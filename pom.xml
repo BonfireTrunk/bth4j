@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xmlns="http://maven.apache.org/POM/4.0.0"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>today.bonfire.oss</groupId>
+        <artifactId>bonfire-oss-parent</artifactId>
+        <version>1.1.6</version>
+    </parent>
+
+    <groupId>today.bonfire.oss</groupId>
+    <artifactId>bth4j</artifactId>
+    <version>2.0.0</version>
+    <packaging>jar</packaging>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <commons-lang3.version>3.17.0</commons-lang3.version>
+        <jedis.version>5.2.0</jedis.version>
+        <cron-utils.version>9.2.1</cron-utils.version>
+    </properties>
+
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>A Java library for asynchronous task management.
+        Handles delayed, recurring tasks, offers flexible configuration, and includes callbacks for monitoring task lifecycle events.
+        Designed for high availability and efficient resource utilization.
+
+    </description>
+    <url>https://github.com/BonfireTrunk/bth4j</url>
+
+    <licenses>
+        <license>
+            <name>The Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <name>Bonfire Team</name>
+            <email>oss@bonfire.today</email>
+            <organization>Bonfire</organization>
+            <organizationUrl>https://github.com/BonfireTrunk</organizationUrl>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:git://github.com/BonfireTrunk/bth4j.git</connection>
+        <developerConnection>scm:git:ssh://github.com/BonfireTrunk/bth4j.git</developerConnection>
+        <url>https://github.com/BonfireTrunk/bth4j</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <dependencyManagement>
+        <dependencies>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+            <version>${commons-lang3.version}</version>
+        </dependency>
+
+
+        <!-- jedis Dependencies -->
+        <dependency>
+            <groupId>today.bonfire.oss</groupId>
+            <artifactId>jedis</artifactId>
+            <version>${jedis.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.cronutils</groupId>
+            <artifactId>cron-utils</artifactId>
+            <version>${cron-utils.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.alibaba.fastjson2</groupId>
+            <artifactId>fastjson2</artifactId>
+            <version>2.0.53</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+    </build>
+</project>

@@ -1,0 +1,173 @@
+package today.bonfire.oss.bth4j.examples;
+
+import lombok.SneakyThrows;
+import lombok.extern.slf4j.Slf4j;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import redis.clients.jedis.DefaultJedisClientConfig;
+import redis.clients.jedis.HostAndPort;
+import redis.clients.jedis.JedisPoolConfig;
+import redis.clients.jedis.JedisPooled;
+import today.bonfire.oss.bth4j.JsonMapperTest;
+import today.bonfire.oss.bth4j.Task;
+import today.bonfire.oss.bth4j.TasksConfigExample;
+import today.bonfire.oss.bth4j.TestEvents;
+import today.bonfire.oss.bth4j.common.Random;
+import today.bonfire.oss.bth4j.executor.DefaultVtExecutor;
+import today.bonfire.oss.bth4j.service.BackgroundRunner;
+import today.bonfire.oss.bth4j.service.TaskOps;
+import today.bonfire.oss.bth4j.service.TaskProcessorRegistry;
+
+import java.time.Duration;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Timer;
+import java.util.TimerTask;
+
+@Slf4j
+class BackgroundRunnerExample {
+
+  private static JedisPooled           jedis;
+  private static TaskProcessorRegistry registry = TasksConfigExample.newTaskProcessorRegistry();
+  private static Thread                th;
+
+  @BeforeAll
+  static void beforeAll() throws InterruptedException {
+    var builder = JedisPoolConfig.builder();
+    builder.maxPoolSize(8)
+           .minPoolSize(1)
+           .testOnBorrow(true)
+           .testWhileIdle(true)
+           .testOnReturn(false)
+           .objEvictionTimeout(Duration.ofSeconds(5))
+           .durationBetweenEvictionsRuns(Duration.ofSeconds(5))
+           .waitingForObjectTimeout(Duration.ofSeconds(2))
+           .abandonedTimeout(Duration.ofSeconds(2))
+           .durationBetweenAbandonCheckRuns(Duration.ofSeconds(2));
+
+
+    var clientConfig = DefaultJedisClientConfig.builder()
+                                               .resp3()
+                                               .timeoutMillis(1000)
+                                               .clientName("bth4j-test")
+                                               .user("app")
+                                               .password("happy")
+                                               .build();
+    var hostPort = new HostAndPort("127.0.0.1", 6404);
+    jedis = new JedisPooled(hostPort, clientConfig, builder.build());
+    var bg = new BackgroundRunner.Builder().taskProcessorRegistry(registry)
+                                           .eventParser(s -> TestEvents.of(Integer.parseInt(s)))
+                                           .taskRetryDelay(Integer::valueOf)
+                                           .taskProcessorQueueCheckInterval(Duration.ofMillis(10))
+                                           .maintenanceCheckInterval(Duration.ofSeconds(10))
+                                           .staleTaskTimeout(Duration.ofSeconds(10))
+                                           .jsonMapper(new JsonMapperTest())
+                                           .jedisClient(jedis)
+                                           .taskExecutor(new DefaultVtExecutor())
+                                           .build();
+    th = new Thread(bg);
+    th.start();
+    var timer = new Timer(true);
+    timer.schedule(new TimerTask() {
+      @SneakyThrows @Override
+      public void run() {
+        log.debug("Stopping runner");
+        bg.stopRunner();
+        th.join(Duration.ofSeconds(10));
+      }
+    }, 600000);
+  }
+
+  @AfterAll
+  static void afterAll() {
+    jedis.close();
+  }
+
+  @BeforeEach
+  void setUp() {}
+
+  @AfterEach
+  void tearDown() {}
+
+  @Test
+  void test() throws InterruptedException {
+    // TaskOps.removeTasksFromSortedSetBasedOnTime(THC.Keys.DEAD_TASKS, Instant.now()
+    //                                                                         .minusSeconds(
+    //                                                                             1000));
+    var cronSet = Arrays.asList(
+        "1 * * * *", "0 0 1,15 * 3",
+        "5 0 * 8 *", "15 14 1 * *",
+        "0 22 * * 1-5", "23 0-22 * * *",
+        "5 4 * * sun", "0 0,12 1 2 *");
+
+    //    for (int i = 0; i < 10000; i++) {
+    //      var t = Task.Builder.newTask()
+    //                          .accountId(Random.UIDBASE64())
+    //                          .event(TestEvents.RECURRING)
+    //                          .queueName("q9")
+    //                          .cronExpression(cronSet.get(i % cronSet.size()))
+    //                          .build();
+    //      TaskOperations.addRecurringTask(t);
+    //    }
+
+    for (int i = 0; i < 10000; i++) {
+      var t = Task.Builder.newTask()
+                          .accountId(Random.UIDBASE64())
+                          .event(TestEvents.NO_DATA)
+                          .executeAfter(5)
+                          .build();
+      TaskOps.addTaskToQueue(t, Collections.emptyMap());
+    }
+    //    for (int i = 0; i < 100; i++) {
+    //      var t = Task.Builder.newTask()
+    //                          .accountId(Random.UIDBASE64())
+    //                          .event(TestEvents.DEFAULT)
+    //                          .build();
+    //      TaskOperations.addTaskToQueue(t.queueName("q2"), Collections.emptyMap());
+    //      t = Task.Builder.newTask()
+    //                      .accountId(Random.UIDBASE64())
+    //                      .event(TestEvents.DEFAULT)
+    //                      .build();
+    //      TaskOperations.addTaskToQueue(t.queueName("q3"), Collections.emptyMap());
+    //      t = Task.Builder.newTask()
+    //                      .accountId(Random.UIDBASE64())
+    //                      .event(TestEvents.DEFAULT)
+    //                      .build();
+    //      TaskOperations.addTaskToQueue(t.queueName("q4"), Collections.emptyMap());
+    //      t = Task.Builder.newTask()
+    //                      .accountId(Random.UIDBASE64())
+    //                      .event(TestEvents.DEFAULT)
+    //                      .build();
+    //      TaskOperations.addTaskToQueue(t.queueName("q5"), Collections.emptyMap());
+    //      t = Task.Builder.newTask()
+    //                      .accountId(Random.UIDBASE64())
+    //                      .event(TestEvents.DEFAULT)
+    //                      .build();
+    //      TaskOperations.addTaskToQueue(t.queueName("q6"), Collections.emptyMap());
+    //      t = Task.Builder.newTask()
+    //                      .accountId(Random.UIDBASE64())
+    //                      .event(TestEvents.DEFAULT)
+    //                      .build();
+    //      TaskOperations.addTaskToQueue(t.queueName("q7"), Collections.emptyMap());
+    //      t = Task.Builder.newTask()
+    //                      .accountId(Random.UIDBASE64())
+    //                      .event(TestEvents.DEFAULT)
+    //                      .build();
+    //      TaskOperations.addTaskToQueue(t.queueName("q8"), Collections.emptyMap());
+    //      t = Task.Builder.newTask()
+    //                      .accountId(Random.UIDBASE64())
+    //                      .event(TestEvents.DEFAULT)
+    //                      .build();
+    //      TaskOperations.addTaskToQueue(t.queueName("q9"), Collections.emptyMap());
+    //      t = Task.Builder.newTask()
+    //                      .accountId(Random.UIDBASE64())
+    //                      .event(TestEvents.DEFAULT)
+    //                      .build();
+    //      TaskOperations.addTaskToQueue(t.queueName("q3"), Collections.emptyMap());
+    //    }
+    th.join();
+  }
+}
