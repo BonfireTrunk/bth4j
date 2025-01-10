@@ -1,7 +1,7 @@
 package today.bonfire.oss.bth4j;
 
 import lombok.extern.slf4j.Slf4j;
-import today.bonfire.oss.bth4j.service.TaskProcessor;
+import today.bonfire.oss.bth4j.service.Task;
 import today.bonfire.oss.bth4j.service.TaskProcessorRegistry;
 
 @Slf4j

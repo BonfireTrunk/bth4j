@@ -12,12 +12,12 @@ import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.JedisPoolConfig;
 import redis.clients.jedis.JedisPooled;
 import today.bonfire.oss.bth4j.JsonMapperTest;
-import today.bonfire.oss.bth4j.Task;
 import today.bonfire.oss.bth4j.TasksConfigExample;
 import today.bonfire.oss.bth4j.TestEvents;
 import today.bonfire.oss.bth4j.common.Random;
 import today.bonfire.oss.bth4j.executor.DefaultVtExecutor;
 import today.bonfire.oss.bth4j.service.BackgroundRunner;
+import today.bonfire.oss.bth4j.service.Task;
 import today.bonfire.oss.bth4j.service.TaskOps;
 import today.bonfire.oss.bth4j.service.TaskProcessorRegistry;
 
@@ -33,6 +33,7 @@ class BackgroundRunnerExample {
   private static JedisPooled           jedis;
   private static TaskProcessorRegistry registry = TasksConfigExample.newTaskProcessorRegistry();
   private static Thread                th;
+  private static TaskOps               taskOps;
 
   @BeforeAll
   static void beforeAll() throws InterruptedException {
@@ -59,7 +60,7 @@ class BackgroundRunnerExample {
     var hostPort = new HostAndPort("127.0.0.1", 6404);
     jedis = new JedisPooled(hostPort, clientConfig, builder.build());
     var bg = new BackgroundRunner.Builder().taskProcessorRegistry(registry)
-                                           .eventParser(s -> TestEvents.of(Integer.parseInt(s)))
+                                           .eventParser(TestEvents.UNKNOWN::from)
                                            .taskRetryDelay(Integer::valueOf)
                                            .taskProcessorQueueCheckInterval(Duration.ofMillis(10))
                                            .maintenanceCheckInterval(Duration.ofSeconds(10))
@@ -68,7 +69,8 @@ class BackgroundRunnerExample {
                                            .jedisClient(jedis)
                                            .taskExecutor(new DefaultVtExecutor())
                                            .build();
-    th = new Thread(bg);
+    taskOps = bg.taskOps();
+    th      = new Thread(bg);
     th.start();
     var timer = new Timer(true);
     timer.schedule(new TimerTask() {
@@ -113,13 +115,13 @@ class BackgroundRunnerExample {
     //      TaskOperations.addRecurringTask(t);
     //    }
 
-    for (int i = 0; i < 10000; i++) {
+    for (int i = 0; i < 100000; i++) {
       var t = Task.Builder.newTask()
                           .accountId(Random.UIDBASE64())
                           .event(TestEvents.NO_DATA)
                           .executeAfter(5)
                           .build();
-      TaskOps.addTaskToQueue(t, Collections.emptyMap());
+      taskOps.addTaskToQueue(t, Collections.emptyMap());
     }
     //    for (int i = 0; i < 100; i++) {
     //      var t = Task.Builder.newTask()

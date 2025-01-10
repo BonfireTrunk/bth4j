@@ -1,6 +1,6 @@
-package today.bonfire.oss.bth4j.service;
+package today.bonfire.oss.bth4j;
 
-import today.bonfire.oss.bth4j.Task;
+import today.bonfire.oss.bth4j.service.Task;
 
 /**
  * Core interface for processing tasks in the background task handler.

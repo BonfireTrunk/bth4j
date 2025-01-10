@@ -1,60 +1,52 @@
-package today.bonfire.oss.bth4j;
+package today.bonfire.oss.bth4j.service;
 
 import com.cronutils.model.CronType;
 import com.cronutils.model.definition.CronDefinitionBuilder;
 import com.cronutils.model.time.ExecutionTime;
 import com.cronutils.parser.CronParser;
-import lombok.AccessLevel;
 import lombok.Getter;
-import lombok.NoArgsConstructor;
 import lombok.Setter;
 import lombok.experimental.Accessors;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
+import today.bonfire.oss.bth4j.Event;
 import today.bonfire.oss.bth4j.common.Random;
 import today.bonfire.oss.bth4j.exceptions.Errors;
 import today.bonfire.oss.bth4j.exceptions.TaskDataException;
 import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
-import today.bonfire.oss.bth4j.service.BackgroundRunner;
-import today.bonfire.oss.bth4j.service.TaskRunnerWrapper;
 
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.util.function.Function;
 
 /**
  * A Task class which holds the task details and the data associated with it.
  * ensure none of the task strings use have | in the strings.
  */
 @Slf4j
-@NoArgsConstructor(access = AccessLevel.PRIVATE)
 @Getter @Accessors(fluent = true)
 public class Task {
 
-  private final static String     TASK_STRING_SEPARATOR = "|";
-  private final static CronParser cronParser            = new CronParser(CronDefinitionBuilder.instanceDefinitionFor(CronType.UNIX));
+  private final static String TASK_STRING_SEPARATOR = "|";
 
-  @Setter
+  private final static CronParser cronParser = new CronParser(CronDefinitionBuilder.instanceDefinitionFor(CronType.UNIX));
+
+  private String uniqueId;
+  private Event  event;
+  private Object accountId;
+  private String queueName;
   private String cronExpression;
-
-  private Object data = null;
-
-  private String taskString = null;
+  private String taskString;
 
   @Setter
-  private String  uniqueId           = null;
-  private Event   event              = null;
-  private Object  accountId          = null;
-
-  @Setter
-  private Instant executeAtTimeStamp = null;
-
-  @Setter
-  private String queueName = null;
+  private Instant executeAtTimeStamp;
+  private Object  data;
 
   /**
    * list key is based on
+   *
    * <pre>
    *   JID|EVENT_ID|ACCOUNT_ID|QUEUE_NAME
    *   1   2        3          4
@@ -75,15 +67,15 @@ public class Task {
    *
    * </pre>
    */
-  public Task(String ts) {
+  public Task(String ts, Function<String, Event> eventParser) {
     if (StringUtils.isBlank(ts)) return;
     this.taskString = ts;
     var split = StringUtils.splitPreserveAllTokens(ts, TASK_STRING_SEPARATOR);
-    if (split.length < 3 || split.length > 6) throw new TaskErrorException("Invalid task string");
+    if (split.length < 3 || split.length > 5) throw new TaskErrorException("Invalid task string");
 
-    uniqueId  = split[0];
-    event     = BackgroundRunner.eventParser().apply(split[1]);
-    accountId = split[2];
+    this.uniqueId = split[0];
+    event         = eventParser.apply(split[1]);
+    accountId     = split[2];
     if (split.length >= 4) {
       queueName = split[3];
       if (queueName.isBlank()) queueName = null;
@@ -97,7 +89,7 @@ public class Task {
 
   protected Task(Builder builder) {
     this.uniqueId           = builder.getUniqueId();
-    this.event              = builder.getEventId();
+    this.event              = builder.getEvent();
     this.accountId          = builder.getAccountId();
     this.executeAtTimeStamp = builder.getExecuteAtTimeStamp();
     this.queueName          = builder.getQueueName();
@@ -134,7 +126,7 @@ public class Task {
         .append(queueName == null ? "" : queueName);
       sb.append(TASK_STRING_SEPARATOR)
         .append(cronExpression);
-    }else{
+    } else {
       if (queueName != null) {
         sb.append(TASK_STRING_SEPARATOR)
           .append(queueName);
@@ -186,7 +178,7 @@ public class Task {
   public static class Builder {
 
     private String  uniqueId           = null;
-    private Event   eventId            = null;
+    private Event   event              = null;
     private Object  accountId          = null;
     private Instant executeAtTimeStamp = null;
     private String  queueName          = null;
@@ -207,8 +199,8 @@ public class Task {
       return b;
     }
 
-    public Builder event(Event eventId) {
-      this.eventId = eventId;
+    public Builder event(Event taskEvent) {
+      this.event = taskEvent;
       return this;
     }
 
@@ -249,7 +241,7 @@ public class Task {
         log.error("accountId cannot be null");
         throw new TaskErrorException(Errors.Tasks.CANNOT_CREATE_TASK);
       }
-      if (ObjectUtils.isEmpty(eventId)) {
+      if (ObjectUtils.isEmpty(event)) {
         log.error("eventId cannot be null");
         throw new TaskErrorException(Errors.Tasks.CANNOT_CREATE_TASK);
       }

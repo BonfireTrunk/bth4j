@@ -2,11 +2,12 @@ package today.bonfire.oss.bth4j.service;
 
 import lombok.extern.slf4j.Slf4j;
 import today.bonfire.oss.bth4j.Event;
-import today.bonfire.oss.bth4j.Task;
+import today.bonfire.oss.bth4j.TaskProcessor;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BiFunction;
 
 /**
  * Registry for task processors that manages the mapping between task events and their processors.
@@ -16,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 public class TaskProcessorRegistry {
 
-  private final Map<Integer, TaskProcessor<?>> processors;
+  private final Map<String, TaskProcessor<?>> processors;
 
   public TaskProcessorRegistry() {
     // Using raw Enum<?> type to support any enum type for events
@@ -32,7 +33,7 @@ public class TaskProcessorRegistry {
    * @param <T>       The type of data the processor handles
    */
   public <E extends Event, T> void register(E event, TaskProcessor<T> processor) {
-    processors.put(event.value(), processor);
+    processors.put(event.toString(), processor);
     log.debug("Registered processor for event: {} with data type: {}",
               event, processor.dataTypeClass().getSimpleName());
   }
@@ -46,8 +47,8 @@ public class TaskProcessorRegistry {
    * @throws TaskConfigurationError if no processor is registered for the task's event
    */
   TaskProcessor<?> getProcessor(Task task) {
-    var              event     = task.event().value();
-    TaskProcessor<?> processor = processors.get(event);
+    var              event     = task.event();
+    TaskProcessor<?> processor = processors.get(event.toString());
     if (processor == null) {
       throw new TaskConfigurationError("No processor registered for event: " + event);
     }
@@ -59,15 +60,15 @@ public class TaskProcessorRegistry {
    *
    * @param task The task to execute
    */
-  public void executeTask(Task task) {
-    executeWithProcessor(task, getProcessor(task));
+  public void executeTask(Task task, BiFunction<String, Class<?>, ?> function) {
+    executeWithProcessor(task, getProcessor(task), function);
   }
 
   @SuppressWarnings("unchecked")
-  private <T> void executeWithProcessor(Task task, TaskProcessor<?> processor) {
+  private <T> void executeWithProcessor(Task task, TaskProcessor<?> processor, BiFunction<String, Class<?>, T> function) {
     TaskProcessor<T> typedProcessor = (TaskProcessor<T>) processor;
     if (typedProcessor.requiresData()) {
-      T data = TaskOps.getDataForTask(task.uniqueId(), typedProcessor.dataTypeClass());
+      T data = function.apply(task.uniqueId(), typedProcessor.dataTypeClass());
       typedProcessor.process(task, data);
     } else {
       typedProcessor.process(task, null);
