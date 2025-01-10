@@ -65,8 +65,8 @@ public class TasksConfigExample {
   private static class CoolTask implements TaskProcessor<Integer> {
 
     @Override public void process(Task task, Integer data) {
-      Math.min(1, 2);
-      log.info("Processing cool task {} with data {}", task.taskString(), data);
+      Math.min(Math.random(), Math.random());
+      // log.info("Processing cool task {} with data {}", task.taskString(), data);
     }
 
     @Override public Class<Integer> dataTypeClass() {

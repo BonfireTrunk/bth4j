@@ -27,21 +27,28 @@ public class THC {
     public final String LOCK_RECURRING_TASKS;
 
     public Keys(String namespace) {
-      this.NAMESPACE         = namespace;
+      this.NAMESPACE = namespace;
       String namespacePrefix = namespace + ":";
-      this.DATA                 = namespacePrefix + "D:";
-      this.SCHEDULED_TASK_QUEUE = namespacePrefix + "SCHEDULED_TASKS";
-      this.RECURRING_TASK_SET   = namespacePrefix + "CRON_TASKS";
-      this.DEAD_TASKS           = namespacePrefix + "DEAD_TASKS";
-      this.TEMP_ROTATION_LIST   = namespacePrefix + "TEMP_LIST";
-      this.IN_PROGRESS_TASKS    = namespacePrefix + "IN_PROGRESS";
-      this.TASK_RETRY_COUNT     = namespacePrefix + "TASK_RETRY_COUNT";
+      this.DATA = namespacePrefix + "D:";
+      final var scheduledTasks = "SCHEDULED_TASKS";
+      final var cronTasks      = "CRON_TASKS";
+      final var deadTasks      = "DEAD_TASKS";
+      final var tempList       = "TEMP_LIST";
+      final var inProgress     = "IN_PROGRESS";
+      final var taskRetryCount = "TASK_RETRY_COUNT";
+      this.SCHEDULED_TASK_QUEUE = namespacePrefix + scheduledTasks;
+      this.RECURRING_TASK_SET   = namespacePrefix + cronTasks;
+      this.DEAD_TASKS           = namespacePrefix + deadTasks;
+      this.TEMP_ROTATION_LIST   = namespacePrefix + tempList;
+      this.IN_PROGRESS_TASKS    = namespacePrefix + inProgress;
+
+      this.TASK_RETRY_COUNT = namespacePrefix + taskRetryCount;
       String LOCK_PREFIX = namespacePrefix + "LOCK:";
 
-      this.LOCK_SCHEDULED_TASKS_QUEUE = LOCK_PREFIX + SCHEDULED_TASK_QUEUE;
-      this.LOCK_ROTATION_LIST         = LOCK_PREFIX + TEMP_ROTATION_LIST;
-      this.LOCK_IN_PROGRESS_TASKS     = LOCK_PREFIX + IN_PROGRESS_TASKS;
-      this.LOCK_RECURRING_TASKS       = LOCK_PREFIX + RECURRING_TASK_SET;
+      this.LOCK_SCHEDULED_TASKS_QUEUE = LOCK_PREFIX + scheduledTasks;
+      this.LOCK_ROTATION_LIST         = LOCK_PREFIX + tempList;
+      this.LOCK_IN_PROGRESS_TASKS     = LOCK_PREFIX + inProgress;
+      this.LOCK_RECURRING_TASKS       = LOCK_PREFIX + cronTasks;
     }
   }
 

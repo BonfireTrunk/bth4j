@@ -26,6 +26,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.CountDownLatch;
 
 @Slf4j
 class BackgroundRunnerExample {
@@ -38,7 +39,7 @@ class BackgroundRunnerExample {
   @BeforeAll
   static void beforeAll() throws InterruptedException {
     var builder = JedisPoolConfig.builder();
-    builder.maxPoolSize(8)
+    builder.maxPoolSize(1000)
            .minPoolSize(1)
            .testOnBorrow(true)
            .testWhileIdle(true)
@@ -67,11 +68,11 @@ class BackgroundRunnerExample {
                                            .staleTaskTimeout(Duration.ofSeconds(10))
                                            .jsonMapper(new JsonMapperTest())
                                            .jedisClient(jedis)
+                                           .namespacePrefix("cool")
                                            .taskExecutor(new DefaultVtExecutor())
                                            .build();
     taskOps = bg.taskOps();
     th      = new Thread(bg);
-    th.start();
     var timer = new Timer(true);
     timer.schedule(new TimerTask() {
       @SneakyThrows @Override
@@ -114,15 +115,25 @@ class BackgroundRunnerExample {
     //                          .build();
     //      TaskOperations.addRecurringTask(t);
     //    }
-
-    for (int i = 0; i < 100000; i++) {
-      var t = Task.Builder.newTask()
-                          .accountId(Random.UIDBASE64())
-                          .event(TestEvents.NO_DATA)
-                          .executeAfter(5)
-                          .build();
-      taskOps.addTaskToQueue(t, Collections.emptyMap());
+    CountDownLatch latch = new CountDownLatch(1000);
+    for (int j = 0; j < 1000; j++) {
+      Thread.startVirtualThread(() -> {
+        try {
+          for (int i = 0; i < 1000; i++) {
+            var t = Task.Builder.newTask()
+                                .accountId(Random.UIDBASE64())
+                                .event(TestEvents.COOL)
+                                .executeAfter(5)
+                                .build();
+            taskOps.addTaskToQueue(t, Collections.emptyMap());
+          }
+        } finally {
+          latch.countDown(); // Decrement the latch count when the thread completes
+        }
+      });
     }
+    latch.await();
+
     //    for (int i = 0; i < 100; i++) {
     //      var t = Task.Builder.newTask()
     //                          .accountId(Random.UIDBASE64())
@@ -170,6 +181,7 @@ class BackgroundRunnerExample {
     //                      .build();
     //      TaskOperations.addTaskToQueue(t.queueName("q3"), Collections.emptyMap());
     //    }
+    th.start();
     th.join();
   }
 }

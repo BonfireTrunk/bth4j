@@ -132,9 +132,10 @@ public class DefaultVtExecutor implements BackgroundExecutor {
           updateConcurrencyLimit(currentMax, newMax, reason, cpuLoad, throughput, throughputChange);
           consecutiveDecreases = 0;
         } else {
-          log.debug("Ignoring potential decrease, recent decreases: {}, throughput: {}",
+          log.debug("Ignoring potential decrease, recent decreases: {}, throughput: {}, Change: {}",
                     consecutiveDecreases,
-                    throughput);
+                    throughput,
+                    throughputChange);
         }
       } else {
         consecutiveIncreases = 0;
