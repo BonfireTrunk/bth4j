@@ -115,8 +115,8 @@ class BackgroundRunnerExample {
     //                          .build();
     //      TaskOperations.addRecurringTask(t);
     //    }
-    CountDownLatch latch = new CountDownLatch(1000);
-    for (int j = 0; j < 1000; j++) {
+    CountDownLatch latch = new CountDownLatch(100);
+    for (int j = 0; j < 100; j++) {
       Thread.startVirtualThread(() -> {
         try {
           for (int i = 0; i < 1000; i++) {

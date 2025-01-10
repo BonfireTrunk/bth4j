@@ -164,6 +164,10 @@ public class MaintenanceService extends CustomThread {
               });
               taskOps.deleteFromInProgressQueueAndAddToQueue(tasksToRetry, tasksToDelete);
             }
+            if (!taskOps.refreshLock(keys.LOCK_IN_PROGRESS_TASKS, THC.Time.T_2_MINUTES)) {
+              log.error("Error in refreshing lock for in progress tasks");
+              break;
+            }
           } while (!"0".equals(cursor));
           taskOps.releaseLock(keys.LOCK_IN_PROGRESS_TASKS);
         }

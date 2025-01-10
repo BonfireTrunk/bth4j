@@ -34,6 +34,7 @@ public class RecurringTaskService extends CustomThread {
   public void run() {
     while (this.canContinueProcessing()) {
       try {
+        // TODO: refresh lock in case of thousands of tasks
         if (taskOps.acquireLock(keys.LOCK_RECURRING_TASKS, lockTimeout)) {
           var           cursor      = "0";
           AtomicInteger itemsQueued = new AtomicInteger();

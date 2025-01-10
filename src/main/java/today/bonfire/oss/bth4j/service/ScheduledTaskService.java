@@ -37,7 +37,7 @@ public class ScheduledTaskService extends CustomThread {
        repeat this process until the queue is empty or no task are ready to be executed.
        */
           while (true) {
-            var tasks = taskOps.peek(keys.SCHEDULED_TASK_QUEUE, 10);
+            var tasks = taskOps.peek(keys.SCHEDULED_TASK_QUEUE, 20);
             if (tasks.isEmpty()) {
               log.trace("Delayed task queue is empty");
               taskOps.releaseLock(keys.LOCK_SCHEDULED_TASKS_QUEUE);
