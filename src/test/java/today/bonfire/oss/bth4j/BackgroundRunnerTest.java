@@ -70,8 +70,9 @@ class BackgroundRunnerTest {
         .eventParser(TestEvents.UNKNOWN::from)
         .taskRetryDelay(Integer::valueOf)
         .taskProcessorQueueCheckInterval(Duration.ofMillis(10))
-        .maintenanceCheckInterval(Duration.ofSeconds(5))
-        .staleTaskTimeout(Duration.ofSeconds(5))
+        .maintenanceCheckInterval(Duration.ofSeconds(1))
+        .staleTaskTimeout(Duration.ofSeconds(3))
+        .taskRetryDelay(integer -> 1)
         .jsonMapper(new JsonMapperTest())
         .jedisClient(jedis)
         .taskExecutor(new DefaultVtExecutor())
@@ -185,7 +186,7 @@ class BackgroundRunnerTest {
 
     taskOps.addTaskToQueue(task, null);
 
-    Thread.sleep(5000 * 3 + 6000); // 3 tries with stale timeout of 5 seconds
+    Thread.sleep(3000 * 3 + 3000); // 3 tries with stale timeout of 3 seconds + retry delay of 6 seconds
     boolean completed = TestTaskProcessors.completionLatch.await(30, TimeUnit.SECONDS);
     assertThat(completed).isTrue();
     // Should have executed 3 times (2 failures + 1 success)

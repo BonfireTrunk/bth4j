@@ -331,11 +331,13 @@ public class BackgroundRunner implements Runnable {
     }
 
     /**
-     * if delay function is not set a default function is used which calculates the value
-     * based on the logic (3 ^ retry-count) + (random_delay between 0 and 59)
+     * This function is used to calculate the time to wait before retrying a failed task.
+     * The function is given the retry count and should return the time in seconds to wait before retrying.
+     * The default value is a function that returns the retry count cubed (x ^ 3).
      *
-     * @param taskRetryDelay function which is supplied with the retry count and expects the
-     *                       return value as delay in seconds
+     * @param taskRetryDelay function to calculate time to wait before retrying a failed task.
+     *                       The function is given the retry count and should return the time in seconds to wait before retrying.
+     * @return current Builder instance for method chaining.
      */
     public Builder taskRetryDelay(Function<Integer, Integer> taskRetryDelay) {
       this.taskRetryDelay = taskRetryDelay;
