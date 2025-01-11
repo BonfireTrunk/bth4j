@@ -1,7 +1,6 @@
 package today.bonfire.oss.bth4j.service;
 
 import lombok.extern.slf4j.Slf4j;
-import today.bonfire.oss.bth4j.Task;
 import today.bonfire.oss.bth4j.exceptions.TaskDataException;
 import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
 import today.bonfire.oss.bth4j.exceptions.TaskRescheduleException;
@@ -15,14 +14,17 @@ public class TaskRunnerWrapper implements Runnable {
   private final Task           task;
   private final Consumer<Task> taskHandler;
   private final TaskCallbacks  callbacks;
+  private final TaskOps        taskOps;
 
   TaskRunnerWrapper(
       Task task,
       Consumer<Task> taskHandler,
-      TaskCallbacks callbacks) {
+      TaskCallbacks callbacks,
+      TaskOps taskOps) {
     this.task        = task;
     this.taskHandler = taskHandler;
     this.callbacks   = callbacks;
+    this.taskOps     = taskOps;
   }
 
   /**
@@ -64,7 +66,7 @@ public class TaskRunnerWrapper implements Runnable {
                               .queueName(task.queueName())
                               .executeAfter(delay)
                               .build();
-    TaskOps.addTaskToQueue(newTask, TaskOps.getDataForTask(task.uniqueId()), true);
+    taskOps.addTaskToQueue(newTask, taskOps.getDataForTask(task.uniqueId()), true);
     log.info("Rescheduling old task {} to run after {} seconds, new task id {}",
              task.uniqueId(), delay, newTask.uniqueId());
     deleteTask(task);
@@ -72,11 +74,11 @@ public class TaskRunnerWrapper implements Runnable {
 
   private void deleteTask(Task task) {
     // delete the task and data if present
-    TaskOps.deleteTaskFromInProgressQueue(task);
+    taskOps.deleteTaskFromInProgressQueue(task);
   }
 
   private void moveToDeadQueue(Task task) {
     // move to dead list if task failed because of BGTaskUnrecoverableException
-    TaskOps.moveToDeadQueue(task);
+    taskOps.moveToDeadQueue(task);
   }
 }

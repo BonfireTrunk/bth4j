@@ -1,16 +1,14 @@
 package today.bonfire.oss.bth4j;
 
+import today.bonfire.oss.bth4j.service.Task;
+
 /**
  * This is the base interface for all the events that are to be used with
  * {@link Task}.
- * Usually your events would be enums that implement this interface.
+ * Your events can be enums that implement this interface,
+ * or you can create your own special class.
  */
 public interface Event {
-
-  /**
-   * The value that is used to identify the event. And this value is part of the task
-   */
-  int value();
 
   /**
    * This is used to identify if the task is recurring or not.
@@ -22,5 +20,25 @@ public interface Event {
 
 
   int retryCount();
+
+  /**
+   * Returns the value of the event.
+   * This value is the identifier of the event,
+   * and is used to identify the event and stored as part of the task.
+   *
+   * @return the value of the event
+   */
+  String value();
+
+  /**
+   * Get the event from the given value.
+   * {@link Event#value()} is the value of the event that would
+   * be suppied to this method
+   *
+   * @param value value of the event
+   * @return the event
+   */
+  Event from(String value);
+
 
 }

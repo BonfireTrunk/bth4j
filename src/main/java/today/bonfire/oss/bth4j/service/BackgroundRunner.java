@@ -1,10 +1,12 @@
 package today.bonfire.oss.bth4j.service;
 
+import lombok.Getter;
+import lombok.experimental.Accessors;
 import lombok.extern.slf4j.Slf4j;
 import redis.clients.jedis.JedisPooled;
 import today.bonfire.oss.bth4j.Event;
-import today.bonfire.oss.bth4j.Task;
 import today.bonfire.oss.bth4j.common.JsonMapper;
+import today.bonfire.oss.bth4j.common.QueuesHolder;
 import today.bonfire.oss.bth4j.common.THC;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.executor.BackgroundExecutor;
@@ -17,21 +19,17 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
-/**
- * primary class to initialize the background and other
- * thread groups and runners
- * update the AVAILABLE_QUEUES values to suit your needs
- * This class is designed to initialized once per application.
- * Multiple instances of this class will not work as expected.
- */
 @Slf4j
-public class BackgroundRunner extends BgrParent implements Runnable {
+@Accessors(fluent = true)
+public class BackgroundRunner implements Runnable {
 
-  private static Function<String, Event> eventParser;
+  @Getter final TaskOps                 taskOps;
+  final         QueuesHolder            queuesHolder;
+  final         Function<String, Event> eventParser;
+  final         THC.Keys                keys;
 
-  // configurable params with defaults
+  private final long                       bgThreadCheckInterval;
   private final long                       staleTaskTimeout;
-  private final long                       BGThreadCheckInterval;
   private final long                       taskProcessorQueueCheckInterval;
   private final long                       maintenanceCheckInterval;
   private final long                       delayedTasksQueueCheckInterval;
@@ -46,12 +44,11 @@ public class BackgroundRunner extends BgrParent implements Runnable {
   private       boolean                    stopRunner = false;
 
   private BackgroundRunner(Builder builder) {
-    super();
     this.staleTaskTimeout                   = builder.staleTaskTimeout.toMillis();
     threadGroup                             = new ThreadGroup(builder.threadGroupName);
     maintenanceCheckInterval                = builder.maintenanceCheckInterval.toMillis();
     taskProcessorQueueCheckInterval         = builder.taskProcessorQueueCheckInterval.toMillis();
-    BGThreadCheckInterval                   = builder.BGThreadCheckInterval.toMillis();
+    bgThreadCheckInterval                   = builder.BGThreadCheckInterval.toMillis();
     delayedTasksQueueCheckInterval          = builder.delayedTasksQueueCheckInterval.toMillis();
     recurringTasksQueueCheckInterval        = builder.recurringTasksQueueCheckInterval.toMillis();
     taskExecutor                            = builder.taskExecutor;
@@ -59,24 +56,36 @@ public class BackgroundRunner extends BgrParent implements Runnable {
     taskCallbacks                           = builder.taskCallbacks;
     recurringTaskCallbacks                  = builder.recurringTaskCallbacks;
     taskRetryDelay                          = builder.taskRetryDelay;
-    eventParser                             = builder.eventParser;
     queueTaskAheadDurationForRecurringTasks = builder.recurringTasksQueueAheadDuration.toSeconds();
-    if (builder.availableQueues != null) {
-      this.updateQueues(builder.availableQueues, builder.queuesToProcess, builder.defaultQueue);
-    }
-    setQueueProcessingStatus();
-    TaskOps.init(builder.jedis, builder.jsonMapper);
+    eventParser                             = builder.eventParser;
+    keys                                    = new THC.Keys(builder.namespacePrefix);
+    queuesHolder                            = setupQueues(this.keys.NAMESPACE, builder.availableQueues, builder.queuesToProcess, builder.defaultQueue);
+    this.taskOps                            = new TaskOps(this.keys, builder.jedis,
+                                                          builder.jsonMapper, eventParser,
+                                                          this.queuesHolder);
 
   }
 
+  static QueuesHolder setupQueues(String namespace, List<String> availableQueues,
+                                  List<String> queuesToProcess,
+                                  String defaultQueue) {
+    queuesToProcess.forEach(s -> {
+      if (!availableQueues.contains(s))
+        throw new TaskConfigurationError("Queues to process not found in available queues list. Please check your configuration");
+    });
+    if (!availableQueues.contains(defaultQueue))
+      throw new TaskConfigurationError("Default queue not found in available queues list. Please check your configuration");
 
-  public static Function<String, Event> eventParser() {
-    return eventParser;
+    return new QueuesHolder(availableQueues.stream()
+                                           .map(s -> namespace + ":" + s)
+                                           .toList(),
+                            queuesToProcess.stream()
+                                           .map(s -> namespace + ":" + s)
+                                           .toList(),
+                            namespace + ":" + defaultQueue
+    );
   }
 
-  public static void setEventParser(Function<String, Event> eventParser) {
-    BackgroundRunner.eventParser = eventParser;
-  }
 
   public void run() {
     log.info("Starting background runner");
@@ -108,7 +117,7 @@ public class BackgroundRunner extends BgrParent implements Runnable {
         log.trace("Current threads in group {}: {}", threadGroup.getName(),
                   threadGroup.activeCount());
 
-        Thread.sleep(BGThreadCheckInterval);
+        Thread.sleep(bgThreadCheckInterval);
       } catch (InterruptedException e) {
         log.error("Main loop interrupted ", e);
       } catch (Exception e) {
@@ -142,6 +151,7 @@ public class BackgroundRunner extends BgrParent implements Runnable {
             recurringTaskCallbacks.onSuccess(),
             recurringTaskCallbacks.onError(),
             recurringTaskCallbacks.afterTask())
+        .setBackgroundRunner(this)
         .create();
     taskProcessorService.start();
     log.info("Thread {} with id {} started", taskProcessorService.getName(),
@@ -153,7 +163,8 @@ public class BackgroundRunner extends BgrParent implements Runnable {
     var delayedTaskService = new ScheduledTaskService.Builder().setGroup(threadGroup)
                                                                .setThreadName("DelayedTaskService")
                                                                .setDelay(delayedTasksQueueCheckInterval)
-                                                               .setRunnable(new ScheduledTaskHandler())
+                                                               .setTaskOps(taskOps)
+                                                               .setKeys(keys)
                                                                .create();
     delayedTaskService.start();
     log.info("Thread {} with id {} started", delayedTaskService.getName(),
@@ -167,6 +178,9 @@ public class BackgroundRunner extends BgrParent implements Runnable {
                                           .setThreadName("RecurringTaskService")
                                           .setCheckInterval(recurringTasksQueueCheckInterval)
                                           .setQueueTaskAheadBy(queueTaskAheadDurationForRecurringTasks)
+                                          .setTaskOps(taskOps)
+                                          .setKeys(keys)
+                                          .setEventParser(eventParser)
                                           .create();
     recurringTaskService.start();
     log.info("Thread {} with id {} started", recurringTaskService.getName(),
@@ -181,6 +195,10 @@ public class BackgroundRunner extends BgrParent implements Runnable {
         .setStaleTaskTimeout(staleTaskTimeout)
         .setInProgressCheckInterval(maintenanceCheckInterval)
         .setTaskRetryDelay(taskRetryDelay)
+        .setTaskOps(taskOps)
+        .setKeys(keys)
+        .setEventParser(eventParser)
+        .setQueuesHolder(queuesHolder)
         .create();
     log.info("Thread {} with id {} started", maintenanceService.getName(),
              maintenanceService.threadId());
@@ -195,7 +213,7 @@ public class BackgroundRunner extends BgrParent implements Runnable {
 
   public static class Builder {
     private Duration                   recurringTasksQueueAheadDuration = Duration.ofSeconds(THC.Time.T_1_HOUR);
-    private Duration                   staleTaskTimeout                 = Duration.ofSeconds(THC.Time.T_30_MINUTES);
+    private Duration                   staleTaskTimeout                 = Duration.ofSeconds(THC.Time.T_5_SECONDS);
     private Duration                   BGThreadCheckInterval            = Duration.ofMillis(10000);
     private Duration                   taskProcessorQueueCheckInterval  = Duration.ofMillis(100);
     private Duration                   maintenanceCheckInterval         = Duration.ofMillis(10000);
@@ -203,16 +221,18 @@ public class BackgroundRunner extends BgrParent implements Runnable {
     private Duration                   recurringTasksQueueCheckInterval = Duration.ofMillis(10000);
     private String                     threadGroupName                  = "bgr";
     private BackgroundExecutor         taskExecutor                     = null;
-    private List<String>               availableQueues;
-    private List<String>               queuesToProcess;
-    private String                     defaultQueue;
+    private List<String>               availableQueues                  = List.of("Q:DEF", "Q:LOW", "Q:MED", "Q:HIGH");
+    private List<String>               queuesToProcess                  = availableQueues;
+    private String                     defaultQueue                     = queuesToProcess.getFirst();
     private TaskProcessorRegistry      taskProcessorRegistry;
     private TaskCallbacks              taskCallbacks                    = TaskCallbacks.noOp();
     private TaskCallbacks              recurringTaskCallbacks           = TaskCallbacks.noOp();
-    private Function<Integer, Integer> taskRetryDelay;
-    private Function<String, Event>    eventParser;
-    private JedisPooled                jedis;
-    private JsonMapper                 jsonMapper;
+    private Function<Integer, Integer> taskRetryDelay                   = retryCount -> retryCount ^ 3;
+
+    private String                  namespacePrefix = "BTH";
+    private Function<String, Event> eventParser;
+    private JedisPooled             jedis;
+    private JsonMapper              jsonMapper;
 
 
     /**
@@ -228,8 +248,17 @@ public class BackgroundRunner extends BgrParent implements Runnable {
       return this;
     }
 
-    public Builder eventParser(Function<String, Event> eventParser) {
-      this.eventParser = eventParser;
+    /**
+     * Sets the event parser.
+     *
+     * @param parser - a function to convert a string to an {@link Event} object.
+     *               This function is used to parse the event string from task to an {@link Event} object.
+     *
+     *               <p> NOTE: This value is static and will be used for all instances of background runners
+     * @return current Builder instance for method chaining.
+     */
+    public Builder eventParser(Function<String, Event> parser) {
+      this.eventParser = parser;
       return this;
     }
 
@@ -302,11 +331,13 @@ public class BackgroundRunner extends BgrParent implements Runnable {
     }
 
     /**
-     * if delay function is not set a default function is used which calculates the value
-     * based on the logic (3 ^ retry-count) + (random_delay between 0 and 59)
+     * This function is used to calculate the time to wait before retrying a failed task.
+     * The function is given the retry count and should return the time in seconds to wait before retrying.
+     * The default value is a function that returns the retry count cubed (x ^ 3).
      *
-     * @param taskRetryDelay function which is supplied with the retry count and expects the
-     *                       return value as delay in seconds
+     * @param taskRetryDelay function to calculate time to wait before retrying a failed task.
+     *                       The function is given the retry count and should return the time in seconds to wait before retrying.
+     * @return current Builder instance for method chaining.
      */
     public Builder taskRetryDelay(Function<Integer, Integer> taskRetryDelay) {
       this.taskRetryDelay = taskRetryDelay;
@@ -323,6 +354,16 @@ public class BackgroundRunner extends BgrParent implements Runnable {
      */
     public Builder staleTaskTimeout(Duration timeout) {
       this.staleTaskTimeout = timeout;
+      return this;
+    }
+
+    /**
+     * @param namespacePrefix - prefix for all keys used by background runner
+     *                        this also prefixes the queue names.
+     *                        default is "BTH"
+     */
+    public Builder namespacePrefix(String namespacePrefix) {
+      this.namespacePrefix = namespacePrefix;
       return this;
     }
 
@@ -417,7 +458,6 @@ public class BackgroundRunner extends BgrParent implements Runnable {
       if (taskProcessorRegistry == null) throw new TaskConfigurationError("Task processor handler is not set");
       if (eventParser == null) throw new TaskConfigurationError("Cannot build runner without event parser");
       if (jedis == null) throw new TaskConfigurationError("Cannot build runner without jedis client");
-      setQueueProcessingStatus();
       return new BackgroundRunner(this);
     }
 

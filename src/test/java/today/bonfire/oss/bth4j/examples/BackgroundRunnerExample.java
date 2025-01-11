@@ -12,12 +12,12 @@ import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.JedisPoolConfig;
 import redis.clients.jedis.JedisPooled;
 import today.bonfire.oss.bth4j.JsonMapperTest;
-import today.bonfire.oss.bth4j.Task;
 import today.bonfire.oss.bth4j.TasksConfigExample;
 import today.bonfire.oss.bth4j.TestEvents;
 import today.bonfire.oss.bth4j.common.Random;
 import today.bonfire.oss.bth4j.executor.DefaultVtExecutor;
 import today.bonfire.oss.bth4j.service.BackgroundRunner;
+import today.bonfire.oss.bth4j.service.Task;
 import today.bonfire.oss.bth4j.service.TaskOps;
 import today.bonfire.oss.bth4j.service.TaskProcessorRegistry;
 
@@ -26,6 +26,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.CountDownLatch;
 
 @Slf4j
 class BackgroundRunnerExample {
@@ -33,11 +34,12 @@ class BackgroundRunnerExample {
   private static JedisPooled           jedis;
   private static TaskProcessorRegistry registry = TasksConfigExample.newTaskProcessorRegistry();
   private static Thread                th;
+  private static TaskOps               taskOps;
 
   @BeforeAll
   static void beforeAll() throws InterruptedException {
     var builder = JedisPoolConfig.builder();
-    builder.maxPoolSize(8)
+    builder.maxPoolSize(1000)
            .minPoolSize(1)
            .testOnBorrow(true)
            .testWhileIdle(true)
@@ -59,17 +61,18 @@ class BackgroundRunnerExample {
     var hostPort = new HostAndPort("127.0.0.1", 6404);
     jedis = new JedisPooled(hostPort, clientConfig, builder.build());
     var bg = new BackgroundRunner.Builder().taskProcessorRegistry(registry)
-                                           .eventParser(s -> TestEvents.of(Integer.parseInt(s)))
+                                           .eventParser(TestEvents.UNKNOWN::from)
                                            .taskRetryDelay(Integer::valueOf)
                                            .taskProcessorQueueCheckInterval(Duration.ofMillis(10))
                                            .maintenanceCheckInterval(Duration.ofSeconds(10))
                                            .staleTaskTimeout(Duration.ofSeconds(10))
                                            .jsonMapper(new JsonMapperTest())
                                            .jedisClient(jedis)
+                                           .namespacePrefix("cool")
                                            .taskExecutor(new DefaultVtExecutor())
                                            .build();
-    th = new Thread(bg);
-    th.start();
+    taskOps = bg.taskOps();
+    th      = new Thread(bg);
     var timer = new Timer(true);
     timer.schedule(new TimerTask() {
       @SneakyThrows @Override
@@ -112,15 +115,25 @@ class BackgroundRunnerExample {
     //                          .build();
     //      TaskOperations.addRecurringTask(t);
     //    }
-
-    for (int i = 0; i < 10000; i++) {
-      var t = Task.Builder.newTask()
-                          .accountId(Random.UIDBASE64())
-                          .event(TestEvents.NO_DATA)
-                          .executeAfter(5)
-                          .build();
-      TaskOps.addTaskToQueue(t, Collections.emptyMap());
+    CountDownLatch latch = new CountDownLatch(100);
+    for (int j = 0; j < 100; j++) {
+      Thread.startVirtualThread(() -> {
+        try {
+          for (int i = 0; i < 1000; i++) {
+            var t = Task.Builder.newTask()
+                                .accountId(Random.UIDBASE64())
+                                .event(TestEvents.COOL)
+                                .executeAfter(5)
+                                .build();
+            taskOps.addTaskToQueue(t, Collections.emptyMap());
+          }
+        } finally {
+          latch.countDown(); // Decrement the latch count when the thread completes
+        }
+      });
     }
+    latch.await();
+
     //    for (int i = 0; i < 100; i++) {
     //      var t = Task.Builder.newTask()
     //                          .accountId(Random.UIDBASE64())
@@ -168,6 +181,7 @@ class BackgroundRunnerExample {
     //                      .build();
     //      TaskOperations.addTaskToQueue(t.queueName("q3"), Collections.emptyMap());
     //    }
+    th.start();
     th.join();
   }
 }

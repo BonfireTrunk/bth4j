@@ -26,17 +26,20 @@ public class DefaultVtExecutor implements BackgroundExecutor {
   private final AtomicInteger         activeTaskCount;
   private final OperatingSystemMXBean osBean;
   private final Timer                 monitor;
+  private final int                   changingOutputDampenLimit    = 1;
+  private final int                   constantOutputDampeningLimit = 3;
 
   private long lastCompletedCount;
   private long lastThroughput;
-  private int  consecutiveIncreases      = 0;
-  private int  consecutiveDecreases      = 0;
-  private long consecutiveZeroThroughput = 0;
-  private long totalTasksCompleted       = 0;
+  private int  consecutiveIncreases        = 0;
+  private int  consecutiveDecreases        = 0;
+  private long consecutiveZeroThroughput   = 0;
+  private long totalTasksCompleted         = 0;
+  private int  consecutiveStableThroughput = 0;
 
   public DefaultVtExecutor() {
     this.maxConcurrentTasks = new AtomicInteger(AVAILABLE_PROCESSORS);
-    this.concurrencyLimiter = new Semaphore(1000);
+    this.concurrencyLimiter = new Semaphore(AVAILABLE_PROCESSORS);
     this.activeTaskCount    = new AtomicInteger(0);
     this.osBean             = ManagementFactory.getOperatingSystemMXBean();
     this.executor           = Executors.newVirtualThreadPerTaskExecutor();
@@ -79,12 +82,12 @@ public class DefaultVtExecutor implements BackgroundExecutor {
       }
       consecutiveIncreases = 0;
     } else {
-      if (throughput == 0) {
+      if (throughput == 0 && activeTaskCount.get() == 0) {
         consecutiveZeroThroughput++;
         log.trace("Zero throughput detected ({} consecutive intervals). CPU: {}, currentMax: {}",
                   consecutiveZeroThroughput, String.format("%.3f", cpuLoad), currentMax);
 
-        if (consecutiveZeroThroughput >= 3) {
+        if (consecutiveZeroThroughput >= constantOutputDampeningLimit) {
           if (currentMax > AVAILABLE_PROCESSORS) {
             newMax = AVAILABLE_PROCESSORS;
             reason = "sustained zero throughput";
@@ -99,8 +102,9 @@ public class DefaultVtExecutor implements BackgroundExecutor {
         } else if (throughputChange < 0 && currentMax > AVAILABLE_PROCESSORS) {
           newMax = Math.max(AVAILABLE_PROCESSORS, currentMax - 1);
           reason = "decreasing throughput";
-        } else if (throughputChange == 0) {
+        } else if (throughputChange == 0 && consecutiveStableThroughput < constantOutputDampeningLimit) {
           newMax = currentMax + 1;
+          consecutiveStableThroughput++;
           reason = "stable throughput, will probe for more";
         }
       }
@@ -109,8 +113,9 @@ public class DefaultVtExecutor implements BackgroundExecutor {
     if (throughput > 0) {
       if (newMax > currentMax) {
         consecutiveIncreases++;
-        consecutiveDecreases = 0;
-        if (consecutiveIncreases > 1) {
+        consecutiveDecreases        = 0;
+        consecutiveStableThroughput = 0;
+        if (consecutiveIncreases > changingOutputDampenLimit) {
           updateConcurrencyLimit(currentMax, newMax, reason, cpuLoad, throughput, throughputChange);
           consecutiveIncreases = 0;
           // TODO: maybe need max limiter?
@@ -121,14 +126,16 @@ public class DefaultVtExecutor implements BackgroundExecutor {
         }
       } else if (newMax < currentMax) {
         consecutiveDecreases++;
-        consecutiveIncreases = 0;
-        if (consecutiveDecreases > 1) {
+        consecutiveIncreases        = 0;
+        consecutiveStableThroughput = 0;
+        if (consecutiveDecreases > changingOutputDampenLimit) {
           updateConcurrencyLimit(currentMax, newMax, reason, cpuLoad, throughput, throughputChange);
           consecutiveDecreases = 0;
         } else {
-          log.debug("Ignoring potential decrease, recent decreases: {}, throughput: {}",
+          log.debug("Ignoring potential decrease, recent decreases: {}, throughput: {}, Change: {}",
                     consecutiveDecreases,
-                    throughput);
+                    throughput,
+                    throughputChange);
         }
       } else {
         consecutiveIncreases = 0;
@@ -147,15 +154,12 @@ public class DefaultVtExecutor implements BackgroundExecutor {
 
   private void updateConcurrencyLimit(int currentMax, int newMax, String reason, double cpuLoad, long throughput, long throughputChange) {
     maxConcurrentTasks.set(newMax);
-
     // Adjust semaphore permits
     if (newMax > currentMax) {
       concurrencyLimiter.release(newMax - currentMax);
     } else {
       int permitsToRemove = currentMax - newMax;
-      for (int i = 0; i < permitsToRemove; i++) {
-        concurrencyLimiter.tryAcquire();
-      }
+      concurrencyLimiter.acquireUninterruptibly(permitsToRemove);
     }
 
     log.debug("{} threads: {} -> {} due to {}. CPU: {}, Throughput: {}, Change: {}",

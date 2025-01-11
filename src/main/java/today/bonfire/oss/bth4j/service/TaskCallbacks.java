@@ -1,6 +1,5 @@
 package today.bonfire.oss.bth4j.service;
 
-import today.bonfire.oss.bth4j.Task;
 import today.bonfire.oss.bth4j.common.THC;
 
 import java.util.function.BiConsumer;

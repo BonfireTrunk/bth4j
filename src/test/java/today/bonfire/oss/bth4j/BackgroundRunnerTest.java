@@ -14,6 +14,7 @@ import redis.clients.jedis.JedisPooled;
 import today.bonfire.oss.bth4j.common.Random;
 import today.bonfire.oss.bth4j.executor.DefaultVtExecutor;
 import today.bonfire.oss.bth4j.service.BackgroundRunner;
+import today.bonfire.oss.bth4j.service.Task;
 import today.bonfire.oss.bth4j.service.TaskOps;
 import today.bonfire.oss.bth4j.service.TaskProcessorRegistry;
 
@@ -33,6 +34,7 @@ class BackgroundRunnerTest {
   private static TaskProcessorRegistry registry;
   private static BackgroundRunner      backgroundRunner;
   private static Thread                backgroundThread;
+  private static TaskOps               taskOps;
 
   @BeforeAll
   static void beforeAll() throws InterruptedException {
@@ -65,16 +67,18 @@ class BackgroundRunnerTest {
     registry         = TestTaskProcessors.createTestRegistry();
     backgroundRunner = new BackgroundRunner.Builder()
         .taskProcessorRegistry(registry)
-        .eventParser(s -> TestEvents.of(Integer.parseInt(s)))
+        .eventParser(TestEvents.UNKNOWN::from)
         .taskRetryDelay(Integer::valueOf)
         .taskProcessorQueueCheckInterval(Duration.ofMillis(10))
-        .maintenanceCheckInterval(Duration.ofSeconds(5))
-        .staleTaskTimeout(Duration.ofSeconds(5))
+        .maintenanceCheckInterval(Duration.ofSeconds(1))
+        .staleTaskTimeout(Duration.ofSeconds(3))
+        .taskRetryDelay(integer -> 1)
         .jsonMapper(new JsonMapperTest())
         .jedisClient(jedis)
         .taskExecutor(new DefaultVtExecutor())
         .build();
 
+    taskOps          = backgroundRunner.taskOps();
     backgroundThread = new Thread(backgroundRunner);
     backgroundThread.start();
 
@@ -116,7 +120,7 @@ class BackgroundRunnerTest {
                            .event(TestEvents.REGULAR_TASK)
                            .build();
 
-    TaskOps.addTaskToQueue(task, Collections.emptyMap());
+    taskOps.addTaskToQueue(task, Collections.emptyMap());
 
     boolean completed = TestTaskProcessors.completionLatch.await(20, TimeUnit.SECONDS);
     assertThat(completed).isTrue();
@@ -135,7 +139,7 @@ class BackgroundRunnerTest {
                            .executeAfter(2) // 2 seconds delay
                            .build();
 
-    TaskOps.addTaskToQueue(task, Collections.emptyMap());
+    taskOps.addTaskToQueue(task, Collections.emptyMap());
 
     boolean completed     = TestTaskProcessors.completionLatch.await(20, TimeUnit.SECONDS);
     long    executionTime = System.currentTimeMillis() - startTime;
@@ -156,7 +160,7 @@ class BackgroundRunnerTest {
                            .cronExpression("*/1 * * * *") // Every minute
                            .build();
     try {
-      var t1 = TaskOps.addRecurringTask(task);
+      var t1 = taskOps.addRecurringTask(task);
       Thread.sleep(60000);
 
       boolean completed = TestTaskProcessors.completionLatch.await(10, TimeUnit.SECONDS);
@@ -164,7 +168,7 @@ class BackgroundRunnerTest {
       assertThat(TestTaskProcessors.recurringTaskExecutions.get()).isGreaterThanOrEqualTo(1)
                                                                   .isLessThanOrEqualTo(2);
     } finally {
-      TaskOps.deleteRecurringTask(task);
+      taskOps.deleteRecurringTask(task);
     }
 
 
@@ -180,9 +184,9 @@ class BackgroundRunnerTest {
                            .event(TestEvents.RETRY_TASK)
                            .build();
 
-    TaskOps.addTaskToQueue(task, null);
+    taskOps.addTaskToQueue(task, null);
 
-    Thread.sleep(5000 * 3 + 6000); // 3 tries with stale timeout of 5 seconds
+    Thread.sleep(3000 * 3 + 3000); // 3 tries with stale timeout of 3 seconds + retry delay of 6 seconds
     boolean completed = TestTaskProcessors.completionLatch.await(30, TimeUnit.SECONDS);
     assertThat(completed).isTrue();
     // Should have executed 3 times (2 failures + 1 success)
@@ -202,7 +206,7 @@ class BackgroundRunnerTest {
                              .accountId(Random.UIDBASE64())
                              .event(TestEvents.CONCURRENT_TASK)
                              .build();
-      TaskOps.addTaskToQueue(task, Collections.emptyMap());
+      taskOps.addTaskToQueue(task, Collections.emptyMap());
     }
 
     TestTaskProcessors.concurrencyLatch.countDown();

@@ -1,98 +1,89 @@
 package today.bonfire.oss.bth4j.service;
 
 import lombok.extern.slf4j.Slf4j;
-import today.bonfire.oss.bth4j.Task;
+import today.bonfire.oss.bth4j.common.QueuesHolder;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.executor.BackgroundExecutor;
 import today.bonfire.oss.bth4j.executor.CustomThread;
 
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 @Slf4j
 public class TaskProcessorService extends CustomThread {
 
-  private final long               delay;
-  private final Consumer<Task>     taskHandler;
-  private final BackgroundExecutor taskExecutor;
-  private final int                queueSize;
-  private final TaskCallbacks      regularTaskCallbacks;
-  private final TaskCallbacks      recurringTaskCallbacks;
-  private       int                queueIndex    = 0;
-  private       int                nullTaskCount = 0;
+  private final long                  delay;
+  private final Consumer<Task>        taskHandler;
+  private final BackgroundExecutor    taskExecutor;
+  private final int                   queueSize;
+  private final TaskCallbacks         regularTaskCallbacks;
+  private final TaskCallbacks         recurringTaskCallbacks;
+  private final QueuesHolder          queuesHolder;
+  private final TaskOps               taskOps;
+  private final AtomicInteger         queueIndex = new AtomicInteger(0);
+  private final TaskProcessorRegistry taskProcessorRegistry;
+
 
   public TaskProcessorService(Builder builder) {
     super(builder.group, builder.threadName);
-    this.taskHandler            = builder.taskHandler;
     this.delay                  = builder.delay;
     this.taskExecutor           = builder.taskExecutor;
     this.regularTaskCallbacks   = builder.regularCallbacks;
     this.recurringTaskCallbacks = builder.recurringCallbacks;
-    this.queueSize              = BgrParent.QUEUES_TO_PROCESS.size();
+    this.taskOps                = builder.backgroundRunner.taskOps;
+    this.queuesHolder           = builder.backgroundRunner.queuesHolder;
+    this.queueSize              = this.queuesHolder.queuesToProcess.size();
+    this.taskProcessorRegistry  = builder.taskProcessorRegistry;
+    this.taskHandler            = task -> {
+      taskProcessorRegistry.executeTask(task, taskOps::getDataForTask);
+    };
   }
 
   /**
    * this method is involved in processing the queues as per defined logic
    * currently it is processing the queues in a round-robin fashion
    */
-  private int getIndex() {
-    // Reset indices if we've processed all queues
-    if (queueIndex >= queueSize) {
-      nullTaskCount = 0;
-      queueIndex    = 0;
+  private String getQueue() {
+    // Try up to one full cycle
+    for (int attempt = 0; attempt < queueSize; attempt++) {
+      // Get and increment index atomically, with wraparound
+      int currentIndex = queueIndex.getAndUpdate(idx -> (idx + 1) % queueSize);
+
+      var queue = queuesHolder.queuesToProcess.get(currentIndex);
+      if (queuesHolder.queueProcessingStatus.get(queue)) {
+        return queue;
+      }
     }
-
-    // Keep track of starting index to prevent infinite loop
-    final int startIndex = queueIndex;
-
-    do {
-      // Get current index and increment for next iteration
-      int currentIndex = queueIndex++;
-
-      // If queue at current index is available for processing, return it
-      if (BgrParent.QUEUE_PROCESSING_STATUS.get(currentIndex) == 1) {
-        return currentIndex;
-      }
-
-      // Count skipped queues
-      nullTaskCount++;
-
-      // Wrap around if we reach the end
-      if (queueIndex >= queueSize) {
-        queueIndex = 0;
-      }
-
-    } while (queueIndex != startIndex && nullTaskCount < queueSize);
-
-    // Return -1 if we've checked all queues and none are available
-    return -1;
+    return null;
   }
 
   @Override
   public void run() {
     while (this.canContinueProcessing()) {
       try {
-        int index = getIndex();
-        if (taskExecutor.isPoolFull() || index == -1) {
+        var q = getQueue();
+        if (taskExecutor.isPoolFull() || q == null) {
           Thread.sleep(delay);
         } else {
           // get a task and process it
-          var task = TaskOps.getTaskFromQueue(
-              BgrParent.QUEUES_TO_PROCESS.get(index));
+          var task = taskOps.getTaskFromQueue(q);
           if (task.isNULL()) {
             // assume the queue is empty for now
-            BgrParent.QUEUE_PROCESSING_STATUS.set(index, 0);
+            queuesHolder.queueProcessingStatus.put(q, false);
           } else {
             if (task.event().isRecurring()) {
               taskExecutor.execute(new TaskRunnerWrapper(
                   task,
                   taskHandler,
-                  recurringTaskCallbacks));
+                  recurringTaskCallbacks,
+                  taskOps));
             } else {
               taskExecutor.execute(new TaskRunnerWrapper(
                   task,
                   taskHandler,
-                  regularTaskCallbacks));
+                  regularTaskCallbacks,
+                  taskOps));
             }
 
           }
@@ -113,7 +104,7 @@ public class TaskProcessorService extends CustomThread {
     private BackgroundExecutor    taskExecutor;
     private TaskCallbacks         regularCallbacks   = TaskCallbacks.noOp();
     private TaskCallbacks         recurringCallbacks = TaskCallbacks.noOp();
-    private Consumer<Task>        taskHandler;
+    private BackgroundRunner      backgroundRunner;
 
     public Builder() {}
 
@@ -197,8 +188,15 @@ public class TaskProcessorService extends CustomThread {
       if (taskExecutor == null) {
         throw new TaskConfigurationError("TaskExecutor is required");
       }
-      this.taskHandler = (task) -> taskProcessorRegistry.executeTask(task);
+      if (backgroundRunner == null) {
+        throw new TaskConfigurationError("BackgroundRunner is required");
+      }
       return new TaskProcessorService(this);
+    }
+
+    public Builder setBackgroundRunner(BackgroundRunner backgroundRunner) {
+      this.backgroundRunner = backgroundRunner;
+      return this;
     }
   }
 }

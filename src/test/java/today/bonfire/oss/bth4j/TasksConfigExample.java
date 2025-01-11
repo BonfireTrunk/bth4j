@@ -1,7 +1,7 @@
 package today.bonfire.oss.bth4j;
 
 import lombok.extern.slf4j.Slf4j;
-import today.bonfire.oss.bth4j.service.TaskProcessor;
+import today.bonfire.oss.bth4j.service.Task;
 import today.bonfire.oss.bth4j.service.TaskProcessorRegistry;
 
 @Slf4j
@@ -65,8 +65,8 @@ public class TasksConfigExample {
   private static class CoolTask implements TaskProcessor<Integer> {
 
     @Override public void process(Task task, Integer data) {
-      Math.min(1, 2);
-      log.info("Processing cool task {} with data {}", task.taskString(), data);
+      Math.min(Math.random(), Math.random());
+      // log.info("Processing cool task {} with data {}", task.taskString(), data);
     }
 
     @Override public Class<Integer> dataTypeClass() {
