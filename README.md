@@ -12,6 +12,18 @@ BTH4J is designed to handle various types of tasks:
 
 The library employs a multi-threaded architecture with configurable parameters for queue processing intervals, maintenance checks, and retry mechanisms. It also supports custom callbacks for task lifecycle events (before start, success, error, after task).
 
+## Installation
+
+Add the following dependency to your project:
+
+```xml
+<dependency>
+    <groupId>today.bonfire.oss</groupId>
+    <artifactId>bth4j</artifactId>
+    <version>2.2.1</version>
+</dependency>
+```
+
 ## Architecture
 
 The core components of BTH4J are:
@@ -81,18 +93,6 @@ The core components of BTH4J are:
         6. All services interact with TaskOps for Redis operations
         7. TaskRunnerWrapper handles task execution lifecycle
         8. Processors implement actual task business logic
-```
-
-## Installation
-
-Add the following dependency to your project:
-
-```xml
-<dependency>
-    <groupId>today.bonfire.oss</groupId>
-    <artifactId>bth4j</artifactId>
-    <version>2.2.0</version>
-</dependency>
 ```
 
 ## Usage Examples
