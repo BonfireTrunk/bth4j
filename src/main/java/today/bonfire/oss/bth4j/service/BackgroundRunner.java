@@ -3,6 +3,8 @@ package today.bonfire.oss.bth4j.service;
 import lombok.Getter;
 import lombok.experimental.Accessors;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.ObjectUtils;
+import org.apache.commons.lang3.StringUtils;
 import redis.clients.jedis.JedisPooled;
 import today.bonfire.oss.bth4j.Event;
 import today.bonfire.oss.bth4j.common.JsonMapper;
@@ -87,8 +89,7 @@ public class BackgroundRunner implements Runnable {
   }
 
   static QueuesHolder setupQueues(String namespace, List<String> availableQueues,
-                                  List<String> queuesToProcess,
-                                  String defaultQueue) {
+                                  List<String> queuesToProcess, String defaultQueue) {
     queuesToProcess.forEach(s -> {
       if (!availableQueues.contains(s))
         throw new TaskConfigurationError("Queues to process not found in available queues list. Please check your configuration");
@@ -491,9 +492,10 @@ public class BackgroundRunner implements Runnable {
      * @param availableQueues - List of all queues visible to the application. Duplicates will be removed.
      *                        Example: List.of("q:def", "q:low", "q:med", "q:high")
      * @param queuesToProcess - List of queues that this instance will process. Must be a subset of availableQueues.
-     *                        Example: List.of("q:low", "q:med") to only process low and medium priority queues
+     *                        if null, then all queues in availableQueues will be processed
+     *                        Example: List.of("q:low", "q:med") to only process low and medium priority queues.
      * @param defaultQueue    - Default queue to use when no queue is specified for a task.
-     *                        Must be present in availableQueues.
+     *                        Must be present in availableQueues. if null, then the first item in queuesToProcess will be used
      *                        Example: "q:def" for default queue
      * @return Builder instance for method chaining
      *
@@ -503,9 +505,11 @@ public class BackgroundRunner implements Runnable {
     public Builder configureQueues(List<String> availableQueues,
                                    List<String> queuesToProcess,
                                    String defaultQueue) {
+      if (ObjectUtils.isEmpty(availableQueues)) throw new TaskConfigurationError("Available queues cannot be null or empty");
+
       this.availableQueues = new HashSet<>(availableQueues).stream().toList();
-      this.queuesToProcess = queuesToProcess;
-      this.defaultQueue    = defaultQueue;
+      this.queuesToProcess = ObjectUtils.isEmpty(queuesToProcess) ? this.availableQueues : queuesToProcess;
+      this.defaultQueue    = StringUtils.isBlank(defaultQueue) ? this.queuesToProcess.getFirst() : defaultQueue;
       return this;
     }
 
