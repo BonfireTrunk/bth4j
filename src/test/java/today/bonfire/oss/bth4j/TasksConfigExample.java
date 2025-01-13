@@ -53,10 +53,6 @@ public class TasksConfigExample {
       log.info("Processing recurring task {}", task.taskString());
     }
 
-    @Override public Class<Void> dataTypeClass() {
-      return TaskProcessor.super.dataTypeClass();
-    }
-
     @Override public boolean requiresData() {
       return TaskProcessor.super.requiresData();
     }
@@ -76,5 +72,6 @@ public class TasksConfigExample {
     @Override public boolean requiresData() {
       return true;
     }
+
   }
 }

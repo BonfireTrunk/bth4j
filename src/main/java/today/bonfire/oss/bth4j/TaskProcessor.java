@@ -21,21 +21,22 @@ public interface TaskProcessor<T> {
   /**
    * Get the class type of data this processor expects.
    * This is used for automatic deserialization of task data.
+   * <p>
+   * if your task needs data then make sure to implement this method.
    *
    * @return The class type of data this processor handles
    */
-  @SuppressWarnings("unchecked")
-  default Class<T> dataTypeClass() {
-    return (Class<T>) Void.class;
+  default Class<?> dataTypeClass() {
+    return Void.class;
   }
 
   /**
    * Indicates whether this processor requires data to process the task.
-   * Default implementation returns false;
+   * Default implementation returns false if void class type i.e. no data;
    *
    * @return true if the processor needs data, false otherwise
    */
   default boolean requiresData() {
-    return dataTypeClass() != Void.class;
+    return Void.class != dataTypeClass();
   }
 }
