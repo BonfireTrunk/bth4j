@@ -75,7 +75,7 @@ public class TaskOps {
         throw new TaskErrorException("Queue name is not in available list: " + queueName);
       }
     }
-
+    ObjectUtils.firstNonNull(data, task.data()); // may remove use with caution
     try (var transaction = jedis.multi()) {
       if (ObjectUtils.isNotEmpty(data)) {
         transaction.set(keys.DATA + task.uniqueId(), isDataRaw ? data.toString() : mapper.toJson(data));
