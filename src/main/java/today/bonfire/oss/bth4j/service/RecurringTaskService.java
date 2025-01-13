@@ -32,7 +32,7 @@ public class RecurringTaskService extends CustomThread {
 
   @Override
   public void run() {
-    while (this.canContinueProcessing()) {
+    while (this.canContinueProcessing) {
       try {
         // TODO: refresh lock in case of thousands of tasks
         if (taskOps.acquireLock(keys.LOCK_RECURRING_TASKS, lockTimeout)) {
@@ -78,6 +78,7 @@ public class RecurringTaskService extends CustomThread {
         log.error("Task processor Thread error", e);
       }
     }
+    doneLatch.countDown();
   }
 
   public static class Builder {
@@ -90,7 +91,7 @@ public class RecurringTaskService extends CustomThread {
     private THC.Keys                keys;
     private Function<String, Event> eventParser;
 
-    private long lockTimeout = THC.Time.T_5_MINUTES;
+    private long lockTimeout;
 
     public Builder() {}
 

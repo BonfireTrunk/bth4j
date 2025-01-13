@@ -58,6 +58,7 @@ public class THC {
   public static class Time {
     public static final long T_30_DAYS    = 3600L * 24 * 30;
     public static final long T_1_HOUR     = 3600L;
+    public static final long T_10_MINUTES = 600L;
     public static final long T_5_MINUTES  = 300L;
     public static final long T_2_MINUTES  = 120;
     public static final long T_1_MINUTE   = 60L;

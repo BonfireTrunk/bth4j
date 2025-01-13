@@ -20,7 +20,7 @@ Add the following dependency to your project:
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j</artifactId>
-    <version>2.2.1</version>
+    <version>2.3.0</version>
 </dependency>
 ```
 

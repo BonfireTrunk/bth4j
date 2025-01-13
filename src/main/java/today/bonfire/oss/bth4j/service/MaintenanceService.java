@@ -177,14 +177,15 @@ public class MaintenanceService extends CustomThread {
     };
 
     Runnable stopExecutor = () -> {
-      if (!canContinueProcessing()) {
+      if (!canContinueProcessing) {
         try {
           log.info("Maintenance Service: Stopping executor");
           executor.shutdown();
-          if (executor.awaitTermination(THC.Time.T_10_SECONDS, TimeUnit.SECONDS)) {
+          if (executor.awaitTermination(THC.Time.T_30_SECONDS, TimeUnit.SECONDS)) {
             log.info("Maintenance Service: Executor stopped");
+            doneLatch.countDown();
           } else {
-            log.error("Maintenance Service: Executor failed to stop within 10 seconds");
+            log.error("Maintenance Service: Executor failed to stop within 30 seconds");
           }
         } catch (InterruptedException e) {
           throw new RuntimeException(e);
@@ -222,6 +223,7 @@ public class MaintenanceService extends CustomThread {
     return false;
   }
 
+  @Override
   public boolean isRunning() {
     return !executor.isShutdown();
   }

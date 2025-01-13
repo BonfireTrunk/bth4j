@@ -1,8 +1,12 @@
 package today.bonfire.oss.bth4j.executor;
 
+import java.util.concurrent.CountDownLatch;
+
 public abstract class CustomThread extends Thread {
 
-  private boolean canContinueProcessing = true;
+  protected final CountDownLatch doneLatch = new CountDownLatch(1);
+
+  protected boolean canContinueProcessing = true;
 
   public CustomThread(ThreadGroup group, String name) {
     super(group, name);
@@ -12,9 +16,12 @@ public abstract class CustomThread extends Thread {
     canContinueProcessing = false;
   }
 
+  public boolean isRunning() {
+    return isAlive();
+  }
 
-  public boolean canContinueProcessing() {
-    return canContinueProcessing;
+  public void waitTillDone() throws InterruptedException {
+      doneLatch.await();
   }
 
 }
