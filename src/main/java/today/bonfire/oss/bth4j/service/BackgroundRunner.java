@@ -18,6 +18,7 @@ import today.bonfire.oss.bth4j.executor.DefaultVtExecutor;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -25,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Accessors(fluent = true)
@@ -88,18 +90,19 @@ public class BackgroundRunner implements Runnable {
     });
   }
 
-  static QueuesHolder setupQueues(String namespace, List<String> availableQueues,
+  static QueuesHolder setupQueues(String namespace, Set<String> availableQueues,
                                   List<String> queuesToProcess, String defaultQueue) {
     queuesToProcess.forEach(s -> {
       if (!availableQueues.contains(s))
         throw new TaskConfigurationError("Queues to process not found in available queues list. Please check your configuration");
     });
+
     if (!availableQueues.contains(defaultQueue))
       throw new TaskConfigurationError("Default queue not found in available queues list. Please check your configuration");
 
     return new QueuesHolder(availableQueues.stream()
                                            .map(s -> namespace + ":" + s)
-                                           .toList(),
+                                           .collect(Collectors.toUnmodifiableSet()),
                             queuesToProcess.stream()
                                            .map(s -> namespace + ":" + s)
                                            .toList(),
@@ -288,9 +291,9 @@ public class BackgroundRunner implements Runnable {
     private Duration                   recurringTasksQueueCheckInterval = Duration.ofMillis(10000);
     private String                     threadGroupName                  = "bgr";
     private BackgroundExecutor         taskExecutor                     = null;
-    private List<String>               availableQueues                  = List.of("Q:DEF", "Q:LOW", "Q:MED", "Q:HIGH");
-    private List<String>               queuesToProcess                  = availableQueues;
-    private String                     defaultQueue                     = queuesToProcess.get(0);
+    private Set<String>                availableQueues                  = Set.of("Q:DEF", "Q:LOW", "Q:MED", "Q:HIGH");
+    private List<String>               queuesToProcess                  = availableQueues.stream().toList();
+    private String                     defaultQueue                     = queuesToProcess.getFirst();
     private TaskProcessorRegistry      taskProcessorRegistry;
     private TaskCallbacks              taskCallbacks                    = TaskCallbacks.noOp();
     private TaskCallbacks              recurringTaskCallbacks           = TaskCallbacks.noOp();
@@ -492,7 +495,7 @@ public class BackgroundRunner implements Runnable {
      * @param availableQueues - List of all queues visible to the application. Duplicates will be removed.
      *                        Example: List.of("q:def", "q:low", "q:med", "q:high")
      * @param queuesToProcess - List of queues that this instance will process. Must be a subset of availableQueues.
-     *                        if null, then all queues in availableQueues will be processed
+     *                        if null, then all queues in availableQueues will be processed, order of queues is undetermined.
      *                        Example: List.of("q:low", "q:med") to only process low and medium priority queues.
      * @param defaultQueue    - Default queue to use when no queue is specified for a task.
      *                        Must be present in availableQueues. if null, then the first item in queuesToProcess will be used
@@ -506,10 +509,16 @@ public class BackgroundRunner implements Runnable {
                                    List<String> queuesToProcess,
                                    String defaultQueue) {
       if (ObjectUtils.isEmpty(availableQueues)) throw new TaskConfigurationError("Available queues cannot be null or empty");
-
-      this.availableQueues = new HashSet<>(availableQueues).stream().toList();
-      this.queuesToProcess = ObjectUtils.isEmpty(queuesToProcess) ? this.availableQueues : queuesToProcess;
-      this.defaultQueue    = StringUtils.isBlank(defaultQueue) ? this.queuesToProcess.getFirst() : defaultQueue;
+      availableQueues.forEach(s -> {
+        if (StringUtils.isBlank(s)) throw new TaskConfigurationError("Available queue name cannot have null or blank queue names");
+      });
+      this.availableQueues = new HashSet<>(availableQueues);
+      if (ObjectUtils.isEmpty(queuesToProcess)) {
+        this.queuesToProcess = this.availableQueues.stream().toList();
+      } else {
+        this.queuesToProcess = queuesToProcess;
+      }
+      this.defaultQueue = StringUtils.isBlank(defaultQueue) ? this.queuesToProcess.getFirst() : defaultQueue;
       return this;
     }
 

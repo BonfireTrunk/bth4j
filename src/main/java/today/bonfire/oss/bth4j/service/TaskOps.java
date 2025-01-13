@@ -16,6 +16,7 @@ import today.bonfire.oss.bth4j.common.QueuesHolder;
 import today.bonfire.oss.bth4j.common.THC;
 import today.bonfire.oss.bth4j.exceptions.OperationNotAllowed;
 import today.bonfire.oss.bth4j.exceptions.TaskDataException;
+import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
 
 import java.time.Instant;
 import java.util.HashMap;
@@ -66,7 +67,15 @@ public class TaskOps {
    *
    */
   void addTaskToQueue(Task task, Object data, boolean isDataRaw) {
-    String queueName = StringUtils.firstNonBlank(task.queueName(), queuesHolder.defaultQueue);
+    var queueName = task.queueName();
+    if (StringUtils.isBlank(queueName)) {
+      queueName = queuesHolder.defaultQueue;
+    } else {
+      if (!queuesHolder.availableQueues.contains(queueName)) {
+        throw new TaskErrorException("Queue name is not in available list: " + queueName);
+      }
+    }
+
     try (var transaction = jedis.multi()) {
       if (ObjectUtils.isNotEmpty(data)) {
         transaction.set(keys.DATA + task.uniqueId(), isDataRaw ? data.toString() : mapper.toJson(data));
