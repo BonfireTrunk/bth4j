@@ -20,7 +20,6 @@ public class TaskProcessorRegistry {
   private final Map<String, TaskProcessor<?>> processors;
 
   public TaskProcessorRegistry() {
-    // Using raw Enum<?> type to support any enum type for events
     this.processors = new ConcurrentHashMap<>();
   }
 
@@ -60,7 +59,7 @@ public class TaskProcessorRegistry {
    *
    * @param task The task to execute
    */
-  public void executeTask(Task task, BiFunction<String, Class<?>, ?> function) {
+  void executeTask(Task task, BiFunction<String, Class<?>, ?> function) {
     executeWithProcessor(task, getProcessor(task), function);
   }
 

@@ -37,6 +37,8 @@ public class BackgroundRunner implements Runnable {
   final         Function<String, Event> eventParser;
   final         THC.Keys                keys;
 
+  @Getter
+  private final TaskProcessorRegistry      taskProcessorRegistry;
   private final long                       bgThreadCheckInterval;
   private final long                       staleTaskTimeout;
   private final long                       taskProcessorQueueCheckInterval;
@@ -47,19 +49,18 @@ public class BackgroundRunner implements Runnable {
   private final long                       cronLockDuration;
   private final BackgroundExecutor         taskExecutor;
   private final ThreadGroup                threadGroup;
-  private final TaskProcessorRegistry      taskProcessorRegistry;
   private final TaskCallbacks              taskCallbacks;
   private final TaskCallbacks              recurringTaskCallbacks;
   private final Function<Integer, Integer> taskRetryDelay;
   private final ScheduledExecutorService   scheduler;
-  private       boolean                    stopRunner = false;
-  private       ScheduledFuture<?>         monitoringTask;
 
-  private volatile CustomThread       taskProcessorService;
-  private volatile CustomThread       scheduledTaskService;
-  private volatile CustomThread       recurringTaskService;
-  private volatile MaintenanceService maintenanceService;
+  private boolean            stopRunner = false;
+  private ScheduledFuture<?> monitoringTask;
 
+  private volatile CustomThread taskProcessorService;
+  private volatile CustomThread scheduledTaskService;
+  private volatile CustomThread recurringTaskService;
+  private volatile CustomThread maintenanceService;
 
   private BackgroundRunner(Builder builder) {
     this.staleTaskTimeout                   = builder.staleTaskTimeout.toMillis();
@@ -109,7 +110,6 @@ public class BackgroundRunner implements Runnable {
                             namespace + ":" + defaultQueue
     );
   }
-
 
   public void run() {
     taskProcessorService = getTaskProcessorService();
@@ -534,7 +534,10 @@ public class BackgroundRunner implements Runnable {
 
     public BackgroundRunner build() {
       if (taskExecutor == null) taskExecutor = new DefaultVtExecutor();
-      if (taskProcessorRegistry == null) throw new TaskConfigurationError("Task processor handler is not set");
+      if (taskProcessorRegistry == null) {
+        taskProcessorRegistry = new TaskProcessorRegistry();
+        log.info("Default TaskProcessorRegistry used. Make sure to configure/add task processors before starting the runner.");
+      }
       if (eventParser == null) throw new TaskConfigurationError("Cannot build runner without event parser");
       if (jedis == null) throw new TaskConfigurationError("Cannot build runner without jedis client");
       return new BackgroundRunner(this);
