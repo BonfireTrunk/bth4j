@@ -76,6 +76,7 @@ class BackgroundRunnerTest {
         .jsonMapper(new JsonMapperTest())
         .jedisClient(jedis)
         .taskExecutor(new DefaultVtExecutor())
+        .namespacePrefix("BTH1")
         .build();
 
     taskOps          = backgroundRunner.taskOps();
