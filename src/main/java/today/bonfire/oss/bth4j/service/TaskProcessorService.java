@@ -35,9 +35,7 @@ public class TaskProcessorService extends CustomThread {
     this.queuesHolder           = builder.backgroundRunner.queuesHolder;
     this.queueSize              = this.queuesHolder.queuesToProcess.size();
     this.taskProcessorRegistry  = builder.taskProcessorRegistry;
-    this.taskHandler            = task -> {
-      taskProcessorRegistry.executeTask(task, taskOps::getDataForTask);
-    };
+    this.taskHandler            = task -> taskProcessorRegistry.executeTask(task, taskOps::getDataForTask);
   }
 
   /**
