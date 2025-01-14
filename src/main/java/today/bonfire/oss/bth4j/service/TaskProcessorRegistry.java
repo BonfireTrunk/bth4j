@@ -47,7 +47,7 @@ public class TaskProcessorRegistry {
    */
   TaskProcessor<?> getProcessor(Task task) {
     var              event     = task.event();
-    TaskProcessor<?> processor = processors.get(event.toString());
+    TaskProcessor<?> processor = processors.get(event.value());
     if (processor == null) {
       throw new TaskConfigurationError("No processor registered for event: " + event);
     }
