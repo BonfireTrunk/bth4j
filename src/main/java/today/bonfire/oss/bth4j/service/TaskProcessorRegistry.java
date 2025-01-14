@@ -32,7 +32,7 @@ public class TaskProcessorRegistry {
    * @param <T>       The type of data the processor handles
    */
   public <E extends Event, T> void register(E event, TaskProcessor<T> processor) {
-    processors.put(event.toString(), processor);
+    processors.put(event.value(), processor);
     log.debug("Registered processor for event: {} with data type: {}",
               event, processor.dataTypeClass().getSimpleName());
   }
