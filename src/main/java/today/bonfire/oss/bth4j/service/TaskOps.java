@@ -16,7 +16,6 @@ import today.bonfire.oss.bth4j.common.QueuesHolder;
 import today.bonfire.oss.bth4j.common.THC;
 import today.bonfire.oss.bth4j.exceptions.OperationNotAllowed;
 import today.bonfire.oss.bth4j.exceptions.TaskDataException;
-import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
 
 import java.time.Instant;
 import java.util.HashMap;
@@ -67,14 +66,7 @@ public class TaskOps {
    *
    */
   void addTaskToQueue(Task task, Object data, boolean isDataRaw) {
-    var queueName = task.queueName();
-    if (StringUtils.isBlank(queueName)) {
-      queueName = queuesHolder.defaultQueue;
-    } else {
-      if (!queuesHolder.queueNames.contains(queueName)) {
-        throw new TaskErrorException("Queue name is not in available list: " + queueName);
-      }
-    }
+    var queueName = queuesHolder.getValidQueue(task.queueName());
     ObjectUtils.firstNonNull(data, task.data()); // may remove use with caution
     try (var transaction = jedis.multi()) {
       if (ObjectUtils.isNotEmpty(data)) {
@@ -172,11 +164,7 @@ public class TaskOps {
     try (var transaction = jedis.multi()) {
       tasks.forEach(t -> {
         var task = new Task(t, eventParser);
-        if (task.queueName() != null) {
-          transaction.rpush(task.queueName(), task.taskString());
-        } else {
-          transaction.rpush(queuesHolder.defaultQueue, task.taskString());
-        }
+        transaction.rpush(queuesHolder.getValidQueue(task.queueName()), task.taskString());
       });
       transaction.zrem(keys.SCHEDULED_TASK_QUEUE, tasks.toArray(new String[0]));
       transaction.exec();
@@ -191,11 +179,7 @@ public class TaskOps {
     try (var transaction = jedis.multi()) {
       items.forEach(t -> {
         var task = new Task(t, eventParser);
-        if (task.queueName() != null) {
-          transaction.rpush(task.queueName(), task.taskString());
-        } else {
-          transaction.rpush(queuesHolder.defaultQueue, task.taskString());
-        }
+        transaction.rpush(queuesHolder.getValidQueue(task.queueName()), task.taskString());
         transaction.lrem(keys.TEMP_ROTATION_LIST, 1, task.taskString());
       });
       transaction.exec();

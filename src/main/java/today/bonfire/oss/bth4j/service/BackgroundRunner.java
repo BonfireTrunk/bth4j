@@ -101,7 +101,7 @@ public class BackgroundRunner implements Runnable {
     if (!availableQueues.contains(defaultQueue))
       throw new TaskConfigurationError("Default queue not found in available queues list. Please check your configuration");
 
-    return new QueuesHolder(Set.copyOf(availableQueues),
+    return new QueuesHolder(namespace,
                             availableQueues.stream()
                                            .map(s -> namespace + ":" + s)
                                            .collect(Collectors.toUnmodifiableSet()),
