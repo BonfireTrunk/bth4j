@@ -7,7 +7,7 @@ This Java library provides a robust and flexible framework for managing backgrou
 BTH4J is designed to handle various types of tasks:
 
 * **Regular Tasks:** Tasks executed once and then removed from the queue.
-* **Delayed Tasks:** Tasks scheduled to run at a specific future time.
+* **Scheduled Tasks:** Tasks scheduled to run at a specific future time.
 * **Recurring Tasks:** Tasks executed periodically at defined intervals.
 
 The library employs a multi-threaded architecture with configurable parameters for queue processing intervals, maintenance checks, and retry mechanisms. It also supports custom callbacks for task lifecycle events (before start, success, error, after task).
@@ -38,7 +38,7 @@ The core components of BTH4J are:
 
 6. **TaskRunnerWrapper:** A wrapper class that executes a task and handles callbacks, error handling, and retry logic.
 
-7. **DelayedTaskService & DelayedTaskHandler:** A service and handler responsible for managing delayed tasks. It periodically checks for tasks that are ready to be executed and moves them to the appropriate queue.
+7. **ScheduledTaskService:** A service and handler responsible for managing delayed tasks. It periodically checks for tasks that are ready to be executed and moves them to the appropriate queue.
 
 8. **RecurringTaskService & RecurringTaskRunnerWrapper:** Services and wrappers responsible for managing recurring tasks. It periodically checks for recurring tasks and adds them to the queue based on their schedule.
 

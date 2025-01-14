@@ -43,7 +43,7 @@ public class BackgroundRunner implements Runnable {
   private final long                       staleTaskTimeout;
   private final long                       taskProcessorQueueCheckInterval;
   private final long                       maintenanceCheckInterval;
-  private final long                       delayedTasksQueueCheckInterval;
+  private final long                       ScheduledTasksQueueCheckInterval;
   private final long                       recurringTasksQueueCheckInterval;
   private final long                       queueTaskAheadDurationForRecurringTasks;
   private final long                       cronLockDuration;
@@ -68,7 +68,7 @@ public class BackgroundRunner implements Runnable {
     maintenanceCheckInterval                = builder.maintenanceCheckInterval.toMillis();
     taskProcessorQueueCheckInterval         = builder.taskProcessorQueueCheckInterval.toMillis();
     bgThreadCheckInterval                   = builder.BGThreadCheckInterval.toMillis();
-    delayedTasksQueueCheckInterval          = builder.delayedTasksQueueCheckInterval.toMillis();
+    ScheduledTasksQueueCheckInterval        = builder.delayedTasksQueueCheckInterval.toMillis();
     recurringTasksQueueCheckInterval        = builder.recurringTasksQueueCheckInterval.toMillis();
     cronLockDuration                        = builder.cronLockDuration.toSeconds();
     taskExecutor                            = builder.taskExecutor;
@@ -101,7 +101,8 @@ public class BackgroundRunner implements Runnable {
     if (!availableQueues.contains(defaultQueue))
       throw new TaskConfigurationError("Default queue not found in available queues list. Please check your configuration");
 
-    return new QueuesHolder(availableQueues.stream()
+    return new QueuesHolder(Set.copyOf(availableQueues),
+                            availableQueues.stream()
                                            .map(s -> namespace + ":" + s)
                                            .collect(Collectors.toUnmodifiableSet()),
                             queuesToProcess.stream()
@@ -130,7 +131,7 @@ public class BackgroundRunner implements Runnable {
           taskProcessorService = getTaskProcessorService();
         }
         if (!scheduledTaskService.isAlive()) {
-          log.error("DelayedTaskService thread is not alive!!!");
+          log.error("ScheduledTaskService thread is not alive!!!");
           scheduledTaskService = getScheduledTaskService();
         }
         if (!recurringTaskService.isAlive()) {
@@ -153,7 +154,7 @@ public class BackgroundRunner implements Runnable {
   public void stopRunner() {
     stopRunner = true;
     // Stop all services first
-    log.info("Stopping background runner services");
+    log.info("Stopping background runner services - {} with namespace {}", this.threadGroup.getName(), this.keys.NAMESPACE);
 
     if (taskProcessorService != null) {
       taskProcessorService.stopThread();
@@ -171,10 +172,10 @@ public class BackgroundRunner implements Runnable {
       maintenanceService.stopThread();
     }
 
-    checkServiceStopped(taskProcessorService, "TaskProcessorService");
-    checkServiceStopped(scheduledTaskService, "ScheduledTaskService");
-    checkServiceStopped(recurringTaskService, "RecurringTaskService");
-    checkServiceStopped(maintenanceService, "MaintenanceService");
+    checkServiceStopped(taskProcessorService, "Task Processor Service");
+    checkServiceStopped(scheduledTaskService, "Scheduled Task Service");
+    checkServiceStopped(recurringTaskService, "Recurring Task Service");
+    checkServiceStopped(maintenanceService, "Maintenance Service");
 
     if (monitoringTask != null && !monitoringTask.isDone()) {
       monitoringTask.cancel(false);
@@ -227,22 +228,20 @@ public class BackgroundRunner implements Runnable {
         .setBackgroundRunner(this)
         .create();
     taskProcessorService.start();
-    log.info("Thread {} with id {} started", taskProcessorService.getName(),
-             taskProcessorService.threadId());
+    log.info("Task processor with id {} started", taskProcessorService.threadId());
     return taskProcessorService;
   }
 
   private ScheduledTaskService getScheduledTaskService() {
-    var delayedTaskService = new ScheduledTaskService.Builder().setGroup(threadGroup)
-                                                               .setThreadName("DelayedTaskService")
-                                                               .setDelay(delayedTasksQueueCheckInterval)
-                                                               .setTaskOps(taskOps)
-                                                               .setKeys(keys)
-                                                               .create();
-    delayedTaskService.start();
-    log.info("Thread {} with id {} started", delayedTaskService.getName(),
-             delayedTaskService.threadId());
-    return delayedTaskService;
+    var service = new ScheduledTaskService.Builder().setGroup(threadGroup)
+                                                    .setThreadName("ScheduledTaskService")
+                                                    .setDelay(ScheduledTasksQueueCheckInterval)
+                                                    .setTaskOps(taskOps)
+                                                    .setKeys(keys)
+                                                    .create();
+    service.start();
+    log.info("Scheduled task service with id {} started", service.threadId());
+    return service;
   }
 
   private RecurringTaskService getRecurringTaskService() {
@@ -257,8 +256,7 @@ public class BackgroundRunner implements Runnable {
                                           .setEventParser(eventParser)
                                           .create();
     recurringTaskService.start();
-    log.info("Thread {} with id {} started", recurringTaskService.getName(),
-             recurringTaskService.threadId());
+    log.info("Recurring task service with id {} started", recurringTaskService.threadId());
     return recurringTaskService;
   }
 
@@ -274,8 +272,7 @@ public class BackgroundRunner implements Runnable {
         .setEventParser(eventParser)
         .setQueuesHolder(queuesHolder)
         .create();
-    log.info("Thread {} with id {} started", maintenanceService.getName(),
-             maintenanceService.threadId());
+    log.info("Maintenance service with id {} started", maintenanceService.threadId());
     maintenanceService.start();
     return maintenanceService;
   }

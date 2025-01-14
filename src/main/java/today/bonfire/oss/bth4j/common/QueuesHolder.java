@@ -9,9 +9,10 @@ public final class QueuesHolder {
   public final Set<String>                        availableQueues;
   public final List<String>                       queuesToProcess;
   public final ConcurrentHashMap<String, Boolean> queueProcessingStatus;
+  public final Set<String>                        queueNames;
 
-  public QueuesHolder(Set<String> availableQueues, List<String> queuesToProcess, String defaultQueue) {
-
+  public QueuesHolder(Set<String> queueNames, Set<String> availableQueues, List<String> queuesToProcess, String defaultQueue) {
+    this.queueNames            = queueNames;
     this.availableQueues       = availableQueues;
     this.queuesToProcess       = queuesToProcess;
     this.defaultQueue          = defaultQueue;

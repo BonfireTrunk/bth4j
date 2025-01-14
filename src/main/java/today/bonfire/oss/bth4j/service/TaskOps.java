@@ -71,7 +71,7 @@ public class TaskOps {
     if (StringUtils.isBlank(queueName)) {
       queueName = queuesHolder.defaultQueue;
     } else {
-      if (!queuesHolder.availableQueues.contains(queueName)) {
+      if (!queuesHolder.queueNames.contains(queueName)) {
         throw new TaskErrorException("Queue name is not in available list: " + queueName);
       }
     }
