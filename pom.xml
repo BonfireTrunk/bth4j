@@ -18,7 +18,7 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <module.name>bonfire.oss.bth4j</module.name>
-        <jedis.version>5.2.0</jedis.version>
+        <jedis.version>5.2.1</jedis.version>
         <cron-utils.version>9.2.1</cron-utils.version>
     </properties>
 
