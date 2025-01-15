@@ -14,19 +14,15 @@ import redis.clients.jedis.JedisPooled;
 import today.bonfire.oss.bth4j.JsonMapperTest;
 import today.bonfire.oss.bth4j.TasksConfigExample;
 import today.bonfire.oss.bth4j.TestEvents;
-import today.bonfire.oss.bth4j.common.Random;
 import today.bonfire.oss.bth4j.executor.DefaultVtExecutor;
 import today.bonfire.oss.bth4j.service.BackgroundRunner;
-import today.bonfire.oss.bth4j.service.Task;
 import today.bonfire.oss.bth4j.service.TaskOps;
 import today.bonfire.oss.bth4j.service.TaskProcessorRegistry;
 
 import java.time.Duration;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Timer;
 import java.util.TimerTask;
-import java.util.concurrent.CountDownLatch;
 
 @Slf4j
 class BackgroundRunnerExample {
@@ -115,24 +111,24 @@ class BackgroundRunnerExample {
     //                          .build();
     //      TaskOperations.addRecurringTask(t);
     //    }
-    CountDownLatch latch = new CountDownLatch(100);
-    for (int j = 0; j < 100; j++) {
-      Thread.startVirtualThread(() -> {
-        try {
-          for (int i = 0; i < 1000; i++) {
-            var t = Task.Builder.newTask()
-                                .accountId(Random.UIDBASE64())
-                                .event(TestEvents.COOL)
-                                .executeAfter(5)
-                                .build();
-            taskOps.addTaskToQueue(t, Collections.emptyMap());
-          }
-        } finally {
-          latch.countDown(); // Decrement the latch count when the thread completes
-        }
-      });
-    }
-    latch.await();
+    // CountDownLatch latch = new CountDownLatch(100);
+    // for (int j = 0; j < 100; j++) {
+    //   Thread.startVirtualThread(() -> {
+    //     try {
+    //       for (int i = 0; i < 1000; i++) {
+    //         var t = Task.Builder.newTask()
+    //                             .accountId(Random.UIDBASE64())
+    //                             .event(TestEvents.COOL)
+    //                             .executeAfter(5)
+    //                             .build();
+    //         taskOps.addTaskToQueue(t, Collections.emptyMap());
+    //       }
+    //     } finally {
+    //       latch.countDown(); // Decrement the latch count when the thread completes
+    //     }
+    //   });
+    // }
+    // latch.await();
 
     //    for (int i = 0; i < 100; i++) {
     //      var t = Task.Builder.newTask()
