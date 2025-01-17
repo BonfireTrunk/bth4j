@@ -66,7 +66,8 @@ public class TaskOps {
    *
    */
   void addTaskToQueue(Task task, Object data, boolean isDataRaw) {
-    String queueName = StringUtils.firstNonBlank(task.queueName(), queuesHolder.defaultQueue);
+    var queueName = queuesHolder.getValidQueue(task.queueName());
+    ObjectUtils.firstNonNull(data, task.data()); // may remove use with caution
     try (var transaction = jedis.multi()) {
       if (ObjectUtils.isNotEmpty(data)) {
         transaction.set(keys.DATA + task.uniqueId(), isDataRaw ? data.toString() : mapper.toJson(data));
@@ -96,11 +97,29 @@ public class TaskOps {
     log.info("Deleted recurring task: {}", task);
   }
 
+  /**
+   * @param uniqueId unique identifier for the task
+   * @return data associated with the given task id.
+   *     Will return null if task id is blank or no data is associated with the given task id.
+   *     This will not do any conversion of the data to the desired type. just the pure string value.
+   *     Use {@link #getDataForTask(String, Class)} for type conversion
+   */
   public String getDataForTask(String uniqueId) {
     if (StringUtils.isBlank(uniqueId)) return null;
     return jedis.get(keys.DATA + uniqueId);
   }
 
+  /**
+   * Gets the data associated with the given task id.
+   * This will try to convert the data to the given type.
+   * If the task id is blank or no data is associated with the given task id or
+   * if the type conversion fails, the method will return throw an exception.
+   *
+   * @param uniqueId unique identifier for the task
+   * @param clazz    the desired type of the data
+   * @return data associated with the given task id, converted to the given type.
+   *     May return null.
+   */
   public <T> T getDataForTask(String uniqueId, Class<T> clazz) {
     if (StringUtils.isBlank(uniqueId) || clazz == null) {
       return null;
@@ -112,6 +131,10 @@ public class TaskOps {
       log.error("Error getting data for task: {}", uniqueId, e);
       throw new TaskDataException("Error getting data for task: " + uniqueId);
     }
+  }
+
+  public <T> T getDataForTask(Task task, Class<T> clazz) {
+    return getDataForTask(task.uniqueId(), clazz);
   }
 
   int incrementRetryCount(String uniqueId) {
@@ -163,11 +186,7 @@ public class TaskOps {
     try (var transaction = jedis.multi()) {
       tasks.forEach(t -> {
         var task = new Task(t, eventParser);
-        if (task.queueName() != null) {
-          transaction.rpush(task.queueName(), task.taskString());
-        } else {
-          transaction.rpush(queuesHolder.defaultQueue, task.taskString());
-        }
+        transaction.rpush(queuesHolder.getValidQueue(task.queueName()), task.taskString());
       });
       transaction.zrem(keys.SCHEDULED_TASK_QUEUE, tasks.toArray(new String[0]));
       transaction.exec();
@@ -182,11 +201,7 @@ public class TaskOps {
     try (var transaction = jedis.multi()) {
       items.forEach(t -> {
         var task = new Task(t, eventParser);
-        if (task.queueName() != null) {
-          transaction.rpush(task.queueName(), task.taskString());
-        } else {
-          transaction.rpush(queuesHolder.defaultQueue, task.taskString());
-        }
+        transaction.rpush(queuesHolder.getValidQueue(task.queueName()), task.taskString());
         transaction.lrem(keys.TEMP_ROTATION_LIST, 1, task.taskString());
       });
       transaction.exec();

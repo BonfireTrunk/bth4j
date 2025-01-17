@@ -76,6 +76,7 @@ class BackgroundRunnerTest {
         .jsonMapper(new JsonMapperTest())
         .jedisClient(jedis)
         .taskExecutor(new DefaultVtExecutor())
+        .namespacePrefix("BTH1")
         .build();
 
     taskOps          = backgroundRunner.taskOps();
@@ -129,7 +130,7 @@ class BackgroundRunnerTest {
 
   @Test
   @Timeout(30)
-  void testDelayedTask() throws InterruptedException {
+  void testScheduledTask() throws InterruptedException {
     TestTaskProcessors.completionLatch = new CountDownLatch(1);
 
     long startTime = System.currentTimeMillis();

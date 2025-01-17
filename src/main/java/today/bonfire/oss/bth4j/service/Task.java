@@ -139,8 +139,9 @@ public class Task {
     return executeAtTimeStamp != null;
   }
 
-  public <T> void setData(T data) {
+  public <T> Task setData(T data) {
     this.data = data;
+    return this;
   }
 
   /**

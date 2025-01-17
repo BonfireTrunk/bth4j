@@ -35,9 +35,7 @@ public class TaskProcessorService extends CustomThread {
     this.queuesHolder           = builder.backgroundRunner.queuesHolder;
     this.queueSize              = this.queuesHolder.queuesToProcess.size();
     this.taskProcessorRegistry  = builder.taskProcessorRegistry;
-    this.taskHandler            = task -> {
-      taskProcessorRegistry.executeTask(task, taskOps::getDataForTask);
-    };
+    this.taskHandler            = task -> taskProcessorRegistry.executeTask(task, taskOps::getDataForTask);
   }
 
   /**
@@ -60,7 +58,7 @@ public class TaskProcessorService extends CustomThread {
 
   @Override
   public void run() {
-    while (this.canContinueProcessing()) {
+    while (this.canContinueProcessing) {
       try {
         var q = getQueue();
         if (taskExecutor.isPoolFull() || q == null) {
@@ -94,6 +92,7 @@ public class TaskProcessorService extends CustomThread {
         log.error("Task processor Thread error", e);
       }
     }
+    doneLatch.countDown();
   }
 
   public static class Builder {

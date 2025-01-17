@@ -24,7 +24,7 @@ public class ScheduledTaskService extends CustomThread {
 
   @Override
   public void run() {
-    while (this.canContinueProcessing()) {
+    while (this.canContinueProcessing) {
       try {
         // check lock key in redis
         // if lock key does not exist or expired, then set new lock key.
@@ -80,6 +80,7 @@ public class ScheduledTaskService extends CustomThread {
         log.error("Task processor Thread error", e);
       }
     }
+    doneLatch.countDown();
   }
 
   public static class Builder {

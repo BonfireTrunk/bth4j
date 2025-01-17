@@ -20,7 +20,6 @@ public class TaskProcessorRegistry {
   private final Map<String, TaskProcessor<?>> processors;
 
   public TaskProcessorRegistry() {
-    // Using raw Enum<?> type to support any enum type for events
     this.processors = new ConcurrentHashMap<>();
   }
 
@@ -33,7 +32,7 @@ public class TaskProcessorRegistry {
    * @param <T>       The type of data the processor handles
    */
   public <E extends Event, T> void register(E event, TaskProcessor<T> processor) {
-    processors.put(event.toString(), processor);
+    processors.put(event.value(), processor);
     log.debug("Registered processor for event: {} with data type: {}",
               event, processor.dataTypeClass().getSimpleName());
   }
@@ -48,7 +47,7 @@ public class TaskProcessorRegistry {
    */
   TaskProcessor<?> getProcessor(Task task) {
     var              event     = task.event();
-    TaskProcessor<?> processor = processors.get(event.toString());
+    TaskProcessor<?> processor = processors.get(event.value());
     if (processor == null) {
       throw new TaskConfigurationError("No processor registered for event: " + event);
     }
@@ -60,7 +59,7 @@ public class TaskProcessorRegistry {
    *
    * @param task The task to execute
    */
-  public void executeTask(Task task, BiFunction<String, Class<?>, ?> function) {
+  void executeTask(Task task, BiFunction<String, Class<?>, ?> function) {
     executeWithProcessor(task, getProcessor(task), function);
   }
 
