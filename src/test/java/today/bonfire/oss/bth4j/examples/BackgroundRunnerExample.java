@@ -14,15 +14,19 @@ import redis.clients.jedis.JedisPooled;
 import today.bonfire.oss.bth4j.JsonMapperTest;
 import today.bonfire.oss.bth4j.TasksConfigExample;
 import today.bonfire.oss.bth4j.TestEvents;
+import today.bonfire.oss.bth4j.common.Random;
 import today.bonfire.oss.bth4j.executor.DefaultVtExecutor;
 import today.bonfire.oss.bth4j.service.BackgroundRunner;
+import today.bonfire.oss.bth4j.service.Task;
 import today.bonfire.oss.bth4j.service.TaskOps;
 import today.bonfire.oss.bth4j.service.TaskProcessorRegistry;
 
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.CountDownLatch;
 
 @Slf4j
 class BackgroundRunnerExample {
@@ -93,90 +97,31 @@ class BackgroundRunnerExample {
 
   @Test
   void test() throws InterruptedException {
-    // TaskOps.removeTasksFromSortedSetBasedOnTime(THC.Keys.DEAD_TASKS, Instant.now()
-    //                                                                         .minusSeconds(
-    //                                                                             1000));
+
     var cronSet = Arrays.asList(
         "1 * * * *", "0 0 1,15 * 3",
         "5 0 * 8 *", "15 14 1 * *",
         "0 22 * * 1-5", "23 0-22 * * *",
         "5 4 * * sun", "0 0,12 1 2 *");
 
-    //    for (int i = 0; i < 10000; i++) {
-    //      var t = Task.Builder.newTask()
-    //                          .accountId(Random.UIDBASE64())
-    //                          .event(TestEvents.RECURRING)
-    //                          .queueName("q9")
-    //                          .cronExpression(cronSet.get(i % cronSet.size()))
-    //                          .build();
-    //      TaskOperations.addRecurringTask(t);
-    //    }
-    // CountDownLatch latch = new CountDownLatch(100);
-    // for (int j = 0; j < 100; j++) {
-    //   Thread.startVirtualThread(() -> {
-    //     try {
-    //       for (int i = 0; i < 1000; i++) {
-    //         var t = Task.Builder.newTask()
-    //                             .accountId(Random.UIDBASE64())
-    //                             .event(TestEvents.COOL)
-    //                             .executeAfter(5)
-    //                             .build();
-    //         taskOps.addTaskToQueue(t, Collections.emptyMap());
-    //       }
-    //     } finally {
-    //       latch.countDown(); // Decrement the latch count when the thread completes
-    //     }
-    //   });
-    // }
-    // latch.await();
-
-    //    for (int i = 0; i < 100; i++) {
-    //      var t = Task.Builder.newTask()
-    //                          .accountId(Random.UIDBASE64())
-    //                          .event(TestEvents.DEFAULT)
-    //                          .build();
-    //      TaskOperations.addTaskToQueue(t.queueName("q2"), Collections.emptyMap());
-    //      t = Task.Builder.newTask()
-    //                      .accountId(Random.UIDBASE64())
-    //                      .event(TestEvents.DEFAULT)
-    //                      .build();
-    //      TaskOperations.addTaskToQueue(t.queueName("q3"), Collections.emptyMap());
-    //      t = Task.Builder.newTask()
-    //                      .accountId(Random.UIDBASE64())
-    //                      .event(TestEvents.DEFAULT)
-    //                      .build();
-    //      TaskOperations.addTaskToQueue(t.queueName("q4"), Collections.emptyMap());
-    //      t = Task.Builder.newTask()
-    //                      .accountId(Random.UIDBASE64())
-    //                      .event(TestEvents.DEFAULT)
-    //                      .build();
-    //      TaskOperations.addTaskToQueue(t.queueName("q5"), Collections.emptyMap());
-    //      t = Task.Builder.newTask()
-    //                      .accountId(Random.UIDBASE64())
-    //                      .event(TestEvents.DEFAULT)
-    //                      .build();
-    //      TaskOperations.addTaskToQueue(t.queueName("q6"), Collections.emptyMap());
-    //      t = Task.Builder.newTask()
-    //                      .accountId(Random.UIDBASE64())
-    //                      .event(TestEvents.DEFAULT)
-    //                      .build();
-    //      TaskOperations.addTaskToQueue(t.queueName("q7"), Collections.emptyMap());
-    //      t = Task.Builder.newTask()
-    //                      .accountId(Random.UIDBASE64())
-    //                      .event(TestEvents.DEFAULT)
-    //                      .build();
-    //      TaskOperations.addTaskToQueue(t.queueName("q8"), Collections.emptyMap());
-    //      t = Task.Builder.newTask()
-    //                      .accountId(Random.UIDBASE64())
-    //                      .event(TestEvents.DEFAULT)
-    //                      .build();
-    //      TaskOperations.addTaskToQueue(t.queueName("q9"), Collections.emptyMap());
-    //      t = Task.Builder.newTask()
-    //                      .accountId(Random.UIDBASE64())
-    //                      .event(TestEvents.DEFAULT)
-    //                      .build();
-    //      TaskOperations.addTaskToQueue(t.queueName("q3"), Collections.emptyMap());
-    //    }
+    CountDownLatch latch = new CountDownLatch(100);
+    for (int j = 0; j < 100; j++) {
+      Thread.startVirtualThread(() -> {
+        try {
+          for (int i = 0; i < 1000; i++) {
+            var t = Task.Builder.newTask()
+                                .accountId(Random.UIDBASE64())
+                                .event(TestEvents.COOL)
+                                .executeAfter(5)
+                                .build();
+            taskOps.addTaskToQueue(t, Collections.emptyMap());
+          }
+        } finally {
+          latch.countDown(); // Decrement the latch count when the thread completes
+        }
+      });
+    }
+    latch.await();
     th.start();
     th.join();
   }

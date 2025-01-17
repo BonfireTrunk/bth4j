@@ -130,7 +130,7 @@ class BackgroundRunnerTest {
 
   @Test
   @Timeout(30)
-  void testDelayedTask() throws InterruptedException {
+  void testScheduledTask() throws InterruptedException {
     TestTaskProcessors.completionLatch = new CountDownLatch(1);
 
     long startTime = System.currentTimeMillis();
