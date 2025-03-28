@@ -58,10 +58,6 @@ public class TaskOps {
     return new Task(t, eventParser);
   }
 
-  public void addTaskToQueue(Task task, Object data) {
-    addTaskToQueue(task, data, false);
-  }
-
   /**
    *
    */
@@ -86,63 +82,8 @@ public class TaskOps {
     log.info("Added {} to queue: {}", task, queueName);
   }
 
-  public String addRecurringTask(Task task) {
-    jedis.hset(keys.RECURRING_TASK_SET, task.taskString(), Instant.now().getEpochSecond() + "");
-    log.info("Added recurring task: {}", task);
-    return task.taskString();
-  }
-
-  public void deleteRecurringTask(Task task) {
-    jedis.hdel(keys.RECURRING_TASK_SET, task.taskString());
-    log.info("Deleted recurring task: {}", task);
-  }
-
-  /**
-   * @param uniqueId unique identifier for the task
-   * @return data associated with the given task id.
-   *     Will return null if task id is blank or no data is associated with the given task id.
-   *     This will not do any conversion of the data to the desired type. just the pure string value.
-   *     Use {@link #getDataForTask(String, Class)} for type conversion
-   */
-  public String getDataForTask(String uniqueId) {
-    if (StringUtils.isBlank(uniqueId)) return null;
-    return jedis.get(keys.DATA + uniqueId);
-  }
-
-  /**
-   * Gets the data associated with the given task id.
-   * This will try to convert the data to the given type.
-   * If the task id is blank or no data is associated with the given task id or
-   * if the type conversion fails, the method will return throw an exception.
-   *
-   * @param uniqueId unique identifier for the task
-   * @param clazz    the desired type of the data
-   * @return data associated with the given task id, converted to the given type.
-   *     May return null.
-   */
-  public <T> T getDataForTask(String uniqueId, Class<T> clazz) {
-    if (StringUtils.isBlank(uniqueId) || clazz == null) {
-      return null;
-    }
-    try {
-      var r = jedis.get(keys.DATA + uniqueId);
-      return mapper.fromJson(r, clazz);
-    } catch (Exception e) {
-      log.error("Error getting data for task: {}", uniqueId, e);
-      throw new TaskDataException("Error getting data for task: " + uniqueId);
-    }
-  }
-
-  public <T> T getDataForTask(Task task, Class<T> clazz) {
-    return getDataForTask(task.uniqueId(), clazz);
-  }
-
   int incrementRetryCount(String uniqueId) {
     return (int) jedis.hincrBy(keys.TASK_RETRY_COUNT, uniqueId, 1);
-  }
-
-  public void updateExecutionTimeForRecurringTasks(String key, Instant instant) {
-    jedis.hset(keys.RECURRING_TASK_SET, key, String.valueOf(instant.getEpochSecond()));
   }
 
   String getLock(String lockName) {
@@ -161,10 +102,6 @@ public class TaskOps {
 
   void releaseLock(String lockDelayedTasks) {
     jedis.del(lockDelayedTasks);
-  }
-
-  public long queueSize(String queueName) {
-    return jedis.llen(queueName);
   }
 
   void deleteTaskFromInProgressQueue(Task task) {
@@ -206,10 +143,6 @@ public class TaskOps {
       });
       transaction.exec();
     }
-  }
-
-  public long getNumberOfTaskInProgress() {
-    return jedis.zcard(keys.IN_PROGRESS_TASKS);
   }
 
   ScanResult<Tuple> scanSortedSet(String key, String cursor) {
@@ -276,5 +209,80 @@ public class TaskOps {
         }
       });
     } while (true);
+  }
+
+  public void addTaskToQueue(Task task, Object data) {
+    addTaskToQueue(task, data, false);
+  }
+
+  public String addRecurringTask(Task task) {
+    jedis.hset(keys.RECURRING_TASK_SET, task.taskString(), Instant.now().getEpochSecond() + "");
+    log.info("Added recurring task: {}", task);
+    return task.taskString();
+  }
+
+  public void deleteRecurringTask(Task task) {
+    jedis.hdel(keys.RECURRING_TASK_SET, task.taskString());
+    log.info("Deleted recurring task: {}", task);
+  }
+
+  public void deleteAllRecurringTasks() {
+    log.info("{} recurring tasks found", jedis.hlen(keys.RECURRING_TASK_SET));
+    jedis.del(keys.RECURRING_TASK_SET);
+    log.info("Deleted all recurring tasks");
+  }
+
+  /**
+   * @param uniqueId unique identifier for the task
+   *
+   * @return data associated with the given task id.
+   *     Will return null if task id is blank or no data is associated with the given task id.
+   *     This will not do any conversion of the data to the desired type. just the pure string value.
+   *     Use {@link #getDataForTask(String, Class)} for type conversion
+   */
+  public String getDataForTask(String uniqueId) {
+    if (StringUtils.isBlank(uniqueId)) return null;
+    return jedis.get(keys.DATA + uniqueId);
+  }
+
+  /**
+   * Gets the data associated with the given task id.
+   * This will try to convert the data to the given type.
+   * If the task id is blank or no data is associated with the given task id or
+   * if the type conversion fails, the method will return throw an exception.
+   *
+   * @param uniqueId unique identifier for the task
+   * @param clazz    the desired type of the data
+   *
+   * @return data associated with the given task id, converted to the given type.
+   *     May return null.
+   */
+  public <T> T getDataForTask(String uniqueId, Class<T> clazz) {
+    if (StringUtils.isBlank(uniqueId) || clazz == null) {
+      return null;
+    }
+    try {
+      var r = jedis.get(keys.DATA + uniqueId);
+      return mapper.fromJson(r, clazz);
+    } catch (Exception e) {
+      log.error("Error getting data for task: {}", uniqueId, e);
+      throw new TaskDataException("Error getting data for task: " + uniqueId);
+    }
+  }
+
+  public <T> T getDataForTask(Task task, Class<T> clazz) {
+    return getDataForTask(task.uniqueId(), clazz);
+  }
+
+  public void updateExecutionTimeForRecurringTasks(String key, Instant instant) {
+    jedis.hset(keys.RECURRING_TASK_SET, key, String.valueOf(instant.getEpochSecond()));
+  }
+
+  public long queueSize(String queueName) {
+    return jedis.llen(queueName);
+  }
+
+  public long getNumberOfTaskInProgress() {
+    return jedis.zcard(keys.IN_PROGRESS_TASKS);
   }
 }
