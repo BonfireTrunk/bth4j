@@ -27,38 +27,6 @@ public class TaskRunnerWrapper implements Runnable {
     this.taskOps     = taskOps;
   }
 
-  /**
-   * if task fails it may be retired automatically by maintenance service
-   * unless the exception is UnrecoverableException in which case the task is marked
-   * dead and deleted.
-   */
-  @Override
-  public void run() {
-    try {
-      callbacks.beforeStart().accept(task);
-      taskHandler.accept(task);
-      deleteTask(task);
-      callbacks.onSuccess().accept(task);
-    } catch (Exception e) {
-      callbacks.onError().accept(task, e);
-      log.error("Task {} failed", task.taskString(), e);
-      if (e instanceof TaskUnrecoverableException || e instanceof TaskDataException) {
-        // task will not be retried
-        moveToDeadQueue(task);
-      } else if (e instanceof TaskErrorException) {
-        // task can be retried
-        log.info("Task will be retried");
-      } else if (e instanceof TaskRescheduleException ex) {
-        rescheduleTask(task, ex.delay());
-      } else {
-        // unknown exception task can be retried
-        log.info("Unhandled exception. Task will be retried");
-      }
-    } finally {
-      callbacks.afterTask().accept(task);
-    }
-  }
-
   private void rescheduleTask(Task task, long delay) {
     var newTask = Task.Builder.newTask()
                               .event(task.event())
@@ -80,5 +48,37 @@ public class TaskRunnerWrapper implements Runnable {
   private void moveToDeadQueue(Task task) {
     // move to dead list if task failed because of BGTaskUnrecoverableException
     taskOps.moveToDeadQueue(task);
+  }
+
+  /**
+   * if task fails it may be retired automatically by maintenance service
+   * unless the exception is UnrecoverableException in which case the task is marked
+   * dead and deleted.
+   */
+  @Override
+  public void run() {
+    try {
+      callbacks.beforeStart().accept(task);
+      taskHandler.accept(task);
+      deleteTask(task);
+      callbacks.onSuccess().accept(task);
+    } catch (Exception e) {
+      callbacks.onError().accept(task, e);
+      if (e instanceof TaskUnrecoverableException || e instanceof TaskDataException) {
+        log.error("Task {} failed", task.taskString(), e);
+        // task will not be retried
+        moveToDeadQueue(task);
+      } else if (e instanceof TaskErrorException) {
+        // task can be retried
+        log.info("Task {} failed", task.taskString(), e);
+      } else if (e instanceof TaskRescheduleException ex) {
+        rescheduleTask(task, ex.delay());
+      } else {
+        // unknown exception task may be retried
+        log.info("Unhandled exception. Task will be retried");
+      }
+    } finally {
+      callbacks.afterTask().accept(task);
+    }
   }
 }
