@@ -70,12 +70,12 @@ public class TaskRunnerWrapper implements Runnable {
         moveToDeadQueue(task);
       } else if (e instanceof TaskErrorException) {
         // task can be retried
-        log.info("Task {} failed", task.taskString(), e);
+        log.warn("Task {} failed", task.taskString(), e);
       } else if (e instanceof TaskRescheduleException ex) {
         rescheduleTask(task, ex.delay());
       } else {
         // unknown exception task may be retried
-        log.info("Unhandled exception. Task will be retried");
+        log.warn("Unhandled exception. Task will be retried", e);
       }
     } finally {
       callbacks.afterTask().accept(task);
