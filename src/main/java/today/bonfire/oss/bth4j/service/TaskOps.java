@@ -176,6 +176,7 @@ public class TaskOps {
         transaction.expire(keys.DATA + t.uniqueId(), THC.Time.T_30_DAYS);
         transaction.hdel(keys.TASK_RETRY_COUNT, t.uniqueId());
       });
+      transaction.exec();
     }
   }
 
