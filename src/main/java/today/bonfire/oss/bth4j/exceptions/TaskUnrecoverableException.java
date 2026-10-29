@@ -6,14 +6,13 @@ package today.bonfire.oss.bth4j.exceptions;
  */
 public class TaskUnrecoverableException extends RuntimeException {
 
-  private TaskUnrecoverableException() {}
+    private TaskUnrecoverableException() {}
 
-  public TaskUnrecoverableException(String message) {
-    super(message);
-  }
+    public TaskUnrecoverableException(String message) {
+        super(message);
+    }
 
-  public TaskUnrecoverableException(String message, Throwable cause) {
-    super(message, cause);
-  }
-
+    public TaskUnrecoverableException(String message, Throwable cause) {
+        super(message, cause);
+    }
 }

@@ -1,84 +1,82 @@
 package today.bonfire.oss.bth4j.service;
 
+import java.util.function.Consumer;
 import lombok.extern.slf4j.Slf4j;
 import today.bonfire.oss.bth4j.exceptions.TaskDataException;
 import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
 import today.bonfire.oss.bth4j.exceptions.TaskRescheduleException;
 import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;
 
-import java.util.function.Consumer;
-
 @Slf4j
 public class TaskRunnerWrapper implements Runnable {
 
-  private final Task           task;
-  private final Consumer<Task> taskHandler;
-  private final TaskCallbacks  callbacks;
-  private final TaskOps        taskOps;
+    private final Task task;
+    private final Consumer<Task> taskHandler;
+    private final TaskCallbacks callbacks;
+    private final TaskOps taskOps;
 
-  TaskRunnerWrapper(
-      Task task,
-      Consumer<Task> taskHandler,
-      TaskCallbacks callbacks,
-      TaskOps taskOps) {
-    this.task        = task;
-    this.taskHandler = taskHandler;
-    this.callbacks   = callbacks;
-    this.taskOps     = taskOps;
-  }
-
-  private void rescheduleTask(Task task, long delay) {
-    var newTask = Task.Builder.newTask()
-                              .event(task.event())
-                              .accountId(task.accountId())
-                              .queueName(task.queueName())
-                              .executeAfter(delay)
-                              .build();
-    taskOps.addTaskToQueue(newTask, taskOps.getDataForTask(task.uniqueId()), true);
-    log.info("Rescheduling old task {} to run after {} seconds, new task id {}",
-             task.uniqueId(), delay, newTask.uniqueId());
-    deleteTask(task);
-  }
-
-  private void deleteTask(Task task) {
-    // delete the task and data if present
-    taskOps.deleteTaskFromInProgressQueue(task);
-  }
-
-  private void moveToDeadQueue(Task task) {
-    // move to dead list if task failed because of BGTaskUnrecoverableException
-    taskOps.moveToDeadQueue(task);
-  }
-
-  /**
-   * if task fails it may be retired automatically by maintenance service
-   * unless the exception is UnrecoverableException in which case the task is marked
-   * dead and deleted.
-   */
-  @Override
-  public void run() {
-    try {
-      callbacks.beforeStart().accept(task);
-      taskHandler.accept(task);
-      deleteTask(task);
-      callbacks.onSuccess().accept(task);
-    } catch (Exception e) {
-      callbacks.onError().accept(task, e);
-      if (e instanceof TaskUnrecoverableException || e instanceof TaskDataException) {
-        log.error("Task {} failed", task.taskString(), e);
-        // task will not be retried
-        moveToDeadQueue(task);
-      } else if (e instanceof TaskErrorException) {
-        // task can be retried
-        log.warn("Task {} failed", task.taskString(), e);
-      } else if (e instanceof TaskRescheduleException ex) {
-        rescheduleTask(task, ex.delay());
-      } else {
-        // unknown exception task may be retried
-        log.warn("Unhandled exception. Task will be retried", e);
-      }
-    } finally {
-      callbacks.afterTask().accept(task);
+    TaskRunnerWrapper(Task task, Consumer<Task> taskHandler, TaskCallbacks callbacks, TaskOps taskOps) {
+        this.task = task;
+        this.taskHandler = taskHandler;
+        this.callbacks = callbacks;
+        this.taskOps = taskOps;
     }
-  }
+
+    private void rescheduleTask(Task task, long delay) {
+        var newTask = Task.Builder.newTask()
+                .event(task.event())
+                .accountId(task.accountId())
+                .queueName(task.queueName())
+                .executeAfter(delay)
+                .build();
+        taskOps.addTaskToQueue(newTask, taskOps.getDataForTask(task.uniqueId()), true);
+        log.info(
+                "Rescheduling old task {} to run after {} seconds, new task id {}",
+                task.uniqueId(),
+                delay,
+                newTask.uniqueId());
+        deleteTask(task);
+    }
+
+    private void deleteTask(Task task) {
+        // delete the task and data if present
+        taskOps.deleteTaskFromInProgressQueue(task);
+    }
+
+    private void moveToDeadQueue(Task task) {
+        // move to dead list if task failed because of BGTaskUnrecoverableException
+        taskOps.moveToDeadQueue(task);
+    }
+
+    /**
+     * if task fails it may be retired automatically by maintenance service
+     * unless the exception is UnrecoverableException in which case the task is marked
+     * dead and deleted.
+     */
+    @Override
+    public void run() {
+        try {
+            callbacks.beforeStart().accept(task);
+            taskHandler.accept(task);
+            deleteTask(task);
+            callbacks.onSuccess().accept(task);
+        } catch (Exception e) {
+            callbacks.onError().accept(task, e);
+            if (e instanceof TaskUnrecoverableException || e instanceof TaskDataException) {
+                log.error("Task {} failed", task.taskString(), e);
+                // task will not be retried
+                moveToDeadQueue(task);
+            } else if (e instanceof TaskErrorException) {
+                // task can be retried
+                log.warn("Task {} failed", task.taskString(), e);
+            } else if (e instanceof TaskRescheduleException ex) {
+                rescheduleTask(task, ex.delay());
+            } else {
+                // unknown exception task may be retried
+                log.warn("Unhandled exception. Task will be retried", e);
+            }
+        } finally {
+            callbacks.afterTask().accept(task);
+        }
+    }
 }
