@@ -4,89 +4,108 @@ import com.cronutils.model.CronType;
 import com.cronutils.model.definition.CronDefinitionBuilder;
 import com.cronutils.model.time.ExecutionTime;
 import com.cronutils.parser.CronParser;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.Event;
 import today.bonfire.oss.bth4j.common.Random;
 import today.bonfire.oss.bth4j.exceptions.Errors;
-import today.bonfire.oss.bth4j.exceptions.TaskDataException;
 import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
 
 /**
- * A Task class which holds the task details and the data associated with it.
+ * A task as submitted by the application or as claimed from Redis.
  * <p>
- * The task is stored in Redis as a string with the parts joined by {@code |}, so the unique id,
- * event value, account id, queue name and cron expression must not contain a {@code |}.
- * This is enforced when the task is built; a {@link TaskErrorException} is thrown otherwise.
+ * A submitted task has an id, an event, an account id, optionally a queue, an execution time and, for a
+ * recurring definition, a cron expression. A claimed task additionally knows its attempt count, the
+ * maximum number of attempts, the schedule it came from and its serialized data.
  */
-public class Task {
-    private static final Logger log = LoggerFactory.getLogger(Task.class);
+public final class Task {
 
-    private static final String TASK_STRING_SEPARATOR = "|";
-
-    private static final CronParser cronParser =
+    private static final CronParser CRON_PARSER =
             new CronParser(CronDefinitionBuilder.instanceDefinitionFor(CronType.UNIX));
+    private static final Map<String, ExecutionTime> EXECUTION_TIMES = new ConcurrentHashMap<>();
 
-    private String uniqueId;
-    private Event event;
-    private Object accountId;
-    private String queueName;
-    private String cronExpression;
-    private String taskString;
+    static final String F_EVENT = "event";
+    static final String F_ACCOUNT = "account";
+    static final String F_QUEUE = "queue";
+    static final String F_CRON = "cron";
+    static final String F_DATA = "data";
+    static final String F_ATTEMPTS = "attempts";
+    static final String F_MAX = "max";
+    static final String F_CREATED = "created";
+    static final String F_DUE = "due";
+    static final String F_TOKEN = "token";
+    static final String F_SCHEDULE = "schedule";
+    static final String F_ERROR = "error";
+    static final String F_DIED = "died";
 
-    private Instant executeAtTimeStamp;
+    private final String uniqueId;
+    private final Event event;
+    private final String accountId;
+    private final String queueName;
+    private final String cronExpression;
+    private final Instant executeAtTimeStamp;
+    private final int attempts;
+    private final int maxAttempts;
+    private final String scheduleId;
+    private final String data;
+    private final String error;
+    private final String token;
 
-    private Object data;
+    private Task(Builder b) {
+        this.uniqueId = b.uniqueId;
+        this.event = b.event;
+        this.accountId = String.valueOf(b.accountId);
+        this.queueName = b.queueName;
+        this.cronExpression = b.cronExpression;
+        this.executeAtTimeStamp = b.executeAtTimeStamp;
+        this.attempts = 0;
+        this.maxAttempts = b.event.retryCount() + 1;
+        this.scheduleId = null;
+        this.data = null;
+        this.error = null;
+        this.token = null;
+    }
+
+    private Task(String id, Map<String, String> hash, Function<String, Event> eventParser) {
+        this.uniqueId = id;
+        var eventValue = hash.get(F_EVENT);
+        this.event = eventValue == null ? null : eventParser.apply(eventValue);
+        if (this.event == null) {
+            throw new TaskErrorException("Event parser returned null for event value '" + eventValue + "' of task "
+                    + id);
+        }
+        this.accountId = hash.get(F_ACCOUNT);
+        this.queueName = hash.get(F_QUEUE);
+        this.cronExpression = hash.get(F_CRON);
+        var due = hash.get(F_DUE);
+        this.executeAtTimeStamp = due == null ? null : Instant.ofEpochMilli(Long.parseLong(due));
+        this.attempts = parseInt(hash.get(F_ATTEMPTS), 0);
+        this.maxAttempts = parseInt(hash.get(F_MAX), this.event.retryCount() + 1);
+        this.scheduleId = hash.get(F_SCHEDULE);
+        this.data = hash.get(F_DATA);
+        this.error = hash.get(F_ERROR);
+        this.token = hash.get(F_TOKEN);
+    }
+
+    private static int parseInt(String s, int fallback) {
+        return s == null ? fallback : Integer.parseInt(s);
+    }
 
     /**
-     * list key is based on
+     * Builds a task from its Redis hash.
      *
-     * <pre>
-     *   JID|EVENT_ID|ACCOUNT_ID|QUEUE_NAME
-     *   1   2        3          4
-     *
-     * the string order is important, since the key is based on the order of the string.
-     * to supply below items for proper taskString,
-     * JID - unique id, will also act as a task ID
-     * EVENT_ID - the event, is an integer
-     * ACCOUNT_ID - can specify an userID, if account id doesn't make sense for your app or just empty if Not applicable
-     * QUEUE_NAME - the name of the queue to which the task will be queued initially.
-     * if not set, the default queue(first queue in the available queue list) will be used.
-     * If the task fails, it may be queued to a retry queue.
-     * The Above 4 items  are in same order always.
-     *
-     * In case of cron job, the task string will be
-     * JID|EVENT_ID|ACCOUNT_ID|QUEUE_NAME|CRON_EXPRESSION
-     * 1   2        3          4          5
-     *
-     * </pre>
+     * @throws TaskErrorException if the event value is unknown to the parser
      */
-    public Task(String ts, Function<String, Event> eventParser) {
-        if (StringUtils.isBlank(ts)) return;
-        this.taskString = ts;
-        var split = StringUtils.splitPreserveAllTokens(ts, TASK_STRING_SEPARATOR);
-        if (split.length < 3 || split.length > 5) throw new TaskErrorException("Invalid task string: " + ts);
-
-        this.uniqueId = split[0];
-        event = eventParser.apply(split[1]);
-        if (event == null) {
-            throw new TaskErrorException(
-                    "Event parser returned null for event value '" + split[1] + "' in task string: " + ts);
-        }
-        accountId = split[2];
-        if (split.length >= 4) {
-            queueName = split[3];
-            if (queueName.isBlank()) queueName = null;
-        }
-        if (split.length > 4 && event.isRecurring()) {
-            cronExpression = split[4];
-        }
+    static Task fromHash(String id, Map<String, String> hash, Function<String, Event> eventParser) {
+        return new Task(id, hash, eventParser);
     }
 
     public String uniqueId() {
@@ -97,95 +116,75 @@ public class Task {
         return event;
     }
 
-    public Object accountId() {
+    public String accountId() {
         return accountId;
     }
 
+    /** @return the logical queue name, or null when the task was built without one and not yet enqueued */
     public String queueName() {
         return queueName;
     }
 
+    /** @return the cron expression of a recurring definition, null for any other task */
     public String cronExpression() {
         return cronExpression;
     }
 
-    public String taskString() {
-        return taskString;
-    }
-
+    /** @return when the task is due to run, null for a task that runs as soon as possible */
     public Instant executeAtTimeStamp() {
         return executeAtTimeStamp;
     }
 
-    public Task executeAtTimeStamp(Instant executeAtTimeStamp) {
-        this.executeAtTimeStamp = executeAtTimeStamp;
-        return this;
+    public boolean isExecutionTimeSet() {
+        return executeAtTimeStamp != null;
     }
 
-    public Object data() {
+    /** @return number of times the task was claimed for execution, including the current one */
+    public int attempts() {
+        return attempts;
+    }
+
+    /** @return the number of attempts after which the task is moved to the dead set, {@code Event.retryCount() + 1} */
+    public int maxAttempts() {
+        return maxAttempts;
+    }
+
+    /** @return the id of the recurring definition that created this task, or null */
+    public String scheduleId() {
+        return scheduleId;
+    }
+
+    /** @return the serialized data of the task, or null when it has none */
+    public String data() {
         return data;
     }
 
-    protected Task(Builder builder) {
-        this.uniqueId = builder.uniqueId;
-        this.event = builder.event;
-        this.accountId = builder.accountId;
-        this.executeAtTimeStamp = builder.executeAtTimeStamp;
-        this.queueName = builder.queueName;
-        this.cronExpression = builder.cronExpression;
-        this.taskString = buildTaskString();
+    /** @return the message of the last failure, or null */
+    public String lastError() {
+        return error;
     }
 
-    @Override
-    public String toString() {
-        return taskString;
+    String token() {
+        return token;
     }
 
-    /** useful to check is task is set or just empty */
-    public boolean isNULL() {
-        return uniqueId == null;
+    /** @return the next execution time of this recurring definition after the given time */
+    public Instant getNextExecutionTime(Instant after) {
+        return nextExecution(cronExpression, after)
+                .orElseThrow(() -> new TaskErrorException("Cron expression never fires: " + cronExpression));
     }
 
-    /**
-     * can call this method when you have made any changes to the task params
-     * else prefer calling the {@link #taskString}
-     * If you are trying to insert into queues for the first time you should call this method.
-     */
-    public String buildTaskString() {
-        rejectSeparator("uniqueId", uniqueId);
-        rejectSeparator("event value", event.value());
-        rejectSeparator("accountId", String.valueOf(accountId));
-        rejectSeparator("queueName", queueName);
-        rejectSeparator("cronExpression", cronExpression);
-        var sb = new StringBuilder();
-        sb.append(uniqueId)
-                .append(TASK_STRING_SEPARATOR)
-                .append(event.value())
-                .append(TASK_STRING_SEPARATOR)
-                .append(accountId);
-
-        if (event.isRecurring() && StringUtils.isNotBlank(cronExpression)) {
-            validateCronExpression(cronExpression);
-            sb.append(TASK_STRING_SEPARATOR).append(queueName == null ? "" : queueName);
-            sb.append(TASK_STRING_SEPARATOR).append(cronExpression);
-        } else {
-            if (queueName != null) {
-                sb.append(TASK_STRING_SEPARATOR).append(queueName);
-            }
-        }
-        return sb.toString();
+    static Optional<Instant> nextExecution(String cronExpression, Instant after) {
+        var executionTime = EXECUTION_TIMES.computeIfAbsent(
+                cronExpression, c -> ExecutionTime.forCron(CRON_PARSER.parse(c)));
+        return executionTime
+                .nextExecution(ZonedDateTime.ofInstant(after, ZoneOffset.UTC))
+                .map(ZonedDateTime::toInstant);
     }
 
-    private static void rejectSeparator(String name, String value) {
-        if (value != null && value.contains(TASK_STRING_SEPARATOR)) {
-            throw new TaskErrorException(Errors.Tasks.CANNOT_CREATE_TASK + name + " must not contain '"
-                    + TASK_STRING_SEPARATOR + "': " + value);
-        }
-    }
-
-    private static void validateCronExpression(String cronExpression) {
+    static void validateCronExpression(String cronExpression) {
         try {
-            cronParser.parse(cronExpression);
+            CRON_PARSER.parse(cronExpression);
         } catch (RuntimeException e) {
             throw new TaskErrorException(
                     Errors.Tasks.CANNOT_CREATE_TASK + "invalid cron expression (5 field unix format expected): "
@@ -194,59 +193,31 @@ public class Task {
         }
     }
 
-    public boolean isExecutionTimeSet() {
-        return executeAtTimeStamp != null;
-    }
-
-    public <T> Task setData(T data) {
-        this.data = data;
-        return this;
-    }
-
-    /**
-     * call only if you are sure the task is recurring.
-     */
-    public Instant getNextExecutionTime(Instant previousExecutionTime) {
-        var cron = cronParser.parse(cronExpression);
-        return ExecutionTime.forCron(cron)
-                .nextExecution(ZonedDateTime.ofInstant(previousExecutionTime, ZoneOffset.UTC))
-                .orElse(ZonedDateTime.now().plusYears(100_000L)) // used so that it can be skipped
-                .toInstant();
-    }
-
-    /**
-     * @return data - that was associated with the task
-     *     may not always have data associated with it.
-     *     Data is populated in {@link TaskRunnerWrapper} class for execution purpose.
-     *     refer {@link TaskRunnerWrapper} for more information.
-     */
-    public <T> T getData(Class<T> clazz) {
-        try {
-            return clazz.cast(data);
-        } catch (ClassCastException e) {
-            throw new TaskDataException("Data type mismatch. Expected " + clazz.getName() + " but found "
-                    + (data == null ? "null" : data.getClass().getName()));
-        }
+    @Override
+    public String toString() {
+        return "Task[" + uniqueId + ", event=" + event.value() + ", account=" + accountId + ", queue=" + queueName
+                + (executeAtTimeStamp == null ? "" : ", due=" + executeAtTimeStamp)
+                + (cronExpression == null ? "" : ", cron=" + cronExpression)
+                + ", attempts=" + attempts + "/" + maxAttempts + ']';
     }
 
     public static class Builder {
 
-        private String uniqueId = null;
-        private Event event = null;
-        private Object accountId = null;
-        private Instant executeAtTimeStamp = null;
-        private String queueName = null;
-        private String cronExpression = null;
+        private String uniqueId;
+        private Event event;
+        private Object accountId;
+        private Instant executeAtTimeStamp;
+        private String queueName;
+        private String cronExpression;
 
-        public Builder() {}
+        private Builder() {}
 
         public static Builder newTask() {
             return newTask(null);
         }
 
         /**
-         * @param uniqueId id for the task. A random id is generated if null or blank.
-         *                 It must not contain {@code |}.
+         * @param uniqueId id of the task. A random id is generated if null or blank.
          */
         public static Builder newTask(String uniqueId) {
             var b = new Builder();
@@ -275,17 +246,19 @@ public class Task {
         }
 
         /**
-         * set to execute task after a fixed delay
-         *
          * @param seconds delay in seconds
          */
         public Builder executeAfter(long seconds) {
-            this.executeAtTimeStamp = Instant.now().plusSeconds(seconds);
+            return executeAfter(Duration.ofSeconds(seconds));
+        }
+
+        public Builder executeAfter(Duration delay) {
+            this.executeAtTimeStamp = Instant.now().plus(delay);
             return this;
         }
 
         /**
-         * @param cronExpression 5 field unix cron expression. Required for the definition of a recurring task.
+         * @param cronExpression 5 field unix cron expression. Required for a recurring definition.
          */
         public Builder cronExpression(String cronExpression) {
             this.cronExpression = cronExpression;
@@ -293,23 +266,17 @@ public class Task {
         }
 
         /**
-         * Builds the task after validating it.
-         *
-         * @throws TaskErrorException if the account id or event is missing, if any part of the task contains
-         *                            the separator {@code |}, or if the event is recurring and the cron expression is
-         *                            invalid. A recurring event without a cron expression is only accepted when an
-         *                            execution time is set, that is for a single run of a recurring task.
+         * @throws TaskErrorException if the account id or event is missing, or if the event is recurring and
+         *                            the cron expression is missing or invalid. A recurring event without a cron
+         *                            expression is accepted when an execution time is set (a single run).
          */
         public Task build() {
             if (ObjectUtils.isEmpty(accountId)) {
-                log.error("accountId cannot be null");
-                throw new TaskErrorException(Errors.Tasks.CANNOT_CREATE_TASK);
+                throw new TaskErrorException(Errors.Tasks.CANNOT_CREATE_TASK + "accountId cannot be empty");
             }
-            if (ObjectUtils.isEmpty(event)) {
-                log.error("eventId cannot be null");
-                throw new TaskErrorException(Errors.Tasks.CANNOT_CREATE_TASK);
+            if (event == null) {
+                throw new TaskErrorException(Errors.Tasks.CANNOT_CREATE_TASK + "event cannot be null");
             }
-
             if (event.isRecurring()) {
                 if (StringUtils.isBlank(cronExpression)) {
                     if (executeAtTimeStamp == null) {
@@ -319,6 +286,9 @@ public class Task {
                 } else {
                     validateCronExpression(cronExpression);
                 }
+            } else if (cronExpression != null) {
+                throw new TaskErrorException(
+                        Errors.Tasks.CANNOT_CREATE_TASK + "only a recurring event can have a cron expression");
             }
             return new Task(this);
         }

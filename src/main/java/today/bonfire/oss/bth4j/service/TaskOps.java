@@ -1,324 +1,516 @@
 package today.bonfire.oss.bth4j.service;
 
+import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Function;
-import java.util.function.Supplier;
-import org.apache.commons.lang3.BooleanUtils;
-import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.UnifiedJedis;
-import redis.clients.jedis.args.ListDirection;
-import redis.clients.jedis.params.ScanParams;
-import redis.clients.jedis.params.SetParams;
-import redis.clients.jedis.params.ZRangeParams;
-import redis.clients.jedis.resps.ScanResult;
-import redis.clients.jedis.resps.Tuple;
 import today.bonfire.oss.bth4j.Event;
 import today.bonfire.oss.bth4j.common.JsonMapper;
+import today.bonfire.oss.bth4j.common.Keys;
 import today.bonfire.oss.bth4j.common.QueuesHolder;
-import today.bonfire.oss.bth4j.common.THC;
-import today.bonfire.oss.bth4j.exceptions.OperationNotAllowed;
 import today.bonfire.oss.bth4j.exceptions.TaskDataException;
+import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
 
+/**
+ * All Redis operations of a runner. Applications use the public methods to enqueue tasks, manage
+ * recurring definitions and inspect queues; the services use the package-private transitions, each
+ * of which is one atomic script (see {@code docs/design-3.0.md}).
+ */
 public class TaskOps {
     private static final Logger log = LoggerFactory.getLogger(TaskOps.class);
 
+    /** Result of a failure transition. */
+    enum FailOutcome {
+        RETRY,
+        DEAD,
+        /** the lease token no longer matched, another instance owns the task now */
+        LOST
+    }
+
+    /** Expired lease as returned by {@link #reclaim(int)}. */
+    record ExpiredLease(String id, String token, int attempts, int maxAttempts, Event event) {}
+
+    /** A recurring definition due for its next occurrence. */
+    record DueSchedule(String scheduleId, Instant fireAt, int revision, Map<String, String> definition) {}
+
+    record PromoteResult(int moved, Instant nextDue) {}
+
     private final UnifiedJedis jedis;
     private final JsonMapper mapper;
-    private final THC.Keys keys;
+    private final Keys keys;
     private final Function<String, Event> eventParser;
     private final QueuesHolder queuesHolder;
+    private final ScriptRunner scripts;
+    private final long deadRetentionSeconds;
 
     /**
-     * Creates the Redis operations facade used by all services.
      * Normally created by {@link BackgroundRunner}; applications obtain the instance from the runner
-     * (the {@code taskOps()} accessor) to enqueue tasks.
+     * through {@code taskOps()}.
+     *
+     * @param deadRetention how long the hash of a dead task is kept
      */
     public TaskOps(
-            THC.Keys keys,
+            Keys keys,
             UnifiedJedis jedis,
             JsonMapper jsonMapper,
             Function<String, Event> eventParser,
-            QueuesHolder queuesHolder) {
+            QueuesHolder queuesHolder,
+            Duration deadRetention) {
+        this.keys = keys;
         this.jedis = jedis;
         this.mapper = jsonMapper;
-        this.keys = keys;
         this.eventParser = eventParser;
         this.queuesHolder = queuesHolder;
+        this.scripts = new ScriptRunner(jedis);
+        this.deadRetentionSeconds = Math.max(1, deadRetention.toSeconds());
     }
 
-    boolean isRetryCountExhausted(Event event, int timeRan) {
-        return timeRan > event.retryCount();
-    }
+    // ---- enqueue -------------------------------------------------------------------------------------
 
     /**
-     * Pops one task from the given queue and marks it as in progress.
-     * <p>
-     * This is a two step operation: the task is first moved atomically (LMOVE) to the temp rotation list,
-     * and then, in a separate transaction, added to the in-progress set and removed from the temp list.
-     * The two steps are not atomic together. If the process dies in between, the task stays in the temp
-     * rotation list and is moved back to its queue by {@link MaintenanceService}, so it is delayed, not lost.
+     * Stores the task and puts it into its queue, or into the scheduled set when it has an execution time.
      *
-     * @return the task, or an empty task (see {@link Task#isNULL()}) if the queue is empty
+     * @return true when stored, false when a task with the same id already exists
+     * @throws TaskErrorException if the queue of the task is not an available queue
      */
-    Task getTaskFromQueue(String queueName) {
-        var t = jedis.lmove(queueName, keys.TEMP_ROTATION_LIST, ListDirection.RIGHT, ListDirection.LEFT);
-        if (t != null) {
-            try (var transaction = jedis.multi()) {
-                transaction.zadd(keys.IN_PROGRESS_TASKS, ((double) Instant.now().getEpochSecond()), t);
-                transaction.lrem(keys.TEMP_ROTATION_LIST, 1, t);
-                transaction.exec();
-            }
-        }
-        return new Task(t, eventParser);
+    public boolean enqueue(Task task) {
+        return enqueue(task, null);
     }
 
     /**
-     * @param isDataRaw if true, the data is already serialized and is stored as {@code data.toString()}
+     * Stores the task with its data. The data is serialized with the configured {@link JsonMapper} and
+     * handed to the processor registered for the event, deserialized to the processor's data class.
+     *
+     * @return true when stored, false when a task with the same id already exists
+     * @throws TaskDataException  if the data cannot be serialized, or no mapper is configured
+     * @throws TaskErrorException if the queue of the task is not an available queue
      */
-    void addTaskToQueue(Task task, Object data, boolean isDataRaw) {
-        var queueName = queuesHolder.getValidQueue(task.queueName());
-        data = ObjectUtils.firstNonNull(data, task.data());
-        String serializedData = null;
-        if (ObjectUtils.isNotEmpty(data)) {
-            if (isDataRaw) {
-                serializedData = data.toString();
-            } else {
-                try {
-                    serializedData = mapper.toJson(data);
-                } catch (Exception e) {
-                    throw new TaskDataException("Unable to serialize data for task: " + task.uniqueId(), e);
-                }
-            }
+    public boolean enqueue(Task task, Object data) {
+        return enqueueSerialized(task, data == null ? null : toJson(task, data));
+    }
+
+    private String toJson(Task task, Object data) {
+        if (mapper == null) {
+            throw new TaskDataException("No JsonMapper configured, cannot store data for task " + task.uniqueId());
         }
-        try (var transaction = jedis.multi()) {
-            if (serializedData != null) {
-                transaction.set(keys.DATA + task.uniqueId(), serializedData);
-            }
-
-            if (task.isExecutionTimeSet()) {
-                transaction.zadd(
-                        keys.SCHEDULED_TASK_QUEUE,
-                        ((double) task.executeAtTimeStamp().getEpochSecond()),
-                        task.taskString());
-            } else {
-                transaction.lpush(queueName, task.taskString());
-            }
-            transaction.exec();
-        }
-        log.debug("Added {} to queue: {}", task, queueName);
-    }
-
-    int incrementRetryCount(String uniqueId) {
-        return (int) jedis.hincrBy(keys.TASK_RETRY_COUNT, uniqueId, 1);
-    }
-
-    String getLock(String lockName) {
-        return jedis.get(lockName);
-    }
-
-    boolean acquireLock(String lockKey, long expiryTime) {
-        var r = jedis.set(
-                lockKey,
-                String.valueOf(Instant.now().getEpochSecond()),
-                new SetParams().nx().ex(expiryTime));
-        return r != null;
-    }
-
-    boolean refreshLock(String lockKey, long expiryTime) {
-        return BooleanUtils.toBoolean((int) jedis.expire(lockKey, expiryTime));
-    }
-
-    void releaseLock(String lockDelayedTasks) {
-        jedis.del(lockDelayedTasks);
-    }
-
-    void deleteTaskFromInProgressQueue(Task task) {
-        try (var pipeline = jedis.pipelined()) {
-            pipeline.del(keys.DATA + task.uniqueId());
-            pipeline.zrem(keys.IN_PROGRESS_TASKS, task.taskString());
-            pipeline.hdel(keys.TASK_RETRY_COUNT, task.uniqueId());
+        try {
+            return mapper.toJson(data);
+        } catch (Exception e) {
+            throw new TaskDataException("Unable to serialize data for task: " + task.uniqueId(), e);
         }
     }
 
-    Map<String, Double> peek(String delayedTaskQueue, int numberOfItems) {
-        var r = jedis.zrangeWithScores(delayedTaskQueue, 0, numberOfItems - 1);
-        var map = new HashMap<String, Double>();
-        r.forEach(e -> map.put(e.getElement(), e.getScore()));
-        return map;
-    }
-
-    void addItemsFromDelayedTasksToQueue(List<String> tasks) {
-        try (var transaction = jedis.multi()) {
-            tasks.forEach(t -> {
-                var task = new Task(t, eventParser);
-                transaction.rpush(queuesHolder.getValidQueue(task.queueName()), task.taskString());
-            });
-            transaction.zrem(keys.SCHEDULED_TASK_QUEUE, tasks.toArray(new String[0]));
-            transaction.exec();
+    boolean enqueueSerialized(Task task, String json) {
+        var queue = queuesHolder.getValidQueue(task.queueName());
+        var args = new ArrayList<String>();
+        args.add(task.uniqueId());
+        args.add(task.isExecutionTimeSet() ? String.valueOf(task.executeAtTimeStamp().toEpochMilli()) : "");
+        args.add(keys.wakeChannel);
+        args.add(queue);
+        args.addAll(taskFields(task, queue, json));
+        var r = (Long) scripts.run(
+                RedisScripts.ENQUEUE, List.of(keys.task(task.uniqueId()), keys.scheduled, keys.queue(queue)), args);
+        if (r == 1) {
+            log.debug("Enqueued {} to {}", task, queue);
+            return true;
         }
+        log.debug("Task {} already exists, not enqueued", task.uniqueId());
+        return false;
     }
 
-    List<String> getAllItemsFromList(String listName) {
-        return jedis.lrange(listName, 0, -1);
-    }
-
-    void deleteFromRotationListAndAddToQueue(List<String> items) {
-        try (var transaction = jedis.multi()) {
-            items.forEach(t -> {
-                var task = new Task(t, eventParser);
-                transaction.rpush(queuesHolder.getValidQueue(task.queueName()), task.taskString());
-                transaction.lrem(keys.TEMP_ROTATION_LIST, 1, task.taskString());
-            });
-            transaction.exec();
+    private static List<String> taskFields(Task task, String queue, String json) {
+        var fields = new ArrayList<String>();
+        fields.add(Task.F_EVENT);
+        fields.add(task.event().value());
+        fields.add(Task.F_ACCOUNT);
+        fields.add(task.accountId());
+        fields.add(Task.F_QUEUE);
+        fields.add(queue);
+        fields.add(Task.F_ATTEMPTS);
+        fields.add("0");
+        fields.add(Task.F_MAX);
+        fields.add(String.valueOf(task.maxAttempts()));
+        fields.add(Task.F_CREATED);
+        fields.add(String.valueOf(System.currentTimeMillis()));
+        if (json != null) {
+            fields.add(Task.F_DATA);
+            fields.add(json);
         }
+        return fields;
     }
 
-    ScanResult<Tuple> scanSortedSet(String key, String cursor) {
-        return jedis.zscan(key, cursor);
-    }
+    // ---- recurring definitions -----------------------------------------------------------------------
 
-    ScanResult<Map.Entry<String, String>> scanHashSet(String key, String cursor) {
-        return jedis.hscan(key, cursor, new ScanParams().count(200));
-    }
-
-    void deleteFromInProgressQueueAndAddToQueue(List<Task> tasksToRetry, List<Task> tasksToDelete) {
-        if (tasksToRetry.isEmpty() && tasksToDelete.isEmpty()) return;
-
-        if (!tasksToRetry.isEmpty()) {
-            try (var transaction = jedis.multi()) {
-                tasksToRetry.forEach(t -> {
-                    transaction.zadd(
-                            keys.SCHEDULED_TASK_QUEUE, t.executeAtTimeStamp().getEpochSecond(), t.taskString());
-                    transaction.zrem(keys.IN_PROGRESS_TASKS, t.taskString());
-                });
-                transaction.exec();
-            }
+    /**
+     * Registers (or updates) a recurring definition. The task's id is the schedule id; its event must be
+     * recurring and it must have a cron expression. Each occurrence is created in the scheduled set ahead
+     * of its time and runs in the task's queue with the given data.
+     * Registering the same id again with the same cron expression keeps the next fire time; a changed
+     * expression resets it.
+     *
+     * @return the schedule id
+     */
+    public String addRecurringTask(Task task, Object data) {
+        if (!task.event().isRecurring() || StringUtils.isBlank(task.cronExpression())) {
+            throw new TaskErrorException("A recurring definition needs a recurring event and a cron expression");
         }
-
-        if (tasksToDelete.isEmpty()) return;
-        try (var transaction = jedis.multi()) {
-            tasksToDelete.forEach(t -> {
-                transaction.zadd(keys.DEAD_TASKS, Instant.now().getEpochSecond(), t.taskString());
-                transaction.zrem(keys.IN_PROGRESS_TASKS, t.taskString());
-                transaction.expire(keys.DATA + t.uniqueId(), THC.Time.T_30_DAYS);
-                transaction.hdel(keys.TASK_RETRY_COUNT, t.uniqueId());
-            });
-            transaction.exec();
+        var queue = queuesHolder.getValidQueue(task.queueName());
+        var next = task.getNextExecutionTime(Instant.now());
+        var args = new ArrayList<String>();
+        args.add(task.uniqueId());
+        args.add(keys.cronPrefix);
+        args.add(String.valueOf(next.toEpochMilli()));
+        args.add(Task.F_EVENT);
+        args.add(task.event().value());
+        args.add(Task.F_ACCOUNT);
+        args.add(task.accountId());
+        args.add(Task.F_QUEUE);
+        args.add(queue);
+        args.add(Task.F_CRON);
+        args.add(task.cronExpression());
+        args.add(Task.F_MAX);
+        args.add(String.valueOf(task.maxAttempts()));
+        if (data != null) {
+            args.add(Task.F_DATA);
+            args.add(toJson(task, data));
         }
-    }
-
-    void moveToDeadQueue(Task task) {
-        try (var transaction = jedis.multi()) {
-            transaction.zadd(keys.DEAD_TASKS, Instant.now().getEpochSecond(), task.taskString());
-            transaction.expire(keys.DATA + task.uniqueId(), THC.Time.T_30_DAYS);
-            transaction.zrem(keys.IN_PROGRESS_TASKS, task.taskString());
-            transaction.hdel(keys.TASK_RETRY_COUNT, task.uniqueId());
-            transaction.exec();
-        }
-    }
-
-    void removeTasksFromSortedSetBasedOnTime(String key, Instant time) {
-        if (!keys.DEAD_TASKS.equals(key)) {
-            throw new OperationNotAllowed("This method is only allowed to delete tasks from the dead queue");
-        }
-
-        Supplier<List<String>> tasksSupplier = () -> jedis.zrange(
-                key, ZRangeParams.zrangeByScoreParams(0, time.getEpochSecond()).limit(0, 100));
-        do {
-            var tasks = tasksSupplier.get();
-            if (ObjectUtils.isEmpty(tasks)) break;
-            tasks.forEach(t -> {
-                var task = new Task(t, eventParser);
-                try (var transaction = jedis.multi()) {
-                    transaction.zrem(key, task.taskString());
-                    transaction.del(keys.DATA + task.uniqueId());
-                    transaction.exec();
-                }
-            });
-        } while (true);
-    }
-
-    public void addTaskToQueue(Task task, Object data) {
-        addTaskToQueue(task, data, false);
+        scripts.run(RedisScripts.CRON_PUT, List.of(keys.cron), args);
+        log.info("Registered recurring task {} next at {}", task, next);
+        return task.uniqueId();
     }
 
     public String addRecurringTask(Task task) {
-        jedis.hset(keys.RECURRING_TASK_SET, task.taskString(), Instant.now().getEpochSecond() + "");
-        log.info("Added recurring task: {}", task);
-        return task.taskString();
+        return addRecurringTask(task, null);
     }
 
-    public void deleteRecurringTask(Task task) {
-        jedis.hdel(keys.RECURRING_TASK_SET, task.taskString());
-        log.info("Deleted recurring task: {}", task);
+    /** @return true when a definition with that id existed */
+    public boolean deleteRecurringTask(String scheduleId) {
+        var r = (Long) scripts.run(RedisScripts.CRON_DELETE, List.of(keys.cron), List.of(scheduleId, keys.cronPrefix));
+        log.info("Deleted recurring task {}: {}", scheduleId, r == 1);
+        return r == 1;
     }
 
-    public void deleteAllRecurringTasks() {
-        log.info("{} recurring tasks found", jedis.hlen(keys.RECURRING_TASK_SET));
-        jedis.del(keys.RECURRING_TASK_SET);
-        log.info("Deleted all recurring tasks");
+    /** @return the number of definitions removed */
+    public long deleteAllRecurringTasks() {
+        long removed = 0;
+        for (var id : jedis.zrange(keys.cron, 0, -1)) {
+            if (deleteRecurringTask(id)) removed++;
+        }
+        return removed;
     }
+
+    /** @return the recurring definitions with their next fire time */
+    public Map<String, Instant> recurringTasks() {
+        var result = new HashMap<String, Instant>();
+        jedis.zrangeWithScores(keys.cron, 0, -1)
+                .forEach(t -> result.put(t.getElement(), Instant.ofEpochMilli((long) t.getScore())));
+        return result;
+    }
+
+    // ---- data and inspection -------------------------------------------------------------------------
 
     /**
-     * @param uniqueId unique identifier for the task
-     *
-     * @return data associated with the given task id.
-     *     Will return null if task id is blank or no data is associated with the given task id.
-     *     This will not do any conversion of the data to the desired type. just the pure string value.
-     *     Use {@link #getDataForTask(String, Class)} for type conversion
+     * @return the serialized data of the task, or null if the id is blank or the task has no data or does not exist
      */
     public String getDataForTask(String uniqueId) {
         if (StringUtils.isBlank(uniqueId)) return null;
-        return jedis.get(keys.DATA + uniqueId);
+        return jedis.hget(keys.task(uniqueId), Task.F_DATA);
     }
 
     /**
-     * Gets the data associated with the given task id.
-     * This will try to convert the data to the given type.
-     * If the task id is blank or no data is associated with the given task id or
-     * if the type conversion fails, the method will return throw an exception.
-     *
-     * @param uniqueId unique identifier for the task
-     * @param clazz    the desired type of the data
-     *
-     * @return data associated with the given task id, converted to the given type.
-     *     May return null.
+     * @return the data of the task converted to the given type, or null if there is none
+     * @throws TaskDataException if the conversion fails
      */
     public <T> T getDataForTask(String uniqueId, Class<T> clazz) {
-        if (StringUtils.isBlank(uniqueId) || clazz == null) {
-            return null;
-        }
-        var r = jedis.get(keys.DATA + uniqueId);
-        if (r == null) {
-            return null;
+        if (StringUtils.isBlank(uniqueId) || clazz == null) return null;
+        return fromJson(uniqueId, getDataForTask(uniqueId), clazz);
+    }
+
+    /**
+     * Converts the data carried by a claimed task to the given type without a Redis read.
+     *
+     * @return the converted data, or null when the task has none
+     * @throws TaskDataException if the conversion fails
+     */
+    public <T> T decodeData(Task task, Class<T> clazz) {
+        return fromJson(task.uniqueId(), task.data(), clazz);
+    }
+
+    private <T> T fromJson(String id, String json, Class<T> clazz) {
+        if (json == null) return null;
+        if (mapper == null) {
+            throw new TaskDataException("No JsonMapper configured, cannot read data for task " + id);
         }
         try {
-            return mapper.fromJson(r, clazz);
+            return mapper.fromJson(json, clazz);
         } catch (Exception e) {
-            log.error("Error getting data for task: {}", uniqueId, e);
-            throw new TaskDataException("Error getting data for task: " + uniqueId, e);
+            throw new TaskDataException("Error reading data for task: " + id, e);
         }
     }
 
-    public <T> T getDataForTask(Task task, Class<T> clazz) {
-        return getDataForTask(task.uniqueId(), clazz);
-    }
-
-    public void updateExecutionTimeForRecurringTasks(String key, Instant instant) {
-        jedis.hset(keys.RECURRING_TASK_SET, key, String.valueOf(instant.getEpochSecond()));
+    /** @return the task with that id, in whatever state it is, if it exists */
+    public Optional<Task> getTask(String uniqueId) {
+        var hash = jedis.hgetAll(keys.task(uniqueId));
+        if (hash.isEmpty()) return Optional.empty();
+        return Optional.of(Task.fromHash(uniqueId, hash, eventParser));
     }
 
     public long queueSize(String queueName) {
-        return jedis.llen(queueName);
+        return jedis.llen(keys.queue(queuesHolder.getValidQueue(queueName)));
     }
 
-    public long getNumberOfTaskInProgress() {
-        return jedis.zcard(keys.IN_PROGRESS_TASKS);
+    public long leasedCount() {
+        return jedis.zcard(keys.leased);
+    }
+
+    public long scheduledCount() {
+        return jedis.zcard(keys.scheduled);
+    }
+
+    public long deadCount() {
+        return jedis.zcard(keys.dead);
+    }
+
+    /** @return the oldest dead tasks, up to the limit, whose hash has not expired yet */
+    public List<Task> deadTasks(int limit) {
+        var result = new ArrayList<Task>();
+        for (var id : jedis.zrange(keys.dead, 0, limit - 1)) {
+            getTask(id).ifPresent(result::add);
+        }
+        return result;
+    }
+
+    /** Puts a dead task back into its queue with a fresh attempt count. @return true when it was dead */
+    public boolean retryDeadTask(String uniqueId) {
+        var r = (Long) scripts.run(
+                RedisScripts.RETRY_DEAD,
+                List.of(keys.dead),
+                List.of(keys.taskPrefix, keys.queuePrefix, keys.wakeChannel, uniqueId));
+        return r == 1;
+    }
+
+    /** Removes dead tasks that died before the given time. @return the number removed */
+    public long purgeDeadTasks(Instant before) {
+        long total = 0;
+        long batch;
+        do {
+            batch = (Long) scripts.run(
+                    RedisScripts.DEAD_PURGE,
+                    List.of(keys.dead),
+                    List.of(String.valueOf(before.toEpochMilli()), "500", keys.taskPrefix));
+            total += batch;
+        } while (batch == 500);
+        return total;
+    }
+
+    // ---- transitions used by the services --------------------------------------------------------------
+
+    /**
+     * Claims up to {@code count} tasks from the queues, in the given order, for {@code lease}.
+     *
+     * @param tokenBase unique per call; the script appends an index per task
+     */
+    @SuppressWarnings("unchecked")
+    List<Task> claim(List<String> queues, int count, String tokenBase, Duration lease) {
+        var scriptKeys = new ArrayList<String>(queues.size() + 1);
+        scriptKeys.add(keys.leased);
+        queues.forEach(q -> scriptKeys.add(keys.queue(q)));
+        var r = (List<Object>) scripts.run(
+                RedisScripts.CLAIM,
+                scriptKeys,
+                List.of(
+                        String.valueOf(System.currentTimeMillis()),
+                        String.valueOf(lease.toMillis()),
+                        tokenBase,
+                        String.valueOf(count),
+                        keys.taskPrefix));
+        var tasks = new ArrayList<Task>(r.size());
+        for (var entry : r) {
+            var flat = (List<Object>) entry;
+            var id = (String) flat.getFirst();
+            try {
+                tasks.add(Task.fromHash(id, toMap(flat, 1), eventParser));
+            } catch (RuntimeException e) {
+                // the task is leased with a token nobody holds; the lease expires and reclaim decides
+                log.error("Claimed task {} cannot be read and will be retried after its lease expires", id, e);
+            }
+        }
+        return tasks;
+    }
+
+    private static Map<String, String> toMap(List<Object> flat, int from) {
+        var map = new HashMap<String, String>();
+        for (int i = from; i + 1 < flat.size(); i += 2) {
+            map.put((String) flat.get(i), (String) flat.get(i + 1));
+        }
+        return map;
+    }
+
+    /** Extends the lease of the given tasks. @return the number of leases still owned */
+    int renew(Collection<Task> tasks, Duration lease) {
+        if (tasks.isEmpty()) return 0;
+        var args = new ArrayList<String>(2 + tasks.size() * 2);
+        args.add(String.valueOf(System.currentTimeMillis() + lease.toMillis()));
+        args.add(keys.taskPrefix);
+        for (var t : tasks) {
+            args.add(t.uniqueId());
+            args.add(t.token());
+        }
+        return ((Long) scripts.run(RedisScripts.RENEW, List.of(keys.leased), args)).intValue();
+    }
+
+    /** Completes the task. @return false when the lease was lost */
+    boolean ack(Task task) {
+        var r = (Long) scripts.run(
+                RedisScripts.ACK, List.of(keys.leased), List.of(keys.taskPrefix, task.uniqueId(), task.token()));
+        return r == 1;
+    }
+
+    FailOutcome fail(Task task, Duration retryDelay, String error) {
+        return fail(task.uniqueId(), task.token(), retryDelay, error);
+    }
+
+    FailOutcome fail(String id, String token, Duration retryDelay, String error) {
+        var r = (String) scripts.run(
+                RedisScripts.FAIL,
+                List.of(keys.leased, keys.scheduled, keys.dead),
+                List.of(
+                        keys.taskPrefix,
+                        id,
+                        token,
+                        String.valueOf(System.currentTimeMillis()),
+                        String.valueOf(retryDelay.toMillis()),
+                        StringUtils.abbreviate(StringUtils.defaultString(error), 1000),
+                        String.valueOf(deadRetentionSeconds)));
+        return FailOutcome.valueOf(r.toUpperCase());
+    }
+
+    /** Moves the task to the scheduled set for the given time. @return false when the lease was lost */
+    boolean reschedule(Task task, Instant due) {
+        var r = (Long) scripts.run(
+                RedisScripts.RESCHEDULE,
+                List.of(keys.leased, keys.scheduled),
+                List.of(keys.taskPrefix, task.uniqueId(), task.token(), String.valueOf(due.toEpochMilli())));
+        return r == 1;
+    }
+
+    /** Returns a claimed task to the front of its queue. @return false when the lease was lost */
+    boolean unclaim(Task task) {
+        var r = (Long) scripts.run(
+                RedisScripts.UNCLAIM,
+                List.of(keys.leased),
+                List.of(keys.taskPrefix, keys.queuePrefix, task.uniqueId(), task.token()));
+        return r == 1;
+    }
+
+    /** Moves due scheduled tasks into their queues. */
+    @SuppressWarnings("unchecked")
+    PromoteResult promote(int limit) {
+        var r = (List<Object>) scripts.run(
+                RedisScripts.PROMOTE,
+                List.of(keys.scheduled),
+                List.of(
+                        String.valueOf(System.currentTimeMillis()),
+                        String.valueOf(limit),
+                        keys.taskPrefix,
+                        keys.queuePrefix,
+                        keys.wakeChannel));
+        var next = (Long) r.get(1);
+        return new PromoteResult(((Long) r.getFirst()).intValue(), next < 0 ? null : Instant.ofEpochMilli(next));
+    }
+
+    /** @return leases that expired, oldest first, up to the limit */
+    @SuppressWarnings("unchecked")
+    List<ExpiredLease> reclaim(int limit) {
+        var r = (List<Object>) scripts.run(
+                RedisScripts.RECLAIM,
+                List.of(keys.leased),
+                List.of(String.valueOf(System.currentTimeMillis()), String.valueOf(limit), keys.taskPrefix));
+        var result = new ArrayList<ExpiredLease>(r.size());
+        for (var entry : r) {
+            var e = (List<Object>) entry;
+            var eventValue = (String) e.get(4);
+            var event = eventValue == null ? null : eventParser.apply(eventValue);
+            result.add(new ExpiredLease(
+                    (String) e.get(0),
+                    (String) e.get(1),
+                    Integer.parseInt((String) e.get(2)),
+                    Integer.parseInt((String) e.get(3)),
+                    event));
+        }
+        return result;
+    }
+
+    /** @return recurring definitions whose next fire time is at or before the given time */
+    @SuppressWarnings("unchecked")
+    List<DueSchedule> cronDue(Instant upTo, int limit) {
+        var r = (List<Object>) scripts.run(
+                RedisScripts.CRON_DUE,
+                List.of(keys.cron),
+                List.of(String.valueOf(upTo.toEpochMilli()), String.valueOf(limit), keys.cronPrefix));
+        var result = new ArrayList<DueSchedule>(r.size());
+        for (var entry : r) {
+            var e = (List<Object>) entry;
+            var definition = toMap(e, 2);
+            var fireAt = Instant.ofEpochMilli((long) Double.parseDouble((String) e.get(1)));
+            result.add(new DueSchedule(
+                    (String) e.get(0), fireAt, Integer.parseInt(definition.getOrDefault("rev", "0")), definition));
+        }
+        return result;
+    }
+
+    /**
+     * Creates the occurrence of a due schedule and advances the schedule to {@code nextFire}, unless the
+     * definition changed or was deleted meanwhile.
+     *
+     * @return true when committed
+     */
+    boolean cronCommit(DueSchedule due, Instant nextFire) {
+        var occurrenceId = due.scheduleId() + ":" + due.fireAt().toEpochMilli();
+        var d = due.definition();
+        var args = new ArrayList<String>();
+        args.add(due.scheduleId());
+        args.add(String.valueOf(due.revision()));
+        args.add(String.valueOf(due.fireAt().toEpochMilli()));
+        args.add(String.valueOf(nextFire.toEpochMilli()));
+        args.add(occurrenceId);
+        args.add(keys.cronPrefix);
+        args.add(keys.taskPrefix);
+        for (var field : List.of(Task.F_EVENT, Task.F_ACCOUNT, Task.F_QUEUE, Task.F_MAX, Task.F_DATA)) {
+            var value = d.get(field);
+            if (value != null) {
+                args.add(field);
+                args.add(value);
+            }
+        }
+        args.add(Task.F_SCHEDULE);
+        args.add(due.scheduleId());
+        args.add(Task.F_ATTEMPTS);
+        args.add("0");
+        args.add(Task.F_CREATED);
+        args.add(String.valueOf(System.currentTimeMillis()));
+        var r = (Long) scripts.run(RedisScripts.CRON_COMMIT, List.of(keys.cron, keys.scheduled), args);
+        return r == 1;
+    }
+
+    Keys keys() {
+        return keys;
+    }
+
+    QueuesHolder queuesHolder() {
+        return queuesHolder;
+    }
+
+    Function<String, Event> eventParser() {
+        return eventParser;
     }
 }
