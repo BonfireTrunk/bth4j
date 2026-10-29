@@ -1,32 +1,31 @@
 package today.bonfire.oss.bth4j.service;
 
+import java.time.Duration;
 import java.time.Instant;
-import java.util.Collections;
-import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import today.bonfire.oss.bth4j.Event;
-import today.bonfire.oss.bth4j.common.THC;
 import today.bonfire.oss.bth4j.executor.CustomThread;
+import today.bonfire.oss.bth4j.service.TaskOps.DueSchedule;
 
+/**
+ * Creates the upcoming occurrences of recurring definitions. Any number of instances may run it; the
+ * commit of an occurrence is atomic and compares the definition revision and fire time.
+ */
 public class RecurringTaskService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(RecurringTaskService.class);
+    private static final int MAX_ROUNDS_PER_CYCLE = 100;
 
-    private final long checkInterval;
-    private final long lockTimeout;
-    private final long queueAheadBy;
     private final TaskOps taskOps;
-    private final THC.Keys keys;
-    private final Function<String, Event> eventParser;
+    private final Duration checkInterval;
+    private final Duration queueAheadBy;
+    private final int batchSize;
 
     RecurringTaskService(Builder builder) {
         super(builder.group, builder.threadName);
-        this.checkInterval = builder.checkInterval;
-        this.lockTimeout = builder.lockTimeout;
-        this.queueAheadBy = builder.queueTaskAheadDuration;
         this.taskOps = builder.taskOps;
-        this.keys = builder.keys;
-        this.eventParser = builder.eventParser;
+        this.checkInterval = builder.checkInterval;
+        this.queueAheadBy = builder.queueAheadBy;
+        this.batchSize = builder.batchSize;
     }
 
     @Override
@@ -34,10 +33,7 @@ public class RecurringTaskService extends CustomThread {
         try {
             while (this.canContinueProcessing) {
                 try {
-                    if (taskOps.acquireLock(keys.LOCK_RECURRING_TASKS, lockTimeout)) {
-                        queueUpcomingTasks();
-                    }
-
+                    queueUpcomingTasks();
                     Thread.sleep(checkInterval);
                 } catch (InterruptedException e) {
                     if (this.canContinueProcessing) {
@@ -47,6 +43,7 @@ public class RecurringTaskService extends CustomThread {
                     }
                 } catch (Exception e) {
                     log.error("Recurring task service Thread error", e);
+                    sleepAfterError();
                 }
             }
         } finally {
@@ -54,92 +51,73 @@ public class RecurringTaskService extends CustomThread {
         }
     }
 
-    /**
-     * Scans all recurring task definitions and queues the ones that are due within the queue-ahead window.
-     * Must be called with the lock held. The lock (valid for {@code lockTimeout} seconds) is refreshed after
-     * every scan page and released on exit, also on exceptions, unless it could not be refreshed
-     * (it may then belong to another instance).
-     */
-    private void queueUpcomingTasks() {
-        var lockHeld = true;
-        var itemsQueued = 0;
+    private void sleepAfterError() {
         try {
-            var cursor = "0";
-            do {
-                var r = taskOps.scanHashSet(keys.RECURRING_TASK_SET, cursor);
-                cursor = r.getCursor();
-                var entries = r.getResult();
-
-                for (var entry : entries) {
-                    if (queueIfDue(entry.getKey(), entry.getValue())) {
-                        itemsQueued++;
-                    }
-                }
-                log.trace("Recurring task service analysed {} tasks", entries.size());
-
-                if (!"0".equals(cursor)) {
-                    // more pages to scan, make sure the lock does not expire in between
-                    if (!taskOps.refreshLock(keys.LOCK_RECURRING_TASKS, lockTimeout)) {
-                        log.error("Unable to refresh lock on recurring tasks");
-                        lockHeld = false;
-                        break;
-                    }
-                }
-            } while (!"0".equals(cursor) && this.canContinueProcessing);
-        } finally {
-            if (lockHeld) {
-                taskOps.releaseLock(keys.LOCK_RECURRING_TASKS);
+            Thread.sleep(checkInterval);
+        } catch (InterruptedException e) {
+            if (this.canContinueProcessing) {
+                log.error("Recurring task service Thread interrupted", e);
+            } else {
+                log.debug("Recurring task service Thread interrupted while stopping");
             }
         }
-        if (itemsQueued > 0) {
-            log.info("Recurring task service queued {} tasks", itemsQueued);
+    }
+
+    private void queueUpcomingTasks() {
+        var queued = 0;
+        try {
+            for (var round = 0; round < MAX_ROUNDS_PER_CYCLE && this.canContinueProcessing; round++) {
+                var due = taskOps.cronDue(Instant.now().plus(queueAheadBy), batchSize);
+                var committed = 0;
+                for (var d : due) {
+                    if (queueIfDue(d)) {
+                        committed++;
+                    }
+                }
+                queued += committed;
+                // nothing committed means every due definition is broken or was taken by another instance
+                if (committed == 0) {
+                    break;
+                }
+            }
+        } finally {
+            if (queued > 0) {
+                log.info("Recurring task service queued {} tasks", queued);
+            }
         }
     }
 
     /**
-     * Queues one instance of the recurring task if it is due within the queue-ahead window.
-     * A malformed entry is logged and skipped so that it cannot block the other recurring tasks.
+     * A bad definition (for example an unparseable cron expression) is logged and skipped so that it
+     * cannot block the others.
      *
-     * @param taskString        task string of the recurring task, the hash key
-     * @param lastExecutionTime epoch seconds of the last queued execution, the hash value
-     * @return true if a task was queued
+     * @return true when an occurrence was committed
      */
-    private boolean queueIfDue(String taskString, String lastExecutionTime) {
+    private boolean queueIfDue(DueSchedule d) {
         try {
-            var lastExecution = Instant.ofEpochSecond(Long.parseLong(lastExecutionTime));
-            var task = new Task(taskString, eventParser);
-            var nextExecutionTime = task.getNextExecutionTime(lastExecution);
-            // only queue tasks that will run in the next queueAheadBy seconds
-            if (Instant.now().plusSeconds(queueAheadBy).isAfter(nextExecutionTime)) {
-                // queue the task based on the next execution time
-                taskOps.addTaskToQueue(
-                        Task.Builder.newTask()
-                                .event(task.event())
-                                .queueName(task.queueName())
-                                .accountId(task.accountId())
-                                .executeAtTimeStamp(nextExecutionTime)
-                                .build(),
-                        Collections.emptyMap());
-                taskOps.updateExecutionTimeForRecurringTasks(taskString, nextExecutionTime);
-                return true;
+            var cron = d.definition().get(Task.F_CRON);
+            var now = Instant.now();
+            var after = d.fireAt().isAfter(now) ? d.fireAt() : now;
+            var next = Task.nextExecution(cron, after);
+            if (next.isEmpty()) {
+                log.error("Recurring task {} never fires again, removing it", d.scheduleId());
+                taskOps.deleteRecurringTask(d.scheduleId());
+                return false;
             }
+            return taskOps.cronCommit(d, next.get());
         } catch (Exception e) {
-            log.error("Skipping recurring task entry {}", taskString, e);
+            log.error("Skipping recurring task {}", d.scheduleId(), e);
+            return false;
         }
-        return false;
     }
 
     public static class Builder {
-
-        private long checkInterval;
-        private long queueTaskAheadDuration;
         private ThreadGroup group;
         private String threadName;
         private TaskOps taskOps;
-        private THC.Keys keys;
-        private Function<String, Event> eventParser;
-
-        private long lockTimeout;
+        private Duration checkInterval = Duration.ofSeconds(10);
+        private Duration queueAheadBy = Duration.ofSeconds(30);
+        private int batchSize = 100;
 
         public Builder() {}
 
@@ -153,38 +131,28 @@ public class RecurringTaskService extends CustomThread {
             return this;
         }
 
-        public Builder setCheckInterval(long checkInterval) {
-            this.checkInterval = checkInterval;
-            return this;
-        }
-
-        public Builder setLockTimeout(long timeout) {
-            this.lockTimeout = timeout;
-            return this;
-        }
-
         public Builder setTaskOps(TaskOps taskOps) {
             this.taskOps = taskOps;
             return this;
         }
 
-        public Builder setKeys(THC.Keys keys) {
-            this.keys = keys;
+        public Builder setCheckInterval(Duration checkInterval) {
+            this.checkInterval = checkInterval;
             return this;
         }
 
-        public Builder setEventParser(Function<String, Event> eventParser) {
-            this.eventParser = eventParser;
+        public Builder setQueueAheadBy(Duration queueAheadBy) {
+            this.queueAheadBy = queueAheadBy;
+            return this;
+        }
+
+        public Builder setBatchSize(int batchSize) {
+            this.batchSize = batchSize;
             return this;
         }
 
         public RecurringTaskService create() {
             return new RecurringTaskService(this);
-        }
-
-        public Builder setQueueTaskAheadBy(long duration) {
-            this.queueTaskAheadDuration = duration;
-            return this;
         }
     }
 }

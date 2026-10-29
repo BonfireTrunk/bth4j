@@ -2,12 +2,13 @@ package today.bonfire.oss.bth4j.executor;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.OperatingSystemMXBean;
+import java.time.Duration;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 import org.slf4j.Logger;
@@ -16,9 +17,8 @@ import org.slf4j.Logger;
  * Default executor that runs every task on its own virtual thread.
  * <p>
  * The number of concurrently running tasks is limited by a semaphore. The limit starts at the number
- * of available processors and is tuned once per second based on CPU load and throughput.
- * Tasks that cannot get a permit are rejected, and {@link #isPoolFull()} tells the task processor to
- * stop picking up tasks while no permits are available.
+ * of available processors and is tuned once per second based on CPU load and throughput, between the
+ * number of processors and {@code maxConcurrency}.
  */
 public class DefaultVtExecutor implements BackgroundExecutor {
     private static final Logger log = org.slf4j.LoggerFactory.getLogger(DefaultVtExecutor.class);
@@ -46,7 +46,17 @@ public class DefaultVtExecutor implements BackgroundExecutor {
 
     private int consecutiveStableThroughput = 0;
 
+    private final int maxConcurrency;
+
     public DefaultVtExecutor() {
+        this(Math.max(256, AVAILABLE_PROCESSORS * 8));
+    }
+
+    /**
+     * @param maxConcurrency upper bound of the adaptive concurrency limit, at least the number of processors
+     */
+    public DefaultVtExecutor(int maxConcurrency) {
+        this.maxConcurrency = Math.max(AVAILABLE_PROCESSORS, maxConcurrency);
         this.maxConcurrentTasks = new AtomicInteger(AVAILABLE_PROCESSORS);
         this.concurrencyLimiter = new AdjustableSemaphore(AVAILABLE_PROCESSORS);
         this.activeTaskCount = new AtomicInteger(0);
@@ -114,13 +124,13 @@ public class DefaultVtExecutor implements BackgroundExecutor {
             } else {
                 consecutiveZeroThroughput = 0;
                 if (throughputChange > 0) {
-                    newMax = currentMax + 1;
+                    newMax = Math.min(maxConcurrency, currentMax + 1);
                     reason = "increasing throughput";
                 } else if (throughputChange < 0 && currentMax > AVAILABLE_PROCESSORS) {
                     newMax = Math.max(AVAILABLE_PROCESSORS, currentMax - 1);
                     reason = "decreasing throughput";
                 } else if (throughputChange == 0 && consecutiveStableThroughput < constantOutputDampeningLimit) {
-                    newMax = currentMax + 1;
+                    newMax = Math.min(maxConcurrency, currentMax + 1);
                     consecutiveStableThroughput++;
                     reason = "stable throughput, will probe for more";
                 }
@@ -135,7 +145,6 @@ public class DefaultVtExecutor implements BackgroundExecutor {
                 if (consecutiveIncreases > changingOutputDampenLimit) {
                     updateConcurrencyLimit(currentMax, newMax, reason, cpuLoad, throughput, throughputChange);
                     consecutiveIncreases = 0;
-                    // TODO: maybe need max limiter?
                 } else {
                     log.trace(
                             "Ignoring potential increase, recent increases: {}, throughput: {}",
@@ -195,22 +204,25 @@ public class DefaultVtExecutor implements BackgroundExecutor {
     }
 
     @Override
-    public ExecutorService getExecutor() {
-        return executor;
+    public int reserve(int max, Duration wait) throws InterruptedException {
+        if (!concurrencyLimiter.tryAcquire(wait.toNanos(), TimeUnit.NANOSECONDS)) {
+            return 0;
+        }
+        int reserved = 1;
+        while (reserved < max && concurrencyLimiter.tryAcquire()) {
+            reserved++;
+        }
+        return reserved;
     }
 
     @Override
-    public boolean isPoolFull() {
-        return concurrencyLimiter.availablePermits() <= 0;
+    public void release(int slots) {
+        if (slots > 0) concurrencyLimiter.release(slots);
     }
 
+    /** Runs the task in a reserved slot; the slot is released when the task finishes or if it is rejected. */
     @Override
     public void execute(Runnable task) {
-        if (!concurrencyLimiter.tryAcquire()) {
-            throw new RejectedExecutionException(
-                    String.format("Executor at capacity with CPU usage: %.2f%%", getCpuLoad() * 100));
-        }
-
         try {
             executor.execute(() -> {
                 activeTaskCount.incrementAndGet();
@@ -224,10 +236,19 @@ public class DefaultVtExecutor implements BackgroundExecutor {
                 }
             });
         } catch (RuntimeException e) {
-            // the task was not accepted (for example after shutdown) so it will never release its permit
             concurrencyLimiter.release();
             throw e;
         }
+    }
+
+    @Override
+    public int activeCount() {
+        return activeTaskCount.get();
+    }
+
+    @Override
+    public boolean awaitTermination(Duration timeout) throws InterruptedException {
+        return executor.awaitTermination(timeout.toNanos(), TimeUnit.NANOSECONDS);
     }
 
     @Override

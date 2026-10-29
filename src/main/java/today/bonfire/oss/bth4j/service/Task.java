@@ -79,8 +79,8 @@ public final class Task {
         var eventValue = hash.get(F_EVENT);
         this.event = eventValue == null ? null : eventParser.apply(eventValue);
         if (this.event == null) {
-            throw new TaskErrorException("Event parser returned null for event value '" + eventValue + "' of task "
-                    + id);
+            throw new TaskErrorException(
+                    "Event parser returned null for event value '" + eventValue + "' of task " + id);
         }
         this.accountId = hash.get(F_ACCOUNT);
         this.queueName = hash.get(F_QUEUE);
@@ -175,8 +175,8 @@ public final class Task {
     }
 
     static Optional<Instant> nextExecution(String cronExpression, Instant after) {
-        var executionTime = EXECUTION_TIMES.computeIfAbsent(
-                cronExpression, c -> ExecutionTime.forCron(CRON_PARSER.parse(c)));
+        var executionTime =
+                EXECUTION_TIMES.computeIfAbsent(cronExpression, c -> ExecutionTime.forCron(CRON_PARSER.parse(c)));
         return executionTime
                 .nextExecution(ZonedDateTime.ofInstant(after, ZoneOffset.UTC))
                 .map(ZonedDateTime::toInstant);

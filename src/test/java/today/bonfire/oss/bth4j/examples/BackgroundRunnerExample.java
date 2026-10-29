@@ -2,7 +2,6 @@ package today.bonfire.oss.bth4j.examples;
 
 import java.time.Duration;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.CountDownLatch;
@@ -65,10 +64,9 @@ class BackgroundRunnerExample {
         var bg = new BackgroundRunner.Builder()
                 .taskProcessorRegistry(registry)
                 .eventParser(TestEvents.UNKNOWN::from)
-                .taskRetryDelay(Integer::valueOf)
-                .taskProcessorQueueCheckInterval(Duration.ofMillis(10))
+                .idlePollInterval(Duration.ofMillis(100))
                 .maintenanceCheckInterval(Duration.ofSeconds(10))
-                .staleTaskTimeout(Duration.ofSeconds(10))
+                .leaseDuration(Duration.ofSeconds(10))
                 .jsonMapper(new JsonMapperTest())
                 .jedisClient(jedis)
                 .namespacePrefix("cool")
@@ -124,7 +122,7 @@ class BackgroundRunnerExample {
                                 .event(TestEvents.COOL)
                                 .executeAfter(5)
                                 .build();
-                        taskOps.addTaskToQueue(t, Collections.emptyMap());
+                        taskOps.enqueue(t);
                     }
                 } finally {
                     latch.countDown(); // Decrement the latch count when the thread completes

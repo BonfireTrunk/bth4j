@@ -1,229 +1,95 @@
 package today.bonfire.oss.bth4j.service;
 
+import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
-import org.apache.commons.lang3.ObjectUtils;
-import org.apache.commons.lang3.RandomUtils;
-import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import today.bonfire.oss.bth4j.Event;
-import today.bonfire.oss.bth4j.common.QueuesHolder;
-import today.bonfire.oss.bth4j.common.THC;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.executor.CustomThread;
 
+/**
+ * Housekeeping: fails tasks whose lease expired (so they are retried or die) and purges dead tasks
+ * past their retention. Jobs run on the scheduler thread itself, so shutting the scheduler down waits
+ * for a job in progress.
+ */
 public class MaintenanceService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(MaintenanceService.class);
-
-    private final Map<String, Long> LOCK_TIMEOUTS;
+    private static final Duration DEAD_PURGE_INTERVAL = Duration.ofHours(1);
+    private static final long SHUTDOWN_WAIT_SECONDS = 30;
 
     private final ScheduledExecutorService executor;
-    private final ThreadFactory virtualThreadFactory;
-
-    private final Map<Runnable, Long> maintenanceTasks = new HashMap<>();
-    private final Function<Integer, Integer> taskRetryDelay;
-    private final long staleTaskTimeout;
     private final TaskOps taskOps;
-    private final THC.Keys keys;
-    private final Function<String, Event> eventParser;
-    private final long inProgressCheckInterval;
-    private final QueuesHolder queuesHolder;
-
-    /** tasks seen in the temp rotation list in the previous cycle, replaced (not accumulated) every cycle */
-    private volatile Set<String> previousRotationListData = new HashSet<>();
+    private final Duration checkInterval;
+    private final Duration deadRetention;
+    private final Function<Integer, Duration> taskRetryDelay;
+    private final int batchSize;
 
     private final AtomicBoolean executorShutdownStarted = new AtomicBoolean(false);
 
     MaintenanceService(Builder builder) {
         super(builder.group, builder.threadName);
-        this.inProgressCheckInterval = builder.inProgressCheckInterval;
-        this.taskRetryDelay = builder.taskRetryDelay;
-        this.staleTaskTimeout = builder.staleTaskTimeout;
-
         this.taskOps = builder.taskOps;
-        this.keys = builder.keys;
-        this.eventParser = builder.eventParser;
-        this.queuesHolder = builder.queuesHolder;
+        this.checkInterval = builder.checkInterval;
+        this.deadRetention = builder.deadRetention;
+        this.taskRetryDelay = builder.taskRetryDelay;
+        this.batchSize = builder.batchSize;
         this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
             var thread = new Thread(builder.group, r, builder.threadName + "-scheduler");
             thread.setDaemon(true);
             return thread;
         });
-        this.virtualThreadFactory =
-                Thread.ofVirtual().name(builder.threadName + "-task", 0).factory();
-
-        this.LOCK_TIMEOUTS = Map.of(
-                keys.LOCK_SCHEDULED_TASKS_QUEUE, THC.Time.T_5_MINUTES,
-                keys.LOCK_RECURRING_TASKS, THC.Time.T_5_MINUTES,
-                keys.LOCK_ROTATION_LIST, THC.Time.T_2_MINUTES,
-                keys.LOCK_IN_PROGRESS_TASKS, THC.Time.T_2_MINUTES);
-
-        initializeMaintenanceTasks();
-    }
-
-    private void initializeMaintenanceTasks() {
-        // ideally not required may be removed in later version
-        Runnable checkAndRemoveLocks = () -> {
-            try {
-                log.trace("Maintenance Service: Checking and removing stale locks");
-                LOCK_TIMEOUTS.forEach((lockKey, timeout) -> {
-                    if (checkLockExpired(taskOps.getLock(lockKey), timeout)) {
-                        log.warn("Maintenance Service: Removing lock on {}. Ideally this should not occur", lockKey);
-                        taskOps.releaseLock(lockKey);
-                    }
-                });
-            } catch (Exception exception) {
-                log.error("Error in lock checks", exception);
-            }
-        };
-
-        Runnable updateQueueExecutionStatus = () -> {
-            queuesHolder.queueProcessingStatus.replaceAll((s, b) -> true);
-        };
-
-        /*
-         this is an extra check to ensure that tasks that have been in the temp rotation list for more than 1 cycle are
-         moved back to the queue.
-         when a task is taken by a worker it is popped from a queue and added to the temp rotation list and then removed
-         once worker is processing the task. This is a check such that in a where a task is not lost due to a crash.
-         This case is highly unlikely but still we have a check here.
-        */
-        Runnable checkAndMoveTaskFromTempRotationListBackToQueue = () -> {
-            try {
-                if (taskOps.acquireLock(keys.LOCK_ROTATION_LIST, THC.Time.T_1_MINUTE)) {
-                    try {
-                        // current assumptions is the list will be very small and scan is not required.
-                        var tasks = taskOps.getAllItemsFromList(keys.TEMP_ROTATION_LIST);
-                        var tasksToBeMoved = new ArrayList<String>();
-                        if (ObjectUtils.isNotEmpty(tasks)) {
-                            for (var task : tasks) {
-                                if (previousRotationListData.contains(task)) {
-                                    tasksToBeMoved.add(task);
-                                }
-                            }
-                        }
-
-                        if (!tasksToBeMoved.isEmpty()) {
-                            // delete items from temp rotation list and add them back to the queue
-                            log.error("Tasks have been in the temp rotation list for more than 1 cycle. "
-                                    + "This should not have happened. Need to investigate.");
-                            taskOps.deleteFromRotationListAndAddToQueue(tasksToBeMoved);
-                        }
-
-                        // remember only what is still in the list, so the set cannot grow beyond the list size
-                        var current = new HashSet<String>(tasks);
-                        tasksToBeMoved.forEach(current::remove);
-                        previousRotationListData = current;
-                    } finally {
-                        taskOps.releaseLock(keys.LOCK_ROTATION_LIST);
-                    }
-                }
-            } catch (Exception e) {
-                log.error("Error in checking rotation list", e);
-            }
-        };
-
-        Runnable checkInProgressTaskAndRetry = () -> {
-            try {
-                log.trace("Maintenance Service: Checking in progress task and submit for retry if needed");
-                if (taskOps.acquireLock(keys.LOCK_IN_PROGRESS_TASKS, THC.Time.T_2_MINUTES)) {
-                    var lockHeld = true;
-                    try {
-                        var taskCount = taskOps.getNumberOfTaskInProgress();
-                        log.trace("No of task in progress {}", taskCount);
-                        // scan through all the tasks in the sorted set and queue them again if they have not been
-                        // removed for more than staleTaskTimeout duration.
-                        var cursor = "0";
-                        do {
-                            var r = taskOps.scanSortedSet(keys.IN_PROGRESS_TASKS, cursor);
-                            cursor = r.getCursor();
-                            var l = r.getResult();
-                            if (!l.isEmpty()) {
-                                var tasksToDelete = new ArrayList<Task>();
-                                var tasksToRetry = new ArrayList<Task>(); // task with executionTimeStamp
-                                l.forEach(item -> {
-                                    var executionQueuedTime = Instant.ofEpochSecond((long) item.getScore());
-                                    if (executionQueuedTime.isBefore(
-                                            Instant.now().minusMillis(staleTaskTimeout))) {
-                                        // task may have failed or thrown exception. reschedule the task
-                                        // data may be present already so not need to modify only the task retry count.
-                                        var task = new Task(item.getElement(), eventParser);
-                                        // fetch task retry count
-                                        var retryCount = taskOps.incrementRetryCount(task.uniqueId());
-                                        if (taskOps.isRetryCountExhausted(task.event(), retryCount)) {
-                                            // delete items since they can't be we can retry them
-                                            // task is deleted along with the data
-                                            tasksToDelete.add(task);
-                                        } else {
-                                            tasksToRetry.add(task.executeAtTimeStamp(
-                                                    Instant.now().plusSeconds(taskRetryDelay.apply(retryCount))));
-                                        }
-                                    }
-                                });
-                                taskOps.deleteFromInProgressQueueAndAddToQueue(tasksToRetry, tasksToDelete);
-                            }
-                            if (!taskOps.refreshLock(keys.LOCK_IN_PROGRESS_TASKS, THC.Time.T_2_MINUTES)) {
-                                // lock expired, it may now belong to another instance so it must not be released
-                                log.error("Error in refreshing lock for in progress tasks");
-                                lockHeld = false;
-                                break;
-                            }
-                        } while (!"0".equals(cursor));
-                    } finally {
-                        if (lockHeld) {
-                            taskOps.releaseLock(keys.LOCK_IN_PROGRESS_TASKS);
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                log.error("Error in checking in progress tasks", e);
-            }
-        };
-
-        Runnable stopExecutor = () -> {
-            if (!canContinueProcessing) {
-                shutdownExecutor();
-            }
-        };
-
-        maintenanceTasks.put(stopExecutor, TimeUnit.SECONDS.toMillis(2));
-        maintenanceTasks.put(checkAndRemoveLocks, TimeUnit.SECONDS.toMillis(THC.Time.T_5_MINUTES));
-        maintenanceTasks.put(updateQueueExecutionStatus, TimeUnit.SECONDS.toMillis(THC.Time.T_3_SECONDS));
-        maintenanceTasks.put(
-                checkAndMoveTaskFromTempRotationListBackToQueue, TimeUnit.SECONDS.toMillis(THC.Time.T_5_MINUTES));
-        maintenanceTasks.put(checkInProgressTaskAndRetry, inProgressCheckInterval);
     }
 
     @Override
     public void run() {
-        final long initialDelay = TimeUnit.SECONDS.toMillis(5);
-        maintenanceTasks.forEach((runnable, delay) -> executor.scheduleWithFixedDelay(
-                () -> virtualThreadFactory.newThread(runnable).start(), initialDelay, delay, TimeUnit.MILLISECONDS));
+        var delay = checkInterval.toMillis();
+        executor.scheduleWithFixedDelay(this::reclaimExpiredLeases, delay, delay, TimeUnit.MILLISECONDS);
+        executor.scheduleWithFixedDelay(
+                this::purgeDeadTasks, delay, DEAD_PURGE_INTERVAL.toMillis(), TimeUnit.MILLISECONDS);
     }
 
-    private boolean checkLockExpired(String instant, long expiryTimeLimitInSeconds) {
-        if (StringUtils.isNotBlank(instant)) {
-            var i = Instant.ofEpochSecond(Long.parseLong(instant));
-            return i.isBefore(Instant.now().minusSeconds(expiryTimeLimitInSeconds));
+    private void reclaimExpiredLeases() {
+        try {
+            log.trace("Maintenance Service: reclaiming expired leases");
+            int count;
+            do {
+                var expired = taskOps.reclaim(batchSize);
+                count = expired.size();
+                for (var e : expired) {
+                    var delay = retryDelay(e.attempts());
+                    var outcome = taskOps.fail(e.id(), e.token(), delay, "lease expired after attempt " + e.attempts());
+                    log.warn("Lease of task {} expired after attempt {}: {}", e.id(), e.attempts(), outcome);
+                }
+            } while (count == batchSize && canContinueProcessing);
+        } catch (Exception e) {
+            log.error("Error in reclaiming expired leases", e);
         }
-        return false;
+    }
+
+    private Duration retryDelay(int attempts) {
+        var delay = taskRetryDelay.apply(attempts);
+        return delay == null || delay.isNegative() ? Duration.ZERO : delay;
+    }
+
+    private void purgeDeadTasks() {
+        try {
+            var removed = taskOps.purgeDeadTasks(Instant.now().minus(deadRetention));
+            if (removed > 0) {
+                log.info("Maintenance Service: purged {} dead tasks", removed);
+            }
+        } catch (Exception e) {
+            log.error("Error in purging dead tasks", e);
+        }
     }
 
     /**
-     * Stops the maintenance schedule. The scheduler is shut down right away (a scheduled
-     * stop check could be cancelled by the shutdown itself, or never run if stop is requested
-     * before the initial delay), and {@link #waitTillDone()} returns once it has terminated.
+     * Stops the maintenance schedule. The scheduler is shut down right away and {@link #waitTillDone()}
+     * returns once it has terminated, which includes a job that is still running.
      */
     @Override
     public void stopThread() {
@@ -241,10 +107,10 @@ public class MaintenanceService extends CustomThread {
         try {
             log.info("Maintenance Service: Stopping executor");
             executor.shutdown();
-            if (executor.awaitTermination(THC.Time.T_30_SECONDS, TimeUnit.SECONDS)) {
+            if (executor.awaitTermination(SHUTDOWN_WAIT_SECONDS, TimeUnit.SECONDS)) {
                 log.info("Maintenance Service: Executor stopped");
             } else {
-                log.error("Maintenance Service: Executor failed to stop within 30 seconds");
+                log.error("Maintenance Service: Executor failed to stop within {} seconds", SHUTDOWN_WAIT_SECONDS);
                 executor.shutdownNow();
             }
         } catch (InterruptedException e) {
@@ -263,14 +129,11 @@ public class MaintenanceService extends CustomThread {
     public static class Builder {
         private ThreadGroup group;
         private String threadName;
-        private long inProgressCheckInterval = THC.Time.T_1_MINUTE;
-        private Function<Integer, Integer> taskRetryDelay =
-                retryCount -> RandomUtils.insecure().randomInt(1, 5) * retryCount;
-        private long staleTaskTimeout;
         private TaskOps taskOps;
-        private THC.Keys keys;
-        private Function<String, Event> eventParser;
-        private QueuesHolder queuesHolder;
+        private Duration checkInterval = Duration.ofSeconds(30);
+        private Duration deadRetention = Duration.ofDays(30);
+        private Function<Integer, Duration> taskRetryDelay = attempts -> Duration.ZERO;
+        private int batchSize = 100;
 
         public Builder() {}
 
@@ -284,18 +147,28 @@ public class MaintenanceService extends CustomThread {
             return this;
         }
 
-        public Builder setInProgressCheckInterval(long interval) {
-            this.inProgressCheckInterval = interval;
+        public Builder setTaskOps(TaskOps taskOps) {
+            this.taskOps = taskOps;
             return this;
         }
 
-        public Builder setTaskRetryDelay(Function<Integer, Integer> taskRetryDelay) {
+        public Builder setCheckInterval(Duration checkInterval) {
+            this.checkInterval = checkInterval;
+            return this;
+        }
+
+        public Builder setDeadRetention(Duration deadRetention) {
+            this.deadRetention = deadRetention;
+            return this;
+        }
+
+        public Builder setTaskRetryDelay(Function<Integer, Duration> taskRetryDelay) {
             this.taskRetryDelay = taskRetryDelay;
             return this;
         }
 
-        public Builder setStaleTaskTimeout(long timeout) {
-            this.staleTaskTimeout = timeout;
+        public Builder setBatchSize(int batchSize) {
+            this.batchSize = batchSize;
             return this;
         }
 
@@ -307,26 +180,6 @@ public class MaintenanceService extends CustomThread {
                 throw new TaskConfigurationError("ThreadName is required");
             }
             return new MaintenanceService(this);
-        }
-
-        public Builder setTaskOps(TaskOps taskOps) {
-            this.taskOps = taskOps;
-            return this;
-        }
-
-        public Builder setKeys(THC.Keys keys) {
-            this.keys = keys;
-            return this;
-        }
-
-        public Builder setEventParser(Function<String, Event> eventParser) {
-            this.eventParser = eventParser;
-            return this;
-        }
-
-        public Builder setQueuesHolder(QueuesHolder queuesHolder) {
-            this.queuesHolder = queuesHolder;
-            return this;
         }
     }
 }

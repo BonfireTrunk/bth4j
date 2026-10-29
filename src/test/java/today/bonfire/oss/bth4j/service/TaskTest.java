@@ -1,374 +1,212 @@
 package today.bonfire.oss.bth4j.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.time.Duration;
 import java.time.Instant;
+import java.util.Map;
 import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.Event;
 import today.bonfire.oss.bth4j.TestEvents;
-import today.bonfire.oss.bth4j.exceptions.TaskDataException;
 import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
 
 class TaskTest {
 
-    private static final Function<String, Event> PARSER = TestEvents.UNKNOWN::from;
-
-    /** event with a configurable value, used to check validation of the event value */
-    private record FixedEvent(String value, boolean recurring) implements Event {
-        @Override
-        public boolean isRecurring() {
-            return recurring;
-        }
-
-        @Override
-        public int retryCount() {
-            return 0;
-        }
-
-        @Override
-        public Event from(String v) {
-            return new FixedEvent(v, recurring);
-        }
-    }
-
-    // build() validation
+    private static final Function<String, Event> PARSER = v -> "5".equals(v) ? TestEvents.RETRY_TASK : null;
 
     @Test
-    void buildRequiresAccountId() {
+    void emptyAccountIdIsRejected() {
         assertThatThrownBy(() ->
                         Task.Builder.newTask().event(TestEvents.REGULAR_TASK).build())
                 .isInstanceOf(TaskErrorException.class);
-    }
-
-    @Test
-    void buildRequiresEvent() {
-        assertThatThrownBy(() -> Task.Builder.newTask().accountId("acct").build())
-                .isInstanceOf(TaskErrorException.class);
-    }
-
-    @Test
-    void newTaskKeepsCallerSuppliedId() {
-        var task = Task.Builder.newTask("my-id")
-                .accountId("acct")
-                .event(TestEvents.REGULAR_TASK)
-                .build();
-        assertThat(task.uniqueId()).isEqualTo("my-id");
-        assertThat(task.taskString()).startsWith("my-id|");
-    }
-
-    @Test
-    void newTaskGeneratesIdWhenNullOrBlank() {
-        var a = Task.Builder.newTask()
-                .accountId("acct")
-                .event(TestEvents.REGULAR_TASK)
-                .build();
-        var b = Task.Builder.newTask(null)
-                .accountId("acct")
-                .event(TestEvents.REGULAR_TASK)
-                .build();
-        var c = Task.Builder.newTask("  ")
-                .accountId("acct")
-                .event(TestEvents.REGULAR_TASK)
-                .build();
-        assertThat(a.uniqueId()).isNotBlank();
-        assertThat(b.uniqueId()).isNotBlank().isNotEqualTo(a.uniqueId());
-        assertThat(c.uniqueId()).isNotBlank().isNotEqualTo(b.uniqueId());
-    }
-
-    @Test
-    void separatorIsRejectedInUniqueId() {
-        assertThatThrownBy(() -> Task.Builder.newTask("a|b")
-                        .accountId("acct")
-                        .event(TestEvents.REGULAR_TASK)
-                        .build())
-                .isInstanceOf(TaskErrorException.class)
-                .hasMessageContaining("uniqueId");
-    }
-
-    @Test
-    void separatorIsRejectedInAccountId() {
         assertThatThrownBy(() -> Task.Builder.newTask()
-                        .accountId("x|y")
                         .event(TestEvents.REGULAR_TASK)
-                        .build())
-                .isInstanceOf(TaskErrorException.class)
-                .hasMessageContaining("accountId");
-    }
-
-    @Test
-    void separatorIsRejectedInAccountIdThatIsNotAString() {
-        var accountId = new Object() {
-            @Override
-            public String toString() {
-                return "a|b";
-            }
-        };
-        assertThatThrownBy(() -> Task.Builder.newTask()
-                        .accountId(accountId)
-                        .event(TestEvents.REGULAR_TASK)
+                        .accountId("")
                         .build())
                 .isInstanceOf(TaskErrorException.class);
     }
 
     @Test
-    void separatorIsRejectedInQueueName() {
+    void nullEventIsRejected() {
+        assertThatThrownBy(() -> Task.Builder.newTask().accountId(1).build()).isInstanceOf(TaskErrorException.class);
+    }
+
+    @Test
+    void recurringWithoutCronAndWithoutExecutionTimeIsRejected() {
         assertThatThrownBy(() -> Task.Builder.newTask()
-                        .accountId("acct")
-                        .queueName("Q|1")
+                        .event(TestEvents.RECURRING)
+                        .accountId(1)
+                        .build())
+                .isInstanceOf(TaskErrorException.class);
+    }
+
+    @Test
+    void recurringWithExecutionTimeButNoCronIsAccepted() {
+        assertThatCode(() -> Task.Builder.newTask()
+                        .event(TestEvents.RECURRING)
+                        .accountId(1)
+                        .executeAfter(Duration.ofMinutes(1))
+                        .build())
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void nonRecurringEventWithCronIsRejected() {
+        assertThatThrownBy(() -> Task.Builder.newTask()
                         .event(TestEvents.REGULAR_TASK)
-                        .build())
-                .isInstanceOf(TaskErrorException.class)
-                .hasMessageContaining("queueName");
-    }
-
-    @Test
-    void separatorIsRejectedInEventValue() {
-        assertThatThrownBy(() -> Task.Builder.newTask()
-                        .accountId("acct")
-                        .event(new FixedEvent("a|b", false))
-                        .build())
-                .isInstanceOf(TaskErrorException.class)
-                .hasMessageContaining("event value");
-    }
-
-    @Test
-    void separatorIsRejectedInCronExpression() {
-        assertThatThrownBy(() -> Task.Builder.newTask()
-                        .accountId("acct")
-                        .event(TestEvents.RECURRING_TASK)
-                        .cronExpression("*/5 * * * *|x")
+                        .accountId(1)
+                        .cronExpression("* * * * *")
                         .build())
                 .isInstanceOf(TaskErrorException.class);
     }
 
     @Test
-    void recurringTaskRequiresCronExpression() {
+    void invalidCronIsRejectedWithFormatHint() {
         assertThatThrownBy(() -> Task.Builder.newTask()
-                        .accountId("acct")
-                        .event(TestEvents.RECURRING_TASK)
-                        .build())
-                .isInstanceOf(TaskErrorException.class)
-                .hasMessageContaining("cron");
-        assertThatThrownBy(() -> Task.Builder.newTask()
-                        .accountId("acct")
-                        .event(TestEvents.RECURRING_TASK)
-                        .cronExpression(" ")
-                        .build())
-                .isInstanceOf(TaskErrorException.class);
-    }
-
-    @Test
-    void recurringTaskRejectsSixFieldCronExpression() {
-        assertThatThrownBy(() -> Task.Builder.newTask()
-                        .accountId("acct")
-                        .event(TestEvents.RECURRING_TASK)
-                        .cronExpression("0 */15 * * * *")
-                        .build())
-                .isInstanceOf(TaskErrorException.class)
-                .hasMessageContaining("cron");
-    }
-
-    @Test
-    void recurringTaskRejectsGarbageCronExpression() {
-        assertThatThrownBy(() -> Task.Builder.newTask()
-                        .accountId("acct")
-                        .event(TestEvents.RECURRING_TASK)
+                        .event(TestEvents.RECURRING)
+                        .accountId(1)
                         .cronExpression("not a cron")
                         .build())
+                .isInstanceOf(TaskErrorException.class)
+                .hasMessageContaining("5 field");
+    }
+
+    @Test
+    void sixFieldCronIsRejected() {
+        assertThatThrownBy(() -> Task.Builder.newTask()
+                        .event(TestEvents.RECURRING)
+                        .accountId(1)
+                        .cronExpression("0 * * * * *")
+                        .build())
+                .isInstanceOf(TaskErrorException.class)
+                .hasMessageContaining("5 field");
+    }
+
+    @Test
+    void newTaskGeneratesIdAndKeepsGivenId() {
+        var generated = Task.Builder.newTask()
+                .event(TestEvents.REGULAR_TASK)
+                .accountId(1)
+                .build();
+        var given = Task.Builder.newTask("x")
+                .event(TestEvents.REGULAR_TASK)
+                .accountId(1)
+                .build();
+
+        assertThat(generated.uniqueId()).isNotBlank();
+        assertThat(given.uniqueId()).isEqualTo("x");
+    }
+
+    @Test
+    void numericAccountIdBecomesString() {
+        var task = Task.Builder.newTask()
+                .event(TestEvents.REGULAR_TASK)
+                .accountId(42)
+                .build();
+
+        assertThat(task.accountId()).isEqualTo("42");
+    }
+
+    @Test
+    void maxAttemptsIsRetryCountPlusOne() {
+        var regular = Task.Builder.newTask()
+                .event(TestEvents.REGULAR_TASK)
+                .accountId(1)
+                .build();
+        var retry =
+                Task.Builder.newTask().event(TestEvents.RETRY_TASK).accountId(1).build();
+
+        assertThat(regular.maxAttempts()).isEqualTo(1);
+        assertThat(retry.maxAttempts()).isEqualTo(TestEvents.RETRY_TASK.retryCount() + 1);
+        assertThat(retry.attempts()).isZero();
+    }
+
+    @Test
+    void executeAfterSetsFutureTime() {
+        var task = Task.Builder.newTask()
+                .event(TestEvents.REGULAR_TASK)
+                .accountId(1)
+                .executeAfter(Duration.ofMinutes(5))
+                .build();
+
+        assertThat(task.isExecutionTimeSet()).isTrue();
+        assertThat(task.executeAtTimeStamp()).isAfter(Instant.now());
+    }
+
+    @Test
+    void fromHashParsesEveryField() {
+        var hash = Map.ofEntries(
+                Map.entry("event", "5"),
+                Map.entry("account", "42"),
+                Map.entry("queue", "hi"),
+                Map.entry("cron", "*/5 * * * *"),
+                Map.entry("due", "1700000000000"),
+                Map.entry("attempts", "2"),
+                Map.entry("max", "4"),
+                Map.entry("schedule", "sched-1"),
+                Map.entry("data", "{\"a\":1}"),
+                Map.entry("error", "boom"),
+                Map.entry("token", "tok"));
+
+        var task = Task.fromHash("id-1", hash, PARSER);
+
+        assertThat(task.uniqueId()).isEqualTo("id-1");
+        assertThat(task.event()).isEqualTo(TestEvents.RETRY_TASK);
+        assertThat(task.accountId()).isEqualTo("42");
+        assertThat(task.queueName()).isEqualTo("hi");
+        assertThat(task.cronExpression()).isEqualTo("*/5 * * * *");
+        assertThat(task.executeAtTimeStamp()).isEqualTo(Instant.ofEpochMilli(1700000000000L));
+        assertThat(task.attempts()).isEqualTo(2);
+        assertThat(task.maxAttempts()).isEqualTo(4);
+        assertThat(task.scheduleId()).isEqualTo("sched-1");
+        assertThat(task.data()).isEqualTo("{\"a\":1}");
+        assertThat(task.lastError()).isEqualTo("boom");
+        assertThat(task.token()).isEqualTo("tok");
+    }
+
+    @Test
+    void fromHashWithOnlyRequiredFieldsUsesDefaults() {
+        var task = Task.fromHash("id", Map.of("event", "5", "account", "1"), PARSER);
+
+        assertThat(task.attempts()).isZero();
+        assertThat(task.maxAttempts()).isEqualTo(TestEvents.RETRY_TASK.retryCount() + 1);
+        assertThat(task.executeAtTimeStamp()).isNull();
+        assertThat(task.data()).isNull();
+        assertThat(task.token()).isNull();
+    }
+
+    @Test
+    void fromHashWithUnknownEventThrows() {
+        assertThatThrownBy(() -> Task.fromHash("id", Map.of("event", "999", "account", "1"), PARSER))
+                .isInstanceOf(TaskErrorException.class);
+        assertThatThrownBy(() -> Task.fromHash("id", Map.of("account", "1"), PARSER))
                 .isInstanceOf(TaskErrorException.class);
     }
 
     @Test
-    void recurringEventWithExecutionTimeDoesNotNeedCronExpression() {
-        // this is a single run of a recurring task, queued by the recurring task service
-        var task = Task.Builder.newTask("id1")
-                .accountId("acct")
-                .event(TestEvents.RECURRING_TASK)
-                .executeAfter(10)
-                .build();
-        assertThat(task.cronExpression()).isNull();
-        assertThat(task.isExecutionTimeSet()).isTrue();
-        assertThat(task.taskString()).isEqualTo("id1|200|acct");
+    void nextExecutionIsNextFiveMinuteBoundary() {
+        var next = Task.nextExecution("*/5 * * * *", Instant.parse("2024-01-01T10:02:30Z"));
+
+        assertThat(next).contains(Instant.parse("2024-01-01T10:05:00Z"));
     }
 
     @Test
-    void cronExpressionIsIgnoredForNonRecurringEvents() {
-        var task = Task.Builder.newTask("id1")
-                .accountId("acct")
+    void nextExecutionIsStrictlyAfterABoundary() {
+        var next = Task.nextExecution("*/5 * * * *", Instant.parse("2024-01-01T10:05:00Z"));
+
+        assertThat(next).contains(Instant.parse("2024-01-01T10:10:00Z"));
+    }
+
+    @Test
+    void toStringContainsId() {
+        var task = Task.Builder.newTask("the-id")
                 .event(TestEvents.REGULAR_TASK)
-                .cronExpression("not a cron")
-                .build();
-        assertThat(task.taskString()).isEqualTo("id1|3|acct");
-    }
-
-    // task string and round trip
-
-    @Test
-    void regularTaskStringHasThreeParts() {
-        var task = Task.Builder.newTask("id1")
-                .accountId("acct")
-                .event(TestEvents.REGULAR_TASK)
-                .build();
-        assertThat(task.taskString()).isEqualTo("id1|3|acct");
-        assertThat(task.toString()).isEqualTo(task.taskString());
-        assertThat(task.isNULL()).isFalse();
-        assertThat(task.isExecutionTimeSet()).isFalse();
-    }
-
-    @Test
-    void regularTaskRoundTrip() {
-        var task = Task.Builder.newTask("id1")
-                .accountId("acct")
-                .event(TestEvents.REGULAR_TASK)
-                .build();
-        var parsed = new Task(task.taskString(), PARSER);
-
-        assertThat(parsed.uniqueId()).isEqualTo("id1");
-        assertThat(parsed.event()).isEqualTo(TestEvents.REGULAR_TASK);
-        assertThat(parsed.accountId()).isEqualTo("acct");
-        assertThat(parsed.queueName()).isNull();
-        assertThat(parsed.cronExpression()).isNull();
-        assertThat(parsed.taskString()).isEqualTo(task.taskString());
-    }
-
-    @Test
-    void queuedTaskRoundTrip() {
-        var task = Task.Builder.newTask("id1")
-                .accountId(42)
-                .queueName("Q:LOW")
-                .event(TestEvents.REGULAR_TASK)
-                .build();
-        assertThat(task.taskString()).isEqualTo("id1|3|42|Q:LOW");
-
-        var parsed = new Task(task.taskString(), PARSER);
-        assertThat(parsed.queueName()).isEqualTo("Q:LOW");
-        assertThat(parsed.accountId()).isEqualTo("42");
-        assertThat(parsed.buildTaskString()).isEqualTo(task.taskString());
-    }
-
-    @Test
-    void blankQueueNameInTaskStringIsParsedAsNull() {
-        var parsed = new Task("id1|3|acct|", PARSER);
-        assertThat(parsed.queueName()).isNull();
-    }
-
-    @Test
-    void recurringTaskRoundTrip() {
-        var task = Task.Builder.newTask("id1")
-                .accountId("acct")
-                .queueName("Q:MED")
-                .event(TestEvents.RECURRING_TASK)
-                .cronExpression("*/15 * * * *")
-                .build();
-        assertThat(task.taskString()).isEqualTo("id1|200|acct|Q:MED|*/15 * * * *");
-
-        var parsed = new Task(task.taskString(), PARSER);
-        assertThat(parsed.event()).isEqualTo(TestEvents.RECURRING_TASK);
-        assertThat(parsed.queueName()).isEqualTo("Q:MED");
-        assertThat(parsed.cronExpression()).isEqualTo("*/15 * * * *");
-    }
-
-    @Test
-    void recurringTaskWithoutQueueKeepsPositionOfCronExpression() {
-        var task = Task.Builder.newTask("id1")
-                .accountId("acct")
-                .event(TestEvents.RECURRING_TASK)
-                .cronExpression("0 22 * * 1-5")
-                .build();
-        assertThat(task.taskString()).isEqualTo("id1|200|acct||0 22 * * 1-5");
-
-        var parsed = new Task(task.taskString(), PARSER);
-        assertThat(parsed.queueName()).isNull();
-        assertThat(parsed.cronExpression()).isEqualTo("0 22 * * 1-5");
-    }
-
-    // parsing
-
-    @Test
-    void blankTaskStringGivesNullTask() {
-        assertThat(new Task(null, PARSER).isNULL()).isTrue();
-        assertThat(new Task("", PARSER).isNULL()).isTrue();
-        assertThat(new Task("   ", PARSER).isNULL()).isTrue();
-    }
-
-    @Test
-    void malformedTaskStringIsRejected() {
-        assertThatThrownBy(() -> new Task("id1|3", PARSER)).isInstanceOf(TaskErrorException.class);
-        assertThatThrownBy(() -> new Task("a|3|c|d|e|f", PARSER)).isInstanceOf(TaskErrorException.class);
-    }
-
-    @Test
-    void eventParserReturningNullIsRejected() {
-        assertThatThrownBy(() -> new Task("id1|99|acct", s -> null))
-                .isInstanceOf(TaskErrorException.class)
-                .hasMessageContaining("Event parser returned null");
-    }
-
-    // execution time
-
-    @Test
-    void nextExecutionTimeFollowsCronExpression() {
-        var task = Task.Builder.newTask("id1")
-                .accountId("acct")
-                .event(TestEvents.RECURRING_TASK)
-                .cronExpression("*/15 * * * *")
+                .accountId(1)
                 .build();
 
-        assertThat(task.getNextExecutionTime(Instant.parse("2024-01-01T00:07:00Z")))
-                .isEqualTo(Instant.parse("2024-01-01T00:15:00Z"));
-        // the time passed in is excluded, so the next run is the following slot
-        assertThat(task.getNextExecutionTime(Instant.parse("2024-01-01T00:15:00Z")))
-                .isEqualTo(Instant.parse("2024-01-01T00:30:00Z"));
-        assertThat(task.getNextExecutionTime(Instant.parse("2024-01-01T23:50:00Z")))
-                .isEqualTo(Instant.parse("2024-01-02T00:00:00Z"));
-    }
-
-    @Test
-    void executeAfterSetsExecutionTimeInTheFuture() {
-        var before = Instant.now();
-        var task = Task.Builder.newTask()
-                .accountId("acct")
-                .event(TestEvents.REGULAR_TASK)
-                .executeAfter(60)
-                .build();
-        assertThat(task.isExecutionTimeSet()).isTrue();
-        assertThat(task.executeAtTimeStamp()).isAfter(before.plusSeconds(59));
-    }
-
-    // data
-
-    @Test
-    void getDataReturnsDataOfTheRightType() {
-        var task = Task.Builder.newTask()
-                .accountId("acct")
-                .event(TestEvents.REGULAR_TASK)
-                .build();
-        task.setData("payload");
-        assertThat(task.getData(String.class)).isEqualTo("payload");
-        assertThat(task.data()).isEqualTo("payload");
-    }
-
-    @Test
-    void getDataReturnsNullWhenNoDataIsSet() {
-        var task = Task.Builder.newTask()
-                .accountId("acct")
-                .event(TestEvents.REGULAR_TASK)
-                .build();
-        assertThat(task.getData(String.class)).isNull();
-    }
-
-    @Test
-    void getDataWithWrongTypeThrowsTaskDataException() {
-        var task = Task.Builder.newTask()
-                .accountId("acct")
-                .event(TestEvents.REGULAR_TASK)
-                .build();
-        task.setData("payload");
-        assertThatThrownBy(() -> task.getData(Integer.class))
-                .isInstanceOf(TaskDataException.class)
-                .hasMessageContaining("java.lang.Integer")
-                .hasMessageContaining("java.lang.String");
+        assertThat(task.toString()).contains("the-id");
     }
 }

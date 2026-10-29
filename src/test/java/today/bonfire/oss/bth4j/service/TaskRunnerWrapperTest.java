@@ -3,59 +3,65 @@ package today.bonfire.oss.bth4j.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.TestEvents;
+import today.bonfire.oss.bth4j.common.Keys;
+import today.bonfire.oss.bth4j.common.QueuesHolder;
 import today.bonfire.oss.bth4j.exceptions.TaskDataException;
-import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
 import today.bonfire.oss.bth4j.exceptions.TaskRescheduleException;
 import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;
 
 class TaskRunnerWrapperTest {
 
-    /** Records Redis operations in the list shared with the callbacks, so the order of both can be asserted. */
+    /** Records the transitions in the list shared with the callbacks, so the order of both can be asserted. */
     private static class FakeTaskOps extends TaskOps {
         private final List<String> events;
-        final List<Task> addedTasks = new ArrayList<>();
-        final List<Object> addedData = new ArrayList<>();
-        final List<Boolean> addedDataRaw = new ArrayList<>();
-        String storedData = null;
-        boolean failOnDelete = false;
-        boolean failOnDeadMove = false;
+        boolean ackResult = true;
+        RuntimeException ackError = null;
+        final List<Duration> failDelays = new ArrayList<>();
+        final List<String> failMessages = new ArrayList<>();
+        final List<Instant> rescheduledTo = new ArrayList<>();
 
         FakeTaskOps(List<String> events) {
-            super(null, null, null, null, null);
+            super(
+                    new Keys("T"),
+                    null,
+                    null,
+                    TestEvents.UNKNOWN::from,
+                    new QueuesHolder(Set.of("Q:DEF"), List.of("Q:DEF"), "Q:DEF"),
+                    Duration.ofDays(1));
             this.events = events;
         }
 
         @Override
-        void deleteTaskFromInProgressQueue(Task task) {
-            if (failOnDelete) throw new IllegalStateException("redis down");
-            events.add("delete:" + task.uniqueId());
+        boolean ack(Task task) {
+            events.add("ack");
+            if (ackError != null) throw ackError;
+            return ackResult;
         }
 
         @Override
-        void moveToDeadQueue(Task task) {
-            if (failOnDeadMove) throw new IllegalStateException("redis down");
-            events.add("dead:" + task.uniqueId());
+        FailOutcome fail(Task task, Duration retryDelay, String error) {
+            events.add("fail");
+            failDelays.add(retryDelay);
+            failMessages.add(error);
+            return FailOutcome.RETRY;
         }
 
         @Override
-        void addTaskToQueue(Task task, Object data, boolean isDataRaw) {
-            events.add("add");
-            addedTasks.add(task);
-            addedData.add(data);
-            addedDataRaw.add(isDataRaw);
-        }
-
-        @Override
-        public String getDataForTask(String uniqueId) {
-            return storedData;
+        boolean reschedule(Task task, Instant due) {
+            events.add("reschedule");
+            rescheduledTo.add(due);
+            return true;
         }
     }
 
@@ -67,104 +73,114 @@ class TaskRunnerWrapperTest {
     private Consumer<Task> onSuccess = t -> events.add("success");
     private BiConsumer<Task, Exception> onError = (t, e) -> events.add("error");
     private Consumer<Task> afterTask = t -> events.add("after");
+    private Function<Integer, Duration> retryDelay = n -> Duration.ofSeconds(7);
+    private final List<Integer> retryDelayArgs = new ArrayList<>();
 
     @BeforeEach
     void setUp() {
         events.clear();
         ops = new FakeTaskOps(events);
-        task = Task.Builder.newTask("t1")
-                .accountId("acct")
+        task = Task.Builder.newTask("id")
                 .event(TestEvents.REGULAR_TASK)
+                .accountId("a")
                 .build();
     }
 
     private void run(Consumer<Task> handler) {
         var callbacks = new TaskCallbacks(beforeStart, onSuccess, onError, afterTask);
-        new TaskRunnerWrapper(task, handler, callbacks, ops).run();
+        Function<Integer, Duration> recording = n -> {
+            retryDelayArgs.add(n);
+            return retryDelay.apply(n);
+        };
+        new TaskRunnerWrapper(task, handler, callbacks, ops, recording, t -> events.add("finished")).run();
     }
 
     @Test
-    void successDeletesTaskThenCallsOnSuccess() {
+    void successAcksThenCallsOnSuccessAfterTaskAndOnFinished() {
         run(t -> events.add("handler"));
-        assertThat(events).containsExactly("before", "handler", "delete:t1", "success", "after");
+        assertThat(events).containsExactly("before", "handler", "ack", "success", "finished", "after");
     }
 
     @Test
-    void failingOnSuccessCallbackDoesNotMoveCompletedTaskToDeadQueue() {
+    void ackReturningFalseIsOnlyLogged() {
+        ops.ackResult = false;
+        assertThatCode(() -> run(t -> {})).doesNotThrowAnyException();
+        assertThat(events).containsExactly("before", "ack", "success", "finished", "after");
+    }
+
+    @Test
+    void runtimeExceptionFromAckIsSwallowedAndAfterTaskStillRuns() {
+        ops.ackError = new IllegalStateException("redis down");
+        assertThatCode(() -> run(t -> {})).doesNotThrowAnyException();
+        assertThat(events).contains("ack", "finished", "after");
+    }
+
+    @Test
+    void failingOnSuccessCallbackDoesNotChangeTheOutcome() {
         onSuccess = t -> {
             events.add("success");
             throw new IllegalStateException("callback bug");
         };
         assertThatCode(() -> run(t -> {})).doesNotThrowAnyException();
-        assertThat(events).containsExactly("before", "delete:t1", "success", "after");
+        assertThat(events).containsExactly("before", "ack", "success", "finished", "after");
     }
 
     @Test
-    void unrecoverableExceptionMovesTaskToDeadQueue() {
+    void unrecoverableExceptionFailsWithoutDelay() {
         run(t -> {
             throw new TaskUnrecoverableException("fatal");
         });
-        assertThat(events).containsExactly("before", "dead:t1", "error", "after");
+        assertThat(events).containsExactly("before", "fail", "error", "finished", "after");
+        assertThat(ops.failDelays).containsExactly((Duration) null);
+        assertThat(ops.failMessages.getFirst()).contains("fatal");
     }
 
     @Test
-    void dataExceptionMovesTaskToDeadQueue() {
+    void dataExceptionFailsWithoutDelay() {
         run(t -> {
             throw new TaskDataException("bad data");
         });
-        assertThat(events).containsExactly("before", "dead:t1", "error", "after");
+        assertThat(events).containsExactly("before", "fail", "error", "finished", "after");
+        assertThat(ops.failDelays).containsExactly((Duration) null);
     }
 
     @Test
-    void rescheduleExceptionQueuesNewTaskAndDeletesOldOne() {
-        ops.storedData = "{\"k\":1}";
+    void rescheduleExceptionReschedulesAboutDelaySecondsFromNow() {
         var before = Instant.now();
         run(t -> {
             throw new TaskRescheduleException(30);
         });
+        var after = Instant.now();
 
-        assertThat(events).containsExactly("before", "add", "delete:t1", "error", "after");
-        assertThat(ops.addedTasks).hasSize(1);
-        var newTask = ops.addedTasks.getFirst();
-        assertThat(newTask.uniqueId()).isNotEqualTo("t1");
-        assertThat(newTask.event()).isEqualTo(TestEvents.REGULAR_TASK);
-        assertThat(newTask.accountId()).isEqualTo("acct");
-        assertThat(newTask.executeAtTimeStamp()).isAfter(before.plusSeconds(29));
-        assertThat(ops.addedData).containsExactly("{\"k\":1}");
-        assertThat(ops.addedDataRaw).containsExactly(true);
+        assertThat(events).containsExactly("before", "reschedule", "error", "finished", "after");
+        assertThat(ops.rescheduledTo).hasSize(1);
+        assertThat(ops.rescheduledTo.getFirst()).isBetween(before.plusSeconds(30), after.plusSeconds(30));
     }
 
     @Test
-    void rescheduleKeepsQueueName() {
-        task = Task.Builder.newTask("t1")
-                .accountId("acct")
-                .queueName("Q:LOW")
-                .event(TestEvents.REGULAR_TASK)
-                .build();
-        run(t -> {
-            throw new TaskRescheduleException(1);
-        });
-        assertThat(ops.addedTasks.getFirst().queueName()).isEqualTo("Q:LOW");
-    }
-
-    @Test
-    void genericExceptionLeavesTaskInProgressForRetry() {
+    void genericExceptionFailsWithTheRetryDelayOfTheAttempt() {
         run(t -> {
             throw new IllegalStateException("boom");
         });
-        assertThat(events).containsExactly("before", "error", "after");
+        assertThat(events).containsExactly("before", "fail", "error", "finished", "after");
+        assertThat(retryDelayArgs).containsExactly(task.attempts());
+        assertThat(ops.failDelays).containsExactly(Duration.ofSeconds(7));
+        assertThat(ops.failMessages.getFirst())
+                .contains("IllegalStateException")
+                .contains("boom");
     }
 
     @Test
-    void taskErrorExceptionLeavesTaskInProgressForRetry() {
+    void nullRetryDelayMeansNoDelay() {
+        retryDelay = n -> null;
         run(t -> {
-            throw new TaskErrorException("retry me");
+            throw new IllegalStateException("boom");
         });
-        assertThat(events).containsExactly("before", "error", "after");
+        assertThat(ops.failDelays).containsExactly(Duration.ZERO);
     }
 
     @Test
-    void failingOnErrorCallbackStillMovesTaskToDeadQueue() {
+    void failingOnErrorCallbackDoesNotChangeTheOutcome() {
         onError = (t, e) -> {
             events.add("error");
             throw new IllegalStateException("callback bug");
@@ -173,18 +189,7 @@ class TaskRunnerWrapperTest {
                     throw new TaskUnrecoverableException("fatal");
                 }))
                 .doesNotThrowAnyException();
-        assertThat(events).containsExactly("before", "dead:t1", "error", "after");
-    }
-
-    @Test
-    void failingOnErrorCallbackStillReschedulesTask() {
-        onError = (t, e) -> {
-            throw new IllegalStateException("callback bug");
-        };
-        run(t -> {
-            throw new TaskRescheduleException(5);
-        });
-        assertThat(events).containsExactly("before", "add", "delete:t1", "after");
+        assertThat(events).containsExactly("before", "fail", "error", "finished", "after");
     }
 
     @Test
@@ -199,13 +204,13 @@ class TaskRunnerWrapperTest {
     }
 
     @Test
-    void failingBeforeStartCallbackSkipsHandlerAndRunsErrorHandling() {
+    void exceptionFromBeforeStartCountsAsFailureAndSkipsTheHandler() {
         beforeStart = t -> {
             events.add("before");
             throw new IllegalStateException("callback bug");
         };
         run(t -> events.add("handler"));
-        assertThat(events).containsExactly("before", "error", "after");
+        assertThat(events).containsExactly("before", "fail", "error", "finished", "after");
     }
 
     @Test
@@ -215,23 +220,22 @@ class TaskRunnerWrapperTest {
             throw new IllegalStateException("callback bug");
         };
         assertThatCode(() -> run(t -> {})).doesNotThrowAnyException();
-        assertThat(events).containsExactly("before", "delete:t1", "success", "after");
+        assertThat(events).containsExactly("before", "ack", "success", "finished", "after");
     }
 
     @Test
-    void failureToDeleteCompletedTaskIsTreatedAsFailure() {
-        ops.failOnDelete = true;
-        run(t -> {});
-        assertThat(events).containsExactly("before", "error", "after");
-    }
-
-    @Test
-    void failureToMoveToDeadQueueStillCallsOnError() {
-        ops.failOnDeadMove = true;
+    void runtimeExceptionFromFailIsSwallowed() {
+        var failing = new FakeTaskOps(events) {
+            @Override
+            FailOutcome fail(Task task, Duration retryDelay, String error) {
+                throw new IllegalStateException("redis down");
+            }
+        };
+        ops = failing;
         assertThatCode(() -> run(t -> {
-                    throw new TaskUnrecoverableException("fatal");
+                    throw new IllegalStateException("boom");
                 }))
                 .doesNotThrowAnyException();
-        assertThat(events).containsExactly("before", "error", "after");
+        assertThat(events).containsExactly("before", "error", "finished", "after");
     }
 }

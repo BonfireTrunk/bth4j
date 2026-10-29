@@ -113,7 +113,10 @@ public class TaskOps {
         var queue = queuesHolder.getValidQueue(task.queueName());
         var args = new ArrayList<String>();
         args.add(task.uniqueId());
-        args.add(task.isExecutionTimeSet() ? String.valueOf(task.executeAtTimeStamp().toEpochMilli()) : "");
+        args.add(
+                task.isExecutionTimeSet()
+                        ? String.valueOf(task.executeAtTimeStamp().toEpochMilli())
+                        : "");
         args.add(keys.wakeChannel);
         args.add(queue);
         args.addAll(taskFields(task, queue, json));
@@ -375,6 +378,10 @@ public class TaskOps {
         return r == 1;
     }
 
+    /**
+     * Records a failed attempt: the task is scheduled again after {@code retryDelay}, or moved to the dead set
+     * when its attempts are exhausted or {@code retryDelay} is null.
+     */
     FailOutcome fail(Task task, Duration retryDelay, String error) {
         return fail(task.uniqueId(), task.token(), retryDelay, error);
     }
@@ -388,7 +395,7 @@ public class TaskOps {
                         id,
                         token,
                         String.valueOf(System.currentTimeMillis()),
-                        String.valueOf(retryDelay.toMillis()),
+                        retryDelay == null ? "dead" : String.valueOf(retryDelay.toMillis()),
                         StringUtils.abbreviate(StringUtils.defaultString(error), 1000),
                         String.valueOf(deadRetentionSeconds)));
         return FailOutcome.valueOf(r.toUpperCase());

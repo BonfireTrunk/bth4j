@@ -1,24 +1,24 @@
 package today.bonfire.oss.bth4j.service;
 
+import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import today.bonfire.oss.bth4j.common.THC;
 import today.bonfire.oss.bth4j.executor.CustomThread;
 
+/** Moves scheduled tasks whose time has come into their queues. Any number of instances may run it. */
 public class ScheduledTaskService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(ScheduledTaskService.class);
 
-    private final long delay;
     private final TaskOps taskOps;
-    private final THC.Keys keys;
+    private final Duration pollInterval;
+    private final int batchSize;
 
-    public ScheduledTaskService(Builder builder) {
+    ScheduledTaskService(Builder builder) {
         super(builder.group, builder.threadName);
-        this.delay = builder.delay;
         this.taskOps = builder.taskOps;
-        this.keys = builder.keys;
+        this.pollInterval = builder.pollInterval;
+        this.batchSize = builder.batchSize;
     }
 
     @Override
@@ -26,16 +26,14 @@ public class ScheduledTaskService extends CustomThread {
         try {
             while (this.canContinueProcessing) {
                 try {
-                    // check lock key in redis
-                    // if lock key does not exist or expired, then set new lock key.
-                    // if lock key exists, then do return immediately.
-                    if (taskOps.acquireLock(keys.LOCK_SCHEDULED_TASKS_QUEUE, THC.Time.T_5_MINUTES)) {
-                        queueDueTasks();
-                    } else {
-                        // lock is not acquired here
-                        log.trace("Current Run not able to acquire lock on delayed task queue");
+                    var r = taskOps.promote(batchSize);
+                    if (r.moved() > 0) {
+                        log.trace("Moved {} scheduled tasks to their queues", r.moved());
                     }
-                    Thread.sleep(delay);
+                    if (r.moved() == batchSize) {
+                        continue;
+                    }
+                    Thread.sleep(sleepTime(r.nextDue()));
                 } catch (InterruptedException e) {
                     if (this.canContinueProcessing) {
                         log.error("Scheduled task service Thread interrupted", e);
@@ -44,6 +42,7 @@ public class ScheduledTaskService extends CustomThread {
                     }
                 } catch (Exception e) {
                     log.error("Scheduled task service Thread error", e);
+                    sleepAfterError();
                 }
             }
         } finally {
@@ -51,63 +50,33 @@ public class ScheduledTaskService extends CustomThread {
         }
     }
 
-    /**
-     * Moves tasks that are due from the scheduled queue to their queues.
-     * Must be called with the lock held. The lock is released on exit, also on exceptions,
-     * unless it could not be refreshed (it may then belong to another instance).
-     */
-    private void queueDueTasks() {
-        var lockHeld = true;
-        try {
-            /*
-            peek into the delayed task queue to get one item and check that it is ready to be
-            executed. if ready then queue it to the relevant task queue. else exit this function.
-            repeat this process until the queue is empty or no task are ready to be executed.
-            */
-            while (this.canContinueProcessing) {
-                var tasks = taskOps.peek(keys.SCHEDULED_TASK_QUEUE, 20);
-                if (tasks.isEmpty()) {
-                    log.trace("Delayed task queue is empty");
-                    break;
-                }
-                var itemsToQueue = new ArrayList<String>();
-                final var epochSecond = Instant.now().getEpochSecond();
-                // check that every item in tasks is ready for execution based on score
-                tasks.forEach((k, v) -> {
-                    if (epochSecond >= v) {
-                        itemsToQueue.add(k);
-                    }
-                });
-                if (!itemsToQueue.isEmpty()) {
-                    taskOps.addItemsFromDelayedTasksToQueue(itemsToQueue);
-                }
+    private Duration sleepTime(Instant nextDue) {
+        if (nextDue == null) {
+            return pollInterval;
+        }
+        var untilDue = Duration.between(Instant.now(), nextDue);
+        var wait = untilDue.compareTo(Duration.ofMillis(1)) < 0 ? Duration.ofMillis(1) : untilDue;
+        return wait.compareTo(pollInterval) < 0 ? wait : pollInterval;
+    }
 
-                if (itemsToQueue.size() < tasks.size()) {
-                    log.trace("Selected tasks are not ready for execution. Exiting function");
-                    break;
-                }
-                // more task may be available for execution
-                // refresh lock here
-                if (!taskOps.refreshLock(keys.LOCK_SCHEDULED_TASKS_QUEUE, THC.Time.T_5_MINUTES)) {
-                    log.error("Unable to refresh lock on delayed task queue");
-                    lockHeld = false;
-                    break;
-                }
-            }
-        } finally {
-            if (lockHeld) {
-                taskOps.releaseLock(keys.LOCK_SCHEDULED_TASKS_QUEUE);
+    private void sleepAfterError() {
+        try {
+            Thread.sleep(pollInterval);
+        } catch (InterruptedException e) {
+            if (this.canContinueProcessing) {
+                log.error("Scheduled task service Thread interrupted", e);
+            } else {
+                log.debug("Scheduled task service Thread interrupted while stopping");
             }
         }
     }
 
     public static class Builder {
-
-        private long delay;
         private ThreadGroup group;
         private String threadName;
         private TaskOps taskOps;
-        private THC.Keys keys;
+        private Duration pollInterval = Duration.ofSeconds(1);
+        private int batchSize = 100;
 
         public Builder() {}
 
@@ -121,23 +90,23 @@ public class ScheduledTaskService extends CustomThread {
             return this;
         }
 
-        public Builder setDelay(long delay) {
-            this.delay = delay;
-            return this;
-        }
-
-        public ScheduledTaskService create() {
-            return new ScheduledTaskService(this);
-        }
-
         public Builder setTaskOps(TaskOps taskOps) {
             this.taskOps = taskOps;
             return this;
         }
 
-        public Builder setKeys(THC.Keys keys) {
-            this.keys = keys;
+        public Builder setPollInterval(Duration pollInterval) {
+            this.pollInterval = pollInterval;
             return this;
+        }
+
+        public Builder setBatchSize(int batchSize) {
+            this.batchSize = batchSize;
+            return this;
+        }
+
+        public ScheduledTaskService create() {
+            return new ScheduledTaskService(this);
         }
     }
 }

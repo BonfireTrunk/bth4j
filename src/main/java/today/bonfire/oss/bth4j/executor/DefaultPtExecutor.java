@@ -2,11 +2,12 @@ package today.bonfire.oss.bth4j.executor;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.OperatingSystemMXBean;
+import java.time.Duration;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -15,8 +16,8 @@ import org.slf4j.Logger;
 
 /**
  * Executor backed by a platform thread pool. The number of threads is tuned once per second based on
- * CPU load and throughput. {@link #isPoolFull()} reports true when running plus queued tasks reach the
- * current limit, so tasks do not pile up in the local queue while already marked as in progress in Redis.
+ * CPU load and throughput. A semaphore with as many permits as threads bounds the slots handed out by
+ * {@link #reserve(int, Duration)}, so tasks never pile up in the local queue while leased in Redis.
  */
 public class DefaultPtExecutor implements BackgroundExecutor {
     private static final Logger log = org.slf4j.LoggerFactory.getLogger(DefaultPtExecutor.class);
@@ -31,6 +32,7 @@ public class DefaultPtExecutor implements BackgroundExecutor {
     private final OperatingSystemMXBean osBean;
     private final Timer monitor;
     private final ThreadPoolExecutor threadPool;
+    private final AdjustableSemaphore slots;
 
     private long lastCompletedCount;
     private long lastThroughput; // Track last throughput
@@ -60,6 +62,7 @@ public class DefaultPtExecutor implements BackgroundExecutor {
                     }
                 });
         this.executor = threadPool;
+        this.slots = new AdjustableSemaphore(AVAILABLE_PROCESSORS);
         this.monitor = new Timer("bth4j-pt-monitor", true); // daemon timer
         this.lastCompletedCount = threadPool.getCompletedTaskCount();
 
@@ -173,6 +176,11 @@ public class DefaultPtExecutor implements BackgroundExecutor {
             int currentMax, int newMax, String reason, double cpuLoad, long throughput, long throughputChange) {
         maxConcurrentTasks.set(newMax);
         threadPool.setCorePoolSize(newMax);
+        if (newMax > currentMax) {
+            slots.release(newMax - currentMax);
+        } else {
+            slots.shrink(currentMax - newMax);
+        }
         log.debug(
                 "{} threads: {} -> {} due to {}. CPU: {}, Throughput: {}, Change: {}",
                 newMax > currentMax ? "Increased" : "Decreased",
@@ -185,25 +193,48 @@ public class DefaultPtExecutor implements BackgroundExecutor {
     }
 
     @Override
-    public ExecutorService getExecutor() {
-        return executor;
+    public int reserve(int max, Duration wait) throws InterruptedException {
+        if (!slots.tryAcquire(wait.toNanos(), TimeUnit.NANOSECONDS)) {
+            return 0;
+        }
+        int reserved = 1;
+        while (reserved < max && slots.tryAcquire()) {
+            reserved++;
+        }
+        return reserved;
     }
 
     @Override
-    public boolean isPoolFull() {
-        // The queue is unbounded, so the pool never grows past its core size and the maximum pool size is never
-        // reached. Count queued tasks too, otherwise tasks wait locally while their in-progress timer is running.
-        return threadPool.getActiveCount() + threadPool.getQueue().size() >= maxConcurrentTasks.get();
+    public void release(int count) {
+        if (count > 0) slots.release(count);
     }
 
+    /** Runs the task in a reserved slot; the slot is released when the task finishes or if it is rejected. */
     @Override
     public void execute(Runnable task) {
         try {
-            executor.execute(task);
-        } catch (RejectedExecutionException e) {
+            executor.execute(() -> {
+                try {
+                    task.run();
+                } finally {
+                    slots.release();
+                }
+            });
+        } catch (RuntimeException e) {
+            slots.release();
             log.error("Task rejected", e);
             throw e;
         }
+    }
+
+    @Override
+    public int activeCount() {
+        return threadPool.getActiveCount();
+    }
+
+    @Override
+    public boolean awaitTermination(Duration timeout) throws InterruptedException {
+        return executor.awaitTermination(timeout.toNanos(), TimeUnit.NANOSECONDS);
     }
 
     @Override
@@ -226,6 +257,16 @@ public class DefaultPtExecutor implements BackgroundExecutor {
 
     public int getActiveTaskCount() {
         return threadPool.getActiveCount();
+    }
+
+    private static final class AdjustableSemaphore extends Semaphore {
+        AdjustableSemaphore(int permits) {
+            super(permits);
+        }
+
+        void shrink(int permits) {
+            reducePermits(permits);
+        }
     }
 
     public int getCurrentMaxThreads() {

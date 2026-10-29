@@ -10,7 +10,7 @@ BTH4J is designed to handle various types of tasks:
 * **Scheduled Tasks:** Tasks scheduled to run at a specific future time.
 * **Recurring Tasks:** Tasks executed periodically at defined intervals.
 
-The library employs a multi-threaded architecture with configurable parameters for queue processing intervals, maintenance checks, and retry mechanisms. It also supports custom callbacks for task lifecycle events (before start, success, error, after task).
+Tasks are claimed in batches with a lease, retried with a configurable backoff, and every state change is an atomic Redis script, so several instances can share one namespace safely. Callbacks for task lifecycle events (before start, success, error, after task) are supported.
 
 ## Installation
 
@@ -20,261 +20,207 @@ Add the following dependency to your project:
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j</artifactId>
-    <version>2.3.0</version>
+    <version>3.0.0</version>
 </dependency>
 ```
 
-## Architecture
+Requires Java 21 and Redis 7.0 or newer (also works on Redis Cluster: all keys of a runner share one hash slot).
 
-The core components of BTH4J are:
+## How it works
 
-1. **BackgroundRunner:** The main orchestrator, responsible for initializing and managing all background threads and services. It monitors the health of these services and restarts them if necessary.
-
-3. **TaskProcessorService:** A service that continuously monitors task queues, retrieves tasks, and submits them to the `taskExecutor` for processing. It uses a round-robin approach to process multiple queues.
-
-4. **TaskProcessorRegistry:** A registry that maps task events to their corresponding processors. This allows for flexible task processing logic based on the task type.
-
-5. **TaskProcessor:** An interface defining the contract for processing individual tasks. Custom implementations can be provided to handle specific task types.
-
-6. **TaskRunnerWrapper:** A wrapper class that executes a task and handles callbacks, error handling, and retry logic.
-
-7. **ScheduledTaskService:** A service and handler responsible for managing delayed tasks. It periodically checks for tasks that are ready to be executed and moves them to the appropriate queue.
-
-8. **RecurringTaskService & RecurringTaskRunnerWrapper:** Services and wrappers responsible for managing recurring tasks. It periodically checks for recurring tasks and adds them to the queue based on their schedule.
-
-9. **MaintenanceService:** A service that performs periodic maintenance tasks, such as checking for stale tasks (tasks that have been in progress for too long), removing expired locks, and retrying failed tasks.
-
-10. **TaskOps:** A utility class providing operations for interacting with Redis, such as adding tasks to queues, retrieving data, managing locks, and performing other Redis-related operations.
-
-11. **TaskCallbacks:** A record class that encapsulates callback functions for task lifecycle events.
-
-**Architecture Diagram:**
+Every task is a Redis hash; queues hold task ids. Each state change of a task is one atomic Lua script that
+checks the task's lease token, so a task runs again only when the worker holding it died or could not renew
+its lease. Several runners with the same namespace share the work without any locks. The design, the key
+layout and the scripts are described in [docs/design-3.0.md](docs/design-3.0.md).
 
 ```
-                                +----------------------+
-                                |   BackgroundRunner   |
-                                +----------------------+
-                                          |
-                    +---------------------+---------------------+
-                    |                     |                    |
-                    v                     v                    v
-        +-----------------+    +------------------+   +-----------------+
-        |TaskProcessorSvc |    |ScheduledTaskSvc  |   |RecurringTaskSvc |
-        +-----------------+    +------------------+   +-----------------+
-                |                      |                      |
-                |                      |                      |
-                v                      v                      v
-        +-----------------+    +-----------------+    +-----------------+
-        |TaskRunnerWrapper|    |     TaskOps     |<---|MaintenanceService|
-        +-----------------+    +-----------------+    +-----------------+
-                |                      ^
-                |                      |
-                v                      |
-        +-----------------+           |
-        |BackgroundExecutor|          |
-        |  - VtExecutor   |          |
-        |  - PtExecutor   |          |
-        +-----------------+          |
-                |                    |
-                v                    |
-        +-----------------+         |
-        | TaskProcessor<T>|         |
-        +-----------------+         |
-                |                   |
-                +-------------------+
-
-        Data Flow:
-        ----------
-        1. BackgroundRunner orchestrates all services
-        2. TaskProcessorSvc processes tasks through executor
-        3. ScheduledTaskSvc manages delayed tasks
-        4. RecurringTaskSvc handles periodic tasks
-        5. MaintenanceService monitors and maintains system health
-        6. All services interact with TaskOps for Redis operations
-        7. TaskRunnerWrapper handles task execution lifecycle
-        8. Processors implement actual task business logic
+enqueue  --(no due)-->  queue  --claim-->  leased  --ack-->  gone
+   |                      ^                  |  |
+   +--(due)--> scheduled --+                 |  +--fail, attempts left--> scheduled (retry delay)
+                  ^                          |  +--fail, exhausted-----> dead (kept 30 days)
+                  +--------reschedule--------+  +--lease expired------> retried by maintenance
 ```
 
-## Usage Examples
+Components:
 
-### 1. Setting Up Background Runner
+- **BackgroundRunner** starts and supervises the services and shuts them down in order.
+- **TaskProcessorService** reserves executor slots, claims that many tasks in one call, hands them to the
+  executor and renews their leases while they run. It is woken by a Redis channel when a task is enqueued.
+- **ScheduledTaskService** moves due tasks from the scheduled set into their queues and sleeps until the next due time.
+- **RecurringTaskService** creates the next occurrence of each recurring definition ahead of its time.
+- **MaintenanceService** retries tasks whose lease expired and purges old dead tasks.
+- **TaskOps** is the Redis store: enqueue, recurring definitions, inspection, and the transitions above.
+- **BackgroundExecutor** bounds concurrency; `DefaultVtExecutor` (virtual threads, adaptive limit) and
+  `DefaultPtExecutor` (platform threads) are provided.
+
+## Usage
+
+### 1. Events
+
+Events identify task types and carry the retry policy. An enum is the usual choice:
 
 ```java
-// Configure Redis connection
-var poolConfig = ConnectionPoolConfig.builder()
-    .maxPoolSize(1000)
-    .minPoolSize(1)
-    .testOnBorrow(true)
-    .testWhileIdle(true)
-    .objEvictionTimeout(Duration.ofSeconds(5))
-    .build();
+public enum AppEvent implements Event {
+    SEND_MAIL(false, 3), NIGHTLY_REPORT(true, 0), UNKNOWN(false, 0);
 
-var clientConfig = DefaultJedisClientConfig.builder()
-    .resp3()
-    .timeoutMillis(1000)
-    .clientName("bth4j-app")
-    .user("app")
-    .password("your-password")
-    .build();
+    private final boolean recurring;
+    private final int retries;
 
+    AppEvent(boolean recurring, int retries) { this.recurring = recurring; this.retries = retries; }
+
+    @Override public boolean isRecurring() { return recurring; }
+    @Override public int retryCount() { return retries; }
+    @Override public String value() { return name(); }
+    @Override public Event from(String value) {
+        try { return valueOf(value); } catch (IllegalArgumentException e) { return UNKNOWN; }
+    }
+}
+```
+
+A task is attempted `retryCount() + 1` times before it is moved to the dead set.
+
+### 2. Task processors
+
+```java
+public class SendMail implements TaskProcessor<MailRequest> {
+    @Override
+    public void process(Task task, MailRequest data) {
+        // task.attempts() tells which attempt this is
+    }
+
+    @Override
+    public Class<MailRequest> dataTypeClass() {
+        return MailRequest.class;
+    }
+}
+
+public class NightlyReport implements TaskProcessor<Void> {
+    @Override
+    public void process(Task task, Void data) { ... }
+}
+```
+
+Processors must be idempotent: delivery is at least once.
+
+Throw `TaskUnrecoverableException` to move a task to the dead set at once, `TaskRescheduleException(delaySeconds)`
+to run the same task again later without using an attempt, or any other exception to fail the attempt and retry
+after the configured delay.
+
+### 3. Runner
+
+```java
 var jedis = RedisClient.builder()
     .hostAndPort(new HostAndPort("localhost", 6379))
-    .clientConfig(clientConfig)
-    .poolConfig(poolConfig.build())
+    .clientConfig(DefaultJedisClientConfig.builder().resp3().clientName("my-app").build())
+    .poolConfig(ConnectionPoolConfig.builder().maxPoolSize(32).build())
     .build();
 
-// Create and configure BackgroundRunner
-var backgroundRunner = new BackgroundRunner.Builder()
-    .taskProcessorRegistry(registry)
-    .eventParser(YourEvent.UNKNOWN::from)  // Your event parser
-    .taskRetryDelay(Integer::valueOf)
-    .taskProcessorQueueCheckInterval(Duration.ofMillis(100))
-    .maintenanceCheckInterval(Duration.ofSeconds(30))
-    .staleTaskTimeout(Duration.ofMinutes(5))
-    .jsonMapper(yourJsonMapper)
+var registry = new TaskProcessorRegistry();
+registry.register(AppEvent.SEND_MAIL, new SendMail());
+registry.register(AppEvent.NIGHTLY_REPORT, new NightlyReport());
+
+var runner = new BackgroundRunner.Builder()
     .jedisClient(jedis)
-    .namespacePrefix("your-app")
-    .taskExecutor(new DefaultVtExecutor())
+    .eventParser(AppEvent.UNKNOWN::from)
+    .taskProcessorRegistry(registry)
+    .jsonMapper(myJsonMapper)              // needed when tasks carry data
+    .namespacePrefix("my-app")
+    .configureQueues(List.of("default", "mail", "reports"), List.of("default", "mail", "reports"), "default")
+    .leaseDuration(Duration.ofSeconds(60))
     .build();
 
-// Start the background runner
-Thread bgThread = new Thread(backgroundRunner);
-bgThread.start();
+runner.run();                              // returns at once, the services run on their own threads
+...
+runner.stopRunner();                       // waits for running tasks, then
+jedis.close();
 ```
 
-### 2. Creating Task Processors
+### 4. Enqueueing tasks
 
 ```java
-// Example task processor that requires data
-public class DataProcessor implements TaskProcessor<YourDataType> {
-    @Override 
-    public void process(Task task, YourDataType data) {
-        // Process your task with data
-    }
+var taskOps = runner.taskOps();
 
-    @Override 
-    public Class<YourDataType> dataTypeClass() {
-        return YourDataType.class;
-    }
+taskOps.enqueue(Task.Builder.newTask()
+        .accountId(customerId)
+        .event(AppEvent.SEND_MAIL)
+        .queueName("mail")
+        .build(),
+    new MailRequest(...));
 
-    @Override 
-    public boolean requiresData() {
-        return true;
-    }
-}
+taskOps.enqueue(Task.Builder.newTask("order-42-reminder")   // your own id, duplicates are rejected
+        .accountId(customerId)
+        .event(AppEvent.SEND_MAIL)
+        .executeAfter(Duration.ofHours(24))
+        .build(),
+    new MailRequest(...));
 
-// Example task processor without data requirement
-public class NoDataProcessor implements TaskProcessor<Void> {
-    @Override 
-    public void process(Task task, Void data) {
-        // Process your task
-    }
-}
+taskOps.addRecurringTask(Task.Builder.newTask("nightly-report")
+        .accountId("system")
+        .event(AppEvent.NIGHTLY_REPORT)
+        .cronExpression("30 2 * * *")       // 5 field unix cron, UTC
+        .queueName("reports")
+        .build());
 ```
 
-### 3. Registering Task Processors
+`enqueue` returns `false` when a task with that id already exists. Recurring definitions are keyed by the task id;
+registering the same id again updates the definition and keeps the next fire time unless the cron expression changed.
+
+### 5. Callbacks
 
 ```java
-TaskProcessorRegistry registry = new TaskProcessorRegistry();
-registry.register(YourEvents.EVENT_TYPE, new DataProcessor());
-registry.register(YourEvents.NO_DATA_EVENT, new NoDataProcessor());
+new BackgroundRunner.Builder()
+    .taskHandlerDecorators(
+        task -> log.info("starting {}", task),
+        task -> log.info("done {}", task),
+        (task, ex) -> log.warn("failed {} on attempt {}", task, task.attempts(), ex),
+        task -> metrics.record(task))
+    .recurringTaskHandlerDecorators(...)
 ```
 
-### 4. Creating and Queueing Tasks
+Callbacks run after the outcome has been applied to Redis and never change it.
+
+### 6. Inspection
 
 ```java
-// Regular task
-var task = Task.Builder.newTask()
-    .accountId("account123")
-    .event(YourEvents.EVENT_TYPE)
-    .build();
-taskOps.addTaskToQueue(task, yourData);
-
-// Delayed task (execute after 5 seconds)
-var delayedTask = Task.Builder.newTask()
-    .accountId("account123")
-    .event(YourEvents.EVENT_TYPE)
-    .executeAfter(5)
-    .build();
-taskOps.addTaskToQueue(delayedTask, yourData);
-
-// Recurring task with cron expression
-var recurringTask = Task.Builder.newTask()
-    .accountId("account123")
-    .event(YourEvents.RECURRING)
-    .cronExpression("0 */15 * * * *")  // Every 15 minutes
-    .build();
-taskOps.addRecurringTask(recurringTask);
+taskOps.queueSize("mail");
+taskOps.leasedCount();              // running now, across all instances
+taskOps.scheduledCount();
+taskOps.deadTasks(100);             // with lastError() and attempts()
+taskOps.retryDeadTask(id);
+taskOps.getTask(id);                // any state
 ```
 
-### 5. Task Lifecycle Callbacks
+## Configuration
 
-```java
-var callbacks = new TaskCallbacks(
-    task -> log.info("Before start: {}", task),  // Before task starts
-    task -> log.info("Success: {}", task),       // On success
-    (task, ex) -> log.error("Error: {}", ex),    // On error
-    task -> log.info("After task: {}", task)     // After task completion
-);
+| Builder setting | Default | Meaning |
+|---|---|---|
+| `leaseDuration` | 60 s | how long a claimed task stays leased without renewal; renewed every third while running |
+| `taskRetryDelay` | exponential, 1 s doubling, capped at 1 h, 20 % jitter | delay before a failed task is retried, by attempt number |
+| `idlePollInterval` | 1 s | fallback wait when the queues are empty or the executor is full |
+| `claimBatchSize` | 32 | most tasks claimed in one Redis call |
+| `maintenanceCheckInterval` | 5 s | how often expired leases are retried |
+| `scheduledTasksCheckInterval` | 1 s | upper bound of the scheduler's wait; it wakes earlier for the next due task |
+| `recurringTasksCheckInterval` | 10 s | how often recurring definitions are checked |
+| `recurringTasksQueueAheadDuration` | 1 h | how far ahead occurrences are created in the scheduled set |
+| `deadTaskRetention` | 30 d | how long dead tasks are kept |
+| `shutdownTimeout` | 30 s | how long `stopRunner()` waits for services and running tasks |
+| `serviceCheckInterval` | 10 s | how often dead service threads are restarted |
+| `namespacePrefix` | `BTH` | runners with the same namespace share the work |
+| `configureQueues` | `Q:DEF`, `Q:LOW`, `Q:MED`, `Q:HIGH` | available queues, queues to process in round robin, default queue |
 
-// Use callbacks in BackgroundRunner configuration
-.setRegularTaskCallbacks(callbacks)
-.setRecurringTaskCallbacks(callbacks)
-```
+## Upgrading from 2.x
 
-## Configuration Options
-
-### BackgroundRunner Configuration
-- `taskProcessorQueueCheckInterval`: Interval to check for new tasks (default: 100ms)
-- `maintenanceCheckInterval`: Interval for maintenance operations (default: 30s)
-- `staleTaskTimeout`: Time after which a task is considered stale (default: 5m)
-- `taskRetryDelay`: Delay before retrying failed tasks
-- `namespacePrefix`: Prefix for Redis keys to avoid conflicts
-- `BGThreadCheckInterval`: Interval for background thread health checks
-- `delayedTasksQueueCheckInterval`: Interval for checking delayed tasks
-- `recurringTasksQueueCheckInterval`: Interval for checking recurring tasks
-- `queueTaskAheadDurationForRecurringTasks`: Duration to queue recurring tasks ahead of time
-
-### Redis Configuration
-- Connection pooling settings
-- Connection timeout
-- Authentication credentials
-- Client name for monitoring
-
-## Best Practices
-
-1. **Task Design**
-   - Keep tasks small and focused
-   - Ensure idempotency when possible
-   - Include necessary context in task data
-   - Use meaningful event names and account IDs
-
-2. **Error Handling**
-   - Implement proper error handling in processors
-   - Use callbacks for monitoring task execution
-   - Configure appropriate retry policies
-   - Handle task failures gracefully
-
-3. **Performance**
-   - Monitor Redis connection pool usage
-   - Adjust queue check intervals based on load
-   - Use appropriate task timeout values
-   - Configure thread pool sizes based on workload
-
-4. **Monitoring**
-   - Implement logging in task processors
-   - Monitor stale tasks and failures
-   - Track task execution times
-   - Set up alerts for critical failures
+3.0 cannot read 2.x data. Let the 2.x runners drain their queues, then start 3.0, or use a new namespace.
+API changes are listed in `CHANGELOG.md`.
 
 ## Limitations
 
-- Cron expressions follow Unix crontab format
-- Redis/valkey or similar key value db is required for operation
-- Virtual thread support requires Java 21 or later. This library itself has baseline java requirement of Java 21.
+- Cron expressions use the 5 field Unix format and are evaluated in UTC.
+- Redis 7.0 or newer (or a compatible server) is required.
+- Java 21 or later is required.
 
 ## Contributing
 
 - Build and test with the Maven Wrapper: `./mvnw verify`. Java 21 or later is required.
-- Unit tests run in the `test` phase. The Redis integration test (`BackgroundRunnerIT`) starts a Redis container with Testcontainers in the `integration-test` phase and needs Docker.
+- Unit tests run in the `test` phase. The Redis integration tests (`*IT`) start a Redis container with Testcontainers in the `integration-test` phase and need Docker.
 - Versioning: the first change after a release bumps the version in `pom.xml` to the next `-SNAPSHOT`. A release is a pull request titled `Release X.Y.Z` that sets the final version and adds a `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md`; merging it publishes the release.

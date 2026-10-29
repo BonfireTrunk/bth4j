@@ -1,7 +1,9 @@
 package today.bonfire.oss.bth4j;
 
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.service.Task;
@@ -16,6 +18,9 @@ public class TestTaskProcessors {
     public static final AtomicInteger recurringTaskExecutions = new AtomicInteger(0);
     public static final AtomicInteger retryTaskExecutions = new AtomicInteger(0);
     public static final AtomicInteger concurrentTaskExecutions = new AtomicInteger(0);
+    public static final AtomicInteger longTaskExecutions = new AtomicInteger(0);
+    public static final AtomicReference<Map<String, Object>> receivedData = new AtomicReference<>();
+    public static volatile long longTaskMillis = 3000;
     public static CountDownLatch completionLatch;
     public static CountDownLatch concurrencyLatch;
 
@@ -25,6 +30,8 @@ public class TestTaskProcessors {
         recurringTaskExecutions.set(0);
         retryTaskExecutions.set(0);
         concurrentTaskExecutions.set(0);
+        longTaskExecutions.set(0);
+        receivedData.set(null);
     }
 
     public static TaskProcessorRegistry createTestRegistry() {
@@ -35,13 +42,15 @@ public class TestTaskProcessors {
         registry.register(TestEvents.RETRY_TASK, new RetryTaskProcessor());
         registry.register(TestEvents.CONCURRENT_TASK, new ConcurrentTaskProcessor());
         registry.register(TestEvents.ALWAYS_FAILS, new AlwaysFailsProcessor());
+        registry.register(TestEvents.COOL, new DataTaskProcessor());
+        registry.register(TestEvents.DEFAULT, new LongTaskProcessor());
         return registry;
     }
 
     private static class RegularTaskProcessor implements TaskProcessor<Void> {
         @Override
         public void process(Task task, Void data) {
-            log.info("Processing regular task: {}", task.taskString());
+            log.info("Processing regular task: {}", task);
             regularTaskExecutions.incrementAndGet();
             if (completionLatch != null) {
                 completionLatch.countDown();
@@ -52,7 +61,7 @@ public class TestTaskProcessors {
     private static class DelayedTaskProcessor implements TaskProcessor<Void> {
         @Override
         public void process(Task task, Void data) {
-            log.info("Processing delayed task: {}", task.taskString());
+            log.info("Processing delayed task: {}", task);
             delayedTaskExecutions.incrementAndGet();
             if (completionLatch != null) {
                 completionLatch.countDown();
@@ -63,7 +72,7 @@ public class TestTaskProcessors {
     private static class RecurringTaskProcessor implements TaskProcessor<Void> {
         @Override
         public void process(Task task, Void data) {
-            log.info("Processing recurring task: {}", task.taskString());
+            log.info("Processing recurring task: {}", task);
             recurringTaskExecutions.incrementAndGet();
             if (completionLatch != null) {
                 completionLatch.countDown();
@@ -74,7 +83,7 @@ public class TestTaskProcessors {
     private static class RetryTaskProcessor implements TaskProcessor<Void> {
         @Override
         public void process(Task task, Void data) {
-            log.info("Processing retry task: {}", task.taskString());
+            log.info("Processing retry task: {}", task);
             int executions = retryTaskExecutions.incrementAndGet();
             if (executions <= 2) { // Fail first two times
                 throw new RuntimeException("Simulated failure for retry testing");
@@ -96,7 +105,7 @@ public class TestTaskProcessors {
         @Override
         public void process(Task task, Void data) {
             try {
-                log.info("Processing concurrent task: {}", task.taskString());
+                log.info("Processing concurrent task: {}", task);
                 int current = concurrentTaskExecutions.incrementAndGet();
                 if (concurrencyLatch != null) {
                     // Wait for other tasks to start
@@ -109,6 +118,37 @@ public class TestTaskProcessors {
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static class DataTaskProcessor implements TaskProcessor<Map> {
+        @Override
+        public void process(Task task, Map data) {
+            receivedData.set(data);
+            if (completionLatch != null) {
+                completionLatch.countDown();
+            }
+        }
+
+        @Override
+        public Class<?> dataTypeClass() {
+            return Map.class;
+        }
+    }
+
+    private static class LongTaskProcessor implements TaskProcessor<Void> {
+        @Override
+        public void process(Task task, Void data) {
+            longTaskExecutions.incrementAndGet();
+            try {
+                Thread.sleep(longTaskMillis);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            if (completionLatch != null) {
+                completionLatch.countDown();
             }
         }
     }

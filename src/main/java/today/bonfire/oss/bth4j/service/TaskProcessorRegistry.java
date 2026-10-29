@@ -57,21 +57,19 @@ public class TaskProcessorRegistry {
     }
 
     /**
-     * Execute a task using its registered processor.
-     *
-     * @param task The task to execute
+     * Execute a task using its registered processor. The data carried by the claimed task is decoded to the
+     * processor's data class with the given function.
      */
-    void executeTask(Task task, BiFunction<String, Class<?>, ?> function) {
-        executeWithProcessor(task, getProcessor(task), function);
+    void executeTask(Task task, BiFunction<Task, Class<?>, ?> decoder) {
+        executeWithProcessor(task, getProcessor(task), decoder);
     }
 
     @SuppressWarnings("unchecked")
     private <T> void executeWithProcessor(
-            Task task, TaskProcessor<?> processor, BiFunction<String, Class<?>, T> function) {
+            Task task, TaskProcessor<?> processor, BiFunction<Task, Class<?>, T> decoder) {
         TaskProcessor<T> typedProcessor = (TaskProcessor<T>) processor;
         if (typedProcessor.requiresData()) {
-            T data = function.apply(task.uniqueId(), typedProcessor.dataTypeClass());
-            typedProcessor.process(task, data);
+            typedProcessor.process(task, decoder.apply(task, typedProcessor.dataTypeClass()));
         } else {
             typedProcessor.process(task, null);
         }

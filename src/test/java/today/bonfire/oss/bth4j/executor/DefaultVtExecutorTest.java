@@ -40,11 +40,25 @@ class DefaultVtExecutorTest {
         }
     }
 
+    private static final Duration SHORT = Duration.ofMillis(50);
+
+    private static Runnable blockOn(CountDownLatch started, CountDownLatch release) {
+        return () -> {
+            started.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+    }
+
     @Test
     void executeRunsTasksAndReleasesPermits() throws InterruptedException {
         var executor = newExecutor();
         int permits = executor.getAvailablePermits();
         int tasks = Math.min(permits, 4);
+        assertThat(executor.reserve(tasks, Duration.ofSeconds(1))).isEqualTo(tasks);
         var latch = new CountDownLatch(tasks);
 
         for (int i = 0; i < tasks; i++) {
@@ -52,65 +66,94 @@ class DefaultVtExecutorTest {
         }
 
         assertThat(latch.await(10, TimeUnit.SECONDS)).isTrue();
-        awaitTrue(() -> executor.getActiveTaskCount() == 0 && executor.getAvailablePermits() >= permits);
-        assertThat(executor.isPoolFull()).isFalse();
+        awaitTrue(() -> executor.activeCount() == 0 && executor.getAvailablePermits() >= permits);
     }
 
     @Test
-    void poolIsFullWhenAllPermitsAreInUseAndFurtherTasksAreRejected() throws InterruptedException {
+    void reserveReturnsBetweenOneAndMaxWhenSlotsAreFree() throws InterruptedException {
         var executor = newExecutor();
         int permits = executor.getAvailablePermits();
-        var started = new CountDownLatch(permits);
+
+        int reserved = executor.reserve(permits + 5, Duration.ofSeconds(1));
+
+        assertThat(reserved).isBetween(1, permits);
+        assertThat(executor.getAvailablePermits()).isEqualTo(permits - reserved);
+    }
+
+    @Test
+    void reserveNeverReturnsMoreThanMax() throws InterruptedException {
+        var executor = newExecutor();
+        assertThat(executor.reserve(1, Duration.ofSeconds(1))).isEqualTo(1);
+    }
+
+    @Test
+    void reserveReturnsZeroWhenAllSlotsAreReservedAndReleaseMakesThemAvailable() throws InterruptedException {
+        var executor = newExecutor();
+        int permits = executor.getAvailablePermits();
+        assertThat(executor.reserve(permits, Duration.ofSeconds(1))).isEqualTo(permits);
+
+        assertThat(executor.reserve(1, SHORT)).isZero();
+
+        executor.release(permits);
+        assertThat(executor.reserve(permits, Duration.ofSeconds(1))).isEqualTo(permits);
+    }
+
+    @Test
+    void executeConsumesOneReservedSlotAndFreesItWhenTheTaskFinishes() throws InterruptedException {
+        var executor = newExecutor();
+        int permits = executor.getAvailablePermits();
+        assertThat(executor.reserve(permits, Duration.ofSeconds(1))).isEqualTo(permits);
+        var started = new CountDownLatch(1);
         var release = new CountDownLatch(1);
 
-        for (int i = 0; i < permits; i++) {
-            executor.execute(() -> {
-                started.countDown();
-                try {
-                    release.await();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            });
-        }
+        executor.execute(blockOn(started, release));
 
         assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
-        assertThat(executor.isPoolFull()).isTrue();
-        assertThat(executor.getActiveTaskCount()).isEqualTo(permits);
-        assertThatThrownBy(() -> executor.execute(() -> {})).isInstanceOf(RejectedExecutionException.class);
-
+        assertThat(executor.reserve(1, SHORT)).isZero();
         release.countDown();
-        awaitTrue(() -> !executor.isPoolFull());
-        awaitTrue(() -> executor.getActiveTaskCount() == 0);
-        // accepting work again
-        var ran = new CountDownLatch(1);
-        executor.execute(ran::countDown);
-        assertThat(ran.await(10, TimeUnit.SECONDS)).isTrue();
+        assertThat(executor.reserve(1, Duration.ofSeconds(1))).isEqualTo(1);
     }
 
     @Test
-    void failedTaskReleasesItsPermit() throws InterruptedException {
+    void failedTaskReleasesItsSlot() throws InterruptedException {
         var executor = newExecutor();
         int permits = executor.getAvailablePermits();
+        assertThat(executor.reserve(1, Duration.ofSeconds(1))).isEqualTo(1);
 
         executor.execute(() -> {
             throw new IllegalStateException("simulated task failure");
         });
 
-        awaitTrue(() -> executor.getActiveTaskCount() == 0 && executor.getAvailablePermits() >= permits);
+        awaitTrue(() -> executor.activeCount() == 0 && executor.getAvailablePermits() >= permits);
     }
 
     @Test
-    void rejectedExecutionAfterShutdownDoesNotLeakPermits() {
+    void activeCountReflectsARunningTask() throws InterruptedException {
+        var executor = newExecutor();
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        assertThat(executor.reserve(1, Duration.ofSeconds(1))).isEqualTo(1);
+
+        executor.execute(blockOn(started, release));
+
+        assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
+        assertThat(executor.activeCount()).isEqualTo(1);
+        release.countDown();
+        awaitTrue(() -> executor.activeCount() == 0);
+    }
+
+    @Test
+    void executeAfterShutdownIsRejectedAndFreesTheReservedSlot() throws InterruptedException {
         var executor = newExecutor();
         int permits = executor.getAvailablePermits();
+        assertThat(executor.reserve(permits, Duration.ofSeconds(1))).isEqualTo(permits);
         executor.shutdown();
 
         assertThatThrownBy(() -> executor.execute(() -> {})).isInstanceOf(RejectedExecutionException.class);
-        assertThatThrownBy(() -> executor.execute(() -> {})).isInstanceOf(RejectedExecutionException.class);
 
-        assertThat(executor.getAvailablePermits()).isEqualTo(permits);
-        assertThat(executor.getActiveTaskCount()).isZero();
+        assertThat(executor.getAvailablePermits()).isEqualTo(1);
+        assertThat(executor.reserve(1, SHORT)).isEqualTo(1);
+        assertThat(executor.activeCount()).isZero();
     }
 
     @Test
@@ -119,14 +162,8 @@ class DefaultVtExecutorTest {
         var started = new CountDownLatch(1);
         var release = new CountDownLatch(1);
 
-        executor.execute(() -> {
-            started.countDown();
-            try {
-                release.await();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        });
+        assertThat(executor.reserve(1, Duration.ofSeconds(1))).isEqualTo(1);
+        executor.execute(blockOn(started, release));
         assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
 
         executor.shutdown();
@@ -149,5 +186,13 @@ class DefaultVtExecutorTest {
         assertThat(executor.getCurrentMaxThreads())
                 .isEqualTo(Runtime.getRuntime().availableProcessors());
         assertThat(executor.getAvailablePermits()).isEqualTo(executor.getCurrentMaxThreads());
+    }
+
+    @Test
+    void maxConcurrencyBelowProcessorCountIsClampedToProcessorCount() {
+        var executor = new DefaultVtExecutor(2);
+        created.add(executor);
+        assertThat(executor.getCurrentMaxThreads())
+                .isEqualTo(Runtime.getRuntime().availableProcessors());
     }
 }

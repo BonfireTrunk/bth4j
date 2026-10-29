@@ -7,7 +7,10 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
+import redis.clients.jedis.HostAndPort;
+import redis.clients.jedis.RedisClient;
 import today.bonfire.oss.bth4j.JsonMapperTest;
 import today.bonfire.oss.bth4j.TestEvents;
 import today.bonfire.oss.bth4j.common.QueuesHolder;
@@ -15,21 +18,36 @@ import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
 
 /**
- * Tests of the builder and queue setup. None of these need Redis: the builder only reads its own state
- * and every failing {@code build()} call fails before a Jedis client would be needed.
+ * Tests of the builder and queue setup. None of these need a running Redis: the client is created
+ * without connecting and the runners built here are never started.
  */
 class BackgroundRunnerBuilderTest {
+
+    private static final RedisClient JEDIS =
+            RedisClient.builder().hostAndPort(new HostAndPort("localhost", 1)).build();
+
+    @AfterAll
+    static void closeClient() {
+        JEDIS.close();
+    }
 
     // defaults
 
     @Test
-    void defaultRetryDelayIsTheCubeOfTheRetryCount() {
-        var delay = new BackgroundRunner.Builder().getTaskRetryDelay();
-        assertThat(delay.apply(0)).isEqualTo(0);
-        assertThat(delay.apply(1)).isEqualTo(1);
-        assertThat(delay.apply(2)).isEqualTo(8);
-        assertThat(delay.apply(3)).isEqualTo(27);
-        assertThat(delay.apply(4)).isEqualTo(64);
+    void defaultRetryDelayGrowsExponentiallyWithJitter() {
+        for (int i = 0; i < 50; i++) {
+            assertThat(BackgroundRunner.defaultRetryDelay(1))
+                    .isBetween(Duration.ofMillis(800), Duration.ofMillis(1200));
+            assertThat(BackgroundRunner.defaultRetryDelay(3))
+                    .isBetween(Duration.ofMillis(3200), Duration.ofMillis(4800));
+            assertThat(BackgroundRunner.defaultRetryDelay(100)).isLessThanOrEqualTo(Duration.ofMinutes(72));
+        }
+    }
+
+    @Test
+    void builderUsesDefaultRetryDelayUnlessReplaced() {
+        var delay = new BackgroundRunner.Builder().getTaskRetryDelay().apply(1);
+        assertThat(delay).isBetween(Duration.ofMillis(800), Duration.ofMillis(1200));
     }
 
     @Test
@@ -95,23 +113,67 @@ class BackgroundRunnerBuilderTest {
                 .hasMessageContaining("jedis");
     }
 
+    @Test
+    void buildingTwiceGivesRunnersWithDifferentOps() {
+        var builder = new BackgroundRunner.Builder()
+                .eventParser(TestEvents.UNKNOWN::from)
+                .jsonMapper(new JsonMapperTest())
+                .jedisClient(JEDIS);
+
+        var first = builder.build();
+        var second = builder.build();
+
+        assertThat(first).isNotSameAs(second);
+        assertThat(first.taskOps()).isNotSameAs(second.taskOps());
+    }
+
     // invalid settings
 
     @Test
     void durationsMustBePositive() {
         var builder = new BackgroundRunner.Builder();
-        assertThatThrownBy(() -> builder.staleTaskTimeout(null)).isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> builder.staleTaskTimeout(Duration.ZERO)).isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> builder.staleTaskTimeout(Duration.ofSeconds(-1)))
+        assertThatThrownBy(() -> builder.leaseDuration(null)).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> builder.leaseDuration(Duration.ZERO)).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> builder.leaseDuration(Duration.ofSeconds(-1)))
                 .isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> builder.BGThreadCheckInterval(Duration.ZERO))
+        assertThatThrownBy(() -> builder.idlePollInterval(Duration.ZERO)).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> builder.idlePollInterval(Duration.ofMillis(-5)))
                 .isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> builder.taskProcessorQueueCheckInterval(Duration.ofMillis(-5)))
+        assertThatThrownBy(() -> builder.maintenanceCheckInterval(Duration.ZERO))
                 .isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> builder.recurringTasksQueueCheckInterval(null))
+        assertThatThrownBy(() -> builder.scheduledTasksCheckInterval(Duration.ZERO))
                 .isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> builder.setRecurringTasksQueueAheadDuration(Duration.ZERO))
+        assertThatThrownBy(() -> builder.scheduledTasksCheckInterval(null)).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> builder.recurringTasksCheckInterval(null)).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> builder.recurringTasksCheckInterval(Duration.ofSeconds(-1)))
                 .isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> builder.recurringTasksQueueAheadDuration(Duration.ZERO))
+                .isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> builder.recurringTasksQueueAheadDuration(null))
+                .isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> builder.deadTaskRetention(Duration.ZERO)).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> builder.deadTaskRetention(Duration.ofDays(-1)))
+                .isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> builder.deadTaskRetention(null)).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> builder.serviceCheckInterval(Duration.ZERO))
+                .isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> builder.serviceCheckInterval(null)).isInstanceOf(TaskConfigurationError.class);
+    }
+
+    @Test
+    void leaseDurationHasOneSecondMinimum() {
+        var builder = new BackgroundRunner.Builder();
+        assertThatThrownBy(() -> builder.leaseDuration(Duration.ofMillis(999)))
+                .isInstanceOf(TaskConfigurationError.class);
+        assertThat(builder.leaseDuration(Duration.ofSeconds(1))).isSameAs(builder);
+    }
+
+    @Test
+    void idlePollIntervalHasTenMillisecondMinimum() {
+        var builder = new BackgroundRunner.Builder();
+        assertThatThrownBy(() -> builder.idlePollInterval(Duration.ofMillis(9)))
+                .isInstanceOf(TaskConfigurationError.class);
+        assertThat(builder.idlePollInterval(Duration.ofMillis(10))).isSameAs(builder);
     }
 
     @Test
@@ -124,22 +186,19 @@ class BackgroundRunnerBuilderTest {
     }
 
     @Test
-    void delayedTasksQueueCheckIntervalHasTenMillisecondMinimum() {
+    void scheduledTasksCheckIntervalHasTenMillisecondMinimum() {
         var builder = new BackgroundRunner.Builder();
-        assertThatThrownBy(() -> builder.delayedTasksQueueCheckInterval(Duration.ofMillis(9)))
+        assertThatThrownBy(() -> builder.scheduledTasksCheckInterval(Duration.ofMillis(9)))
                 .isInstanceOf(TaskConfigurationError.class);
-        assertThat(builder.delayedTasksQueueCheckInterval(Duration.ofMillis(10)))
-                .isSameAs(builder);
+        assertThat(builder.scheduledTasksCheckInterval(Duration.ofMillis(10))).isSameAs(builder);
     }
 
     @Test
-    void cronLockDurationIsChainableAndValidated() {
+    void claimBatchSizeMustBeAtLeastOne() {
         var builder = new BackgroundRunner.Builder();
-        assertThat(builder.cronLockDuration(Duration.ofMinutes(1))).isSameAs(builder);
-        assertThatThrownBy(() -> builder.cronLockDuration(Duration.ofMillis(500)))
-                .isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> builder.cronLockDuration(Duration.ZERO)).isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> builder.cronLockDuration(null)).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> builder.claimBatchSize(0)).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> builder.claimBatchSize(-3)).isInstanceOf(TaskConfigurationError.class);
+        assertThat(builder.claimBatchSize(1)).isSameAs(builder);
     }
 
     @Test
@@ -160,48 +219,55 @@ class BackgroundRunnerBuilderTest {
     }
 
     @Test
+    void namespacePrefixRejectsBraces() {
+        var builder = new BackgroundRunner.Builder();
+        assertThatThrownBy(() -> builder.namespacePrefix("a{b")).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> builder.namespacePrefix("a}b")).isInstanceOf(TaskConfigurationError.class);
+        assertThat(builder.namespacePrefix("ok")).isSameAs(builder);
+    }
+
+    @Test
     void customRetryDelayReplacesTheDefault() {
-        var builder = new BackgroundRunner.Builder().taskRetryDelay(count -> 5);
-        assertThat(builder.getTaskRetryDelay().apply(3)).isEqualTo(5);
+        var builder = new BackgroundRunner.Builder().taskRetryDelay(count -> Duration.ofSeconds(5));
+        assertThat(builder.getTaskRetryDelay().apply(3)).isEqualTo(Duration.ofSeconds(5));
     }
 
     // setupQueues
 
     @Test
-    void setupQueuesPrefixesNamespaceAndKeepsOrder() {
-        QueuesHolder holder = BackgroundRunner.setupQueues("NS", Set.of("Q:A", "Q:B"), List.of("Q:B", "Q:A"), "Q:A");
+    void setupQueuesKeepsLogicalNamesAndOrder() {
+        QueuesHolder holder = BackgroundRunner.setupQueues(Set.of("Q:A", "Q:B"), List.of("Q:B", "Q:A"), "Q:A");
 
-        assertThat(holder.namespace).isEqualTo("NS");
-        assertThat(holder.defaultQueue).isEqualTo("NS:Q:A");
-        assertThat(holder.availableQueues).containsExactlyInAnyOrder("NS:Q:A", "NS:Q:B");
-        assertThat(holder.queuesToProcess).containsExactly("NS:Q:B", "NS:Q:A");
+        assertThat(holder.defaultQueue).isEqualTo("Q:A");
+        assertThat(holder.availableQueues).containsExactlyInAnyOrder("Q:A", "Q:B");
+        assertThat(holder.queuesToProcess).containsExactly("Q:B", "Q:A");
     }
 
     @Test
     void setupQueuesResolvesValidQueuesAndRejectsUnknownOnes() {
-        var holder = BackgroundRunner.setupQueues("NS", Set.of("Q:A", "Q:B"), List.of("Q:A"), "Q:A");
+        var holder = BackgroundRunner.setupQueues(Set.of("Q:A", "Q:B"), List.of("Q:A"), "Q:A");
 
-        assertThat(holder.getValidQueue("Q:B")).isEqualTo("NS:Q:B");
-        assertThat(holder.getValidQueue(null)).isEqualTo("NS:Q:A");
-        assertThat(holder.getValidQueue(" ")).isEqualTo("NS:Q:A");
+        assertThat(holder.getValidQueue("Q:B")).isEqualTo("Q:B");
+        assertThat(holder.getValidQueue(null)).isEqualTo("Q:A");
+        assertThat(holder.getValidQueue(" ")).isEqualTo("Q:A");
         assertThatThrownBy(() -> holder.getValidQueue("Q:Z")).isInstanceOf(TaskErrorException.class);
     }
 
     @Test
     void setupQueuesRejectsQueueToProcessThatIsNotAvailable() {
-        assertThatThrownBy(() -> BackgroundRunner.setupQueues("NS", Set.of("Q:A"), List.of("Q:B"), "Q:A"))
+        assertThatThrownBy(() -> BackgroundRunner.setupQueues(Set.of("Q:A"), List.of("Q:B"), "Q:A"))
                 .isInstanceOf(TaskConfigurationError.class);
     }
 
     @Test
     void setupQueuesRejectsDefaultQueueThatIsNotAvailable() {
-        assertThatThrownBy(() -> BackgroundRunner.setupQueues("NS", Set.of("Q:A"), List.of("Q:A"), "Q:B"))
+        assertThatThrownBy(() -> BackgroundRunner.setupQueues(Set.of("Q:A"), List.of("Q:A"), "Q:B"))
                 .isInstanceOf(TaskConfigurationError.class);
     }
 
     @Test
     void setupQueuesRejectsEmptyQueuesToProcess() {
-        assertThatThrownBy(() -> BackgroundRunner.setupQueues("NS", Set.of("Q:A"), List.of(), "Q:A"))
+        assertThatThrownBy(() -> BackgroundRunner.setupQueues(Set.of("Q:A"), List.of(), "Q:A"))
                 .isInstanceOf(TaskConfigurationError.class);
     }
 }

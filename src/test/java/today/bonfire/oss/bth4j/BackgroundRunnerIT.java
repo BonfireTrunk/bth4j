@@ -3,9 +3,7 @@ package today.bonfire.oss.bth4j;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Duration;
-import java.util.Collections;
-import java.util.Timer;
-import java.util.TimerTask;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterAll;
@@ -13,8 +11,6 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
@@ -32,12 +28,11 @@ import today.bonfire.oss.bth4j.service.TaskOps;
 import today.bonfire.oss.bth4j.service.TaskProcessorRegistry;
 
 /**
- * Integration test against a real Redis started with Testcontainers. Needs Docker.
+ * Integration test of a whole runner against a real Redis started with Testcontainers. Needs Docker.
  * Run by maven-failsafe-plugin (mvn verify), not by the unit test phase.
  */
 @Testcontainers
 class BackgroundRunnerIT {
-    private static final Logger log = LoggerFactory.getLogger(BackgroundRunnerIT.class);
 
     @Container
     static final GenericContainer<?> REDIS = new GenericContainer<>(DockerImageName.parse("redis:7.4-alpine"))
@@ -45,16 +40,13 @@ class BackgroundRunnerIT {
             .waitingFor(Wait.forLogMessage(".*Ready to accept connections.*\\n", 1));
 
     private static RedisClient jedis;
-    private static TaskProcessorRegistry registry;
     private static BackgroundRunner backgroundRunner;
-    private static Thread backgroundThread;
     private static TaskOps taskOps;
 
     @BeforeAll
-    static void beforeAll() throws InterruptedException {
-        // Setup Redis connection
+    static void beforeAll() {
         var poolConfig = ConnectionPoolConfig.builder()
-                .maxPoolSize(8)
+                .maxPoolSize(16)
                 .minPoolSize(1)
                 .testOnBorrow(false)
                 .testWhileIdle(true)
@@ -72,50 +64,31 @@ class BackgroundRunnerIT {
                 .clientName("bth4j-test")
                 .build();
 
-        var hostPort = new HostAndPort(REDIS.getHost(), REDIS.getMappedPort(6379));
         jedis = RedisClient.builder()
-                .hostAndPort(hostPort)
+                .hostAndPort(new HostAndPort(REDIS.getHost(), REDIS.getMappedPort(6379)))
                 .clientConfig(clientConfig)
                 .poolConfig(poolConfig)
                 .build();
 
-        // Setup BackgroundRunner with test registry
-        registry = TestTaskProcessors.createTestRegistry();
-        backgroundRunner = new BackgroundRunner.Builder()
+        backgroundRunner = runnerBuilder("BTH1").build();
+        taskOps = backgroundRunner.taskOps();
+        backgroundRunner.run();
+    }
+
+    static BackgroundRunner.Builder runnerBuilder(String namespace) {
+        TaskProcessorRegistry registry = TestTaskProcessors.createTestRegistry();
+        return new BackgroundRunner.Builder()
                 .taskProcessorRegistry(registry)
                 .eventParser(TestEvents.UNKNOWN::from)
-                .taskRetryDelay(Integer::valueOf)
-                .taskProcessorQueueCheckInterval(Duration.ofMillis(10))
+                .taskRetryDelay(attempt -> Duration.ofSeconds(1))
+                .idlePollInterval(Duration.ofMillis(500))
                 .maintenanceCheckInterval(Duration.ofSeconds(1))
-                .staleTaskTimeout(Duration.ofSeconds(3))
-                .taskRetryDelay(integer -> 1)
+                .recurringTasksCheckInterval(Duration.ofSeconds(1))
+                .leaseDuration(Duration.ofSeconds(1))
                 .jsonMapper(new JsonMapperTest())
                 .jedisClient(jedis)
                 .taskExecutor(new DefaultVtExecutor())
-                .namespacePrefix("BTH1")
-                .build();
-
-        taskOps = backgroundRunner.taskOps();
-        backgroundThread = new Thread(backgroundRunner);
-        backgroundThread.start();
-
-        // Setup auto-shutdown timer
-        var timer = new Timer(true);
-        timer.schedule(
-                new TimerTask() {
-                    @Override
-                    public void run() {
-                        log.debug("Stopping runner");
-                        backgroundRunner.stopRunner();
-                        try {
-                            backgroundThread.join(Duration.ofSeconds(10));
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            throw new RuntimeException(e);
-                        }
-                    }
-                },
-                600000); // 10 minutes timeout
+                .namespacePrefix(namespace);
     }
 
     @AfterAll
@@ -133,131 +106,193 @@ class BackgroundRunnerIT {
         TestTaskProcessors.resetCounters();
     }
 
-    @Test
-    @Timeout(30) // 30 seconds timeout
-    void testRegularTask() throws InterruptedException {
-        TestTaskProcessors.completionLatch = new CountDownLatch(1);
-
-        var task = Task.Builder.newTask()
-                .accountId(Random.UIDBASE64())
-                .event(TestEvents.REGULAR_TASK)
-                .build();
-
-        taskOps.addTaskToQueue(task, Collections.emptyMap());
-
-        boolean completed = TestTaskProcessors.completionLatch.await(20, TimeUnit.SECONDS);
-        assertThat(completed).isTrue();
-        assertThat(TestTaskProcessors.regularTaskExecutions.get()).isEqualTo(1);
+    private static Task.Builder task(Event event) {
+        return Task.Builder.newTask().accountId(Random.UIDBASE64()).event(event);
     }
 
     @Test
     @Timeout(30)
-    void testScheduledTask() throws InterruptedException {
+    void regularTaskRunsOnceAndIsRemoved() throws InterruptedException {
         TestTaskProcessors.completionLatch = new CountDownLatch(1);
+        var t = task(TestEvents.REGULAR_TASK).build();
 
+        assertThat(taskOps.enqueue(t)).isTrue();
+
+        assertThat(TestTaskProcessors.completionLatch.await(20, TimeUnit.SECONDS))
+                .isTrue();
+        assertThat(TestTaskProcessors.regularTaskExecutions.get()).isEqualTo(1);
+        for (int i = 0; i < 50 && taskOps.getTask(t.uniqueId()).isPresent(); i++) Thread.sleep(100);
+        assertThat(taskOps.getTask(t.uniqueId())).isEmpty();
+        assertThat(taskOps.leasedCount()).isZero();
+    }
+
+    @Test
+    @Timeout(30)
+    void enqueueWakesAnIdleRunnerQuickly() throws InterruptedException {
+        Thread.sleep(1500); // let the processor settle into its idle wait
+        TestTaskProcessors.completionLatch = new CountDownLatch(1);
+        long start = System.nanoTime();
+
+        taskOps.enqueue(task(TestEvents.REGULAR_TASK).build());
+
+        assertThat(TestTaskProcessors.completionLatch.await(5, TimeUnit.SECONDS))
+                .isTrue();
+        long millis = (System.nanoTime() - start) / 1_000_000;
+        assertThat(millis).isLessThan(400);
+    }
+
+    @Test
+    @Timeout(30)
+    void duplicateIdIsRejected() {
+        var t = task(TestEvents.DELAYED_TASK).executeAfter(600).build();
+        assertThat(taskOps.enqueue(t)).isTrue();
+        assertThat(taskOps.enqueue(t)).isFalse();
+        assertThat(taskOps.scheduledCount()).isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    @Timeout(30)
+    void scheduledTaskRunsAtItsTime() throws InterruptedException {
+        TestTaskProcessors.completionLatch = new CountDownLatch(1);
         long startTime = System.currentTimeMillis();
-        var task = Task.Builder.newTask()
-                .accountId(Random.UIDBASE64())
-                .event(TestEvents.DELAYED_TASK)
-                .executeAfter(2) // 2 seconds delay
-                .build();
+        taskOps.enqueue(task(TestEvents.DELAYED_TASK).executeAfter(2).build());
 
-        taskOps.addTaskToQueue(task, Collections.emptyMap());
-
-        boolean completed = TestTaskProcessors.completionLatch.await(20, TimeUnit.SECONDS);
-        long executionTime = System.currentTimeMillis() - startTime;
-
-        assertThat(completed).isTrue();
-        assertThat(executionTime).isGreaterThanOrEqualTo(2000);
+        assertThat(TestTaskProcessors.completionLatch.await(20, TimeUnit.SECONDS))
+                .isTrue();
+        assertThat(System.currentTimeMillis() - startTime)
+                .isGreaterThanOrEqualTo(2000)
+                .isLessThan(4000);
         assertThat(TestTaskProcessors.delayedTaskExecutions.get()).isEqualTo(1);
     }
 
     @Test
-    @Timeout(120)
-    void testRecurringTask() throws InterruptedException {
-        TestTaskProcessors.completionLatch = new CountDownLatch(1); // Wait for 3 executions
-
-        var task = Task.Builder.newTask()
-                .accountId(Random.UIDBASE64())
-                .event(TestEvents.RECURRING_TASK)
-                .cronExpression("*/1 * * * *") // Every minute
-                .build();
-        try {
-            var t1 = taskOps.addRecurringTask(task);
-            Thread.sleep(60000);
-
-            boolean completed = TestTaskProcessors.completionLatch.await(10, TimeUnit.SECONDS);
-            assertThat(completed).isTrue();
-            assertThat(TestTaskProcessors.recurringTaskExecutions.get())
-                    .isGreaterThanOrEqualTo(1)
-                    .isLessThanOrEqualTo(2);
-        } finally {
-            taskOps.deleteRecurringTask(task);
-        }
-    }
-
-    @Test
-    @Timeout(120)
-    void testTaskRetry() throws InterruptedException {
-        TestTaskProcessors.completionLatch = new CountDownLatch(1);
-        TestTaskProcessors.retryTaskExecutions.set(0);
-        var task = Task.Builder.newTask()
-                .accountId(Random.UIDBASE64())
-                .event(TestEvents.RETRY_TASK)
-                .build();
-
-        taskOps.addTaskToQueue(task, null);
-
-        // 3 tries: each failed attempt is retried after the stale timeout of 3 seconds plus the retry delay,
-        // so the third attempt lands at roughly 12 seconds. Poll the counter instead of sleeping a fixed time.
-        for (int i = 0; i < 40 && TestTaskProcessors.retryTaskExecutions.get() < 3; i++) {
-            Thread.sleep(1000);
-        }
-        // Should have executed 3 times (2 failures + 1 success)
-        assertThat(TestTaskProcessors.retryTaskExecutions.get()).isEqualTo(3);
-    }
-
-    @Test
     @Timeout(30)
-    void testConcurrentTaskProcessing() throws InterruptedException {
-        int taskCount = 5;
-        TestTaskProcessors.completionLatch = new CountDownLatch(taskCount);
-        TestTaskProcessors.concurrencyLatch = new CountDownLatch(1);
+    void taskDataReachesTheProcessor() throws InterruptedException {
+        TestTaskProcessors.completionLatch = new CountDownLatch(1);
+        taskOps.enqueue(task(TestEvents.COOL).build(), Map.of("name", "bth4j", "count", 3));
 
-        // Create multiple tasks
-        for (int i = 0; i < taskCount; i++) {
-            var task = Task.Builder.newTask()
-                    .accountId(Random.UIDBASE64())
-                    .event(TestEvents.CONCURRENT_TASK)
-                    .build();
-            taskOps.addTaskToQueue(task, Collections.emptyMap());
+        assertThat(TestTaskProcessors.completionLatch.await(20, TimeUnit.SECONDS))
+                .isTrue();
+        assertThat(TestTaskProcessors.receivedData.get())
+                .containsEntry("name", "bth4j")
+                .containsEntry("count", 3);
+    }
+
+    @Test
+    @Timeout(120)
+    void recurringTaskRunsEveryMinute() throws InterruptedException {
+        TestTaskProcessors.completionLatch = new CountDownLatch(1);
+        var definition =
+                task(TestEvents.RECURRING_TASK).cronExpression("* * * * *").build();
+        try {
+            taskOps.addRecurringTask(definition);
+            for (int i = 0; i < 100 && taskOps.scheduledCount() == 0; i++) Thread.sleep(100);
+            assertThat(taskOps.scheduledCount()).isGreaterThanOrEqualTo(1);
+
+            assertThat(TestTaskProcessors.completionLatch.await(70, TimeUnit.SECONDS))
+                    .isTrue();
+            assertThat(TestTaskProcessors.recurringTaskExecutions.get()).isBetween(1, 2);
+        } finally {
+            assertThat(taskOps.deleteRecurringTask(definition.uniqueId())).isTrue();
         }
-
-        TestTaskProcessors.concurrencyLatch.countDown();
-        // Wait for all tasks to complete
-        boolean completed = TestTaskProcessors.completionLatch.await(30, TimeUnit.SECONDS);
-        assertThat(completed).isTrue();
-
-        // Verify that tasks ran concurrently
-        int maxConcurrent = taskCount; // All tasks should have run concurrently
-        assertThat(TestTaskProcessors.concurrentTaskExecutions.get()).isLessThanOrEqualTo(maxConcurrent);
     }
 
     @Test
     @Timeout(60)
-    void testTaskIsMovedToDeadQueueWhenRetriesAreExhausted() throws InterruptedException {
-        var task = Task.Builder.newTask()
-                .accountId(Random.UIDBASE64())
-                .event(TestEvents.ALWAYS_FAILS) // retryCount is 1
-                .build();
-        taskOps.addTaskToQueue(task, null);
+    void failedTaskIsRetriedAfterTheDelay() throws InterruptedException {
+        TestTaskProcessors.completionLatch = new CountDownLatch(1);
+        long start = System.currentTimeMillis();
+        taskOps.enqueue(task(TestEvents.RETRY_TASK).build());
 
-        // fails, becomes stale (3s), is retried, fails again, becomes stale again and is then moved to the dead queue
-        Double deadSince = null;
-        for (int i = 0; i < 50 && deadSince == null; i++) {
-            deadSince = jedis.zscore("BTH1:DEAD_TASKS", task.taskString());
-            if (deadSince == null) Thread.sleep(1000);
+        assertThat(TestTaskProcessors.completionLatch.await(30, TimeUnit.SECONDS))
+                .isTrue();
+        assertThat(TestTaskProcessors.retryTaskExecutions.get()).isEqualTo(3);
+        // two failures, each retried after one second
+        assertThat(System.currentTimeMillis() - start)
+                .isGreaterThanOrEqualTo(2000)
+                .isLessThan(10000);
+    }
+
+    @Test
+    @Timeout(30)
+    void tasksRunConcurrently() throws InterruptedException {
+        int taskCount = 5;
+        TestTaskProcessors.completionLatch = new CountDownLatch(taskCount);
+        TestTaskProcessors.concurrencyLatch = new CountDownLatch(1);
+        for (int i = 0; i < taskCount; i++) {
+            taskOps.enqueue(task(TestEvents.CONCURRENT_TASK).build());
         }
-        assertThat(deadSince).isNotNull();
+        for (int i = 0; i < 100 && TestTaskProcessors.concurrentTaskExecutions.get() < taskCount; i++) {
+            Thread.sleep(50);
+        }
+        assertThat(TestTaskProcessors.concurrentTaskExecutions.get()).isEqualTo(taskCount);
+        TestTaskProcessors.concurrencyLatch.countDown();
+        assertThat(TestTaskProcessors.completionLatch.await(20, TimeUnit.SECONDS))
+                .isTrue();
+    }
+
+    @Test
+    @Timeout(60)
+    void taskIsDeadAfterItsAttemptsAreExhausted() throws InterruptedException {
+        var t = task(TestEvents.ALWAYS_FAILS).build(); // retryCount 1, so two attempts
+        taskOps.enqueue(t);
+
+        Task dead = null;
+        for (int i = 0; i < 300 && dead == null; i++) {
+            dead = taskOps.deadTasks(10).stream()
+                    .filter(d -> d.uniqueId().equals(t.uniqueId()))
+                    .findFirst()
+                    .orElse(null);
+            if (dead == null) Thread.sleep(100);
+        }
+        assertThat(dead).isNotNull();
+        assertThat(dead.attempts()).isEqualTo(2);
+        assertThat(dead.lastError()).contains("Simulated permanent failure");
+
+        TestTaskProcessors.completionLatch = new CountDownLatch(1);
+        assertThat(taskOps.retryDeadTask(t.uniqueId())).isTrue();
+        assertThat(taskOps.getTask(t.uniqueId()))
+                .get()
+                .extracting(Task::attempts)
+                .isEqualTo(0);
+    }
+
+    @Test
+    @Timeout(60)
+    void longTaskKeepsItsLeaseAndRunsOnce() throws InterruptedException {
+        TestTaskProcessors.longTaskMillis = 3500; // several lease durations of 1 s
+        TestTaskProcessors.completionLatch = new CountDownLatch(1);
+        var t = task(TestEvents.DEFAULT).build();
+        taskOps.enqueue(t);
+
+        assertThat(TestTaskProcessors.completionLatch.await(20, TimeUnit.SECONDS))
+                .isTrue();
+        Thread.sleep(2500); // enough for maintenance to have reclaimed it if the lease had lapsed
+        assertThat(TestTaskProcessors.longTaskExecutions.get()).isEqualTo(1);
+        assertThat(taskOps.getTask(t.uniqueId())).isEmpty();
+        assertThat(taskOps.deadTasks(100)).extracting(Task::uniqueId).doesNotContain(t.uniqueId());
+    }
+
+    @Test
+    @Timeout(60)
+    void stopRunnerWaitsForRunningTasksAndCompletesThem() throws InterruptedException {
+        var runner =
+                runnerBuilder("BTH2").shutdownTimeout(Duration.ofSeconds(15)).build();
+        var ops = runner.taskOps();
+        runner.run();
+        TestTaskProcessors.longTaskMillis = 2500;
+        TestTaskProcessors.completionLatch = new CountDownLatch(1);
+        var t = task(TestEvents.DEFAULT).build();
+        ops.enqueue(t);
+        for (int i = 0; i < 100 && runner.runningTasks() == 0; i++) Thread.sleep(50);
+        assertThat(runner.runningTasks()).isEqualTo(1);
+
+        long start = System.currentTimeMillis();
+        runner.stopRunner();
+
+        assertThat(System.currentTimeMillis() - start).isGreaterThanOrEqualTo(1500);
+        assertThat(TestTaskProcessors.completionLatch.getCount()).isZero();
+        assertThat(ops.getTask(t.uniqueId())).isEmpty();
+        assertThat(ops.leasedCount()).isZero();
     }
 }

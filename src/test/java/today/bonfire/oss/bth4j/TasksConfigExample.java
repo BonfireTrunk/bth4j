@@ -31,7 +31,7 @@ public class TasksConfigExample {
 
         @Override
         public void process(Task task, String data) {
-            log.info("Processing task {}", task.taskString());
+            log.info("Processing task {}", task);
             log.info("Task data: {}", data);
         }
 
@@ -58,7 +58,7 @@ public class TasksConfigExample {
 
         @Override
         public void process(Task task, Void data) {
-            log.info("Processing recurring task {}", task.taskString());
+            log.info("Processing recurring task {}", task);
         }
 
         @Override
@@ -72,7 +72,7 @@ public class TasksConfigExample {
         @Override
         public void process(Task task, Integer data) {
             Math.min(Math.random(), Math.random());
-            // log.info("Processing cool task {} with data {}", task.taskString(), data);
+            // log.info("Processing cool task {} with data {}", task, data);
         }
 
         @Override

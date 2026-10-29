@@ -15,8 +15,7 @@ final class RedisScripts {
      * KEYS: task hash, scheduled zset, queue list. ARGV: id, due ms or "", wake channel, queue name,
      * then field/value pairs of the hash. Returns 1 when stored, 0 when the id already exists.
      */
-    static final String ENQUEUE =
-            """
+    static final String ENQUEUE = """
             if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
             local fields = {}
             for i = 5, #ARGV do fields[#fields + 1] = ARGV[i] end
@@ -36,8 +35,7 @@ final class RedisScripts {
      * count, task prefix. Pops up to count ids from the queues in order, leases them and returns a list of
      * flattened hashes, each starting with the id. Ids without a hash are dropped.
      */
-    static final String CLAIM =
-            """
+    static final String CLAIM = """
             local now = tonumber(ARGV[1])
             local expiry = now + tonumber(ARGV[2])
             local remaining = tonumber(ARGV[4])
@@ -74,8 +72,7 @@ final class RedisScripts {
      * KEYS: leased zset. ARGV: new expiry ms, task prefix, then id/token pairs. Returns the number of
      * leases renewed; a task whose token changed is skipped.
      */
-    static final String RENEW =
-            """
+    static final String RENEW = """
             local renewed = 0
             for i = 3, #ARGV, 2 do
               local tkey = ARGV[2] .. ARGV[i]
@@ -89,8 +86,7 @@ final class RedisScripts {
             """;
 
     /** KEYS: leased zset. ARGV: task prefix, id, token. Returns 1 when the task was completed, 0 otherwise. */
-    static final String ACK =
-            """
+    static final String ACK = """
             local tkey = ARGV[1] .. ARGV[2]
             if redis.call('HGET', tkey, 'token') ~= ARGV[3] then return 0 end
             redis.call('ZREM', KEYS[1], ARGV[2])
@@ -99,11 +95,11 @@ final class RedisScripts {
             """;
 
     /**
-     * KEYS: leased zset, scheduled zset, dead zset. ARGV: task prefix, id, token, now ms, retry delay ms,
-     * error text, dead hash ttl seconds. Returns "retry", "dead" or "lost" (token mismatch).
+     * KEYS: leased zset, scheduled zset, dead zset. ARGV: task prefix, id, token, now ms, retry delay ms or
+     * "dead" to kill the task regardless of attempts, error text, dead hash ttl seconds.
+     * Returns "retry", "dead" or "lost" (token mismatch).
      */
-    static final String FAIL =
-            """
+    static final String FAIL = """
             local tkey = ARGV[1] .. ARGV[2]
             if redis.call('HGET', tkey, 'token') ~= ARGV[3] then return 'lost' end
             redis.call('ZREM', KEYS[1], ARGV[2])
@@ -111,7 +107,7 @@ final class RedisScripts {
             redis.call('HSET', tkey, 'error', ARGV[6])
             local attempts = tonumber(redis.call('HGET', tkey, 'attempts'))
             local max = tonumber(redis.call('HGET', tkey, 'max'))
-            if attempts >= max then
+            if ARGV[5] == 'dead' or attempts >= max then
               redis.call('ZADD', KEYS[3], ARGV[4], ARGV[2])
               redis.call('HSET', tkey, 'died', ARGV[4])
               redis.call('EXPIRE', tkey, ARGV[7])
@@ -127,8 +123,7 @@ final class RedisScripts {
      * KEYS: leased zset, scheduled zset. ARGV: task prefix, id, token, due ms. Moves the task to the
      * scheduled set and gives the attempt back. Returns 1, or 0 on token mismatch.
      */
-    static final String RESCHEDULE =
-            """
+    static final String RESCHEDULE = """
             local tkey = ARGV[1] .. ARGV[2]
             if redis.call('HGET', tkey, 'token') ~= ARGV[3] then return 0 end
             redis.call('ZREM', KEYS[1], ARGV[2])
@@ -143,8 +138,7 @@ final class RedisScripts {
      * KEYS: leased zset. ARGV: task prefix, queue prefix, id, token. Puts the task back at the front of its
      * queue and gives the attempt back. Returns 1, or 0 on token mismatch.
      */
-    static final String UNCLAIM =
-            """
+    static final String UNCLAIM = """
             local tkey = ARGV[1] .. ARGV[3]
             if redis.call('HGET', tkey, 'token') ~= ARGV[4] then return 0 end
             redis.call('ZREM', KEYS[1], ARGV[3])
@@ -158,8 +152,7 @@ final class RedisScripts {
      * KEYS: scheduled zset. ARGV: now ms, limit, task prefix, queue prefix, wake channel. Moves due ids into
      * their queues. Returns {moved count, next due ms or -1}.
      */
-    static final String PROMOTE =
-            """
+    static final String PROMOTE = """
             local due = redis.call('ZRANGE', KEYS[1], 0, ARGV[1], 'BYSCORE', 'LIMIT', 0, ARGV[2])
             local moved = 0
             for _, id in ipairs(due) do
@@ -183,8 +176,7 @@ final class RedisScripts {
      * KEYS: leased zset. ARGV: now ms, limit, task prefix. Returns expired leases as {id, token, attempts,
      * max, event} entries. Entries without a hash are removed.
      */
-    static final String RECLAIM =
-            """
+    static final String RECLAIM = """
             local expired = redis.call('ZRANGE', KEYS[1], 0, ARGV[1], 'BYSCORE', 'LIMIT', 0, ARGV[2])
             local result = {}
             for _, id in ipairs(expired) do
@@ -203,8 +195,7 @@ final class RedisScripts {
      * KEYS: cron zset. ARGV: schedule id, cron prefix, next fire ms, then field/value pairs including the
      * 'cron' expression. Keeps the current fire time when the expression is unchanged. Returns the revision.
      */
-    static final String CRON_PUT =
-            """
+    static final String CRON_PUT = """
             local ckey = ARGV[2] .. ARGV[1]
             local current = redis.call('HGET', ckey, 'cron')
             local fields = {}
@@ -221,8 +212,7 @@ final class RedisScripts {
             """;
 
     /** KEYS: cron zset. ARGV: schedule id, cron prefix. Returns 1 when a definition was removed. */
-    static final String CRON_DELETE =
-            """
+    static final String CRON_DELETE = """
             redis.call('ZREM', KEYS[1], ARGV[1])
             return redis.call('UNLINK', ARGV[2] .. ARGV[1])
             """;
@@ -231,8 +221,7 @@ final class RedisScripts {
      * KEYS: cron zset. ARGV: up to ms, limit, cron prefix. Returns definitions due up to the given time as
      * {schedule id, fire at, flattened hash} entries.
      */
-    static final String CRON_DUE =
-            """
+    static final String CRON_DUE = """
             local due = redis.call('ZRANGE', KEYS[1], 0, ARGV[1], 'BYSCORE', 'WITHSCORES', 'LIMIT', 0, ARGV[2])
             local result = {}
             for i = 1, #due, 2 do
@@ -250,8 +239,7 @@ final class RedisScripts {
      * scheduled set and advances the schedule, unless the definition changed or was deleted meanwhile.
      * Returns 1 when committed, 0 otherwise.
      */
-    static final String CRON_COMMIT =
-            """
+    static final String CRON_COMMIT = """
             local ckey = ARGV[6] .. ARGV[1]
             if redis.call('HGET', ckey, 'rev') ~= ARGV[2] then return 0 end
             local score = redis.call('ZSCORE', KEYS[1], ARGV[1])
@@ -269,8 +257,7 @@ final class RedisScripts {
             """;
 
     /** KEYS: dead zset. ARGV: before ms, limit, task prefix. Removes dead entries older than the time. */
-    static final String DEAD_PURGE =
-            """
+    static final String DEAD_PURGE = """
             local old = redis.call('ZRANGE', KEYS[1], 0, ARGV[1], 'BYSCORE', 'LIMIT', 0, ARGV[2])
             for _, id in ipairs(old) do
               redis.call('UNLINK', ARGV[3] .. id)
@@ -283,8 +270,7 @@ final class RedisScripts {
      * KEYS: dead zset. ARGV: task prefix, queue prefix, wake channel, id. Puts a dead task back into its queue
      * with a fresh attempt count. Returns 1, or 0 when the task is not dead or its hash expired.
      */
-    static final String RETRY_DEAD =
-            """
+    static final String RETRY_DEAD = """
             local tkey = ARGV[1] .. ARGV[4]
             if redis.call('ZREM', KEYS[1], ARGV[4]) == 0 then return 0 end
             local queue = redis.call('HGET', tkey, 'queue')

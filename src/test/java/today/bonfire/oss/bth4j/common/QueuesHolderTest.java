@@ -13,60 +13,57 @@ import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
 class QueuesHolderTest {
 
     private static QueuesHolder holder() {
-        return new QueuesHolder("NS", Set.of("NS:Q:A", "NS:Q:B"), List.of("NS:Q:B", "NS:Q:A"), "NS:Q:A");
+        return new QueuesHolder(Set.of("a", "b"), List.of("b", "a"), "a");
     }
 
     @Test
-    void validQueueNameIsResolvedWithNamespace() {
-        assertThat(holder().getValidQueue("Q:B")).isEqualTo("NS:Q:B");
-    }
-
-    @Test
-    void blankQueueNameResolvesToDefaultQueue() {
+    void blankQueueNameReturnsDefault() {
         var h = holder();
-        assertThat(h.getValidQueue(null)).isEqualTo("NS:Q:A");
-        assertThat(h.getValidQueue("")).isEqualTo("NS:Q:A");
-        assertThat(h.getValidQueue("   ")).isEqualTo("NS:Q:A");
+
+        assertThat(h.getValidQueue(null)).isEqualTo("a");
+        assertThat(h.getValidQueue("")).isEqualTo("a");
+        assertThat(h.getValidQueue("  ")).isEqualTo("a");
     }
 
     @Test
-    void unknownQueueNameIsRejected() {
-        assertThatThrownBy(() -> holder().getValidQueue("Q:Z"))
+    void knownQueueNameIsReturnedAsIs() {
+        assertThat(holder().getValidQueue("b")).isEqualTo("b");
+    }
+
+    @Test
+    void unknownQueueNameThrows() {
+        assertThatThrownBy(() -> holder().getValidQueue("zzz"))
                 .isInstanceOf(TaskErrorException.class)
-                .hasMessageContaining("NS:Q:Z");
+                .hasMessageContaining("zzz");
     }
 
     @Test
-    void queueNameWithNamespaceAlreadyAppliedIsRejected() {
-        // names come from user space and never carry the namespace
-        assertThatThrownBy(() -> holder().getValidQueue("NS:Q:A")).isInstanceOf(TaskErrorException.class);
+    void exposesConfiguration() {
+        var h = holder();
+
+        assertThat(h.defaultQueue).isEqualTo("a");
+        assertThat(h.availableQueues).containsExactlyInAnyOrder("a", "b");
+        assertThat(h.queuesToProcess).containsExactly("b", "a");
     }
 
     @Test
-    void allAvailableQueuesAreProcessedInitially() {
-        assertThat(holder().queueProcessingStatus)
-                .containsEntry("NS:Q:A", true)
-                .containsEntry("NS:Q:B", true)
-                .hasSize(2);
+    void collectionsAreUnmodifiable() {
+        var h = holder();
+
+        assertThatThrownBy(() -> h.availableQueues.add("c")).isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> h.queuesToProcess.add("c")).isInstanceOf(UnsupportedOperationException.class);
     }
 
     @Test
-    void queueCollectionsAreCopiedAndUnmodifiable() {
-        var available = new HashSet<>(Set.of("NS:Q:A", "NS:Q:B"));
-        var toProcess = new ArrayList<>(List.of("NS:Q:A"));
-        var h = new QueuesHolder("NS", available, toProcess, "NS:Q:A");
+    void collectionsAreCopies() {
+        var available = new HashSet<>(Set.of("a"));
+        var process = new ArrayList<>(List.of("a"));
+        var h = new QueuesHolder(available, process, "a");
 
-        available.add("NS:Q:C");
-        toProcess.add("NS:Q:B");
+        available.add("late");
+        process.add("late");
 
-        assertThat(h.availableQueues).containsExactlyInAnyOrder("NS:Q:A", "NS:Q:B");
-        assertThat(h.queuesToProcess).containsExactly("NS:Q:A");
-        assertThatThrownBy(() -> h.availableQueues.add("x")).isInstanceOf(UnsupportedOperationException.class);
-        assertThatThrownBy(() -> h.queuesToProcess.add("x")).isInstanceOf(UnsupportedOperationException.class);
-    }
-
-    @Test
-    void queueOrderOfQueuesToProcessIsKept() {
-        assertThat(holder().queuesToProcess).containsExactly("NS:Q:B", "NS:Q:A");
+        assertThat(h.availableQueues).containsExactly("a");
+        assertThat(h.queuesToProcess).containsExactly("a");
     }
 }
