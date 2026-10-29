@@ -1,11 +1,13 @@
 package today.bonfire.oss.bth4j;
 
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.service.Task;
 import today.bonfire.oss.bth4j.service.TaskProcessorRegistry;
 
-@Slf4j
 public class TasksConfigExample {
+    private static final Logger log = LoggerFactory.getLogger(TasksConfigExample.class);
+
     public static TaskProcessorRegistry newTaskProcessorRegistry() {
         TaskProcessorRegistry registry = new TaskProcessorRegistry();
         registry.register(TestEvents.UNKNOWN, new VoidTask2());

@@ -8,13 +8,13 @@ import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import lombok.SneakyThrows;
-import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
@@ -35,9 +35,9 @@ import today.bonfire.oss.bth4j.service.TaskProcessorRegistry;
  * Integration test against a real Redis started with Testcontainers. Needs Docker.
  * Run by maven-failsafe-plugin (mvn verify), not by the unit test phase.
  */
-@Slf4j
 @Testcontainers
 class BackgroundRunnerIT {
+    private static final Logger log = LoggerFactory.getLogger(BackgroundRunnerIT.class);
 
     @Container
     static final GenericContainer<?> REDIS = new GenericContainer<>(DockerImageName.parse("redis:7.4-alpine"))
@@ -103,12 +103,16 @@ class BackgroundRunnerIT {
         var timer = new Timer(true);
         timer.schedule(
                 new TimerTask() {
-                    @SneakyThrows
                     @Override
                     public void run() {
                         log.debug("Stopping runner");
                         backgroundRunner.stopRunner();
-                        backgroundThread.join(Duration.ofSeconds(10));
+                        try {
+                            backgroundThread.join(Duration.ofSeconds(10));
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new RuntimeException(e);
+                        }
                     }
                 },
                 600000); // 10 minutes timeout

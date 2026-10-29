@@ -1,7 +1,8 @@
 package today.bonfire.oss.bth4j.service;
 
 import java.util.function.Consumer;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.exceptions.TaskDataException;
 import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
 import today.bonfire.oss.bth4j.exceptions.TaskRescheduleException;
@@ -14,8 +15,8 @@ import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;
  * queue, rescheduled) is always applied before the matching callback is invoked, and an exception thrown
  * by a callback is only logged. It can neither undo a completed task nor skip the failure handling.
  */
-@Slf4j
 public class TaskRunnerWrapper implements Runnable {
+    private static final Logger log = LoggerFactory.getLogger(TaskRunnerWrapper.class);
 
     private final Task task;
     private final Consumer<Task> taskHandler;

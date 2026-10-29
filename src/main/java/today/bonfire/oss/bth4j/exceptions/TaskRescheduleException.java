@@ -1,18 +1,13 @@
 package today.bonfire.oss.bth4j.exceptions;
 
-import lombok.Getter;
-import lombok.experimental.Accessors;
-
 /**
  * Exception thrown by a task processor to ask for the task to be run again after a delay.
  * The original task is replaced by a new task (new id) that carries the same data and is
  * scheduled to run after {@link #delay()} seconds.
  */
-@Accessors(fluent = true)
 public class TaskRescheduleException extends RuntimeException {
 
     /** delay in seconds before the task is run again */
-    @Getter
     private long delay = 0;
 
     private TaskRescheduleException() {}
@@ -42,6 +37,10 @@ public class TaskRescheduleException extends RuntimeException {
     public TaskRescheduleException(long seconds, String message, Throwable cause) {
         super(message, cause);
         delay = requireNonNegative(seconds);
+    }
+
+    public long delay() {
+        return delay;
     }
 
     private static long requireNonNegative(long seconds) {

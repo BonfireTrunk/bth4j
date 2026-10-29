@@ -6,13 +6,13 @@ import java.util.Collections;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.CountDownLatch;
-import lombok.SneakyThrows;
-import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import redis.clients.jedis.ConnectionPoolConfig;
 import redis.clients.jedis.DefaultJedisClientConfig;
 import redis.clients.jedis.HostAndPort;
@@ -27,8 +27,8 @@ import today.bonfire.oss.bth4j.service.Task;
 import today.bonfire.oss.bth4j.service.TaskOps;
 import today.bonfire.oss.bth4j.service.TaskProcessorRegistry;
 
-@Slf4j
 class BackgroundRunnerExample {
+    private static final Logger log = LoggerFactory.getLogger(BackgroundRunnerExample.class);
 
     private static RedisClient jedis;
     private static TaskProcessorRegistry registry = TasksConfigExample.newTaskProcessorRegistry();
@@ -79,12 +79,16 @@ class BackgroundRunnerExample {
         var timer = new Timer(true);
         timer.schedule(
                 new TimerTask() {
-                    @SneakyThrows
                     @Override
                     public void run() {
                         log.debug("Stopping runner");
                         bg.stopRunner();
-                        th.join(Duration.ofSeconds(10));
+                        try {
+                            th.join(Duration.ofSeconds(10));
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new RuntimeException(e);
+                        }
                     }
                 },
                 600000);

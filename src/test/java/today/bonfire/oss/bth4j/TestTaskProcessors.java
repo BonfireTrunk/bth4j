@@ -2,12 +2,14 @@ package today.bonfire.oss.bth4j;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.service.Task;
 import today.bonfire.oss.bth4j.service.TaskProcessorRegistry;
 
-@Slf4j
 public class TestTaskProcessors {
+    private static final Logger log = LoggerFactory.getLogger(TestTaskProcessors.class);
+
     // Counters for verification
     public static final AtomicInteger regularTaskExecutions = new AtomicInteger(0);
     public static final AtomicInteger delayedTaskExecutions = new AtomicInteger(0);

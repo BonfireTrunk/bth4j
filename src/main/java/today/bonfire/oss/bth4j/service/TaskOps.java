@@ -6,14 +6,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.function.Supplier;
-import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import redis.clients.jedis.UnifiedJedis;
 import redis.clients.jedis.args.ListDirection;
 import redis.clients.jedis.params.ScanParams;
 import redis.clients.jedis.params.SetParams;
+import redis.clients.jedis.params.ZRangeParams;
 import redis.clients.jedis.resps.ScanResult;
 import redis.clients.jedis.resps.Tuple;
 import today.bonfire.oss.bth4j.Event;
@@ -23,8 +25,8 @@ import today.bonfire.oss.bth4j.common.THC;
 import today.bonfire.oss.bth4j.exceptions.OperationNotAllowed;
 import today.bonfire.oss.bth4j.exceptions.TaskDataException;
 
-@Slf4j
 public class TaskOps {
+    private static final Logger log = LoggerFactory.getLogger(TaskOps.class);
 
     private final UnifiedJedis jedis;
     private final JsonMapper mapper;
@@ -222,11 +224,12 @@ public class TaskOps {
     }
 
     void removeTasksFromSortedSetBasedOnTime(String key, Instant time) {
-        if (!StringUtils.equalsAny(key, keys.DEAD_TASKS)) {
+        if (!keys.DEAD_TASKS.equals(key)) {
             throw new OperationNotAllowed("This method is only allowed to delete tasks from the dead queue");
         }
 
-        Supplier<List<String>> tasksSupplier = () -> jedis.zrangeByScore(key, 0, time.getEpochSecond(), 0, 100);
+        Supplier<List<String>> tasksSupplier = () -> jedis.zrange(
+                key, ZRangeParams.zrangeByScoreParams(0, time.getEpochSecond()).limit(0, 100));
         do {
             var tasks = tasksSupplier.get();
             if (ObjectUtils.isEmpty(tasks)) break;

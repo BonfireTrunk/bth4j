@@ -3,13 +3,14 @@ package today.bonfire.oss.bth4j.service;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.function.Function;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.Event;
 import today.bonfire.oss.bth4j.common.THC;
 import today.bonfire.oss.bth4j.executor.CustomThread;
 
-@Slf4j
 public class RecurringTaskService extends CustomThread {
+    private static final Logger log = LoggerFactory.getLogger(RecurringTaskService.class);
 
     private final long checkInterval;
     private final long lockTimeout;
