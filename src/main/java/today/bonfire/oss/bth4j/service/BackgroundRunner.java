@@ -19,7 +19,7 @@ import lombok.experimental.Accessors;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
-import redis.clients.jedis.JedisPooled;
+import redis.clients.jedis.UnifiedJedis;
 import today.bonfire.oss.bth4j.Event;
 import today.bonfire.oss.bth4j.common.JsonMapper;
 import today.bonfire.oss.bth4j.common.QueuesHolder;
@@ -382,7 +382,7 @@ public class BackgroundRunner implements Runnable {
 
         private String namespacePrefix = "BTH";
         private Function<String, Event> eventParser;
-        private JedisPooled jedis;
+        private UnifiedJedis jedis;
         private JsonMapper jsonMapper;
 
         /**
@@ -615,9 +615,10 @@ public class BackgroundRunner implements Runnable {
         }
 
         /**
-         * @param jedis Jedis client used for all Redis operations. Required. The runner does not close it.
+         * @param jedis Jedis client used for all Redis operations, for example a {@code RedisClient}. Required.
+         *              The runner does not close it.
          */
-        public Builder jedisClient(JedisPooled jedis) {
+        public Builder jedisClient(UnifiedJedis jedis) {
             this.jedis = jedis;
             return this;
         }

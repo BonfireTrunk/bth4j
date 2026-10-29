@@ -13,10 +13,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import redis.clients.jedis.ConnectionPoolConfig;
 import redis.clients.jedis.DefaultJedisClientConfig;
 import redis.clients.jedis.HostAndPort;
-import redis.clients.jedis.JedisPoolConfig;
-import redis.clients.jedis.JedisPooled;
+import redis.clients.jedis.RedisClient;
 import today.bonfire.oss.bth4j.JsonMapperTest;
 import today.bonfire.oss.bth4j.TasksConfigExample;
 import today.bonfire.oss.bth4j.TestEvents;
@@ -30,14 +30,14 @@ import today.bonfire.oss.bth4j.service.TaskProcessorRegistry;
 @Slf4j
 class BackgroundRunnerExample {
 
-    private static JedisPooled jedis;
+    private static RedisClient jedis;
     private static TaskProcessorRegistry registry = TasksConfigExample.newTaskProcessorRegistry();
     private static Thread th;
     private static TaskOps taskOps;
 
     @BeforeAll
     static void beforeAll() throws InterruptedException {
-        var builder = JedisPoolConfig.builder();
+        var builder = ConnectionPoolConfig.builder();
         builder.maxPoolSize(1000)
                 .minPoolSize(1)
                 .testOnBorrow(true)
@@ -57,7 +57,11 @@ class BackgroundRunnerExample {
                 .password("happy")
                 .build();
         var hostPort = new HostAndPort("127.0.0.1", 6404);
-        jedis = new JedisPooled(hostPort, clientConfig, builder.build());
+        jedis = RedisClient.builder()
+                .hostAndPort(hostPort)
+                .clientConfig(clientConfig)
+                .poolConfig(builder.build())
+                .build();
         var bg = new BackgroundRunner.Builder()
                 .taskProcessorRegistry(registry)
                 .eventParser(TestEvents.UNKNOWN::from)

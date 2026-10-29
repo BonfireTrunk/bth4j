@@ -101,7 +101,7 @@ The core components of BTH4J are:
 
 ```java
 // Configure Redis connection
-var poolConfig = JedisPoolConfig.builder()
+var poolConfig = ConnectionPoolConfig.builder()
     .maxPoolSize(1000)
     .minPoolSize(1)
     .testOnBorrow(true)
@@ -117,7 +117,11 @@ var clientConfig = DefaultJedisClientConfig.builder()
     .password("your-password")
     .build();
 
-var jedis = new JedisPooled(new HostAndPort("localhost", 6379), clientConfig, poolConfig.build());
+var jedis = RedisClient.builder()
+    .hostAndPort(new HostAndPort("localhost", 6379))
+    .clientConfig(clientConfig)
+    .poolConfig(poolConfig.build())
+    .build();
 
 // Create and configure BackgroundRunner
 var backgroundRunner = new BackgroundRunner.Builder()
