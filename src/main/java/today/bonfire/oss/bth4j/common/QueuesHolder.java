@@ -6,6 +6,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.apache.commons.lang3.StringUtils;
 import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
 
+/**
+ * Holds the queue configuration of a runner. The queue sets are unmodifiable copies;
+ * only {@link #queueProcessingStatus} changes at runtime.
+ */
 public final class QueuesHolder {
     public final String defaultQueue;
     public final Set<String> availableQueues;
@@ -16,8 +20,8 @@ public final class QueuesHolder {
     public QueuesHolder(
             String namespace, Set<String> availableQueues, List<String> queuesToProcess, String defaultQueue) {
         this.namespace = namespace;
-        this.availableQueues = availableQueues;
-        this.queuesToProcess = queuesToProcess;
+        this.availableQueues = Set.copyOf(availableQueues);
+        this.queuesToProcess = List.copyOf(queuesToProcess);
         this.defaultQueue = defaultQueue;
         this.queueProcessingStatus = new ConcurrentHashMap<>();
         for (var availableQueue : availableQueues) {

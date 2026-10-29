@@ -2,7 +2,6 @@ package today.bonfire.oss.bth4j.service;
 
 import java.time.Instant;
 import java.util.Collections;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import lombok.extern.slf4j.Slf4j;
 import today.bonfire.oss.bth4j.Event;
@@ -31,52 +30,102 @@ public class RecurringTaskService extends CustomThread {
 
     @Override
     public void run() {
-        while (this.canContinueProcessing) {
-            try {
-                // TODO: refresh lock in case of thousands of tasks
-                if (taskOps.acquireLock(keys.LOCK_RECURRING_TASKS, lockTimeout)) {
-                    var cursor = "0";
-                    AtomicInteger itemsQueued = new AtomicInteger();
-                    do {
-                        var r = taskOps.scanHashSet(keys.RECURRING_TASK_SET, cursor);
-                        cursor = r.getCursor();
-                        var l = r.getResult();
+        try {
+            while (this.canContinueProcessing) {
+                try {
+                    if (taskOps.acquireLock(keys.LOCK_RECURRING_TASKS, lockTimeout)) {
+                        queueUpcomingTasks();
+                    }
 
-                        l.forEach((k) -> {
-                            var lastExecutionTime = Instant.ofEpochSecond(Long.parseLong(k.getValue()));
-                            var task = new Task(k.getKey(), eventParser);
-                            var nextExecutionTime = task.getNextExecutionTime(lastExecutionTime);
-                            // only queue tasks that will run in the next queueAheadBy seconds
-                            if (Instant.now().plusSeconds(queueAheadBy).isAfter(nextExecutionTime)) {
-                                // queue the task based on the next execution time
-                                taskOps.addTaskToQueue(
-                                        Task.Builder.newTask()
-                                                .event(task.event())
-                                                .queueName(task.queueName())
-                                                .accountId(task.accountId())
-                                                .executeAtTimeStamp(nextExecutionTime)
-                                                .build(),
-                                        Collections.emptyMap());
-                                taskOps.updateExecutionTimeForRecurringTasks(k.getKey(), nextExecutionTime);
-                                itemsQueued.getAndIncrement();
-                            }
-                        });
-                        log.trace("Recurring task service analysed {} tasks", l.size());
-                    } while (!cursor.equals("0"));
-                    taskOps.releaseLock(keys.LOCK_RECURRING_TASKS);
-                    if (itemsQueued.get() > 0) {
-                        log.info("Recurring task service queued {} tasks", itemsQueued.get());
+                    Thread.sleep(checkInterval);
+                } catch (InterruptedException e) {
+                    if (this.canContinueProcessing) {
+                        log.error("Recurring task service Thread interrupted", e);
+                    } else {
+                        log.debug("Recurring task service Thread interrupted while stopping");
+                    }
+                } catch (Exception e) {
+                    log.error("Recurring task service Thread error", e);
+                }
+            }
+        } finally {
+            doneLatch.countDown();
+        }
+    }
+
+    /**
+     * Scans all recurring task definitions and queues the ones that are due within the queue-ahead window.
+     * Must be called with the lock held. The lock (valid for {@code lockTimeout} seconds) is refreshed after
+     * every scan page and released on exit, also on exceptions, unless it could not be refreshed
+     * (it may then belong to another instance).
+     */
+    private void queueUpcomingTasks() {
+        var lockHeld = true;
+        var itemsQueued = 0;
+        try {
+            var cursor = "0";
+            do {
+                var r = taskOps.scanHashSet(keys.RECURRING_TASK_SET, cursor);
+                cursor = r.getCursor();
+                var entries = r.getResult();
+
+                for (var entry : entries) {
+                    if (queueIfDue(entry.getKey(), entry.getValue())) {
+                        itemsQueued++;
                     }
                 }
+                log.trace("Recurring task service analysed {} tasks", entries.size());
 
-                Thread.sleep(checkInterval);
-            } catch (InterruptedException e) {
-                log.error("Task processor Thread interrupted", e);
-            } catch (Exception e) {
-                log.error("Task processor Thread error", e);
+                if (!"0".equals(cursor)) {
+                    // more pages to scan, make sure the lock does not expire in between
+                    if (!taskOps.refreshLock(keys.LOCK_RECURRING_TASKS, lockTimeout)) {
+                        log.error("Unable to refresh lock on recurring tasks");
+                        lockHeld = false;
+                        break;
+                    }
+                }
+            } while (!"0".equals(cursor) && this.canContinueProcessing);
+        } finally {
+            if (lockHeld) {
+                taskOps.releaseLock(keys.LOCK_RECURRING_TASKS);
             }
         }
-        doneLatch.countDown();
+        if (itemsQueued > 0) {
+            log.info("Recurring task service queued {} tasks", itemsQueued);
+        }
+    }
+
+    /**
+     * Queues one instance of the recurring task if it is due within the queue-ahead window.
+     * A malformed entry is logged and skipped so that it cannot block the other recurring tasks.
+     *
+     * @param taskString        task string of the recurring task, the hash key
+     * @param lastExecutionTime epoch seconds of the last queued execution, the hash value
+     * @return true if a task was queued
+     */
+    private boolean queueIfDue(String taskString, String lastExecutionTime) {
+        try {
+            var lastExecution = Instant.ofEpochSecond(Long.parseLong(lastExecutionTime));
+            var task = new Task(taskString, eventParser);
+            var nextExecutionTime = task.getNextExecutionTime(lastExecution);
+            // only queue tasks that will run in the next queueAheadBy seconds
+            if (Instant.now().plusSeconds(queueAheadBy).isAfter(nextExecutionTime)) {
+                // queue the task based on the next execution time
+                taskOps.addTaskToQueue(
+                        Task.Builder.newTask()
+                                .event(task.event())
+                                .queueName(task.queueName())
+                                .accountId(task.accountId())
+                                .executeAtTimeStamp(nextExecutionTime)
+                                .build(),
+                        Collections.emptyMap());
+                taskOps.updateExecutionTimeForRecurringTasks(taskString, nextExecutionTime);
+                return true;
+            }
+        } catch (Exception e) {
+            log.error("Skipping recurring task entry {}", taskString, e);
+        }
+        return false;
     }
 
     public static class Builder {

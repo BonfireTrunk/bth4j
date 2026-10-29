@@ -7,6 +7,13 @@ import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
 import today.bonfire.oss.bth4j.exceptions.TaskRescheduleException;
 import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;
 
+/**
+ * Runs a single task and applies the outcome to Redis.
+ * <p>
+ * Callbacks ({@link TaskCallbacks}) are user code. The state change of the task (deleted, moved to the dead
+ * queue, rescheduled) is always applied before the matching callback is invoked, and an exception thrown
+ * by a callback is only logged. It can neither undo a completed task nor skip the failure handling.
+ */
 @Slf4j
 public class TaskRunnerWrapper implements Runnable {
 
@@ -49,34 +56,69 @@ public class TaskRunnerWrapper implements Runnable {
     }
 
     /**
-     * if task fails it may be retired automatically by maintenance service
-     * unless the exception is UnrecoverableException in which case the task is marked
-     * dead and deleted.
+     * If the task fails it may be retried automatically by the maintenance service
+     * unless the exception is {@link TaskUnrecoverableException} or {@link TaskDataException},
+     * in which case the task is moved to the dead queue, or {@link TaskRescheduleException},
+     * in which case the task is replaced by a new delayed task.
      */
     @Override
     public void run() {
         try {
-            callbacks.beforeStart().accept(task);
-            taskHandler.accept(task);
-            deleteTask(task);
-            callbacks.onSuccess().accept(task);
-        } catch (Exception e) {
-            callbacks.onError().accept(task, e);
-            if (e instanceof TaskUnrecoverableException || e instanceof TaskDataException) {
-                log.error("Task {} failed", task.taskString(), e);
-                // task will not be retried
-                moveToDeadQueue(task);
-            } else if (e instanceof TaskErrorException) {
-                // task can be retried
-                log.warn("Task {} failed", task.taskString(), e);
-            } else if (e instanceof TaskRescheduleException ex) {
-                rescheduleTask(task, ex.delay());
+            Exception failure = null;
+            try {
+                callbacks.beforeStart().accept(task);
+                taskHandler.accept(task);
+                deleteTask(task);
+            } catch (Exception e) {
+                failure = e;
+            }
+
+            if (failure == null) {
+                invokeCallback("onSuccess", () -> callbacks.onSuccess().accept(task));
             } else {
-                // unknown exception task may be retried
-                log.warn("Unhandled exception. Task will be retried", e);
+                handleFailure(failure);
             }
         } finally {
-            callbacks.afterTask().accept(task);
+            invokeCallback("afterTask", () -> callbacks.afterTask().accept(task));
+        }
+    }
+
+    private void handleFailure(Exception e) {
+        try {
+            switch (e) {
+                case TaskUnrecoverableException ex -> {
+                    log.error("Task {} failed", task.taskString(), e);
+                    // task will not be retried
+                    moveToDeadQueue(task);
+                }
+                case TaskDataException ex -> {
+                    log.error("Task {} failed", task.taskString(), e);
+                    // task will not be retried
+                    moveToDeadQueue(task);
+                }
+                case TaskRescheduleException ex -> rescheduleTask(task, ex.delay());
+                case TaskErrorException ex ->
+                    // task can be retried
+                    log.warn("Task {} failed", task.taskString(), e);
+                default ->
+                    // unknown exception task may be retried
+                    log.warn("Unhandled exception. Task will be retried", e);
+            }
+        } catch (RuntimeException stateError) {
+            // typically a redis error. The task stays in progress and the maintenance service retries it.
+            log.error(
+                    "Unable to update state of failed task {}. It will be retried by maintenance",
+                    task.taskString(),
+                    stateError);
+        }
+        invokeCallback("onError", () -> callbacks.onError().accept(task, e));
+    }
+
+    private void invokeCallback(String name, Runnable callback) {
+        try {
+            callback.run();
+        } catch (Exception callbackError) {
+            log.error("Callback {} failed for task {}", name, task.taskString(), callbackError);
         }
     }
 }

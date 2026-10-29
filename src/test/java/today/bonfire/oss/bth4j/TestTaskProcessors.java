@@ -32,6 +32,7 @@ public class TestTaskProcessors {
         registry.register(TestEvents.RECURRING_TASK, new RecurringTaskProcessor());
         registry.register(TestEvents.RETRY_TASK, new RetryTaskProcessor());
         registry.register(TestEvents.CONCURRENT_TASK, new ConcurrentTaskProcessor());
+        registry.register(TestEvents.ALWAYS_FAILS, new AlwaysFailsProcessor());
         return registry;
     }
 
@@ -79,6 +80,13 @@ public class TestTaskProcessors {
             if (completionLatch != null) {
                 completionLatch.countDown();
             }
+        }
+    }
+
+    private static class AlwaysFailsProcessor implements TaskProcessor<Void> {
+        @Override
+        public void process(Task task, Void data) {
+            throw new IllegalStateException("Simulated permanent failure");
         }
     }
 
