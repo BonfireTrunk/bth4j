@@ -3,14 +3,15 @@ package today.bonfire.oss.bth4j.service;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.common.QueuesHolder;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.executor.BackgroundExecutor;
 import today.bonfire.oss.bth4j.executor.CustomThread;
 
-@Slf4j
 public class TaskProcessorService extends CustomThread {
+    private static final Logger log = LoggerFactory.getLogger(TaskProcessorService.class);
 
     private final long delay;
     private final Consumer<Task> taskHandler;

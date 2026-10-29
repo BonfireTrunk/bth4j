@@ -14,11 +14,10 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
-import lombok.Getter;
-import lombok.experimental.Accessors;
-import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import redis.clients.jedis.UnifiedJedis;
 import today.bonfire.oss.bth4j.Event;
 import today.bonfire.oss.bth4j.common.JsonMapper;
@@ -38,18 +37,15 @@ import today.bonfire.oss.bth4j.executor.DefaultVtExecutor;
  * Delivery is at least once: a task can run more than once (for example when the process dies while running
  * it, or when it runs longer than the stale task timeout), so task processors must be idempotent.
  */
-@Slf4j
-@Accessors(fluent = true)
 public class BackgroundRunner implements Runnable {
+    private static final Logger log = LoggerFactory.getLogger(BackgroundRunner.class);
 
-    @Getter
     final TaskOps taskOps;
 
     final QueuesHolder queuesHolder;
     final Function<String, Event> eventParser;
     final THC.Keys keys;
 
-    @Getter
     private final TaskProcessorRegistry taskProcessorRegistry;
 
     private final long bgThreadCheckInterval;
@@ -357,6 +353,14 @@ public class BackgroundRunner implements Runnable {
         log.info("Maintenance service with id {} started", maintenanceService.threadId());
         maintenanceService.start();
         return maintenanceService;
+    }
+
+    public TaskOps taskOps() {
+        return taskOps;
+    }
+
+    public TaskProcessorRegistry taskProcessorRegistry() {
+        return taskProcessorRegistry;
     }
 
     public static class Builder {

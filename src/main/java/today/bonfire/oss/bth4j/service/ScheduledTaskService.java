@@ -2,12 +2,13 @@ package today.bonfire.oss.bth4j.service;
 
 import java.time.Instant;
 import java.util.ArrayList;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.common.THC;
 import today.bonfire.oss.bth4j.executor.CustomThread;
 
-@Slf4j
 public class ScheduledTaskService extends CustomThread {
+    private static final Logger log = LoggerFactory.getLogger(ScheduledTaskService.class);
 
     private final long delay;
     private final TaskOps taskOps;

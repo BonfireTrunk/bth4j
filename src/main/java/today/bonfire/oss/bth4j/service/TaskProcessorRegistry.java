@@ -3,7 +3,8 @@ package today.bonfire.oss.bth4j.service;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiFunction;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.Event;
 import today.bonfire.oss.bth4j.TaskProcessor;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
@@ -13,8 +14,8 @@ import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
  * This is an internal component of the library that handles the execution of tasks with their
  * appropriate processors.
  */
-@Slf4j
 public class TaskProcessorRegistry {
+    private static final Logger log = LoggerFactory.getLogger(TaskProcessorRegistry.class);
 
     private final Map<String, TaskProcessor<?>> processors;
 

@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Jedis moved to 8.0.2 (with simple-object-pool 3.0.0). `JedisPooled` no longer exists in Jedis 8, so `BackgroundRunner.Builder.jedisClient` and `TaskOps` now take a `UnifiedJedis`, for example a `RedisClient` built with `RedisClient.builder()`. Pool settings use `ConnectionPoolConfig.builder()`.
-- Parent POM moved to bonfire-oss-parent 2.1.1. Lombok is now declared by this project, and all sources are formatted with palantir-java-format through Spotless, which CI enforces.
+- Parent POM moved to bonfire-oss-parent 2.1.1. All sources are formatted with palantir-java-format through Spotless, which CI enforces.
 - The Redis integration test now starts its own Redis with Testcontainers and runs under maven-failsafe-plugin in the `integration-test` phase. It no longer expects a Redis on a fixed local port.
 - Maven Wrapper upgraded to 3.3.4 with Maven 3.10.0 and a pinned distribution checksum.
+- Lombok removed; the library has no annotation processor any more. Public accessors are unchanged.

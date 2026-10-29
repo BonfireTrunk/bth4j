@@ -8,12 +8,10 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.function.Function;
-import lombok.Getter;
-import lombok.Setter;
-import lombok.experimental.Accessors;
-import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.Event;
 import today.bonfire.oss.bth4j.common.Random;
 import today.bonfire.oss.bth4j.exceptions.Errors;
@@ -27,10 +25,8 @@ import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
  * event value, account id, queue name and cron expression must not contain a {@code |}.
  * This is enforced when the task is built; a {@link TaskErrorException} is thrown otherwise.
  */
-@Slf4j
-@Getter
-@Accessors(fluent = true)
 public class Task {
+    private static final Logger log = LoggerFactory.getLogger(Task.class);
 
     private static final String TASK_STRING_SEPARATOR = "|";
 
@@ -44,7 +40,6 @@ public class Task {
     private String cronExpression;
     private String taskString;
 
-    @Setter
     private Instant executeAtTimeStamp;
 
     private Object data;
@@ -94,13 +89,50 @@ public class Task {
         }
     }
 
+    public String uniqueId() {
+        return uniqueId;
+    }
+
+    public Event event() {
+        return event;
+    }
+
+    public Object accountId() {
+        return accountId;
+    }
+
+    public String queueName() {
+        return queueName;
+    }
+
+    public String cronExpression() {
+        return cronExpression;
+    }
+
+    public String taskString() {
+        return taskString;
+    }
+
+    public Instant executeAtTimeStamp() {
+        return executeAtTimeStamp;
+    }
+
+    public Task executeAtTimeStamp(Instant executeAtTimeStamp) {
+        this.executeAtTimeStamp = executeAtTimeStamp;
+        return this;
+    }
+
+    public Object data() {
+        return data;
+    }
+
     protected Task(Builder builder) {
-        this.uniqueId = builder.getUniqueId();
-        this.event = builder.getEvent();
-        this.accountId = builder.getAccountId();
-        this.executeAtTimeStamp = builder.getExecuteAtTimeStamp();
-        this.queueName = builder.getQueueName();
-        this.cronExpression = builder.getCronExpression();
+        this.uniqueId = builder.uniqueId;
+        this.event = builder.event;
+        this.accountId = builder.accountId;
+        this.executeAtTimeStamp = builder.executeAtTimeStamp;
+        this.queueName = builder.queueName;
+        this.cronExpression = builder.cronExpression;
         this.taskString = buildTaskString();
     }
 
@@ -197,8 +229,6 @@ public class Task {
         }
     }
 
-    @Getter
-    @Accessors(fluent = false)
     public static class Builder {
 
         private String uniqueId = null;
