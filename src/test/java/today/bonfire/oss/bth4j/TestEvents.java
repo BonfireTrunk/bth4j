@@ -12,6 +12,7 @@ public enum TestEvents implements Event {
     DELAYED_TASK(4, 0),
     RETRY_TASK(5, 3),
     CONCURRENT_TASK(6, 0),
+    ALWAYS_FAILS(7, 1),
     DEFAULT(10, 1),
     RECURRING(20, 2),
     RECURRING_TASK(200, 0),

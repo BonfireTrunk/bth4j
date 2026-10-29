@@ -13,6 +13,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 
+/**
+ * Executor backed by a platform thread pool. The number of threads is tuned once per second based on
+ * CPU load and throughput. {@link #isPoolFull()} reports true when running plus queued tasks reach the
+ * current limit, so tasks do not pile up in the local queue while already marked as in progress in Redis.
+ */
 public class DefaultPtExecutor implements BackgroundExecutor {
     private static final Logger log = org.slf4j.LoggerFactory.getLogger(DefaultPtExecutor.class);
 
@@ -55,7 +60,7 @@ public class DefaultPtExecutor implements BackgroundExecutor {
                     }
                 });
         this.executor = threadPool;
-        this.monitor = new Timer("CPU-Monitor", true); // daemon timer
+        this.monitor = new Timer("bth4j-pt-monitor", true); // daemon timer
         this.lastCompletedCount = threadPool.getCompletedTaskCount();
 
         startMonitoring();
@@ -186,7 +191,9 @@ public class DefaultPtExecutor implements BackgroundExecutor {
 
     @Override
     public boolean isPoolFull() {
-        return threadPool.getActiveCount() >= threadPool.getMaximumPoolSize();
+        // The queue is unbounded, so the pool never grows past its core size and the maximum pool size is never
+        // reached. Count queued tasks too, otherwise tasks wait locally while their in-progress timer is running.
+        return threadPool.getActiveCount() + threadPool.getQueue().size() >= maxConcurrentTasks.get();
     }
 
     @Override
@@ -206,11 +213,15 @@ public class DefaultPtExecutor implements BackgroundExecutor {
     }
 
     private double getCpuLoad() {
+        double load;
         if (osBean instanceof com.sun.management.OperatingSystemMXBean sunOsBean) {
-            return sunOsBean.getCpuLoad();
+            load = sunOsBean.getCpuLoad();
+        } else {
+            // Fallback to the system load average if system-wide CPU load is not available
+            load = osBean.getSystemLoadAverage() / AVAILABLE_PROCESSORS;
         }
-        // Fallback to process CPU load if system-wide CPU load is not available
-        return osBean.getSystemLoadAverage() / AVAILABLE_PROCESSORS;
+        // the JDK returns a negative value when the load is not available
+        return Double.isNaN(load) ? 0.0 : Math.max(0.0, load);
     }
 
     public int getActiveTaskCount() {

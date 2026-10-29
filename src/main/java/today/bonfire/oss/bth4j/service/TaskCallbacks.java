@@ -6,8 +6,15 @@ import today.bonfire.oss.bth4j.common.THC;
 
 /**
  * Encapsulates all callback functions for task lifecycle events.
+ * <p>
+ * Callbacks are user code. Exceptions thrown by a callback are logged and never change the outcome of the task.
+ *
+ * @param beforeStart called before the task processor runs
+ * @param onSuccess   called after the task completed successfully
+ * @param onError     called after a task failed, once the failure has been handled
+ * @param afterTask   called after every run, successful or not
  */
-record TaskCallbacks(
+public record TaskCallbacks(
         Consumer<Task> beforeStart,
         Consumer<Task> onSuccess,
         BiConsumer<Task, Exception> onError,

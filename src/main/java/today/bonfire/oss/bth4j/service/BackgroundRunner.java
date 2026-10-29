@@ -1,13 +1,15 @@
 package today.bonfire.oss.bth4j.service;
 
 import java.time.Duration;
-import java.util.HashSet;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -27,6 +29,15 @@ import today.bonfire.oss.bth4j.executor.BackgroundExecutor;
 import today.bonfire.oss.bth4j.executor.CustomThread;
 import today.bonfire.oss.bth4j.executor.DefaultVtExecutor;
 
+/**
+ * Starts and supervises the background services: task processing, scheduled tasks, recurring tasks and maintenance.
+ * <p>
+ * Create it with {@link Builder}, start it by running it on a thread (or calling {@link #run()}), and stop it with
+ * {@link #stopRunner()}. {@link #run()} returns as soon as the services are started, it does not block.
+ * <p>
+ * Delivery is at least once: a task can run more than once (for example when the process dies while running
+ * it, or when it runs longer than the stale task timeout), so task processors must be idempotent.
+ */
 @Slf4j
 @Accessors(fluent = true)
 public class BackgroundRunner implements Runnable {
@@ -55,9 +66,14 @@ public class BackgroundRunner implements Runnable {
     private final TaskCallbacks recurringTaskCallbacks;
     private final Function<Integer, Integer> taskRetryDelay;
     private final ScheduledExecutorService scheduler;
+    private final Duration shutdownTimeout;
 
-    private boolean stopRunner = false;
-    private ScheduledFuture<?> monitoringTask;
+    private final AtomicBoolean started = new AtomicBoolean(false);
+    private final AtomicBoolean stopped = new AtomicBoolean(false);
+    private final Object lifecycleLock = new Object();
+
+    private volatile boolean stopRunner = false;
+    private volatile ScheduledFuture<?> monitoringTask;
 
     private volatile CustomThread taskProcessorService;
     private volatile CustomThread scheduledTaskService;
@@ -74,6 +90,7 @@ public class BackgroundRunner implements Runnable {
         recurringTasksQueueCheckInterval = builder.recurringTasksQueueCheckInterval.toMillis();
         cronLockDuration = builder.cronLockDuration.toSeconds();
         taskExecutor = builder.taskExecutor;
+        shutdownTimeout = builder.shutdownTimeout;
         taskProcessorRegistry = builder.taskProcessorRegistry;
         taskCallbacks = builder.taskCallbacks;
         recurringTaskCallbacks = builder.recurringTaskCallbacks;
@@ -94,6 +111,9 @@ public class BackgroundRunner implements Runnable {
 
     static QueuesHolder setupQueues(
             String namespace, Set<String> availableQueues, List<String> queuesToProcess, String defaultQueue) {
+        if (queuesToProcess.isEmpty())
+            throw new TaskConfigurationError("Queues to process cannot be empty. Please check your configuration");
+
         queuesToProcess.forEach(s -> {
             if (!availableQueues.contains(s))
                 throw new TaskConfigurationError(
@@ -111,87 +131,141 @@ public class BackgroundRunner implements Runnable {
                 namespace + ":" + defaultQueue);
     }
 
+    /**
+     * Starts all services and the monitor that restarts a service if its thread dies.
+     * Returns after starting, it does not block. Calling it a second time, or after {@link #stopRunner()},
+     * logs a warning and does nothing.
+     */
+    @Override
     public void run() {
-        taskProcessorService = getTaskProcessorService();
-        scheduledTaskService = getScheduledTaskService();
-        recurringTaskService = getRecurringTaskService();
-        maintenanceService = getMaintenanceService();
-        log.info("Background runner - {} with namespace {} started", this.threadGroup.getName(), this.keys.NAMESPACE);
-        monitoringTask = scheduler.scheduleWithFixedDelay(
-                () -> {
-                    try {
-                        if (stopRunner) {
-                            log.info("Stopping background runner monitoring task");
-                            monitoringTask.cancel(false);
-                            return;
-                        }
-
-                        if (!taskProcessorService.isAlive()) {
-                            log.error("PrimaryTaskService thread is not alive!!!");
-                            taskProcessorService = getTaskProcessorService();
-                        }
-                        if (!scheduledTaskService.isAlive()) {
-                            log.error("ScheduledTaskService thread is not alive!!!");
-                            scheduledTaskService = getScheduledTaskService();
-                        }
-                        if (!recurringTaskService.isAlive()) {
-                            log.error("RecurringTaskService thread is not alive!!!");
-                            recurringTaskService = getRecurringTaskService();
-                        }
-                        if (!maintenanceService.isRunning()) {
-                            log.error("MaintenanceService thread is not alive!!!");
-                            maintenanceService = getMaintenanceService();
-                        }
-                        log.trace("Current threads in group {}: {}", threadGroup.getName(), threadGroup.activeCount());
-                    } catch (Exception e) {
-                        log.error("Error in service monitoring", e);
-                    }
-                },
-                bgThreadCheckInterval,
-                bgThreadCheckInterval,
-                TimeUnit.MILLISECONDS);
+        if (!started.compareAndSet(false, true)) {
+            log.warn(
+                    "Background runner - {} with namespace {} is already started, ignoring call to run()",
+                    this.threadGroup.getName(),
+                    this.keys.NAMESPACE);
+            return;
+        }
+        synchronized (lifecycleLock) {
+            if (stopRunner) {
+                log.warn(
+                        "Background runner - {} with namespace {} was stopped before it started",
+                        this.threadGroup.getName(),
+                        this.keys.NAMESPACE);
+                return;
+            }
+            taskProcessorService = getTaskProcessorService();
+            scheduledTaskService = getScheduledTaskService();
+            recurringTaskService = getRecurringTaskService();
+            maintenanceService = getMaintenanceService();
+            log.info(
+                    "Background runner - {} with namespace {} started",
+                    this.threadGroup.getName(),
+                    this.keys.NAMESPACE);
+            monitoringTask = scheduler.scheduleWithFixedDelay(
+                    this::checkServices, bgThreadCheckInterval, bgThreadCheckInterval, TimeUnit.MILLISECONDS);
+        }
     }
 
+    /**
+     * Restarts any service whose thread is no longer alive.
+     */
+    private void checkServices() {
+        try {
+            synchronized (lifecycleLock) {
+                if (stopRunner) {
+                    log.info("Stopping background runner monitoring task");
+                    var task = monitoringTask;
+                    if (task != null) task.cancel(false);
+                    return;
+                }
+
+                if (!taskProcessorService.isAlive()) {
+                    log.error("PrimaryTaskService thread is not alive!!!");
+                    taskProcessorService = getTaskProcessorService();
+                }
+                if (!scheduledTaskService.isAlive()) {
+                    log.error("ScheduledTaskService thread is not alive!!!");
+                    scheduledTaskService = getScheduledTaskService();
+                }
+                if (!recurringTaskService.isAlive()) {
+                    log.error("RecurringTaskService thread is not alive!!!");
+                    recurringTaskService = getRecurringTaskService();
+                }
+                if (!maintenanceService.isRunning()) {
+                    log.error("MaintenanceService thread is not alive!!!");
+                    maintenanceService = getMaintenanceService();
+                }
+                log.trace("Current threads in group {}: {}", threadGroup.getName(), threadGroup.activeCount());
+            }
+        } catch (Exception e) {
+            log.error("Error in service monitoring", e);
+        }
+    }
+
+    /**
+     * Gracefully stops the runner: stops picking up tasks, stops all services, then shuts down the task executor
+     * and waits up to the configured shutdown timeout for tasks that are already running.
+     * Tasks that are still running after the timeout stay in progress in Redis and are retried by maintenance.
+     * <p>
+     * The task executor passed to the builder is shut down and cannot be reused.
+     * Call this before closing the Jedis client. Calling it again is a no-op, also while the first call is
+     * still waiting.
+     */
     public void stopRunner() {
-        stopRunner = true;
-        // Stop all services first
+        if (!stopped.compareAndSet(false, true)) {
+            log.debug("Background runner {} is already stopped or stopping", this.threadGroup.getName());
+            return;
+        }
         log.info(
                 "Stopping background runner services - {} with namespace {}",
                 this.threadGroup.getName(),
                 this.keys.NAMESPACE);
 
-        if (taskProcessorService != null) {
-            taskProcessorService.stopThread();
+        final CustomThread processor;
+        final CustomThread scheduled;
+        final CustomThread recurring;
+        final CustomThread maintenance;
+        // under the lock so that the monitor cannot restart a service that is being stopped
+        synchronized (lifecycleLock) {
+            stopRunner = true;
+            var task = monitoringTask;
+            if (task != null) task.cancel(false);
+            processor = taskProcessorService;
+            scheduled = scheduledTaskService;
+            recurring = recurringTaskService;
+            maintenance = maintenanceService;
+            for (var service : new CustomThread[] {processor, scheduled, recurring, maintenance}) {
+                if (service != null) service.stopThread();
+            }
         }
 
-        if (scheduledTaskService != null) {
-            scheduledTaskService.stopThread();
-        }
-
-        if (recurringTaskService != null) {
-            recurringTaskService.stopThread();
-        }
-
-        if (maintenanceService != null) {
-            maintenanceService.stopThread();
-        }
-
-        checkServiceStopped(taskProcessorService, "Task Processor Service");
-        checkServiceStopped(scheduledTaskService, "Scheduled Task Service");
-        checkServiceStopped(recurringTaskService, "Recurring Task Service");
-        checkServiceStopped(maintenanceService, "Maintenance Service");
-
-        if (monitoringTask != null && !monitoringTask.isDone()) {
-            monitoringTask.cancel(false);
-        }
+        checkServiceStopped(processor, "Task Processor Service");
+        checkServiceStopped(scheduled, "Scheduled Task Service");
+        checkServiceStopped(recurring, "Recurring Task Service");
+        checkServiceStopped(maintenance, "Maintenance Service");
 
         scheduler.shutdown();
         try {
-            if (!scheduler.awaitTermination(60, TimeUnit.SECONDS)) {
+            if (!scheduler.awaitTermination(shutdownTimeout.toNanos(), TimeUnit.NANOSECONDS)) {
                 scheduler.shutdownNow();
             }
         } catch (InterruptedException e) {
             scheduler.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+
+        // no service submits tasks anymore, let the running ones finish
+        taskExecutor.shutdown();
+        try {
+            if (taskExecutor.awaitTermination(shutdownTimeout)) {
+                log.info("Background runner - {} stopped", this.threadGroup.getName());
+            } else {
+                log.warn(
+                        "Tasks still running after {}. They stay in progress and will be retried after the stale task timeout",
+                        shutdownTimeout);
+            }
+        } catch (InterruptedException e) {
+            log.warn("Interrupted while waiting for running tasks to finish");
             Thread.currentThread().interrupt();
         }
     }
@@ -199,11 +273,14 @@ public class BackgroundRunner implements Runnable {
     private void checkServiceStopped(CustomThread service, String serviceName) {
         if (service != null) {
             try {
-                service.waitTillDone();
-                log.info("{} stopped", serviceName);
-                Thread.sleep(100);
-                if (service.isRunning()) {
-                    log.warn("{} did not stop within timeout", serviceName);
+                if (service.waitTillDone(shutdownTimeout)) {
+                    log.info("{} stopped", serviceName);
+                    service.join(100);
+                    if (service.isRunning()) {
+                        log.warn("{} thread is still alive after stopping", serviceName);
+                    }
+                } else {
+                    log.warn("{} did not stop within {}", serviceName, shutdownTimeout);
                 }
             } catch (InterruptedException e) {
                 log.error("Interrupted while waiting for {} to stop", serviceName, e);
@@ -293,13 +370,15 @@ public class BackgroundRunner implements Runnable {
         private Duration recurringTasksQueueCheckInterval = Duration.ofMillis(10000);
         private String threadGroupName = "bgr";
         private BackgroundExecutor taskExecutor = null;
-        private Set<String> availableQueues = Set.of("Q:DEF", "Q:LOW", "Q:MED", "Q:HIGH");
-        private List<String> queuesToProcess = availableQueues.stream().toList();
-        private String defaultQueue = queuesToProcess.getFirst();
+        private Duration shutdownTimeout = Duration.ofSeconds(THC.Time.T_30_SECONDS);
+        // LinkedHashSet and List.of keep a fixed order, so the default queue is the same on every run
+        private Set<String> availableQueues = new LinkedHashSet<>(List.of("Q:DEF", "Q:LOW", "Q:MED", "Q:HIGH"));
+        private List<String> queuesToProcess = List.of("Q:DEF", "Q:LOW", "Q:MED", "Q:HIGH");
+        private String defaultQueue = "Q:DEF";
         private TaskProcessorRegistry taskProcessorRegistry;
         private TaskCallbacks taskCallbacks = TaskCallbacks.noOp();
         private TaskCallbacks recurringTaskCallbacks = TaskCallbacks.noOp();
-        private Function<Integer, Integer> taskRetryDelay = retryCount -> retryCount ^ 3;
+        private Function<Integer, Integer> taskRetryDelay = retryCount -> retryCount * retryCount * retryCount;
 
         private String namespacePrefix = "BTH";
         private Function<String, Event> eventParser;
@@ -315,7 +394,7 @@ public class BackgroundRunner implements Runnable {
          * @return current Builder instance for method chaining.
          */
         public Builder setRecurringTasksQueueAheadDuration(Duration duration) {
-            this.recurringTasksQueueAheadDuration = duration;
+            this.recurringTasksQueueAheadDuration = requirePositive(duration, "recurringTasksQueueAheadDuration");
             return this;
         }
 
@@ -339,7 +418,7 @@ public class BackgroundRunner implements Runnable {
          *                 default is 10 seconds
          */
         public Builder BGThreadCheckInterval(Duration interval) {
-            this.BGThreadCheckInterval = interval;
+            this.BGThreadCheckInterval = requirePositive(interval, "BGThreadCheckInterval");
             return this;
         }
 
@@ -348,7 +427,7 @@ public class BackgroundRunner implements Runnable {
          *                 picked up and processed. default is 100ms
          */
         public Builder taskProcessorQueueCheckInterval(Duration interval) {
-            this.taskProcessorQueueCheckInterval = interval;
+            this.taskProcessorQueueCheckInterval = requirePositive(interval, "taskProcessorQueueCheckInterval");
             return this;
         }
 
@@ -360,6 +439,7 @@ public class BackgroundRunner implements Runnable {
          *                 values less than 1 second are rejected
          */
         public Builder maintenanceCheckInterval(Duration interval) {
+            requirePositive(interval, "maintenanceCheckInterval");
             if (interval.toMillis() < 1000) throw new TaskConfigurationError("Delay cannot be less than 1 second");
             this.maintenanceCheckInterval = interval;
             return this;
@@ -372,6 +452,7 @@ public class BackgroundRunner implements Runnable {
          *                 values less than 10ms are rejected
          */
         public Builder delayedTasksQueueCheckInterval(Duration interval) {
+            requirePositive(interval, "delayedTasksQueueCheckInterval");
             if (interval.toMillis() < 10) throw new TaskConfigurationError("Delay cannot be less than 10ms");
             this.delayedTasksQueueCheckInterval = interval;
             return this;
@@ -383,15 +464,24 @@ public class BackgroundRunner implements Runnable {
          *                 default is 10 seconds
          */
         public Builder recurringTasksQueueCheckInterval(Duration interval) {
-            this.recurringTasksQueueCheckInterval = interval;
+            this.recurringTasksQueueCheckInterval = requirePositive(interval, "recurringTasksQueueCheckInterval");
             return this;
         }
 
+        /**
+         * @param threadGroupName name of the thread group of all service threads, default is "bgr". Must not be blank.
+         */
         public Builder threadGroupName(String threadGroupName) {
+            if (StringUtils.isBlank(threadGroupName))
+                throw new TaskConfigurationError("threadGroupName cannot be blank");
             this.threadGroupName = threadGroupName;
             return this;
         }
 
+        /**
+         * @param executor executor that runs the tasks. Default is a {@link DefaultVtExecutor}.
+         *                 The runner shuts it down in {@link BackgroundRunner#stopRunner()}.
+         */
         public Builder taskExecutor(BackgroundExecutor executor) {
             this.taskExecutor = executor;
             return this;
@@ -400,13 +490,14 @@ public class BackgroundRunner implements Runnable {
         /**
          * This function is used to calculate the time to wait before retrying a failed task.
          * The function is given the retry count and should return the time in seconds to wait before retrying.
-         * The default value is a function that returns the retry count cubed (x ^ 3).
+         * The default value is a function that returns the retry count cubed (x * x * x).
          *
          * @param taskRetryDelay function to calculate time to wait before retrying a failed task.
          *                       The function is given the retry count and should return the time in seconds to wait before retrying.
          * @return current Builder instance for method chaining.
          */
         public Builder taskRetryDelay(Function<Integer, Integer> taskRetryDelay) {
+            if (taskRetryDelay == null) throw new TaskConfigurationError("taskRetryDelay cannot be null");
             this.taskRetryDelay = taskRetryDelay;
             return this;
         }
@@ -420,7 +511,7 @@ public class BackgroundRunner implements Runnable {
          *                default is 10 minutes
          */
         public Builder staleTaskTimeout(Duration timeout) {
-            this.staleTaskTimeout = timeout;
+            this.staleTaskTimeout = requirePositive(timeout, "staleTaskTimeout");
             return this;
         }
 
@@ -430,6 +521,8 @@ public class BackgroundRunner implements Runnable {
          *                        default is "BTH"
          */
         public Builder namespacePrefix(String namespacePrefix) {
+            if (StringUtils.isBlank(namespacePrefix))
+                throw new TaskConfigurationError("namespacePrefix cannot be blank");
             this.namespacePrefix = namespacePrefix;
             return this;
         }
@@ -492,10 +585,10 @@ public class BackgroundRunner implements Runnable {
          * @param availableQueues - List of all queues visible to the application. Duplicates will be removed.
          *                        Example: List.of("q:def", "q:low", "q:med", "q:high")
          * @param queuesToProcess - List of queues that this instance will process. Must be a subset of availableQueues.
-         *                        if null, then all queues in availableQueues will be processed, order of queues is undetermined.
+         *                        if null or empty, then all queues in availableQueues will be processed, in the order of availableQueues.
          *                        Example: List.of("q:low", "q:med") to only process low and medium priority queues.
          * @param defaultQueue    - Default queue to use when no queue is specified for a task.
-         *                        Must be present in availableQueues. if null, then the first item in queuesToProcess will be used
+         *                        Must be present in availableQueues. if null or blank, then the first item in queuesToProcess will be used
          *                        Example: "q:def" for default queue
          * @return Builder instance for method chaining
          *
@@ -510,38 +603,59 @@ public class BackgroundRunner implements Runnable {
                 if (StringUtils.isBlank(s))
                     throw new TaskConfigurationError("Available queue name cannot have null or blank queue names");
             });
-            this.availableQueues = new HashSet<>(availableQueues);
+            // LinkedHashSet keeps the order given by the caller, a HashSet would make it random
+            this.availableQueues = new LinkedHashSet<>(availableQueues);
             if (ObjectUtils.isEmpty(queuesToProcess)) {
-                this.queuesToProcess = this.availableQueues.stream().toList();
+                this.queuesToProcess = new ArrayList<>(this.availableQueues);
             } else {
-                this.queuesToProcess = queuesToProcess;
+                this.queuesToProcess = new ArrayList<>(queuesToProcess);
             }
             this.defaultQueue = StringUtils.isBlank(defaultQueue) ? this.queuesToProcess.getFirst() : defaultQueue;
             return this;
         }
 
+        /**
+         * @param jedis Jedis client used for all Redis operations. Required. The runner does not close it.
+         */
         public Builder jedisClient(JedisPooled jedis) {
             this.jedis = jedis;
             return this;
         }
 
+        /**
+         * @param jsonMapper mapper used to store and read task data as JSON. Needed when tasks carry data.
+         */
         public Builder jsonMapper(JsonMapper jsonMapper) {
             this.jsonMapper = jsonMapper;
             return this;
         }
 
+        /**
+         * Builds the runner. Nothing is started and no Redis connection is made until {@link BackgroundRunner#run()}.
+         *
+         * @throws TaskConfigurationError if the event parser or Jedis client is missing,
+         *                                or the queue configuration is invalid
+         */
         public BackgroundRunner build() {
+            // validate before creating anything (the default executor starts a monitor thread)
+            if (eventParser == null) throw new TaskConfigurationError("Cannot build runner without event parser");
+            if (jedis == null) throw new TaskConfigurationError("Cannot build runner without jedis client");
+            setupQueues(
+                    namespacePrefix, availableQueues, queuesToProcess, defaultQueue); // fail on bad queue config early
             if (taskExecutor == null) taskExecutor = new DefaultVtExecutor();
             if (taskProcessorRegistry == null) {
                 taskProcessorRegistry = new TaskProcessorRegistry();
                 log.info(
                         "Default TaskProcessorRegistry used. Make sure to configure/add task processors before starting the runner.");
             }
-            if (eventParser == null) throw new TaskConfigurationError("Cannot build runner without event parser");
-            if (jedis == null) throw new TaskConfigurationError("Cannot build runner without jedis client");
             return new BackgroundRunner(this);
         }
 
+        /**
+         * @param taskProcessorRegistry registry that maps events to task processors.
+         *                              If not set, an empty registry is used and processors must be added to it
+         *                              through the runner's {@code taskProcessorRegistry()} accessor.
+         */
         public Builder taskProcessorRegistry(TaskProcessorRegistry taskProcessorRegistry) {
             this.taskProcessorRegistry = taskProcessorRegistry;
             return this;
@@ -556,10 +670,54 @@ public class BackgroundRunner implements Runnable {
          * Do note that thousands of tasks can be processed at with the default value of 5 minutes
          * so you may not need to change this value unless you have an extremely large number of tasks.
          *
-         * @param cronLockDuration - the duration for a cron job lock, default is 5 minutes
+         * @param cronLockDuration - the duration for a cron job lock, default is 5 minutes. At least 1 second.
+         * @return current Builder instance for method chaining.
          */
-        public void cronLockDuration(Duration cronLockDuration) {
+        public Builder cronLockDuration(Duration cronLockDuration) {
+            requirePositive(cronLockDuration, "cronLockDuration");
+            if (cronLockDuration.toSeconds() < 1)
+                throw new TaskConfigurationError("cronLockDuration cannot be less than 1 second");
             this.cronLockDuration = cronLockDuration;
+            return this;
+        }
+
+        /**
+         * How long {@link BackgroundRunner#stopRunner()} waits for each service to stop, and then for running tasks to finish.
+         *
+         * @param shutdownTimeout maximum wait time, default is 30 seconds. Must not be negative.
+         * @return current Builder instance for method chaining.
+         */
+        public Builder shutdownTimeout(Duration shutdownTimeout) {
+            if (shutdownTimeout == null || shutdownTimeout.isNegative()) {
+                throw new TaskConfigurationError("shutdownTimeout cannot be null or negative");
+            }
+            this.shutdownTimeout = shutdownTimeout;
+            return this;
+        }
+
+        private static Duration requirePositive(Duration duration, String name) {
+            if (duration == null || duration.isZero() || duration.isNegative()) {
+                throw new TaskConfigurationError(name + " must be a positive duration");
+            }
+            return duration;
+        }
+
+        // package-private accessors for tests
+
+        Function<Integer, Integer> getTaskRetryDelay() {
+            return taskRetryDelay;
+        }
+
+        String getDefaultQueue() {
+            return defaultQueue;
+        }
+
+        List<String> getQueuesToProcess() {
+            return queuesToProcess;
+        }
+
+        Set<String> getAvailableQueues() {
+            return availableQueues;
         }
     }
 }

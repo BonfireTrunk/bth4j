@@ -234,4 +234,22 @@ class BackgroundRunnerIT {
         int maxConcurrent = taskCount; // All tasks should have run concurrently
         assertThat(TestTaskProcessors.concurrentTaskExecutions.get()).isLessThanOrEqualTo(maxConcurrent);
     }
+
+    @Test
+    @Timeout(60)
+    void testTaskIsMovedToDeadQueueWhenRetriesAreExhausted() throws InterruptedException {
+        var task = Task.Builder.newTask()
+                .accountId(Random.UIDBASE64())
+                .event(TestEvents.ALWAYS_FAILS) // retryCount is 1
+                .build();
+        taskOps.addTaskToQueue(task, null);
+
+        // fails, becomes stale (3s), is retried, fails again, becomes stale again and is then moved to the dead queue
+        Double deadSince = null;
+        for (int i = 0; i < 50 && deadSince == null; i++) {
+            deadSince = jedis.zscore("BTH1:DEAD_TASKS", task.taskString());
+            if (deadSince == null) Thread.sleep(1000);
+        }
+        assertThat(deadSince).isNotNull();
+    }
 }

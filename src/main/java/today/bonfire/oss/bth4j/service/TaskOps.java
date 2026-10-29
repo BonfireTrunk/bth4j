@@ -32,6 +32,11 @@ public class TaskOps {
     private final Function<String, Event> eventParser;
     private final QueuesHolder queuesHolder;
 
+    /**
+     * Creates the Redis operations facade used by all services.
+     * Normally created by {@link BackgroundRunner}; applications obtain the instance from the runner
+     * (the {@code taskOps()} accessor) to enqueue tasks.
+     */
     public TaskOps(
             THC.Keys keys,
             JedisPooled jedis,
@@ -49,6 +54,16 @@ public class TaskOps {
         return timeRan > event.retryCount();
     }
 
+    /**
+     * Pops one task from the given queue and marks it as in progress.
+     * <p>
+     * This is a two step operation: the task is first moved atomically (LMOVE) to the temp rotation list,
+     * and then, in a separate transaction, added to the in-progress set and removed from the temp list.
+     * The two steps are not atomic together. If the process dies in between, the task stays in the temp
+     * rotation list and is moved back to its queue by {@link MaintenanceService}, so it is delayed, not lost.
+     *
+     * @return the task, or an empty task (see {@link Task#isNULL()}) if the queue is empty
+     */
     Task getTaskFromQueue(String queueName) {
         var t = jedis.lmove(queueName, keys.TEMP_ROTATION_LIST, ListDirection.RIGHT, ListDirection.LEFT);
         if (t != null) {
@@ -62,14 +77,26 @@ public class TaskOps {
     }
 
     /**
-     *
+     * @param isDataRaw if true, the data is already serialized and is stored as {@code data.toString()}
      */
     void addTaskToQueue(Task task, Object data, boolean isDataRaw) {
         var queueName = queuesHolder.getValidQueue(task.queueName());
-        ObjectUtils.firstNonNull(data, task.data()); // may remove use with caution
+        data = ObjectUtils.firstNonNull(data, task.data());
+        String serializedData = null;
+        if (ObjectUtils.isNotEmpty(data)) {
+            if (isDataRaw) {
+                serializedData = data.toString();
+            } else {
+                try {
+                    serializedData = mapper.toJson(data);
+                } catch (Exception e) {
+                    throw new TaskDataException("Unable to serialize data for task: " + task.uniqueId(), e);
+                }
+            }
+        }
         try (var transaction = jedis.multi()) {
-            if (ObjectUtils.isNotEmpty(data)) {
-                transaction.set(keys.DATA + task.uniqueId(), isDataRaw ? data.toString() : mapper.toJson(data));
+            if (serializedData != null) {
+                transaction.set(keys.DATA + task.uniqueId(), serializedData);
             }
 
             if (task.isExecutionTimeSet()) {
@@ -81,10 +108,8 @@ public class TaskOps {
                 transaction.lpush(queueName, task.taskString());
             }
             transaction.exec();
-        } catch (Exception e) {
-            throw new RuntimeException(e);
         }
-        log.info("Added {} to queue: {}", task, queueName);
+        log.debug("Added {} to queue: {}", task, queueName);
     }
 
     int incrementRetryCount(String uniqueId) {
@@ -266,12 +291,15 @@ public class TaskOps {
         if (StringUtils.isBlank(uniqueId) || clazz == null) {
             return null;
         }
+        var r = jedis.get(keys.DATA + uniqueId);
+        if (r == null) {
+            return null;
+        }
         try {
-            var r = jedis.get(keys.DATA + uniqueId);
             return mapper.fromJson(r, clazz);
         } catch (Exception e) {
             log.error("Error getting data for task: {}", uniqueId, e);
-            throw new TaskDataException("Error getting data for task: " + uniqueId);
+            throw new TaskDataException("Error getting data for task: " + uniqueId, e);
         }
     }
 

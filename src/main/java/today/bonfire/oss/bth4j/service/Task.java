@@ -22,7 +22,10 @@ import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
 
 /**
  * A Task class which holds the task details and the data associated with it.
- * ensure none of the task strings use have | in the strings.
+ * <p>
+ * The task is stored in Redis as a string with the parts joined by {@code |}, so the unique id,
+ * event value, account id, queue name and cron expression must not contain a {@code |}.
+ * This is enforced when the task is built; a {@link TaskErrorException} is thrown otherwise.
  */
 @Slf4j
 @Getter
@@ -73,10 +76,14 @@ public class Task {
         if (StringUtils.isBlank(ts)) return;
         this.taskString = ts;
         var split = StringUtils.splitPreserveAllTokens(ts, TASK_STRING_SEPARATOR);
-        if (split.length < 3 || split.length > 5) throw new TaskErrorException("Invalid task string");
+        if (split.length < 3 || split.length > 5) throw new TaskErrorException("Invalid task string: " + ts);
 
         this.uniqueId = split[0];
         event = eventParser.apply(split[1]);
+        if (event == null) {
+            throw new TaskErrorException(
+                    "Event parser returned null for event value '" + split[1] + "' in task string: " + ts);
+        }
         accountId = split[2];
         if (split.length >= 4) {
             queueName = split[3];
@@ -113,6 +120,11 @@ public class Task {
      * If you are trying to insert into queues for the first time you should call this method.
      */
     public String buildTaskString() {
+        rejectSeparator("uniqueId", uniqueId);
+        rejectSeparator("event value", event.value());
+        rejectSeparator("accountId", String.valueOf(accountId));
+        rejectSeparator("queueName", queueName);
+        rejectSeparator("cronExpression", cronExpression);
         var sb = new StringBuilder();
         sb.append(uniqueId)
                 .append(TASK_STRING_SEPARATOR)
@@ -120,8 +132,8 @@ public class Task {
                 .append(TASK_STRING_SEPARATOR)
                 .append(accountId);
 
-        if (event.isRecurring() && cronExpression != null) {
-            cronParser.parse(cronExpression); // validate
+        if (event.isRecurring() && StringUtils.isNotBlank(cronExpression)) {
+            validateCronExpression(cronExpression);
             sb.append(TASK_STRING_SEPARATOR).append(queueName == null ? "" : queueName);
             sb.append(TASK_STRING_SEPARATOR).append(cronExpression);
         } else {
@@ -130,6 +142,24 @@ public class Task {
             }
         }
         return sb.toString();
+    }
+
+    private static void rejectSeparator(String name, String value) {
+        if (value != null && value.contains(TASK_STRING_SEPARATOR)) {
+            throw new TaskErrorException(Errors.Tasks.CANNOT_CREATE_TASK + name + " must not contain '"
+                    + TASK_STRING_SEPARATOR + "': " + value);
+        }
+    }
+
+    private static void validateCronExpression(String cronExpression) {
+        try {
+            cronParser.parse(cronExpression);
+        } catch (RuntimeException e) {
+            throw new TaskErrorException(
+                    Errors.Tasks.CANNOT_CREATE_TASK + "invalid cron expression (5 field unix format expected): "
+                            + cronExpression,
+                    e);
+        }
     }
 
     public boolean isExecutionTimeSet() {
@@ -163,7 +193,7 @@ public class Task {
             return clazz.cast(data);
         } catch (ClassCastException e) {
             throw new TaskDataException("Data type mismatch. Expected " + clazz.getName() + " but found "
-                    + data.getClass().getName());
+                    + (data == null ? "null" : data.getClass().getName()));
         }
     }
 
@@ -184,12 +214,13 @@ public class Task {
             return newTask(null);
         }
 
+        /**
+         * @param uniqueId id for the task. A random id is generated if null or blank.
+         *                 It must not contain {@code |}.
+         */
         public static Builder newTask(String uniqueId) {
             var b = new Builder();
-            if (StringUtils.isBlank(b.uniqueId)) {
-                uniqueId = Random.tuid();
-            }
-            b.uniqueId = uniqueId;
+            b.uniqueId = StringUtils.isBlank(uniqueId) ? Random.tuid() : uniqueId;
             return b;
         }
 
@@ -223,11 +254,22 @@ public class Task {
             return this;
         }
 
+        /**
+         * @param cronExpression 5 field unix cron expression. Required for the definition of a recurring task.
+         */
         public Builder cronExpression(String cronExpression) {
             this.cronExpression = cronExpression;
             return this;
         }
 
+        /**
+         * Builds the task after validating it.
+         *
+         * @throws TaskErrorException if the account id or event is missing, if any part of the task contains
+         *                            the separator {@code |}, or if the event is recurring and the cron expression is
+         *                            invalid. A recurring event without a cron expression is only accepted when an
+         *                            execution time is set, that is for a single run of a recurring task.
+         */
         public Task build() {
             if (ObjectUtils.isEmpty(accountId)) {
                 log.error("accountId cannot be null");
@@ -238,6 +280,16 @@ public class Task {
                 throw new TaskErrorException(Errors.Tasks.CANNOT_CREATE_TASK);
             }
 
+            if (event.isRecurring()) {
+                if (StringUtils.isBlank(cronExpression)) {
+                    if (executeAtTimeStamp == null) {
+                        throw new TaskErrorException(
+                                Errors.Tasks.CANNOT_CREATE_TASK + "a recurring task requires a cron expression");
+                    }
+                } else {
+                    validateCronExpression(cronExpression);
+                }
+            }
             return new Task(this);
         }
     }

@@ -9,8 +9,17 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.LongAdder;
 import org.slf4j.Logger;
 
+/**
+ * Default executor that runs every task on its own virtual thread.
+ * <p>
+ * The number of concurrently running tasks is limited by a semaphore. The limit starts at the number
+ * of available processors and is tuned once per second based on CPU load and throughput.
+ * Tasks that cannot get a permit are rejected, and {@link #isPoolFull()} tells the task processor to
+ * stop picking up tasks while no permits are available.
+ */
 public class DefaultVtExecutor implements BackgroundExecutor {
     private static final Logger log = org.slf4j.LoggerFactory.getLogger(DefaultVtExecutor.class);
 
@@ -20,7 +29,7 @@ public class DefaultVtExecutor implements BackgroundExecutor {
 
     private final ExecutorService executor;
     private final AtomicInteger maxConcurrentTasks;
-    private final Semaphore concurrencyLimiter;
+    private final AdjustableSemaphore concurrencyLimiter;
     private final AtomicInteger activeTaskCount;
     private final OperatingSystemMXBean osBean;
     private final Timer monitor;
@@ -32,16 +41,18 @@ public class DefaultVtExecutor implements BackgroundExecutor {
     private int consecutiveIncreases = 0;
     private int consecutiveDecreases = 0;
     private long consecutiveZeroThroughput = 0;
-    private long totalTasksCompleted = 0;
+    /** number of tasks that finished running, successfully or not. Written by many threads, so not a plain long. */
+    private final LongAdder totalTasksCompleted = new LongAdder();
+
     private int consecutiveStableThroughput = 0;
 
     public DefaultVtExecutor() {
         this.maxConcurrentTasks = new AtomicInteger(AVAILABLE_PROCESSORS);
-        this.concurrencyLimiter = new Semaphore(AVAILABLE_PROCESSORS);
+        this.concurrencyLimiter = new AdjustableSemaphore(AVAILABLE_PROCESSORS);
         this.activeTaskCount = new AtomicInteger(0);
         this.osBean = ManagementFactory.getOperatingSystemMXBean();
         this.executor = Executors.newVirtualThreadPerTaskExecutor();
-        this.monitor = new Timer("CPU-Monitor", true); // daemon timer
+        this.monitor = new Timer("bth4j-vt-monitor", true); // daemon timer
 
         startMonitoring();
     }
@@ -55,6 +66,7 @@ public class DefaultVtExecutor implements BackgroundExecutor {
                             adjustThreadCount();
                         } catch (Exception e) {
                             // Log error but don't stop monitoring
+                            log.debug("Error in CPU monitoring", e);
                         }
                     }
                 },
@@ -67,10 +79,11 @@ public class DefaultVtExecutor implements BackgroundExecutor {
         int currentMax = maxConcurrentTasks.get();
 
         // Calculate throughput metrics
-        long throughput = totalTasksCompleted - lastCompletedCount;
+        long completed = totalTasksCompleted.sum();
+        long throughput = completed - lastCompletedCount;
         long throughputChange = throughput - lastThroughput;
 
-        lastCompletedCount = totalTasksCompleted;
+        lastCompletedCount = completed;
         lastThroughput = throughput;
 
         int newMax = currentMax;
@@ -165,8 +178,9 @@ public class DefaultVtExecutor implements BackgroundExecutor {
         if (newMax > currentMax) {
             concurrencyLimiter.release(newMax - currentMax);
         } else {
-            int permitsToRemove = currentMax - newMax;
-            concurrencyLimiter.acquireUninterruptibly(permitsToRemove);
+            // never blocks: permits held by running tasks are given back and simply not reused,
+            // the available count may go negative until enough tasks finish
+            concurrencyLimiter.shrink(currentMax - newMax);
         }
 
         log.debug(
@@ -197,16 +211,23 @@ public class DefaultVtExecutor implements BackgroundExecutor {
                     String.format("Executor at capacity with CPU usage: %.2f%%", getCpuLoad() * 100));
         }
 
-        executor.execute(() -> {
-            try {
+        try {
+            executor.execute(() -> {
                 activeTaskCount.incrementAndGet();
-                task.run();
-                totalTasksCompleted++;
-            } finally {
-                activeTaskCount.decrementAndGet();
-                concurrencyLimiter.release();
-            }
-        });
+                try {
+                    task.run();
+                } finally {
+                    // counts finished tasks, including failed ones, to measure throughput
+                    totalTasksCompleted.increment();
+                    activeTaskCount.decrementAndGet();
+                    concurrencyLimiter.release();
+                }
+            });
+        } catch (RuntimeException e) {
+            // the task was not accepted (for example after shutdown) so it will never release its permit
+            concurrencyLimiter.release();
+            throw e;
+        }
     }
 
     @Override
@@ -216,11 +237,29 @@ public class DefaultVtExecutor implements BackgroundExecutor {
     }
 
     private double getCpuLoad() {
+        double load;
         if (osBean instanceof com.sun.management.OperatingSystemMXBean sunOsBean) {
-            return sunOsBean.getCpuLoad();
+            load = sunOsBean.getCpuLoad();
+        } else {
+            // Fallback to the system load average if system-wide CPU load is not available
+            load = osBean.getSystemLoadAverage() / AVAILABLE_PROCESSORS;
         }
-        // Fallback to process CPU load if system-wide CPU load is not available
-        return osBean.getSystemLoadAverage() / AVAILABLE_PROCESSORS;
+        // the JDK returns a negative value when the load is not available
+        return Double.isNaN(load) ? 0.0 : Math.max(0.0, load);
+    }
+
+    /**
+     * Semaphore that can lower its permits without blocking.
+     * {@link Semaphore#reducePermits(int)} is protected, so it is exposed here.
+     */
+    private static final class AdjustableSemaphore extends Semaphore {
+        AdjustableSemaphore(int permits) {
+            super(permits);
+        }
+
+        void shrink(int permits) {
+            reducePermits(permits);
+        }
     }
 
     public int getActiveTaskCount() {

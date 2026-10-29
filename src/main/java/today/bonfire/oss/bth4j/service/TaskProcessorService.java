@@ -56,34 +56,41 @@ public class TaskProcessorService extends CustomThread {
 
     @Override
     public void run() {
-        while (this.canContinueProcessing) {
-            try {
-                var q = getQueue();
-                if (taskExecutor.isPoolFull() || q == null) {
-                    Thread.sleep(delay);
-                } else {
-                    // get a task and process it
-                    var task = taskOps.getTaskFromQueue(q);
-                    if (task.isNULL()) {
-                        // assume the queue is empty for now
-                        queuesHolder.queueProcessingStatus.put(q, false);
+        try {
+            while (this.canContinueProcessing) {
+                try {
+                    var q = getQueue();
+                    if (taskExecutor.isPoolFull() || q == null) {
+                        Thread.sleep(delay);
                     } else {
-                        if (task.event().isRecurring()) {
-                            taskExecutor.execute(
-                                    new TaskRunnerWrapper(task, taskHandler, recurringTaskCallbacks, taskOps));
+                        // get a task and process it
+                        var task = taskOps.getTaskFromQueue(q);
+                        if (task.isNULL()) {
+                            // assume the queue is empty for now
+                            queuesHolder.queueProcessingStatus.put(q, false);
                         } else {
-                            taskExecutor.execute(
-                                    new TaskRunnerWrapper(task, taskHandler, regularTaskCallbacks, taskOps));
+                            if (task.event().isRecurring()) {
+                                taskExecutor.execute(
+                                        new TaskRunnerWrapper(task, taskHandler, recurringTaskCallbacks, taskOps));
+                            } else {
+                                taskExecutor.execute(
+                                        new TaskRunnerWrapper(task, taskHandler, regularTaskCallbacks, taskOps));
+                            }
                         }
                     }
+                } catch (InterruptedException e) {
+                    if (this.canContinueProcessing) {
+                        log.error("Task processor Thread interrupted", e);
+                    } else {
+                        log.debug("Task processor Thread interrupted while stopping");
+                    }
+                } catch (Exception e) {
+                    log.error("Task processor Thread error", e);
                 }
-            } catch (InterruptedException e) {
-                log.error("Task processor Thread interrupted", e);
-            } catch (Exception e) {
-                log.error("Task processor Thread error", e);
             }
+        } finally {
+            doneLatch.countDown();
         }
-        doneLatch.countDown();
     }
 
     public static class Builder {

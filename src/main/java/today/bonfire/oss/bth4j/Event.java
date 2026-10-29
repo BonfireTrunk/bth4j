@@ -18,6 +18,13 @@ public interface Event {
      */
     boolean isRecurring();
 
+    /**
+     * Maximum number of times a task of this event is retried by the maintenance service after it
+     * became stale (stayed in progress longer than the stale task timeout). When the retry count
+     * is exceeded the task is moved to the dead queue. Zero means the task is never retried.
+     *
+     * @return the number of retries allowed for this event
+     */
     int retryCount();
 
     /**
