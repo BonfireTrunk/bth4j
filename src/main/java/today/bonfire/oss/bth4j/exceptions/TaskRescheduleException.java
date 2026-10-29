@@ -10,18 +10,17 @@ import lombok.experimental.Accessors;
 @Accessors(fluent = true)
 public class TaskRescheduleException extends RuntimeException {
 
-  @Getter
-  private long delay = 0;
+    @Getter
+    private long delay = 0;
 
-  private TaskRescheduleException() {}
+    private TaskRescheduleException() {}
 
-  public TaskRescheduleException(long seconds) {
-    super("Reschedule task in " + seconds + " seconds");
-    delay = seconds;
-  }
+    public TaskRescheduleException(long seconds) {
+        super("Reschedule task in " + seconds + " seconds");
+        delay = seconds;
+    }
 
-  public TaskRescheduleException(String message, Throwable cause) {
-    super(message, cause);
-  }
-
+    public TaskRescheduleException(String message, Throwable cause) {
+        super(message, cause);
+    }
 }

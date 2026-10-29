@@ -6,14 +6,13 @@ package today.bonfire.oss.bth4j.exceptions;
  */
 public class TaskDataException extends RuntimeException {
 
-  private TaskDataException() {}
+    private TaskDataException() {}
 
-  public TaskDataException(String message) {
-    super(message);
-  }
+    public TaskDataException(String message) {
+        super(message);
+    }
 
-  public TaskDataException(String message, Throwable cause) {
-    super(message, cause);
-  }
-
+    public TaskDataException(String message, Throwable cause) {
+        super(message, cause);
+    }
 }

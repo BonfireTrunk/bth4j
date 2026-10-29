@@ -4,11 +4,11 @@ import java.util.concurrent.ExecutorService;
 
 public interface BackgroundExecutor {
 
-  ExecutorService getExecutor();
+    ExecutorService getExecutor();
 
-  boolean isPoolFull();
+    boolean isPoolFull();
 
-  void execute(Runnable task);
+    void execute(Runnable task);
 
-  void shutdown();
+    void shutdown();
 }

@@ -14,5 +14,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Parent POM moved to bonfire-oss-parent 2.1.1. Lombok is now declared by this project, and all sources are formatted with palantir-java-format through Spotless, which CI enforces.
 - The Redis integration test now starts its own Redis with Testcontainers and runs under maven-failsafe-plugin in the `integration-test` phase. It no longer expects a Redis on a fixed local port.
 - Maven Wrapper upgraded to 3.3.4 with Maven 3.10.0 and a pinned distribution checksum.

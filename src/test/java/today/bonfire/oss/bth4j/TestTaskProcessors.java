@@ -1,11 +1,10 @@
 package today.bonfire.oss.bth4j;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 import lombok.extern.slf4j.Slf4j;
 import today.bonfire.oss.bth4j.service.Task;
 import today.bonfire.oss.bth4j.service.TaskProcessorRegistry;
-
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicInteger;
 
 @Slf4j
 public class TestTaskProcessors {
