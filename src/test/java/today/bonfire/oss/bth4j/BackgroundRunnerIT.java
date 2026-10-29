@@ -20,10 +20,10 @@ import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
+import redis.clients.jedis.ConnectionPoolConfig;
 import redis.clients.jedis.DefaultJedisClientConfig;
 import redis.clients.jedis.HostAndPort;
-import redis.clients.jedis.JedisPoolConfig;
-import redis.clients.jedis.JedisPooled;
+import redis.clients.jedis.RedisClient;
 import today.bonfire.oss.bth4j.common.Random;
 import today.bonfire.oss.bth4j.executor.DefaultVtExecutor;
 import today.bonfire.oss.bth4j.service.BackgroundRunner;
@@ -44,7 +44,7 @@ class BackgroundRunnerIT {
             .withExposedPorts(6379)
             .waitingFor(Wait.forLogMessage(".*Ready to accept connections.*\\n", 1));
 
-    private static JedisPooled jedis;
+    private static RedisClient jedis;
     private static TaskProcessorRegistry registry;
     private static BackgroundRunner backgroundRunner;
     private static Thread backgroundThread;
@@ -53,7 +53,7 @@ class BackgroundRunnerIT {
     @BeforeAll
     static void beforeAll() throws InterruptedException {
         // Setup Redis connection
-        var poolConfig = JedisPoolConfig.builder()
+        var poolConfig = ConnectionPoolConfig.builder()
                 .maxPoolSize(8)
                 .minPoolSize(1)
                 .testOnBorrow(false)
@@ -73,7 +73,11 @@ class BackgroundRunnerIT {
                 .build();
 
         var hostPort = new HostAndPort(REDIS.getHost(), REDIS.getMappedPort(6379));
-        jedis = new JedisPooled(hostPort, clientConfig, poolConfig);
+        jedis = RedisClient.builder()
+                .hostAndPort(hostPort)
+                .clientConfig(clientConfig)
+                .poolConfig(poolConfig)
+                .build();
 
         // Setup BackgroundRunner with test registry
         registry = TestTaskProcessors.createTestRegistry();

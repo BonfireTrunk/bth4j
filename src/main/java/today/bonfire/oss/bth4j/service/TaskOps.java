@@ -10,7 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
-import redis.clients.jedis.JedisPooled;
+import redis.clients.jedis.UnifiedJedis;
 import redis.clients.jedis.args.ListDirection;
 import redis.clients.jedis.params.ScanParams;
 import redis.clients.jedis.params.SetParams;
@@ -26,7 +26,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskDataException;
 @Slf4j
 public class TaskOps {
 
-    private final JedisPooled jedis;
+    private final UnifiedJedis jedis;
     private final JsonMapper mapper;
     private final THC.Keys keys;
     private final Function<String, Event> eventParser;
@@ -39,7 +39,7 @@ public class TaskOps {
      */
     public TaskOps(
             THC.Keys keys,
-            JedisPooled jedis,
+            UnifiedJedis jedis,
             JsonMapper jsonMapper,
             Function<String, Event> eventParser,
             QueuesHolder queuesHolder) {
