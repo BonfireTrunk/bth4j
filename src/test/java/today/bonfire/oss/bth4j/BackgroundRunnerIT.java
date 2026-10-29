@@ -7,6 +7,11 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.utility.DockerImageName;
 import redis.clients.jedis.DefaultJedisClientConfig;
 import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.JedisPoolConfig;
@@ -27,8 +32,19 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Integration test against a real Redis started with Testcontainers. Needs Docker.
+ * Run by maven-failsafe-plugin (mvn verify), not by the unit test phase.
+ */
 @Slf4j
-class BackgroundRunnerTest {
+@Testcontainers
+class BackgroundRunnerIT {
+
+  @Container
+  static final GenericContainer<?> REDIS =
+      new GenericContainer<>(DockerImageName.parse("redis:7.4-alpine"))
+          .withExposedPorts(6379)
+          .waitingFor(Wait.forLogMessage(".*Ready to accept connections.*\\n", 1));
 
   private static JedisPooled           jedis;
   private static TaskProcessorRegistry registry;
@@ -56,11 +72,9 @@ class BackgroundRunnerTest {
                                                .resp3()
                                                .timeoutMillis(1000)
                                                .clientName("bth4j-test")
-                                               .user("app")
-                                               .password("happy")
                                                .build();
 
-    var hostPort = new HostAndPort("127.0.0.1", 6404);
+    var hostPort = new HostAndPort(REDIS.getHost(), REDIS.getMappedPort(6379));
     jedis = new JedisPooled(hostPort, clientConfig, poolConfig);
 
     // Setup BackgroundRunner with test registry
@@ -187,9 +201,11 @@ class BackgroundRunnerTest {
 
     taskOps.addTaskToQueue(task, null);
 
-    Thread.sleep(3000 * 3 + 3000); // 3 tries with stale timeout of 3 seconds + retry delay of 6 seconds
-    boolean completed = TestTaskProcessors.completionLatch.await(30, TimeUnit.SECONDS);
-    assertThat(completed).isTrue();
+    // 3 tries: each failed attempt is retried after the stale timeout of 3 seconds plus the retry delay,
+    // so the third attempt lands at roughly 12 seconds. Poll the counter instead of sleeping a fixed time.
+    for (int i = 0; i < 40 && TestTaskProcessors.retryTaskExecutions.get() < 3; i++) {
+      Thread.sleep(1000);
+    }
     // Should have executed 3 times (2 failures + 1 success)
     assertThat(TestTaskProcessors.retryTaskExecutions.get()).isEqualTo(3);
   }

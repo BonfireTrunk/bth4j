@@ -268,3 +268,9 @@ var callbacks = new TaskCallbacks(
 - Cron expressions follow Unix crontab format
 - Redis/valkey or similar key value db is required for operation
 - Virtual thread support requires Java 21 or later. This library itself has baseline java requirement of Java 21.
+
+## Contributing
+
+- Build and test with the Maven Wrapper: `./mvnw verify`. Java 21 or later is required.
+- Unit tests run in the `test` phase. The Redis integration test (`BackgroundRunnerIT`) starts a Redis container with Testcontainers in the `integration-test` phase and needs Docker.
+- Versioning: the first change after a release bumps the version in `pom.xml` to the next `-SNAPSHOT`. A release is a pull request titled `Release X.Y.Z` that sets the final version and adds a `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md`; merging it publishes the release.
