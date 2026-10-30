@@ -12,7 +12,9 @@ upgrading, or start 3.0 with a new namespace. Redis 7.0 or newer is required. Se
 
 ### Changed (3.0, breaking)
 
-- Every task state transition is one atomic Lua script that checks the task's lease token. A worker that lost its lease cannot complete, fail or reschedule the task any more. Failed tasks are retried immediately after the configured delay instead of after the stale timeout, and a task that runs longer than the lease keeps renewing it instead of being executed twice.
+- The library is split into `bth4j-core` (task model, runner, services, the `TaskStore` interface) and `bth4j-redis` (the Redis store). Applications depend on `bth4j-redis`; the single `bth4j` artifact is gone.
+- Storage is behind `today.bonfire.oss.bth4j.store.TaskStore`: enqueue, claim and the token-checked transitions, each of which a store must make atomic. `BackgroundRunner.Builder.taskStore(TaskStore)` replaces `jedisClient` and `namespacePrefix`; the Redis store is `new RedisTaskStore(jedis, "namespace")`. `TaskOps` takes a store instead of a Jedis client. A store on another engine implements the same interface.
+- Every task state transition in the Redis store is one atomic Lua script that checks the task's lease token. A worker that lost its lease cannot complete, fail or reschedule the task any more. Failed tasks are retried immediately after the configured delay instead of after the stale timeout, and a task that runs longer than the lease keeps renewing it instead of being executed twice.
 - Tasks are stored as one hash per id and queues hold ids. The pipe-separated task string is gone, duplicate ids are rejected by `TaskOps.enqueue`, and `Task` exposes `attempts()`, `maxAttempts()`, `scheduleId()`, `data()` and `lastError()`. `accountId()` is a `String`.
 - All keys carry the namespace as a hash tag (`{BTH}:...`), so the library works on Redis Cluster.
 - The task processor reserves executor slots first, then claims up to that many tasks in one call, and is woken by a Redis channel when a task is enqueued. There are no more polling timers on the hot path and no locks anywhere.
@@ -21,7 +23,7 @@ upgrading, or start 3.0 with a new namespace. Redis 7.0 or newer is required. Se
 - `BackgroundExecutor` contract: `reserve(max, wait)`, `release(n)`, `execute`, `activeCount`, `shutdown`, `awaitTermination`. `isPoolFull` and `getExecutor` are gone. `DefaultVtExecutor` has a configurable upper bound for its adaptive limit.
 - `BackgroundRunner.Builder`: `leaseDuration` replaces `staleTaskTimeout`, `idlePollInterval` replaces `taskProcessorQueueCheckInterval`, `scheduledTasksCheckInterval` replaces `delayedTasksQueueCheckInterval`, `serviceCheckInterval` replaces `BGThreadCheckInterval`, `recurringTasksQueueAheadDuration` and `recurringTasksCheckInterval` are renamed accordingly, `taskRetryDelay` takes a `Function<Integer, Duration>` with exponential backoff and jitter as default, new `deadTaskRetention` and `claimBatchSize`; `cronLockDuration` is gone. `build()` no longer stores the default executor in the builder.
 - `stopRunner()` keeps renewing the leases of running tasks until they finish or the shutdown timeout elapses.
-- `THC` is replaced by `common.Keys`; `QueuesHolder` holds logical queue names.
+- `THC` is gone; the Redis key layout lives in `bth4j-redis`. `QueuesHolder` holds logical queue names.
 
 ### Added
 
@@ -53,7 +55,7 @@ upgrading, or start 3.0 with a new namespace. Redis 7.0 or newer is required. Se
 
 ### Changed
 
-- Jedis moved to 8.0.2 (with simple-object-pool 3.0.0). `JedisPooled` no longer exists in Jedis 8, so `BackgroundRunner.Builder.jedisClient` and `TaskOps` now take a `UnifiedJedis`, for example a `RedisClient` built with `RedisClient.builder()`. Pool settings use `ConnectionPoolConfig.builder()`.
+- Jedis moved to 8.0.2 (with simple-object-pool 3.0.0). `JedisPooled` no longer exists in Jedis 8, so `RedisTaskStore` takes a `UnifiedJedis`, for example a `RedisClient` built with `RedisClient.builder()`. Pool settings use `ConnectionPoolConfig.builder()`.
 - Parent POM moved to bonfire-oss-parent 2.1.1. All sources are formatted with palantir-java-format through Spotless, which CI enforces.
 - The Redis integration test now starts its own Redis with Testcontainers and runs under maven-failsafe-plugin in the `integration-test` phase. It no longer expects a Redis on a fixed local port.
 - Maven Wrapper upgraded to 3.3.4 with Maven 3.10.0 and a pinned distribution checksum.
