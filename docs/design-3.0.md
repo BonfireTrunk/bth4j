@@ -8,7 +8,9 @@ store that can make those transitions atomic. Nothing in 3.0 can read 2.x data: 
 
 Modules: `bth4j-core` holds the task model, the runner, the services and the `TaskStore`
 interface, with no dependency on a particular store. `bth4j-redis` is the Redis store
-(Redis 7.0 or newer). Applications depend on a store module and get core transitively.
+(Redis 7.0 or newer) and `bth4j-postgres` the PostgreSQL store (PostgreSQL 14 or newer).
+Applications depend on a store module and get core transitively. `bth4j-store-tests`
+holds the contract tests both stores run; it is not published.
 
 ## Guarantees
 
@@ -125,8 +127,10 @@ script per method; on an SQL database it is one statement per method, with
 for the token-checked transitions. The wake-up signal maps to pub/sub, `LISTEN/NOTIFY`,
 or nothing.
 
-The integration tests of `bth4j-redis` (`TaskOpsIT`, `BackgroundRunnerIT`) exercise the
-guarantees through `TaskOps` and the runner and are the reference for a second store.
+The contract tests in `bth4j-store-tests` (`TaskOpsContract`, `BackgroundRunnerContract`,
+`ThroughputContract`) exercise the guarantees through `TaskOps` and the runner. A store
+module subclasses them with a `newStore(namespace)` hook that supplies its store, as
+`bth4j-redis` and `bth4j-postgres` do.
 
 ## Appendix: the Redis store
 
@@ -162,3 +166,42 @@ commands.
   moved something.
 
 Requires Redis 7.0 or newer (`LMPOP`, `ZRANGE ... BYSCORE LIMIT`, scripts).
+
+## Appendix: the PostgreSQL store
+
+Two tables per prefix, created by `PostgresTaskStore.createSchema()` or from
+`schemaStatements()` through a migration tool:
+
+| Table | Content |
+|---|---|
+| `<prefix>_task` | one row per task: `state` (0 queued, 1 scheduled, 2 leased, 3 dead), `queue`, `event`, `account`, `data`, `attempts`, `max_attempts`, `created`, `due`, `token`, `lease_until`, `schedule_id`, `error`, `died`, `pos` |
+| `<prefix>_schedule` | recurring definitions: `event`, `account`, `queue`, `cron`, `data`, `max_attempts`, `rev`, `next_fire` |
+
+Partial indexes per state make each service's scan cheap: `(queue, pos) WHERE state = 0`
+for claims, `(due) WHERE state = 1` for promote, `(lease_until) WHERE state = 2` for
+reclaim, `(died) WHERE state = 3` for purge. `pos` orders a queue: enqueue, promote and
+retry take the next value of a sequence (back of the queue), unclaim takes the negated
+next value (front).
+
+Each `TaskStore` method is one SQL statement, so its check and its writes are one
+transaction without the application managing any:
+
+- `claim`: a CTE selects queued rows ordered by the caller's queue order and `pos` with
+  `LIMIT n FOR UPDATE SKIP LOCKED`, and an `UPDATE ... FROM` moves them to leased with
+  token `<base>:<n>` and returns them. Concurrent runners never see each other's rows.
+- `renew`, `ack`, `fail`, `reschedule`, `unclaim`: `UPDATE` or `DELETE` with
+  `WHERE id = ? AND token = ? AND state = 2`; the update count says whether the token
+  still matched. `fail` decides retry or dead inside the statement from `attempts` and
+  `max_attempts` and returns the new state.
+- `commitRecurring`: a CTE advances the definition `WHERE id = ? AND rev = ? AND
+  next_fire = ?`, and the occurrence is inserted `FROM` that CTE with
+  `ON CONFLICT DO NOTHING`.
+- Wake-up: an `AFTER INSERT OR UPDATE OF state` trigger calls
+  `pg_notify('<prefix>_wake', queue)` whenever a row becomes queued; the runner's
+  listener holds one connection with `LISTEN` and polls it with a one second timeout so
+  it can stop. Identical notifications in one transaction are delivered once.
+- Times are `timestamptz`, written with millisecond precision so a value read back
+  compares equal to the one written.
+
+The same contract tests pass on both stores. In the throughput test on one machine
+PostgreSQL processed about 650 tasks per second end to end against about 1300 on Redis.

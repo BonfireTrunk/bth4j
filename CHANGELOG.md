@@ -12,7 +12,7 @@ upgrading, or start 3.0 with a new namespace. Redis 7.0 or newer is required. Se
 
 ### Changed (3.0, breaking)
 
-- The library is split into `bth4j-core` (task model, runner, services, the `TaskStore` interface) and `bth4j-redis` (the Redis store). Applications depend on `bth4j-redis`; the single `bth4j` artifact is gone.
+- The library is split into `bth4j-core` (task model, runner, services, the `TaskStore` interface), `bth4j-redis` (the Redis store) and `bth4j-postgres` (the PostgreSQL store). Applications depend on a store module; the single `bth4j` artifact is gone.
 - Storage is behind `today.bonfire.oss.bth4j.store.TaskStore`: enqueue, claim and the token-checked transitions, each of which a store must make atomic. `BackgroundRunner.Builder.taskStore(TaskStore)` replaces `jedisClient` and `namespacePrefix`; the Redis store is `new RedisTaskStore(jedis, "namespace")`. `TaskOps` takes a store instead of a Jedis client. A store on another engine implements the same interface.
 - Every task state transition in the Redis store is one atomic Lua script that checks the task's lease token. A worker that lost its lease cannot complete, fail or reschedule the task any more. Failed tasks are retried immediately after the configured delay instead of after the stale timeout, and a task that runs longer than the lease keeps renewing it instead of being executed twice.
 - Tasks are stored as one hash per id and queues hold ids. The pipe-separated task string is gone, duplicate ids are rejected by `TaskOps.enqueue`, and `Task` exposes `attempts()`, `maxAttempts()`, `scheduleId()`, `data()` and `lastError()`. `accountId()` is a `String`.
@@ -27,6 +27,8 @@ upgrading, or start 3.0 with a new namespace. Redis 7.0 or newer is required. Se
 
 ### Added
 
+- `bth4j-postgres`: `PostgresTaskStore(DataSource, prefix)` keeps tasks in `<prefix>_task` and `<prefix>_schedule`, claims with `FOR UPDATE SKIP LOCKED`, checks lease tokens in single `UPDATE` statements and wakes runners through `LISTEN/NOTIFY`. `createSchema()` and `schemaStatements()` provide the DDL. Needs PostgreSQL 14 or newer and the application's driver.
+- `bth4j-store-tests`: the contract tests (`TaskOpsContract`, `BackgroundRunnerContract`, `ThroughputContract`) that every store must pass; both store modules run them.
 - `BackgroundRunner.Builder.shutdownTimeout(Duration)`: how long `stopRunner()` waits for the services and for running tasks (default 30 seconds). `stopRunner()` now also shuts down the task executor and waits for running tasks before returning.
 - `BackgroundExecutor.awaitTermination(Duration)` default method and `CustomThread.waitTillDone(Duration)`.
 - `TaskRescheduleException(long, String, Throwable)` constructor; a negative delay is rejected.

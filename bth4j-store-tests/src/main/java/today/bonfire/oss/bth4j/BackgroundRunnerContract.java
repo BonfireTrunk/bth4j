@@ -10,73 +10,36 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.Timeout;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
-import redis.clients.jedis.ConnectionPoolConfig;
-import redis.clients.jedis.DefaultJedisClientConfig;
-import redis.clients.jedis.HostAndPort;
-import redis.clients.jedis.RedisClient;
 import today.bonfire.oss.bth4j.common.Random;
 import today.bonfire.oss.bth4j.executor.DefaultVtExecutor;
-import today.bonfire.oss.bth4j.redis.RedisTaskStore;
 import today.bonfire.oss.bth4j.service.BackgroundRunner;
 import today.bonfire.oss.bth4j.service.Task;
 import today.bonfire.oss.bth4j.service.TaskOps;
 import today.bonfire.oss.bth4j.service.TaskProcessorRegistry;
+import today.bonfire.oss.bth4j.store.TaskStore;
 
 /**
- * Integration test of a whole runner against a real Redis started with Testcontainers. Needs Docker.
- * Run by maven-failsafe-plugin (mvn verify), not by the unit test phase.
+ * Contract of a whole runner against a real store: enqueue, retry, dead tasks, recurring tasks, leases and
+ * shutdown. A store module subclasses it and supplies its {@link TaskStore} through {@link #newStore(String)}.
  */
-@Testcontainers
-class BackgroundRunnerIT {
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+public abstract class BackgroundRunnerContract {
 
-    @Container
-    static final GenericContainer<?> REDIS = new GenericContainer<>(DockerImageName.parse("redis:7.4-alpine"))
-            .withExposedPorts(6379)
-            .waitingFor(Wait.forLogMessage(".*Ready to accept connections.*\\n", 1));
+    private BackgroundRunner backgroundRunner;
+    private TaskOps taskOps;
 
-    private static RedisClient jedis;
-    private static BackgroundRunner backgroundRunner;
-    private static TaskOps taskOps;
+    protected abstract TaskStore newStore(String namespace);
 
     @BeforeAll
-    static void beforeAll() {
-        var poolConfig = ConnectionPoolConfig.builder()
-                .maxPoolSize(16)
-                .minPoolSize(1)
-                .testOnBorrow(false)
-                .testWhileIdle(true)
-                .testOnReturn(false)
-                .objEvictionTimeout(Duration.ofSeconds(120))
-                .durationBetweenEvictionsRuns(Duration.ofSeconds(5))
-                .waitingForObjectTimeout(Duration.ofSeconds(2))
-                .abandonedTimeout(Duration.ofSeconds(120))
-                .durationBetweenAbandonCheckRuns(Duration.ofSeconds(2))
-                .build();
-
-        var clientConfig = DefaultJedisClientConfig.builder()
-                .resp3()
-                .timeoutMillis(1000)
-                .clientName("bth4j-test")
-                .build();
-
-        jedis = RedisClient.builder()
-                .hostAndPort(new HostAndPort(REDIS.getHost(), REDIS.getMappedPort(6379)))
-                .clientConfig(clientConfig)
-                .poolConfig(poolConfig)
-                .build();
-
+    void beforeAll() {
         backgroundRunner = runnerBuilder("BTH1").build();
         taskOps = backgroundRunner.taskOps();
         backgroundRunner.run();
     }
 
-    static BackgroundRunner.Builder runnerBuilder(String namespace) {
+    BackgroundRunner.Builder runnerBuilder(String namespace) {
         TaskProcessorRegistry registry = TestTaskProcessors.createTestRegistry();
         return new BackgroundRunner.Builder()
                 .taskProcessorRegistry(registry)
@@ -88,16 +51,13 @@ class BackgroundRunnerIT {
                 .leaseDuration(Duration.ofSeconds(1))
                 .jsonMapper(new JsonMapperTest())
                 .taskExecutor(new DefaultVtExecutor())
-                .taskStore(new RedisTaskStore(jedis, namespace));
+                .taskStore(newStore(namespace));
     }
 
     @AfterAll
-    static void afterAll() {
+    protected void afterAll() {
         if (backgroundRunner != null) {
             backgroundRunner.stopRunner();
-        }
-        if (jedis != null) {
-            jedis.close();
         }
     }
 

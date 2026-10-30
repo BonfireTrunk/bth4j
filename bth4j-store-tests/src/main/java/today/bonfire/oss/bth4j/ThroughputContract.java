@@ -2,75 +2,51 @@ package today.bonfire.oss.bth4j;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
-import redis.clients.jedis.ConnectionPoolConfig;
-import redis.clients.jedis.DefaultJedisClientConfig;
-import redis.clients.jedis.HostAndPort;
-import redis.clients.jedis.RedisClient;
 import today.bonfire.oss.bth4j.common.Random;
 import today.bonfire.oss.bth4j.executor.DefaultVtExecutor;
-import today.bonfire.oss.bth4j.redis.RedisTaskStore;
 import today.bonfire.oss.bth4j.service.BackgroundRunner;
 import today.bonfire.oss.bth4j.service.Task;
+import today.bonfire.oss.bth4j.store.TaskStore;
 
 /**
  * Measures how fast a single runner drains a burst of tasks. The numbers are logged; the assertion is a loose
- * lower bound so that the test does not fail on a slow machine.
+ * lower bound so that the test does not fail on a slow machine. A store module subclasses it and supplies its
+ * {@link TaskStore} through {@link #newStore(String)}.
  */
-@Testcontainers
-class ThroughputIT {
-    private static final Logger log = LoggerFactory.getLogger(ThroughputIT.class);
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+public abstract class ThroughputContract {
+    private static final Logger log = LoggerFactory.getLogger(ThroughputContract.class);
     private static final int TASKS = 5120;
 
-    @Container
-    static final GenericContainer<?> REDIS = new GenericContainer<>(DockerImageName.parse("redis:7.4-alpine"))
-            .withExposedPorts(6379)
-            .waitingFor(Wait.forLogMessage(".*Ready to accept connections.*\\n", 1));
+    private BackgroundRunner runner;
 
-    private static RedisClient jedis;
-    private static BackgroundRunner runner;
+    protected abstract TaskStore newStore(String namespace);
 
     @BeforeAll
-    static void beforeAll() {
-        jedis = RedisClient.builder()
-                .hostAndPort(new HostAndPort(REDIS.getHost(), REDIS.getMappedPort(6379)))
-                .clientConfig(DefaultJedisClientConfig.builder()
-                        .resp3()
-                        .timeoutMillis(2000)
-                        .build())
-                .poolConfig(ConnectionPoolConfig.builder()
-                        .maxPoolSize(64)
-                        .waitingForObjectTimeout(Duration.ofSeconds(5))
-                        .build())
-                .build();
+    void beforeAll() {
         runner = new BackgroundRunner.Builder()
                 .taskProcessorRegistry(TestTaskProcessors.createTestRegistry())
                 .eventParser(TestEvents.UNKNOWN::from)
                 .taskExecutor(new DefaultVtExecutor())
                 .claimBatchSize(64)
-                .taskStore(new RedisTaskStore(jedis, "PERF"))
+                .taskStore(newStore("PERF"))
                 .build();
         runner.run();
     }
 
     @AfterAll
-    static void afterAll() {
+    protected void afterAll() {
         runner.stopRunner();
-        jedis.close();
     }
 
     @Test

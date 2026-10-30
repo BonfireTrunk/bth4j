@@ -31,8 +31,8 @@
         </dependency>
 
         <dependency>
-            <groupId>com.alibaba.fastjson2</groupId>
-            <artifactId>fastjson2</artifactId>
+            <groupId>today.bonfire.oss</groupId>
+            <artifactId>bth4j-store-tests</artifactId>
             <scope>test</scope>
         </dependency>
         <!-- integration tests against a real Redis (Testcontainers, needs Docker) -->

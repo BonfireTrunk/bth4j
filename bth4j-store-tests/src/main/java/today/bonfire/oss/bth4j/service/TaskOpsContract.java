@@ -9,33 +9,20 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
-import redis.clients.jedis.ConnectionPoolConfig;
-import redis.clients.jedis.DefaultJedisClientConfig;
-import redis.clients.jedis.HostAndPort;
-import redis.clients.jedis.RedisClient;
 import today.bonfire.oss.bth4j.JsonMapperTest;
 import today.bonfire.oss.bth4j.TestEvents;
 import today.bonfire.oss.bth4j.common.QueuesHolder;
 import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
-import today.bonfire.oss.bth4j.redis.Keys;
-import today.bonfire.oss.bth4j.redis.RedisTaskStore;
 import today.bonfire.oss.bth4j.store.FailOutcome;
+import today.bonfire.oss.bth4j.store.TaskStore;
 
 /**
- * Every state transition of {@link TaskOps} against a real Redis. Needs Docker; run by failsafe.
- * Each test uses its own namespace, so tests do not see each other's keys.
+ * Contract of every state transition of {@link TaskOps}, checked through its public reads only. A store module
+ * subclasses it and supplies its {@link TaskStore} through {@link #newStore(String)}.
  */
-@Testcontainers
-class TaskOpsIT {
+public abstract class TaskOpsContract {
 
     public static class Payload {
         private String name;
@@ -65,50 +52,18 @@ class TaskOpsIT {
         }
     }
 
-    @Container
-    static final GenericContainer<?> REDIS = new GenericContainer<>(DockerImageName.parse("redis:7.4-alpine"))
-            .withExposedPorts(6379)
-            .waitingFor(Wait.forLogMessage(".*Ready to accept connections.*\\n", 1));
-
     private static final AtomicInteger COUNTER = new AtomicInteger();
     private static final Duration LEASE = Duration.ofSeconds(30);
     private static final Duration DEAD_RETENTION = Duration.ofDays(1);
 
-    private static RedisClient jedis;
-
-    private RedisTaskStore store;
-    private Keys keys;
     private QueuesHolder queues;
     private TaskOps ops;
 
-    @BeforeAll
-    static void connect() {
-        var poolConfig = ConnectionPoolConfig.builder()
-                .maxPoolSize(8)
-                .minPoolSize(1)
-                .waitingForObjectTimeout(Duration.ofSeconds(5))
-                .build();
-        var clientConfig = DefaultJedisClientConfig.builder()
-                .resp3()
-                .timeoutMillis(3000)
-                .clientName("bth4j-ops-test")
-                .build();
-        jedis = RedisClient.builder()
-                .hostAndPort(new HostAndPort(REDIS.getHost(), REDIS.getMappedPort(6379)))
-                .clientConfig(clientConfig)
-                .poolConfig(poolConfig)
-                .build();
-    }
-
-    @AfterAll
-    static void disconnect() {
-        if (jedis != null) jedis.close();
-    }
+    protected abstract TaskStore newStore(String namespace);
 
     @BeforeEach
     void setUp() {
-        store = new RedisTaskStore(jedis, "T" + COUNTER.incrementAndGet());
-        keys = store.keys();
+        var store = newStore("T" + COUNTER.incrementAndGet());
         queues = new QueuesHolder(Set.of("def", "hi"), List.of("def", "hi"), "def");
         ops = new TaskOps(store, new JsonMapperTest(), TestEvents.UNKNOWN::from, queues, DEAD_RETENTION);
     }
@@ -258,7 +213,7 @@ class TaskOpsIT {
         assertThat(claimed.data()).contains("\"name\":\"n\"");
         assertThat(ops.decodeData(claimed, Payload.class).getCount()).isEqualTo(1);
         assertThat(ops.leasedCount()).isEqualTo(1);
-        assertThat(jedis.zrange(keys.leased, 0, -1)).containsExactly("a");
+        assertThat(ops.getTask("a").orElseThrow().token()).isEqualTo(claimed.token());
         assertThat(ops.queueSize("def")).isZero();
     }
 
@@ -343,7 +298,6 @@ class TaskOpsIT {
 
         assertThat(ops.fail(t, Duration.ofMillis(100), "boom")).isEqualTo(FailOutcome.DEAD);
 
-        assertThat(jedis.hget(keys.task("a"), "error")).isEqualTo("boom");
         assertThat(ops.deadCount()).isEqualTo(1);
         assertThat(ops.scheduledCount()).isZero();
         assertThat(ops.leasedCount()).isZero();
@@ -351,7 +305,6 @@ class TaskOpsIT {
         assertThat(dead).hasSize(1);
         assertThat(dead.getFirst().uniqueId()).isEqualTo("a");
         assertThat(dead.getFirst().lastError()).isEqualTo("boom");
-        assertThat(jedis.ttl(keys.task("a"))).isPositive();
     }
 
     @Test
@@ -515,7 +468,6 @@ class TaskOpsIT {
         var stored = ops.getTask("a").orElseThrow();
         assertThat(stored.attempts()).isZero();
         assertThat(stored.lastError()).isNull();
-        assertThat(jedis.ttl(keys.task("a"))).isEqualTo(-1);
         assertThat(ops.retryDeadTask("a")).isFalse();
         assertThat(claim(List.of("def"), 1)).extracting(Task::uniqueId).containsExactly("a");
     }
@@ -624,8 +576,6 @@ class TaskOpsIT {
         assertThat(ops.cronCommit(due, next)).isTrue();
 
         var occurrenceId = "r:" + due.fireAt().toEpochMilli();
-        assertThat(jedis.zscore(keys.scheduled, occurrenceId))
-                .isEqualTo((double) due.fireAt().toEpochMilli());
         var occurrence = ops.getTask(occurrenceId).orElseThrow();
         assertThat(occurrence.scheduleId()).isEqualTo("r");
         assertThat(occurrence.event()).isEqualTo(TestEvents.RECURRING);
@@ -667,7 +617,6 @@ class TaskOpsIT {
         assertThat(ops.deleteRecurringTask("r")).isFalse();
 
         assertThat(ops.recurringTasks()).isEmpty();
-        assertThat(jedis.exists(keys.cronDefinition("r"))).isFalse();
     }
 
     @Test
@@ -700,7 +649,7 @@ class TaskOpsIT {
     void claimedTaskWithUnknownEventIsDroppedButStaysLeased() {
         ops.enqueue(task("a", TestEvents.REGULAR_TASK).build());
         var strict = new TaskOps(
-                store,
+                ops.store(),
                 new JsonMapperTest(),
                 v -> TestEvents.REGULAR_TASK.value().equals(v) ? null : TestEvents.UNKNOWN.from(v),
                 queues,
