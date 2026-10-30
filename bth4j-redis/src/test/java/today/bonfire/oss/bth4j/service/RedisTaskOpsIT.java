@@ -118,6 +118,44 @@ class RedisTaskOpsIT extends TaskOpsContract {
     }
 
     @Test
+    void expiredDeadTaskDoesNotShadowAReusedId() throws InterruptedException {
+        var store = new RedisTaskStore(jedis, "R-reuse");
+        var queues = new QueuesHolder(Set.of("def", "hi"), List.of("def", "hi"), "def");
+        var ops = new TaskOps(store, new JsonMapperTest(), TestEvents.UNKNOWN::from, queues, Duration.ofMillis(1));
+        var t = claimOne(ops, "a");
+        assertThat(ops.fail(t, null, "boom")).isEqualTo(FailOutcome.DEAD);
+        Thread.sleep(50);
+        // the hash expired with the retention, only the dead set still knows the id
+        assertThat(jedis.exists(store.keys().task("a"))).isFalse();
+        assertThat(ops.deadCount()).isEqualTo(1);
+
+        assertThat(ops.enqueue(task("a", TestEvents.REGULAR_TASK).build())).isTrue();
+
+        assertThat(ops.deadCount()).isZero();
+        assertThat(ops.purgeDeadTasks(Instant.now().plusSeconds(1))).isZero();
+        assertThat(ops.retryDeadTask("a")).isFalse();
+        assertThat(ops.getTask("a")).isPresent();
+        assertThat(ops.queueSize("def")).isEqualTo(1);
+    }
+
+    @Test
+    void purgeLeavesALiveTaskWhoseIdIsStillInTheDeadSet() throws InterruptedException {
+        var store = new RedisTaskStore(jedis, "R-purge");
+        var queues = new QueuesHolder(Set.of("def", "hi"), List.of("def", "hi"), "def");
+        var ops = new TaskOps(store, new JsonMapperTest(), TestEvents.UNKNOWN::from, queues, Duration.ofMillis(1));
+        var t = claimOne(ops, "a");
+        assertThat(ops.fail(t, null, "boom")).isEqualTo(FailOutcome.DEAD);
+        Thread.sleep(50);
+        // a store that does not clear the dead set on enqueue would leave this entry behind the new hash
+        jedis.hset(store.keys().task("a"), "queue", "def");
+
+        assertThat(ops.purgeDeadTasks(Instant.now().plusSeconds(1))).isEqualTo(1);
+
+        assertThat(jedis.exists(store.keys().task("a"))).isTrue();
+        assertThat(ops.deadCount()).isZero();
+    }
+
+    @Test
     void cronCommitSchedulesTheOccurrenceAtItsFireTime() {
         var store = new RedisTaskStore(jedis, "R-cron");
         var ops = opsOn(store);

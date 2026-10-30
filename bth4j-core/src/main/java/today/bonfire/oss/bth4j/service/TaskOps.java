@@ -295,12 +295,19 @@ public class TaskOps {
     }
 
     FailOutcome fail(String id, String token, Duration retryDelay, String error) {
-        return store.fail(
-                id,
-                token,
-                retryDelay,
-                StringUtils.abbreviate(StringUtils.defaultString(error), MAX_ERROR_LENGTH),
-                deadRetention);
+        return store.fail(id, token, retryDelay, abbreviate(error), deadRetention);
+    }
+
+    /**
+     * Records the failure of a task whose lease expired. {@link FailOutcome#LOST} when the task moved on or its
+     * worker renewed the lease meanwhile.
+     */
+    FailOutcome failExpired(ExpiredLease lease, Duration retryDelay, String error) {
+        return store.failExpired(lease.id(), lease.token(), retryDelay, abbreviate(error), deadRetention);
+    }
+
+    private static String abbreviate(String error) {
+        return StringUtils.abbreviate(StringUtils.defaultString(error), MAX_ERROR_LENGTH);
     }
 
     /** Moves the task to the scheduled set for the given time. @return false when the lease was lost */

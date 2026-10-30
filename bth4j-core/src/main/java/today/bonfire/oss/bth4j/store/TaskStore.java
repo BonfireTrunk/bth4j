@@ -17,9 +17,9 @@ import java.util.Optional;
  * An implementation must guarantee that
  * <ul>
  *   <li>{@link #claim} hands each queued task to exactly one caller and gives it a token nobody else holds;</li>
- *   <li>every token-checked transition ({@link #renew}, {@link #ack}, {@link #fail}, {@link #reschedule},
- *       {@link #unclaim}) is atomic together with its check and has no effect when the token does not
- *       match the one stored with the task;</li>
+ *   <li>every token-checked transition ({@link #renew}, {@link #ack}, {@link #fail}, {@link #failExpired},
+ *       {@link #reschedule}, {@link #unclaim}) is atomic together with its check and has no effect when the
+ *       token does not match the one stored with the task;</li>
  *   <li>{@link #enqueue} and {@link #commitRecurring} never overwrite a task whose id already exists;</li>
  *   <li>{@link #commitRecurring} succeeds at most once per schedule revision and fire time, across all
  *       runners that share the store.</li>
@@ -61,7 +61,7 @@ public interface TaskStore {
 
     long deadCount();
 
-    /** @return the oldest dead tasks, up to the limit */
+    /** @return the oldest dead tasks, up to the limit; empty when the limit is not positive */
     List<TaskRecord> deadTasks(int limit);
 
     /**
@@ -77,7 +77,8 @@ public interface TaskStore {
     /**
      * Moves up to {@code count} queued tasks to the leased state and returns them with their new token.
      * The queues are drained in the given order: the second queue is only read when the first one could
-     * not fill the count. Each claim increments the task's attempts.
+     * not fill the count. A queue named more than once counts once. Each claim increments the task's
+     * attempts.
      *
      * @param tokenBase unique per call; the store derives one token per task from it
      * @param lease     how long the lease lasts unless renewed
@@ -104,6 +105,13 @@ public interface TaskStore {
      *                    before {@link #purgeDeadTasks} runs
      */
     FailOutcome fail(String id, String token, Duration retryDelay, String error, Duration keepDeadFor);
+
+    /**
+     * Records the failure of a task whose lease was found expired by {@link #reclaim}. Same as {@link #fail},
+     * except that it also has no effect ({@link FailOutcome#LOST}) when the lease is no longer expired: a
+     * worker that renewed it between the reclaim and this call keeps the task.
+     */
+    FailOutcome failExpired(String id, String token, Duration retryDelay, String error, Duration keepDeadFor);
 
     /**
      * Moves a leased task to the scheduled state for the given time without counting the attempt.

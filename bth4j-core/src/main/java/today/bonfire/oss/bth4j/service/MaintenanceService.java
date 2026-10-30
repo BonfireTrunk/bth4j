@@ -5,7 +5,6 @@ import java.time.Instant;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,13 +13,12 @@ import today.bonfire.oss.bth4j.executor.CustomThread;
 
 /**
  * Housekeeping: fails tasks whose lease expired (so they are retried or die) and purges dead tasks
- * past their retention. Jobs run on the scheduler thread itself, so shutting the scheduler down waits
- * for a job in progress.
+ * past their retention. Jobs run on the scheduler thread itself; {@link #stopThread()} returns at once
+ * and {@link #waitTillDone(Duration)} waits for a job in progress.
  */
 public class MaintenanceService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(MaintenanceService.class);
     private static final Duration DEAD_PURGE_INTERVAL = Duration.ofHours(1);
-    private static final long SHUTDOWN_WAIT_SECONDS = 30;
 
     private final ScheduledExecutorService executor;
     private final TaskOps taskOps;
@@ -28,8 +26,6 @@ public class MaintenanceService extends CustomThread {
     private final Duration deadRetention;
     private final Function<Integer, Duration> taskRetryDelay;
     private final int batchSize;
-
-    private final AtomicBoolean executorShutdownStarted = new AtomicBoolean(false);
 
     MaintenanceService(Builder builder) {
         super(builder.group, builder.threadName);
@@ -62,7 +58,7 @@ public class MaintenanceService extends CustomThread {
                 count = expired.size();
                 for (var e : expired) {
                     var delay = retryDelay(e.attempts());
-                    var outcome = taskOps.fail(e.id(), e.token(), delay, "lease expired after attempt " + e.attempts());
+                    var outcome = taskOps.failExpired(e, delay, "lease expired after attempt " + e.attempts());
                     log.warn("Lease of task {} expired after attempt {}: {}", e.id(), e.attempts(), outcome);
                 }
             } while (count == batchSize && canContinueProcessing);
@@ -87,38 +83,32 @@ public class MaintenanceService extends CustomThread {
         }
     }
 
-    /**
-     * Stops the maintenance schedule. The scheduler is shut down right away and {@link #waitTillDone()}
-     * returns once it has terminated, which includes a job that is still running.
-     */
+    /** Stops the maintenance schedule without waiting; a job in progress finishes. */
     @Override
     public void stopThread() {
         super.stopThread();
-        shutdownExecutor();
+        log.info("Maintenance Service: Stopping executor");
+        executor.shutdown();
+    }
+
+    /** Waits until the scheduler has terminated, which includes a job that is still running. */
+    @Override
+    public void waitTillDone() throws InterruptedException {
+        executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
     }
 
     /**
-     * Shuts down the scheduler once and always counts down the done latch, also on timeout or interrupt.
+     * Waits for the scheduler to terminate. A job still running when the timeout elapses is interrupted.
+     *
+     * @return true when the scheduler terminated in time
      */
-    private void shutdownExecutor() {
-        if (!executorShutdownStarted.compareAndSet(false, true)) {
-            return;
+    @Override
+    public boolean waitTillDone(Duration timeout) throws InterruptedException {
+        if (executor.awaitTermination(timeout.toNanos(), TimeUnit.NANOSECONDS)) {
+            return true;
         }
-        try {
-            log.info("Maintenance Service: Stopping executor");
-            executor.shutdown();
-            if (executor.awaitTermination(SHUTDOWN_WAIT_SECONDS, TimeUnit.SECONDS)) {
-                log.info("Maintenance Service: Executor stopped");
-            } else {
-                log.error("Maintenance Service: Executor failed to stop within {} seconds", SHUTDOWN_WAIT_SECONDS);
-                executor.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            executor.shutdownNow();
-            Thread.currentThread().interrupt();
-        } finally {
-            doneLatch.countDown();
-        }
+        executor.shutdownNow();
+        return false;
     }
 
     @Override

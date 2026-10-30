@@ -85,7 +85,9 @@ public class RedisTaskStore implements TaskStore {
         args.add(task.due() == null ? "" : String.valueOf(task.due().toEpochMilli()));
         args.addAll(fields(task));
         var r = (Long) scripts.run(
-                RedisScripts.ENQUEUE, List.of(keys.task(task.id()), keys.scheduled, keys.queue(task.queue())), args);
+                RedisScripts.ENQUEUE,
+                List.of(keys.task(task.id()), keys.scheduled, keys.queue(task.queue()), keys.dead),
+                args);
         return r == 1;
     }
 
@@ -109,7 +111,7 @@ public class RedisTaskStore implements TaskStore {
             args.add(F_DATA);
             args.add(d.data());
         }
-        scripts.run(RedisScripts.CRON_PUT, List.of(keys.cron), args);
+        scripts.run(RedisScripts.CRON_PUT, List.of(keys.cron, keys.cronRevision), args);
     }
 
     @Override
@@ -157,6 +159,7 @@ public class RedisTaskStore implements TaskStore {
     @Override
     public List<TaskRecord> deadTasks(int limit) {
         var result = new ArrayList<TaskRecord>();
+        if (limit <= 0) return result;
         for (var id : jedis.zrange(keys.dead, 0, limit - 1)) {
             getTask(id).ifPresent(result::add);
         }
@@ -230,6 +233,16 @@ public class RedisTaskStore implements TaskStore {
 
     @Override
     public FailOutcome fail(String id, String token, Duration retryDelay, String error, Duration keepDeadFor) {
+        return fail(id, token, retryDelay, error, keepDeadFor, "");
+    }
+
+    @Override
+    public FailOutcome failExpired(String id, String token, Duration retryDelay, String error, Duration keepDeadFor) {
+        return fail(id, token, retryDelay, error, keepDeadFor, "expired");
+    }
+
+    private FailOutcome fail(
+            String id, String token, Duration retryDelay, String error, Duration keepDeadFor, String onlyIf) {
         var r = (String) scripts.run(
                 RedisScripts.FAIL,
                 List.of(keys.leased, keys.scheduled, keys.dead),
@@ -240,7 +253,8 @@ public class RedisTaskStore implements TaskStore {
                         String.valueOf(System.currentTimeMillis()),
                         retryDelay == null ? "dead" : String.valueOf(retryDelay.toMillis()),
                         StringUtils.defaultString(error),
-                        String.valueOf(Math.max(1, keepDeadFor.toSeconds()))));
+                        String.valueOf(Math.max(1, keepDeadFor.toMillis())),
+                        onlyIf));
         return FailOutcome.valueOf(r.toUpperCase());
     }
 
@@ -271,8 +285,9 @@ public class RedisTaskStore implements TaskStore {
                         String.valueOf(limit),
                         keys.taskPrefix,
                         keys.queuePrefix));
-        var next = (Long) r.get(1);
-        return new PromoteResult(((Long) r.getFirst()).intValue(), next < 0 ? null : Instant.ofEpochMilli(next));
+        var hasNext = (Long) r.get(1) == 1;
+        return new PromoteResult(
+                ((Long) r.getFirst()).intValue(), hasNext ? Instant.ofEpochMilli((Long) r.get(2)) : null);
     }
 
     @Override
@@ -316,7 +331,7 @@ public class RedisTaskStore implements TaskStore {
                     d.get(F_CRON),
                     d.get(F_DATA),
                     parseInt(d.get(F_MAX), 0),
-                    parseInt(d.get(F_REV), 0));
+                    d.get(F_REV) == null ? 0 : Long.parseLong(d.get(F_REV)));
             result.add(new DueSchedule(id, fireAt, definition));
         }
         return result;
@@ -333,7 +348,7 @@ public class RedisTaskStore implements TaskStore {
         args.add(keys.cronPrefix);
         args.add(keys.taskPrefix);
         args.addAll(fields(occurrence));
-        var r = (Long) scripts.run(RedisScripts.CRON_COMMIT, List.of(keys.cron, keys.scheduled), args);
+        var r = (Long) scripts.run(RedisScripts.CRON_COMMIT, List.of(keys.cron, keys.scheduled, keys.dead), args);
         return r == 1;
     }
 

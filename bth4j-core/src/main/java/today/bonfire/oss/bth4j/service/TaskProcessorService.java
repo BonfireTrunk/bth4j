@@ -5,7 +5,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
@@ -47,7 +46,9 @@ public class TaskProcessorService extends CustomThread {
     private final String instanceId = Random.generateNewToken(6);
     private final AtomicLong claimCounter = new AtomicLong();
     private final AtomicInteger queueOffset = new AtomicInteger();
-    private final Map<String, Task> running = new ConcurrentHashMap<>();
+    /** shared with the runner so that a restarted processor keeps renewing the tasks its predecessor started */
+    private final Map<String, Task> running;
+
     private final Thread renewer;
     private volatile boolean renewalRunning = true;
 
@@ -55,6 +56,7 @@ public class TaskProcessorService extends CustomThread {
         super(b.group, b.threadName);
         this.executor = b.executor;
         this.taskOps = b.taskOps;
+        this.running = b.running;
         this.queuesHolder = taskOps.queuesHolder();
         this.regularCallbacks = b.regularCallbacks;
         this.recurringCallbacks = b.recurringCallbacks;
@@ -115,8 +117,8 @@ public class TaskProcessorService extends CustomThread {
             try {
                 executor.execute(
                         new TaskRunnerWrapper(task, taskHandler, callbacks, taskOps, retryDelay, this::finished));
-            } catch (RejectedExecutionException e) {
-                running.remove(task.uniqueId());
+            } catch (RuntimeException e) {
+                finished(task);
                 returnToQueue(task, e);
             }
         }
@@ -125,7 +127,7 @@ public class TaskProcessorService extends CustomThread {
         }
     }
 
-    private void returnToQueue(Task task, RejectedExecutionException cause) {
+    private void returnToQueue(Task task, RuntimeException cause) {
         try {
             if (!taskOps.unclaim(task)) {
                 log.warn("Task {} was rejected by the executor and its lease was lost", task.uniqueId());
@@ -137,8 +139,12 @@ public class TaskProcessorService extends CustomThread {
         log.warn("Executor rejected task {}, returned to its queue", task.uniqueId(), cause);
     }
 
+    /**
+     * Removes this attempt from the running tasks. Only this attempt: the same id may already be running again
+     * when a retry was claimed while this attempt's callbacks were still executing.
+     */
     private void finished(Task task) {
-        running.remove(task.uniqueId());
+        running.remove(task.uniqueId(), task);
     }
 
     /** The queues to process, starting one position later on every call. */
@@ -202,6 +208,7 @@ public class TaskProcessorService extends CustomThread {
         private Duration lease = Duration.ofSeconds(60);
         private Duration idlePollInterval = Duration.ofSeconds(1);
         private int claimBatchSize = 32;
+        private Map<String, Task> running = new ConcurrentHashMap<>();
 
         public Builder setGroup(ThreadGroup group) {
             this.group = group;
@@ -251,6 +258,12 @@ public class TaskProcessorService extends CustomThread {
 
         public Builder setClaimBatchSize(int claimBatchSize) {
             this.claimBatchSize = claimBatchSize;
+            return this;
+        }
+
+        /** The tasks being executed, to hand over from a processor that died to its replacement. */
+        public Builder setRunning(Map<String, Task> running) {
+            this.running = running;
             return this;
         }
 

@@ -14,4 +14,4 @@ public record RecurringDefinition(
         String cron,
         String data,
         int maxAttempts,
-        int revision) {}
+        long revision) {}

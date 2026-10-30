@@ -12,7 +12,8 @@ import redis.clients.jedis.exceptions.JedisNoScriptException;
 
 /**
  * Runs Lua scripts by SHA-1 and loads a script on demand when the server does not know it,
- * for example after a restart or a {@code SCRIPT FLUSH}.
+ * for example after a restart or a {@code SCRIPT FLUSH}. The load is routed by the script's first key, so
+ * on Redis Cluster it reaches the node that will run the script.
  */
 final class ScriptRunner {
 
@@ -28,7 +29,7 @@ final class ScriptRunner {
         try {
             return jedis.evalsha(sha, keys, args);
         } catch (JedisNoScriptException e) {
-            var loaded = jedis.scriptLoad(script);
+            var loaded = jedis.scriptLoad(script, keys.getFirst());
             return jedis.evalsha(loaded, keys, args);
         }
     }

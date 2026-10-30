@@ -41,9 +41,10 @@ class KeysTest {
                         keys.leased,
                         keys.dead,
                         keys.cron,
+                        keys.cronRevision,
                         keys.taskPrefix,
                         keys.queuePrefix,
                         keys.cronPrefix))
-                .hasSize(7);
+                .hasSize(8);
     }
 }

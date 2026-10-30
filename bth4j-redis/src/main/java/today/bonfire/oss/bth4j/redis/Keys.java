@@ -10,6 +10,9 @@ public final class Keys {
     public final String leased;
     public final String dead;
     public final String cron;
+    /** counter behind recurring definition revisions; it never resets, so a recreated definition cannot reuse one */
+    public final String cronRevision;
+
     public final String taskPrefix;
     public final String queuePrefix;
     public final String cronPrefix;
@@ -21,6 +24,7 @@ public final class Keys {
         this.leased = p + "leased";
         this.dead = p + "dead";
         this.cron = p + "cron";
+        this.cronRevision = p + "cronrev";
         this.taskPrefix = p + "t:";
         this.queuePrefix = p + "q:";
         this.cronPrefix = p + "cron:";
