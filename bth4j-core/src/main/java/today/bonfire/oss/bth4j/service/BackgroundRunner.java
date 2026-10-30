@@ -358,7 +358,7 @@ public class BackgroundRunner implements Runnable {
         private Duration recurringTasksQueueAheadDuration = Duration.ofHours(1);
         private Duration leaseDuration = Duration.ofSeconds(60);
         private Duration serviceCheckInterval = Duration.ofSeconds(10);
-        private Duration idlePollInterval = Duration.ofSeconds(1);
+        private Duration idlePollInterval = Duration.ofMillis(500);
         private Duration maintenanceCheckInterval = Duration.ofSeconds(5);
         private Duration scheduledTasksCheckInterval = Duration.ofSeconds(1);
         private Duration recurringTasksCheckInterval = Duration.ofSeconds(10);
@@ -420,8 +420,9 @@ public class BackgroundRunner implements Runnable {
         }
 
         /**
-         * @param interval how long the task processor waits for a wake-up when the queues are empty before it
-         *                 polls again, and how long it waits for a free executor slot per attempt. Default is 1 second.
+         * @param interval how long the task processor sleeps when a claim found nothing, and how long it waits
+         *                 for a free executor slot per attempt. One claim covers all queues, so an idle runner
+         *                 makes one store call per interval. Default is 500 milliseconds, minimum 10.
          */
         public Builder idlePollInterval(Duration interval) {
             requirePositive(interval, "idlePollInterval");

@@ -14,7 +14,6 @@ class KeysTest {
         assertThat(keys.leased).startsWith("{NS}:");
         assertThat(keys.dead).startsWith("{NS}:");
         assertThat(keys.cron).startsWith("{NS}:");
-        assertThat(keys.wakeChannel).startsWith("{NS}:");
         assertThat(keys.taskPrefix).startsWith("{NS}:");
         assertThat(keys.queuePrefix).startsWith("{NS}:");
         assertThat(keys.cronPrefix).startsWith("{NS}:");
@@ -42,10 +41,9 @@ class KeysTest {
                         keys.leased,
                         keys.dead,
                         keys.cron,
-                        keys.wakeChannel,
                         keys.taskPrefix,
                         keys.queuePrefix,
                         keys.cronPrefix))
-                .hasSize(8);
+                .hasSize(7);
     }
 }

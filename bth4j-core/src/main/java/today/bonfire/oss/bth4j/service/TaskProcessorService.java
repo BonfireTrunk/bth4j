@@ -6,8 +6,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
@@ -25,7 +23,8 @@ import today.bonfire.oss.bth4j.executor.CustomThread;
  * <p>
  * Every iteration first reserves executor slots, then claims at most that many tasks in one call, so a
  * claimed task always has a slot. The queues are tried round robin. When nothing was claimed the thread
- * waits for the store's wake-up signal, with the idle poll interval as fallback.
+ * sleeps for the idle poll interval; one claim covers all queues, so an idle runner costs one store call
+ * per interval.
  * <p>
  * A renewal thread extends the leases of all running tasks every third of the lease duration. It keeps
  * running after {@link #stopThread()} until {@link #stopLeaseRenewal()} is called, so that tasks still
@@ -49,9 +48,7 @@ public class TaskProcessorService extends CustomThread {
     private final AtomicLong claimCounter = new AtomicLong();
     private final AtomicInteger queueOffset = new AtomicInteger();
     private final Map<String, Task> running = new ConcurrentHashMap<>();
-    private final Semaphore wake = new Semaphore(0);
     private final Thread renewer;
-    private volatile AutoCloseable wakeSubscription;
     private volatile boolean renewalRunning = true;
 
     private TaskProcessorService(Builder b) {
@@ -73,11 +70,6 @@ public class TaskProcessorService extends CustomThread {
     @Override
     public synchronized void start() {
         renewer.start();
-        wakeSubscription = taskOps.store().subscribeWake(wake::release, r -> {
-            var thread = new Thread(getThreadGroup(), r, getName() + "-wake");
-            thread.setDaemon(true);
-            return thread;
-        });
         super.start();
     }
 
@@ -129,8 +121,7 @@ public class TaskProcessorService extends CustomThread {
             }
         }
         if (tasks.isEmpty()) {
-            wake.tryAcquire(idlePollInterval.toNanos(), TimeUnit.NANOSECONDS);
-            wake.drainPermits();
+            Thread.sleep(idlePollInterval);
         }
     }
 
@@ -191,19 +182,6 @@ public class TaskProcessorService extends CustomThread {
     /** @return the tasks currently running on this instance */
     public int runningCount() {
         return running.size();
-    }
-
-    @Override
-    public void stopThread() {
-        super.stopThread();
-        var subscription = wakeSubscription;
-        if (subscription != null) {
-            try {
-                subscription.close();
-            } catch (Exception e) {
-                log.debug("Closing the wake-up subscription failed", e);
-            }
-        }
     }
 
     /** Stops renewing leases. Call it after the executor has terminated. */

@@ -17,7 +17,7 @@ upgrading, or start 3.0 with a new namespace. Redis 7.0 or newer is required. Se
 - Every task state transition in the Redis store is one atomic Lua script that checks the task's lease token. A worker that lost its lease cannot complete, fail or reschedule the task any more. Failed tasks are retried immediately after the configured delay instead of after the stale timeout, and a task that runs longer than the lease keeps renewing it instead of being executed twice.
 - Tasks are stored as one hash per id and queues hold ids. The pipe-separated task string is gone, duplicate ids are rejected by `TaskOps.enqueue`, and `Task` exposes `attempts()`, `maxAttempts()`, `scheduleId()`, `data()` and `lastError()`. `accountId()` is a `String`.
 - All keys carry the namespace as a hash tag (`{BTH}:...`), so the library works on Redis Cluster.
-- The task processor reserves executor slots first, then claims up to that many tasks in one call, and is woken by a Redis channel when a task is enqueued. There are no more polling timers on the hot path and no locks anywhere.
+- The task processor reserves executor slots first, then claims up to that many tasks from all queues in one call, and sleeps for `idlePollInterval` (default 500 ms) only when that call found nothing. There are no locks anywhere.
 - `TaskOps`: `enqueue(Task)` and `enqueue(Task, data)` replace `addTaskToQueue`; `addRecurringTask(Task[, data])` returns the schedule id, `deleteRecurringTask(String)` takes it; new `getTask`, `decodeData`, `recurringTasks`, `leasedCount`, `scheduledCount`, `deadCount`, `deadTasks`, `retryDeadTask` and `purgeDeadTasks`.
 - Recurring definitions produce each occurrence exactly once across instances (`<scheduleId>:<fireAt>` ids); missed occurrences are skipped; re-registering with the same cron expression keeps the next fire time; the data given to `addRecurringTask` is passed to every occurrence.
 - `BackgroundExecutor` contract: `reserve(max, wait)`, `release(n)`, `execute`, `activeCount`, `shutdown`, `awaitTermination`. `isPoolFull` and `getExecutor` are gone. `DefaultVtExecutor` has a configurable upper bound for its adaptive limit.
@@ -27,7 +27,7 @@ upgrading, or start 3.0 with a new namespace. Redis 7.0 or newer is required. Se
 
 ### Added
 
-- `bth4j-postgres`: `PostgresTaskStore(DataSource, prefix)` keeps tasks in `<prefix>_task` and `<prefix>_schedule`, claims with `FOR UPDATE SKIP LOCKED`, checks lease tokens in single `UPDATE` statements and wakes runners through `LISTEN/NOTIFY`. `createSchema()` and `schemaStatements()` provide the DDL. Needs PostgreSQL 14 or newer and the application's driver.
+- `bth4j-postgres`: `PostgresTaskStore(DataSource, prefix)` keeps tasks in `<prefix>_task` and `<prefix>_schedule`, claims with `FOR UPDATE SKIP LOCKED` and checks lease tokens in single `UPDATE` statements. `createSchema()` and `schemaStatements()` provide the DDL. Uses only `java.sql`; needs PostgreSQL 9.5 or newer and the application's driver.
 - `bth4j-store-tests`: the contract tests (`TaskOpsContract`, `BackgroundRunnerContract`, `ThroughputContract`) that every store must pass; both store modules run them.
 - `BackgroundRunner.Builder.shutdownTimeout(Duration)`: how long `stopRunner()` waits for the services and for running tasks (default 30 seconds). `stopRunner()` now also shuts down the task executor and waits for running tasks before returning.
 - `BackgroundExecutor.awaitTermination(Duration)` default method and `CustomThread.waitTillDone(Duration)`.

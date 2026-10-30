@@ -7,11 +7,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ThreadFactory;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import redis.clients.jedis.JedisPubSub;
 import redis.clients.jedis.UnifiedJedis;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.store.DueSchedule;
@@ -27,7 +25,7 @@ import today.bonfire.oss.bth4j.store.TaskStore;
  * scheduled, leased and dead states, and one Lua script per transition so that every check and its
  * writes run as one unit (see {@code docs/design-3.0.md}). All keys carry the namespace as a hash tag,
  * so the store also works on Redis Cluster. The scripts are called by SHA and loaded on demand.
- * Runners that share a namespace share the work; the wake-up channel holds one pooled connection per runner.
+ * Runners that share a namespace share the work.
  */
 public class RedisTaskStore implements TaskStore {
     private static final Logger log = LoggerFactory.getLogger(RedisTaskStore.class);
@@ -85,8 +83,6 @@ public class RedisTaskStore implements TaskStore {
         var args = new ArrayList<String>();
         args.add(task.id());
         args.add(task.due() == null ? "" : String.valueOf(task.due().toEpochMilli()));
-        args.add(keys.wakeChannel);
-        args.add(task.queue());
         args.addAll(fields(task));
         var r = (Long) scripts.run(
                 RedisScripts.ENQUEUE, List.of(keys.task(task.id()), keys.scheduled, keys.queue(task.queue())), args);
@@ -170,9 +166,7 @@ public class RedisTaskStore implements TaskStore {
     @Override
     public boolean retryDeadTask(String id) {
         var r = (Long) scripts.run(
-                RedisScripts.RETRY_DEAD,
-                List.of(keys.dead),
-                List.of(keys.taskPrefix, keys.queuePrefix, keys.wakeChannel, id));
+                RedisScripts.RETRY_DEAD, List.of(keys.dead), List.of(keys.taskPrefix, keys.queuePrefix, id));
         return r == 1;
     }
 
@@ -276,8 +270,7 @@ public class RedisTaskStore implements TaskStore {
                         String.valueOf(System.currentTimeMillis()),
                         String.valueOf(limit),
                         keys.taskPrefix,
-                        keys.queuePrefix,
-                        keys.wakeChannel));
+                        keys.queuePrefix));
         var next = (Long) r.get(1);
         return new PromoteResult(((Long) r.getFirst()).intValue(), next < 0 ? null : Instant.ofEpochMilli(next));
     }
@@ -342,71 +335,6 @@ public class RedisTaskStore implements TaskStore {
         args.addAll(fields(occurrence));
         var r = (Long) scripts.run(RedisScripts.CRON_COMMIT, List.of(keys.cron, keys.scheduled), args);
         return r == 1;
-    }
-
-    // ---- wake-up -------------------------------------------------------------------------------------
-
-    @Override
-    public AutoCloseable subscribeWake(Runnable onWake, ThreadFactory threadFactory) {
-        var listener = new WakeListener(onWake);
-        var thread = threadFactory.newThread(listener);
-        thread.start();
-        return () -> listener.stop(thread);
-    }
-
-    /**
-     * Subscribes to the wake channel and calls back on every message. Reconnects with a bounded backoff
-     * when the subscription fails.
-     */
-    private final class WakeListener implements Runnable {
-        private final Runnable onWake;
-        private volatile boolean listening = true;
-        private volatile JedisPubSub subscription;
-
-        WakeListener(Runnable onWake) {
-            this.onWake = onWake;
-        }
-
-        @Override
-        public void run() {
-            long backoffMs = 100;
-            while (listening) {
-                var pubSub = new JedisPubSub() {
-                    @Override
-                    public void onMessage(String channel, String message) {
-                        onWake.run();
-                    }
-                };
-                subscription = pubSub;
-                try {
-                    jedis.subscribe(pubSub, keys.wakeChannel);
-                    backoffMs = 100;
-                } catch (Exception e) {
-                    if (listening) {
-                        log.warn("Wake-up subscription lost, retrying in {} ms", backoffMs, e);
-                        try {
-                            Thread.sleep(backoffMs);
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                        }
-                        backoffMs = Math.min(backoffMs * 2, 10_000);
-                    }
-                }
-            }
-        }
-
-        void stop(Thread thread) {
-            listening = false;
-            var s = subscription;
-            if (s != null && s.isSubscribed()) {
-                try {
-                    s.unsubscribe();
-                } catch (Exception e) {
-                    log.debug("Unsubscribe failed while stopping", e);
-                }
-            }
-            thread.interrupt();
-        }
     }
 
     // ---- hash mapping --------------------------------------------------------------------------------

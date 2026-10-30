@@ -32,10 +32,10 @@ class PostgresTaskStoreTest {
     void schemaStatementsUseThePrefix() {
         var statements = new PostgresTaskStore(DATA_SOURCE, "app").schemaStatements();
 
-        assertThat(statements).hasSize(10);
+        assertThat(statements).hasSize(8);
         assertThat(statements.getFirst()).startsWith("CREATE TABLE IF NOT EXISTS app_task (");
         assertThat(statements).allSatisfy(s -> assertThat(s).contains("app_"));
-        assertThat(statements.getLast()).contains("CREATE OR REPLACE TRIGGER app_task_wake");
+        assertThat(statements.getLast()).startsWith("CREATE INDEX IF NOT EXISTS app_schedule_due");
     }
 
     @Test

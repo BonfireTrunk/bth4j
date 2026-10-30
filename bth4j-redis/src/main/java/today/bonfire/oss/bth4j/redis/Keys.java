@@ -10,7 +10,6 @@ public final class Keys {
     public final String leased;
     public final String dead;
     public final String cron;
-    public final String wakeChannel;
     public final String taskPrefix;
     public final String queuePrefix;
     public final String cronPrefix;
@@ -22,7 +21,6 @@ public final class Keys {
         this.leased = p + "leased";
         this.dead = p + "dead";
         this.cron = p + "cron";
-        this.wakeChannel = p + "wake";
         this.taskPrefix = p + "t:";
         this.queuePrefix = p + "q:";
         this.cronPrefix = p + "cron:";

@@ -25,7 +25,7 @@ Add the store module you use; the core library comes with it:
 ```
 
 Requires Java 21. The Redis store needs Redis 7.0 or newer and also works on Redis Cluster (all keys of a store share
-one hash slot). The PostgreSQL store needs PostgreSQL 14 or newer and the application's own JDBC driver and
+one hash slot). The PostgreSQL store needs PostgreSQL 9.5 or newer and the application's own JDBC driver and
 `DataSource`.
 
 ## How it works
@@ -49,7 +49,8 @@ Components:
 
 - **BackgroundRunner** starts and supervises the services and shuts them down in order.
 - **TaskProcessorService** reserves executor slots, claims that many tasks in one call, hands them to the
-  executor and renews their leases while they run. It is woken by a Redis channel when a task is enqueued.
+  executor and renews their leases while they run. When a claim finds nothing it sleeps for the idle poll
+  interval; one claim covers all queues.
 - **ScheduledTaskService** moves due tasks from the scheduled set into their queues and sleeps until the next due time.
 - **RecurringTaskService** creates the next occurrence of each recurring definition ahead of its time.
 - **MaintenanceService** retries tasks whose lease expired and purges old dead tasks.
@@ -203,7 +204,7 @@ taskOps.getTask(id);                // any state
 | `taskStore` | required | the store: `new RedisTaskStore(jedis, "namespace")` or `new PostgresTaskStore(dataSource, "prefix")` |
 | `leaseDuration` | 60 s | how long a claimed task stays leased without renewal; renewed every third while running |
 | `taskRetryDelay` | exponential, 1 s doubling, capped at 1 h, 20 % jitter | delay before a failed task is retried, by attempt number |
-| `idlePollInterval` | 1 s | fallback wait when the queues are empty or the executor is full |
+| `idlePollInterval` | 500 ms | sleep after a claim that found nothing, and the wait for a free executor slot; one claim covers all queues |
 | `claimBatchSize` | 32 | most tasks claimed in one Redis call |
 | `maintenanceCheckInterval` | 5 s | how often expired leases are retried |
 | `scheduledTasksCheckInterval` | 1 s | upper bound of the scheduler's wait; it wakes earlier for the next due task |
@@ -222,11 +223,9 @@ store.createSchema();                                   // once, or run store.sc
 var runner = new BackgroundRunner.Builder().taskStore(store) ...
 ```
 
-The store uses only `javax.sql.DataSource` plus the driver's `LISTEN/NOTIFY` API, so the application supplies the
-`org.postgresql` driver and a pooled data source. Every transition is one SQL statement: claims take rows with
-`FOR UPDATE SKIP LOCKED`, the token-checked transitions are `UPDATE ... WHERE id = ? AND token = ?`, and a trigger
-sends `NOTIFY` whenever a task becomes runnable. The wake-up subscription holds one pooled connection while the
-runner runs; size the pool accordingly. The same integration tests run against both stores; in them PostgreSQL
+The store uses only `java.sql`, so the application supplies the JDBC driver and a pooled data source. Every
+transition is one SQL statement: claims take rows with `FOR UPDATE SKIP LOCKED` and the token-checked transitions
+are `UPDATE ... WHERE id = ? AND token = ?`. The same integration tests run against both stores; in them PostgreSQL
 processes about half as many tasks per second as Redis.
 
 ## Other stores
@@ -247,7 +246,7 @@ The artifact is now `bth4j-redis` or `bth4j-postgres` (each brings `bth4j-core`)
 
 - Cron expressions use the 5 field Unix format and are evaluated in UTC.
 - The Redis store needs Redis 7.0 or newer (or a compatible server with `EVAL`, `LMPOP` and `ZRANGE BYSCORE`).
-- The PostgreSQL store needs PostgreSQL 14 or newer (`CREATE OR REPLACE TRIGGER`) and `SKIP LOCKED`.
+- The PostgreSQL store needs PostgreSQL 9.5 or newer (`SKIP LOCKED`, `ON CONFLICT`); it is tested on 17.
 - Java 21 or later is required.
 
 ## Contributing

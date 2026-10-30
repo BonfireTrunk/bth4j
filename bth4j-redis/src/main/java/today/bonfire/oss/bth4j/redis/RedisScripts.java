@@ -12,20 +12,19 @@ final class RedisScripts {
     private RedisScripts() {}
 
     /**
-     * KEYS: task hash, scheduled zset, queue list. ARGV: id, due ms or "", wake channel, queue name,
-     * then field/value pairs of the hash. Returns 1 when stored, 0 when the id already exists.
+     * KEYS: task hash, scheduled zset, queue list. ARGV: id, due ms or "", then field/value pairs of the
+     * hash. Returns 1 when stored, 0 when the id already exists.
      */
     static final String ENQUEUE = """
             if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
             local fields = {}
-            for i = 5, #ARGV do fields[#fields + 1] = ARGV[i] end
+            for i = 3, #ARGV do fields[#fields + 1] = ARGV[i] end
             redis.call('HSET', KEYS[1], unpack(fields))
             if ARGV[2] ~= '' then
               redis.call('HSET', KEYS[1], 'due', ARGV[2])
               redis.call('ZADD', KEYS[2], ARGV[2], ARGV[1])
             else
               redis.call('LPUSH', KEYS[3], ARGV[1])
-              redis.call('PUBLISH', ARGV[3], ARGV[4])
             end
             return 1
             """;
@@ -149,7 +148,7 @@ final class RedisScripts {
             """;
 
     /**
-     * KEYS: scheduled zset. ARGV: now ms, limit, task prefix, queue prefix, wake channel. Moves due ids into
+     * KEYS: scheduled zset. ARGV: now ms, limit, task prefix, queue prefix. Moves due ids into
      * their queues. Returns {moved count, next due ms or -1}.
      */
     static final String PROMOTE = """
@@ -161,7 +160,6 @@ final class RedisScripts {
               if queue then
                 redis.call('LPUSH', ARGV[4] .. queue, id)
                 redis.call('HDEL', tkey, 'due')
-                redis.call('PUBLISH', ARGV[5], queue)
                 moved = moved + 1
               end
               redis.call('ZREM', KEYS[1], id)
@@ -267,19 +265,18 @@ final class RedisScripts {
             """;
 
     /**
-     * KEYS: dead zset. ARGV: task prefix, queue prefix, wake channel, id. Puts a dead task back into its queue
+     * KEYS: dead zset. ARGV: task prefix, queue prefix, id. Puts a dead task back into its queue
      * with a fresh attempt count. Returns 1, or 0 when the task is not dead or its hash expired.
      */
     static final String RETRY_DEAD = """
-            local tkey = ARGV[1] .. ARGV[4]
-            if redis.call('ZREM', KEYS[1], ARGV[4]) == 0 then return 0 end
+            local tkey = ARGV[1] .. ARGV[3]
+            if redis.call('ZREM', KEYS[1], ARGV[3]) == 0 then return 0 end
             local queue = redis.call('HGET', tkey, 'queue')
             if not queue then return 0 end
             redis.call('PERSIST', tkey)
             redis.call('HSET', tkey, 'attempts', 0)
             redis.call('HDEL', tkey, 'died', 'error')
-            redis.call('LPUSH', ARGV[2] .. queue, ARGV[4])
-            redis.call('PUBLISH', ARGV[3], queue)
+            redis.call('LPUSH', ARGV[2] .. queue, ARGV[3])
             return 1
             """;
 }

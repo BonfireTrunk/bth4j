@@ -16,12 +16,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ThreadFactory;
 import java.util.regex.Pattern;
 import javax.sql.DataSource;
-import org.postgresql.PGConnection;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.store.DueSchedule;
 import today.bonfire.oss.bth4j.store.ExpiredLease;
@@ -33,18 +29,17 @@ import today.bonfire.oss.bth4j.store.TaskStore;
 import today.bonfire.oss.bth4j.store.TaskStoreException;
 
 /**
- * {@link TaskStore} on PostgreSQL 14 or newer: one row per task in {@code <prefix>_task} with a state
- * column, recurring definitions in {@code <prefix>_schedule}. Every transition is one SQL statement, so
- * its check and its writes commit together: claims use {@code FOR UPDATE SKIP LOCKED}, the token-checked
- * transitions are {@code UPDATE ... WHERE id = ? AND token = ?}, and a trigger sends {@code NOTIFY} on
- * {@code <prefix>_wake} whenever a row becomes queued. Runners that share the tables share the work.
+ * {@link TaskStore} on PostgreSQL (9.5 or newer for {@code SKIP LOCKED} and {@code ON CONFLICT}; tested
+ * on 17): one row per task in {@code <prefix>_task} with a state column, recurring definitions in
+ * {@code <prefix>_schedule}. Every transition is one SQL statement, so its check and its writes commit
+ * together: claims use {@code FOR UPDATE SKIP LOCKED}, the token-checked transitions are
+ * {@code UPDATE ... WHERE id = ? AND token = ?}. Runners that share the tables share the work.
  * <p>
  * The tables are created by {@link #createSchema()}, or by running {@link #schemaStatements()} from
- * the application's migration tool. The application supplies the JDBC driver and a {@link DataSource},
- * normally pooled; the wake-up subscription holds one connection for as long as the runner runs.
+ * the application's migration tool. Only {@code java.sql} is used: the application supplies the JDBC
+ * driver and a {@link DataSource}, normally pooled.
  */
 public class PostgresTaskStore implements TaskStore {
-    private static final Logger log = LoggerFactory.getLogger(PostgresTaskStore.class);
     private static final Pattern PREFIX = Pattern.compile("[a-z][a-z0-9_]{0,40}");
 
     static final int QUEUED = 0;
@@ -57,7 +52,6 @@ public class PostgresTaskStore implements TaskStore {
     private final String task;
     private final String schedule;
     private final String seq;
-    private final String channel;
 
     private final String enqueueSql;
     private final String claimSql;
@@ -92,7 +86,6 @@ public class PostgresTaskStore implements TaskStore {
         this.task = prefix + "_task";
         this.schedule = prefix + "_schedule";
         this.seq = prefix + "_task_pos";
-        this.channel = prefix + "_wake";
 
         enqueueSql = "INSERT INTO " + task
                 + " (id, state, queue, event, account, data, attempts, max_attempts, created, due, pos)"
@@ -152,7 +145,6 @@ public class PostgresTaskStore implements TaskStore {
 
     /** The DDL for this prefix, idempotent; for migration tools that manage the schema themselves. */
     public List<String> schemaStatements() {
-        var fn = prefix + "_task_wake";
         return List.of(
                 "CREATE TABLE IF NOT EXISTS " + task + " ("
                         + " id text PRIMARY KEY,"
@@ -186,15 +178,11 @@ public class PostgresTaskStore implements TaskStore {
                         + " max_attempts integer NOT NULL,"
                         + " rev integer NOT NULL,"
                         + " next_fire timestamptz NOT NULL)",
-                "CREATE INDEX IF NOT EXISTS " + schedule + "_due ON " + schedule + " (next_fire)",
-                "CREATE OR REPLACE FUNCTION " + fn + "() RETURNS trigger LANGUAGE plpgsql AS $$"
-                        + " BEGIN PERFORM pg_notify('" + channel + "', NEW.queue); RETURN NULL; END $$",
-                "CREATE OR REPLACE TRIGGER " + fn + " AFTER INSERT OR UPDATE OF state ON " + task
-                        + " FOR EACH ROW WHEN (NEW.state = 0) EXECUTE FUNCTION " + fn + "()");
+                "CREATE INDEX IF NOT EXISTS " + schedule + "_due ON " + schedule + " (next_fire)");
     }
 
     /**
-     * Creates the tables, indexes, sequence and wake-up trigger if they do not exist. Run it once before
+     * Creates the tables, indexes and sequence if they do not exist. Run it once before
      * the first runner starts, not from several runners at the same time.
      */
     public void createSchema() {
@@ -531,79 +519,6 @@ public class PostgresTaskStore implements TaskStore {
                 return single(ps) == 1;
             }
         });
-    }
-
-    // ---- wake-up -------------------------------------------------------------------------------------
-
-    @Override
-    public AutoCloseable subscribeWake(Runnable onWake, ThreadFactory threadFactory) {
-        var listener = new WakeListener(onWake);
-        var thread = threadFactory.newThread(listener);
-        thread.start();
-        return () -> listener.stop(thread);
-    }
-
-    /**
-     * Holds one connection with {@code LISTEN} on the wake channel and calls back on every notification.
-     * Reconnects with a bounded backoff when the connection fails. The connection is returned to the
-     * pool when the listener stops, after {@code UNLISTEN}, so a pool does not hand it out still listening.
-     */
-    private final class WakeListener implements Runnable {
-        private static final int POLL_MILLIS = 1000;
-        private final Runnable onWake;
-        private volatile boolean listening = true;
-
-        WakeListener(Runnable onWake) {
-            this.onWake = onWake;
-        }
-
-        @Override
-        public void run() {
-            long backoffMs = 100;
-            while (listening) {
-                try (var c = dataSource.getConnection()) {
-                    listen(c);
-                    backoffMs = 100;
-                } catch (Exception e) {
-                    if (listening) {
-                        log.warn("Wake-up listener lost its connection, retrying in {} ms", backoffMs, e);
-                        try {
-                            Thread.sleep(backoffMs);
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                        }
-                        backoffMs = Math.min(backoffMs * 2, 10_000);
-                    }
-                }
-            }
-        }
-
-        private void listen(Connection c) throws SQLException {
-            c.setAutoCommit(true);
-            try (var st = c.createStatement()) {
-                st.execute("LISTEN " + channel);
-            }
-            try {
-                var pg = c.unwrap(PGConnection.class);
-                while (listening) {
-                    var notifications = pg.getNotifications(POLL_MILLIS);
-                    if (notifications != null && notifications.length > 0) {
-                        onWake.run();
-                    }
-                }
-            } finally {
-                try (var st = c.createStatement()) {
-                    st.execute("UNLISTEN " + channel);
-                } catch (SQLException e) {
-                    log.debug("UNLISTEN failed while stopping", e);
-                }
-            }
-        }
-
-        void stop(Thread thread) {
-            listening = false;
-            thread.interrupt();
-        }
     }
 
     // ---- JDBC helpers --------------------------------------------------------------------------------

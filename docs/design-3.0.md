@@ -8,7 +8,7 @@ store that can make those transitions atomic. Nothing in 3.0 can read 2.x data: 
 
 Modules: `bth4j-core` holds the task model, the runner, the services and the `TaskStore`
 interface, with no dependency on a particular store. `bth4j-redis` is the Redis store
-(Redis 7.0 or newer) and `bth4j-postgres` the PostgreSQL store (PostgreSQL 14 or newer).
+(Redis 7.0 or newer) and `bth4j-postgres` the PostgreSQL store (PostgreSQL 9.5 or newer).
 Applications depend on a store module and get core transitively. `bth4j-store-tests`
 holds the contract tests both stores run; it is not published.
 
@@ -39,8 +39,7 @@ enqueue  --(no due)-->  queued  --claim-->  leased  --ack-->  gone
 Each arrow is one `TaskStore` call, and the store must make each call atomic together
 with its checks:
 
-- `enqueue`: rejects an existing id, then queues the task or schedules it for its due time,
-  and signals waiting runners.
+- `enqueue`: rejects an existing id, then queues the task or schedules it for its due time.
 - `claim`: takes up to n queued tasks from the given queues in order (the second queue is
   only read when the first could not fill n), increments `attempts`, assigns a token
   nobody else holds and a lease expiry, and returns the tasks with their payload. One call
@@ -78,10 +77,15 @@ clock skew between instances only matters when it approaches the lease length.
 ## Pick-up
 
 The processor thread reserves executor slots first, then claims at most that many tasks.
-When the claim returns nothing it waits for the store's wake-up signal (a subscription
-thread the store creates) with the idle poll interval as fallback. When the executor is
-full it waits for a slot, not for a timer. A store without push notifications gives a
-subscription that never fires, and the processor polls at the idle interval.
+One claim covers every queue the runner processes, so a poll is one store call whatever
+the queue count. When the claim returns nothing the thread sleeps for the idle poll
+interval (default 500 ms, minimum 10 ms); a busy runner never sleeps. When the executor is
+full it waits for a slot, not for a timer.
+
+There is deliberately no push signal from the store. A wake-up channel costs every
+enqueue a fan-out to every runner (and on PostgreSQL serializes the commits of notifying
+transactions), which is paid exactly in the busy systems that never idle, while an idle
+claim is a sub-millisecond call that a shorter poll interval makes as frequent as needed.
 
 Queues are processed round robin by rotating the queue list on every claim.
 
@@ -110,7 +114,7 @@ bound.
   `addRecurringTask`, `deleteRecurringTask(scheduleId)`, `deleteAllRecurringTasks`,
   `getDataForTask`, `queueSize`, counts, `deadTasks`, `retryDeadTask`, `purgeDeadTasks`.
 - Builder: `leaseDuration` (default 60 s) replaces `staleTaskTimeout`; `idlePollInterval`
-  (1 s) replaces `taskProcessorQueueCheckInterval`; `taskRetryDelay` is
+  (500 ms) replaces `taskProcessorQueueCheckInterval`; `taskRetryDelay` is
   `Function<Integer, Duration>` with exponential backoff and jitter as default;
   `deadTaskRetention` (30 d); `claimBatchSize` (32). `cronLockDuration` is gone.
 - `BackgroundExecutor` has the contract above; `isPoolFull` is gone.
@@ -124,8 +128,7 @@ What a store needs from its engine is a conditional multi-row write (compare the
 then move the task) and a way to take n queued rows exclusively. On Redis that is one Lua
 script per method; on an SQL database it is one statement per method, with
 `SELECT ... FOR UPDATE SKIP LOCKED` for the claim and `UPDATE ... WHERE id = ? AND token = ?`
-for the token-checked transitions. The wake-up signal maps to pub/sub, `LISTEN/NOTIFY`,
-or nothing.
+for the token-checked transitions.
 
 The contract tests in `bth4j-store-tests` (`TaskOpsContract`, `BackgroundRunnerContract`,
 `ThroughputContract`) exercise the guarantees through `TaskOps` and the runner. A store
@@ -146,7 +149,6 @@ and works on Redis Cluster. With namespace `BTH`:
 | `{BTH}:dead` | zset | id -> time of death (ms); tasks that exhausted their attempts |
 | `{BTH}:cron` | zset | schedule id -> next fire time (ms) |
 | `{BTH}:cron:<sid>` | hash | recurring definition: `event`, `account`, `queue`, `cron`, `data`, `max`, `rev` |
-| `{BTH}:wake` | channel | queue name published on every push into a queue |
 
 Each `TaskStore` method is one Lua script (`RedisScripts`), called by its SHA-1 with
 `EVALSHA` and loaded once with `SCRIPT LOAD` when the server does not know it, for
@@ -162,8 +164,7 @@ commands.
 - `fail` sets an `EXPIRE` on the hash of a dead task equal to the dead task retention, so
   storage stays bounded even if no maintenance service runs; the dead set entry is removed
   by `purgeDeadTasks`.
-- `promote` uses `ZRANGE ... BYSCORE LIMIT` and publishes on the wake channel when it
-  moved something.
+- `promote` uses `ZRANGE ... BYSCORE LIMIT` and `LPUSH`es the due ids into their queues.
 
 Requires Redis 7.0 or newer (`LMPOP`, `ZRANGE ... BYSCORE LIMIT`, scripts).
 
@@ -196,10 +197,6 @@ transaction without the application managing any:
 - `commitRecurring`: a CTE advances the definition `WHERE id = ? AND rev = ? AND
   next_fire = ?`, and the occurrence is inserted `FROM` that CTE with
   `ON CONFLICT DO NOTHING`.
-- Wake-up: an `AFTER INSERT OR UPDATE OF state` trigger calls
-  `pg_notify('<prefix>_wake', queue)` whenever a row becomes queued; the runner's
-  listener holds one connection with `LISTEN` and polls it with a one second timeout so
-  it can stop. Identical notifications in one transaction are delivered once.
 - Times are `timestamptz`, written with millisecond precision so a value read back
   compares equal to the one written.
 

@@ -14,7 +14,7 @@
     <packaging>jar</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>PostgreSQL TaskStore for bth4j: one row per task, SKIP LOCKED claims, token-checked updates, LISTEN/NOTIFY wake-up. Requires PostgreSQL 9.5 or newer and the application's JDBC driver.</description>
+    <description>PostgreSQL TaskStore for bth4j: one row per task, SKIP LOCKED claims, token-checked updates. Uses only java.sql; the application supplies the JDBC driver. PostgreSQL 9.5 or newer.</description>
 
     <properties>
         <module.name>bonfire.oss.bth4j.postgres</module.name>
@@ -25,16 +25,15 @@
             <groupId>today.bonfire.oss</groupId>
             <artifactId>bth4j-core</artifactId>
         </dependency>
-        <!-- the application brings the driver; only the LISTEN/NOTIFY API is referenced -->
-        <dependency>
-            <groupId>org.postgresql</groupId>
-            <artifactId>postgresql</artifactId>
-            <scope>provided</scope>
-        </dependency>
 
         <dependency>
             <groupId>today.bonfire.oss</groupId>
             <artifactId>bth4j-store-tests</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

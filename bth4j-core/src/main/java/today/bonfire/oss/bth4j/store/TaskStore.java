@@ -5,7 +5,6 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ThreadFactory;
 
 /**
  * Persistent state of tasks and recurring definitions, and the transitions between their states.
@@ -136,12 +135,4 @@ public interface TaskStore {
      * @return true when committed
      */
     boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord occurrence);
-
-    /**
-     * Calls {@code onWake} whenever a task becomes runnable, that is on every enqueue or promotion into a
-     * queue, by any runner sharing the store. A store without push notifications returns a subscription that
-     * never fires; the caller polls anyway. Any thread needed is created with the given factory and must
-     * stop when the returned subscription is closed.
-     */
-    AutoCloseable subscribeWake(Runnable onWake, ThreadFactory threadFactory);
 }
