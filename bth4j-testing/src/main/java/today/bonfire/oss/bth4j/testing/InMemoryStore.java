@@ -570,6 +570,7 @@ public final class InMemoryStore implements FullStore {
     public void putRecurring(RecurringDefinition definition, Instant nextFire) {
         lock.lock();
         try {
+            Recurring old = recurring.get(definition.scheduleId());
             RecurringDefinition stored = new RecurringDefinition(
                     definition.scheduleId(),
                     definition.eventId(),
@@ -584,10 +585,12 @@ public final class InMemoryStore implements FullStore {
                     definition.overlapSkip(),
                     definition.data(),
                     definition.maxAttempts(),
-                    definition.paused(),
+                    old != null ? old.definition().paused() : definition.paused(),
                     ++recurringRevision);
-            Recurring old = recurring.get(definition.scheduleId());
-            Instant fire = old != null && Objects.equals(old.definition().cron(), definition.cron())
+            Instant fire = old != null
+                            && Objects.equals(old.definition().cron(), definition.cron())
+                            && Objects.equals(old.definition().zone(), definition.zone())
+                            && Objects.equals(old.definition().fixedDelayMs(), definition.fixedDelayMs())
                     ? old.nextFire()
                     : nextFire;
             recurring.put(definition.scheduleId(), new Recurring(stored, fire));
@@ -643,6 +646,7 @@ public final class InMemoryStore implements FullStore {
         try {
             Recurring current = recurring.get(due.scheduleId());
             if (current == null
+                    || current.definition().paused()
                     || current.definition().revision() != due.definition().revision()
                     || !current.nextFire().equals(due.fireAt())) {
                 return false;
@@ -840,6 +844,7 @@ public final class InMemoryStore implements FullStore {
                             .keyKeep(null)
                             .keyUntil(null)
                             .uniqueKey(null)
+                            .startBy(null)
                             .build());
             return true;
         } finally {

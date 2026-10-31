@@ -1073,6 +1073,27 @@ public abstract class StoreContract {
     }
 
     @Test
+    void putRecurringResetsTheNextFireWhenTheZoneOrFixedDelayChanges() {
+        Instant first = millis(now().plusSeconds(60));
+        Instant second = millis(now().plusSeconds(600));
+        Instant third = millis(now().plusSeconds(1200));
+        store.putRecurring(fullDefinition("a"), first);
+        store.putRecurring(fullDefinition("a"), second);
+        assertThat(store.recurringSchedules()).containsOnly(Map.entry("a", first));
+        RecurringDefinition base = fullDefinition("a");
+        RecurringDefinition otherZone = new RecurringDefinition(
+                "a", event, 2, queue, "acme", null, "UTC", "CATCH_UP", 5, 90_000L, true, "{}", 4, false, 0);
+        store.putRecurring(otherZone, second);
+        assertThat(store.recurringSchedules()).containsOnly(Map.entry("a", second));
+        RecurringDefinition otherDelay = new RecurringDefinition(
+                "a", event, 2, queue, "acme", null, "UTC", "CATCH_UP", 5, 60_000L, true, "{}", 4, false, 0);
+        store.putRecurring(otherDelay, third);
+        assertThat(store.recurringSchedules()).containsOnly(Map.entry("a", third));
+        store.putRecurring(base, first);
+        assertThat(store.recurringSchedules()).containsOnly(Map.entry("a", first));
+    }
+
+    @Test
     void deleteRecurringReportsWhetherItExisted() {
         store.putRecurring(definition("a", "* * * * *"), millis(now().plusSeconds(60)));
         assertThat(store.deleteRecurring("a")).isTrue();
@@ -1592,7 +1613,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringStoresTheInitialPausedFlagAndReplacesEveryField() {
+    void putRecurringStoresTheGivenPausedFlagOnlyForANewDefinitionAndReplacesEveryOtherField() {
         Instant fire = millis(now().plusSeconds(60));
         store.putRecurring(fullDefinition("a").withPaused(true), fire);
         assertThat(store.recurringDefinitions().get(0).definition().paused()).isTrue();
@@ -1601,8 +1622,45 @@ public abstract class StoreContract {
         assertThat(d.cron()).isEqualTo("* * * * *");
         assertThat(d.fixedDelayMs()).isNull();
         assertThat(d.zone()).isNull();
-        assertThat(d.paused()).isFalse();
+        assertThat(d.paused()).isTrue();
         assertThat(store.recurringDefinitions()).hasSize(1);
+    }
+
+    @Test
+    void putRecurringKeepsAnOperatorsPauseAndAnUnpauseSurvivesToo() {
+        Instant fire = millis(now().plusSeconds(1));
+        store.putRecurring(definition("a", "* * * * *"), fire);
+        assertThat(store.pauseRecurring("a", true)).isTrue();
+        store.putRecurring(definition("a", "* * * * *"), fire);
+        assertThat(store.recurringDefinitions().get(0).definition().paused()).isTrue();
+        assertThat(store.dueRecurring(fire, 10)).isEmpty();
+        assertThat(store.pauseRecurring("a", false)).isTrue();
+        store.putRecurring(definition("a", "* * * * *").withPaused(true), fire);
+        assertThat(store.recurringDefinitions().get(0).definition().paused()).isFalse();
+        assertThat(store.dueRecurring(fire, 10)).hasSize(1);
+    }
+
+    @Test
+    void commitRecurringIsRefusedWhileTheDefinitionIsPaused() {
+        Instant fire = millis(now().plusSeconds(1));
+        store.putRecurring(definition("nightly", "* * * * *"), fire);
+        DueSchedule due = store.dueRecurring(fire, 10).get(0);
+        assertThat(store.pauseRecurring("nightly", true)).isTrue();
+        TaskRecord occurrence = occurrence(fire);
+        assertThat(store.commitRecurring(due, fire.plusSeconds(60), occurrence)).isFalse();
+        assertThat(store.getTask(occurrence.id())).isEmpty();
+        assertThat(store.recurringSchedules()).containsOnly(Map.entry("nightly", fire));
+    }
+
+    @Test
+    void retryOfAnExpiredTaskClearsStartByAndTheTaskIsClaimable() {
+        TaskRecord e = expired();
+        assertThat(e.startBy()).isNotNull();
+        assertThat(store.retry(e.id(), e.revision())).isTrue();
+        assertThat(get(e.id()).startBy()).isNull();
+        advance(PAST_SHORT);
+        assertThat(store.expire(10)).isEmpty();
+        assertThat(claimOne().id()).isEqualTo(e.id());
     }
 
     @Test
