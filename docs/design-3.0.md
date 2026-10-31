@@ -56,15 +56,19 @@ with its checks:
 - `promote`: moves due scheduled tasks into their queues, bounded, and returns the next
   due time so the scheduler sleeps exactly as long as needed.
 - `reclaim`: returns leased tasks whose lease expired; the caller decides the retry delay
-  from `attempts` and calls `fail` with the expired token, which is a no-op if the task
-  moved in between.
+  from `attempts` and calls `failExpired` with the expired token. That is a no-op if the
+  task moved in between, and also if its worker renewed the lease in between: renewal
+  keeps the token, so the token check alone would let maintenance retry a task that is
+  still running.
 - `dueRecurring` / `commitRecurring`: the recurring service reads definitions due within
   the queue-ahead window, computes the next fire time with the cached cron parser, and
   commits with a compare on the definition revision and the current fire time. The
   occurrence id is `<sid>:<fireAt>`, so the same occurrence can never be created twice.
   Missed occurrences are skipped: the next fire time is computed from `max(fireAt, now)`.
 - `putRecurring` / `deleteRecurring`: register or remove a definition. Re-registering with
-  the same expression keeps the next fire time; a changed expression resets it.
+  the same expression keeps the next fire time; a changed expression resets it. Every put
+  assigns a revision no definition under that id has had before, also after a delete, so a
+  scheduler holding a stale definition can never commit against its replacement.
 - `purgeDeadTasks` and `retryDeadTask`: retention of dead tasks, and putting one back.
 
 There are no locks. Every transition is atomic and idempotent under retry, so instances
@@ -149,11 +153,13 @@ and works on Redis Cluster. With namespace `BTH`:
 | `{BTH}:dead` | zset | id -> time of death (ms); tasks that exhausted their attempts |
 | `{BTH}:cron` | zset | schedule id -> next fire time (ms) |
 | `{BTH}:cron:<sid>` | hash | recurring definition: `event`, `account`, `queue`, `cron`, `data`, `max`, `rev` |
+| `{BTH}:cronrev` | string | counter behind `rev`; it never resets |
 
 Each `TaskStore` method is one Lua script (`RedisScripts`), called by its SHA-1 with
 `EVALSHA` and loaded once with `SCRIPT LOAD` when the server does not know it, for
-example after a restart or `SCRIPT FLUSH`. Only the hash and the arguments travel on the
-wire. A script runs its reads, comparisons and writes as one unit on the server, so a
+example after a restart or `SCRIPT FLUSH`. The load is routed by the script's first key, so
+on a cluster it reaches the node that runs the script. Only the hash and the arguments
+travel on the wire. A script runs its reads, comparisons and writes as one unit on the server, so a
 token-checked transition is one round trip; the same transition with `WATCH`/`MULTI`/`EXEC`
 needs four and a retry loop, and `MULTI`/`EXEC` alone cannot branch on the token at all.
 Measured on Redis 7.4, a five-command script costs the server about one and a half plain
@@ -161,9 +167,11 @@ commands.
 
 - `claim` uses `LMPOP ... RIGHT COUNT n` per queue and returns every claimed hash with
   `HGETALL`, so the payload comes with the claim.
-- `fail` sets an `EXPIRE` on the hash of a dead task equal to the dead task retention, so
+- `fail` sets a `PEXPIRE` on the hash of a dead task equal to the dead task retention, so
   storage stays bounded even if no maintenance service runs; the dead set entry is removed
-  by `purgeDeadTasks`.
+  by `purgeDeadTasks`. Because the hash can be gone while the dead set still holds the id,
+  `enqueue` and `commitRecurring` drop a dead set entry for the id they create, and
+  `purgeDeadTasks` and `retryDeadTask` touch a hash only while it carries `died`.
 - `promote` uses `ZRANGE ... BYSCORE LIMIT` and `LPUSH`es the due ids into their queues.
 
 Requires Redis 7.0 or newer (`LMPOP`, `ZRANGE ... BYSCORE LIMIT`, scripts).
@@ -187,13 +195,18 @@ next value (front).
 Each `TaskStore` method is one SQL statement, so its check and its writes are one
 transaction without the application managing any:
 
-- `claim`: a CTE selects queued rows ordered by the caller's queue order and `pos` with
-  `LIMIT n FOR UPDATE SKIP LOCKED`, and an `UPDATE ... FROM` moves them to leased with
-  token `<base>:<n>` and returns them. Concurrent runners never see each other's rows.
-- `renew`, `ack`, `fail`, `reschedule`, `unclaim`: `UPDATE` or `DELETE` with
+- `claim`: for each queue, a `LATERAL` subquery takes the first `n` queued rows by `pos`
+  with `FOR UPDATE SKIP LOCKED`, which is one bounded walk of the `(queue, pos)` index;
+  the caller's queue order then picks `n` of those candidates, and an `UPDATE ... FROM`
+  moves them to leased with token `<base>:<n>` and returns them. Concurrent runners never
+  see each other's rows. A single `ORDER BY array_position(...)` over all queues would sort
+  the whole backlog on every claim (380 ms against 200k queued rows, versus 2 ms).
+- `renew`, `ack`, `fail`, `failExpired`, `reschedule`, `unclaim`: `UPDATE` or `DELETE` with
   `WHERE id = ? AND token = ? AND state = 2`; the update count says whether the token
   still matched. `fail` decides retry or dead inside the statement from `attempts` and
-  `max_attempts` and returns the new state.
+  `max_attempts` and returns the new state; `failExpired` adds `AND lease_until <= now`.
+- `putRecurring` takes `rev` from the `<prefix>_schedule_rev` sequence on insert and on
+  update, so a deleted and recreated definition never repeats a revision.
 - `commitRecurring`: a CTE advances the definition `WHERE id = ? AND rev = ? AND
   next_fire = ?`, and the occurrence is inserted `FROM` that CTE with
   `ON CONFLICT DO NOTHING`.

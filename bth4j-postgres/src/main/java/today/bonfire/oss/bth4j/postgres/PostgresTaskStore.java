@@ -13,6 +13,7 @@ import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -52,12 +53,14 @@ public class PostgresTaskStore implements TaskStore {
     private final String task;
     private final String schedule;
     private final String seq;
+    private final String scheduleSeq;
 
     private final String enqueueSql;
     private final String claimSql;
     private final String renewSql;
     private final String ackSql;
     private final String failSql;
+    private final String failExpiredSql;
     private final String rescheduleSql;
     private final String unclaimSql;
     private final String promoteSql;
@@ -86,15 +89,19 @@ public class PostgresTaskStore implements TaskStore {
         this.task = prefix + "_task";
         this.schedule = prefix + "_schedule";
         this.seq = prefix + "_task_pos";
+        this.scheduleSeq = prefix + "_schedule_rev";
 
         enqueueSql = "INSERT INTO " + task
                 + " (id, state, queue, event, account, data, attempts, max_attempts, created, due, pos)"
                 + " VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, CASE WHEN ? = 0 THEN nextval('" + seq + "') ELSE 0 END)"
                 + " ON CONFLICT (id) DO NOTHING";
-        claimSql = "WITH locked AS (SELECT id, queue, pos FROM " + task
-                + "   WHERE state = 0 AND queue = ANY(?) ORDER BY array_position(?, queue), pos LIMIT ?"
-                + "   FOR UPDATE SKIP LOCKED),"
-                + " picked AS (SELECT id, row_number() OVER (ORDER BY array_position(?, queue), pos) AS ord FROM locked),"
+        // one bounded, index-ordered scan per queue, then the caller's queue order decides between them;
+        // a single ORDER BY array_position(...) would sort every queued row on each claim
+        claimSql = "WITH q AS (SELECT queue, prio FROM unnest(?) WITH ORDINALITY AS q(queue, prio)),"
+                + " locked AS (SELECT c.id, q.prio, c.pos FROM q, LATERAL (SELECT id, pos FROM " + task
+                + "   WHERE state = 0 AND queue = q.queue ORDER BY pos LIMIT ? FOR UPDATE SKIP LOCKED) c),"
+                + " picked AS (SELECT id, row_number() OVER (ORDER BY prio, pos) AS ord"
+                + "   FROM (SELECT * FROM locked ORDER BY prio, pos LIMIT ?) l),"
                 + " upd AS (UPDATE " + task + " t SET state = 2, attempts = t.attempts + 1,"
                 + "   token = ? || ':' || picked.ord::text, lease_until = ?, due = NULL"
                 + "   FROM picked WHERE t.id = picked.id RETURNING t.*, picked.ord)"
@@ -102,12 +109,14 @@ public class PostgresTaskStore implements TaskStore {
         renewSql = "UPDATE " + task + " t SET lease_until = ? FROM unnest(?, ?) AS u(id, token)"
                 + " WHERE t.id = u.id AND t.token = u.token AND t.state = 2";
         ackSql = "DELETE FROM " + task + " WHERE id = ? AND token = ? AND state = 2";
-        failSql = "UPDATE " + task + " SET"
+        var failUpdate = "UPDATE " + task + " SET"
                 + " state = CASE WHEN ? OR attempts >= max_attempts THEN 3 ELSE 1 END,"
                 + " due = CASE WHEN ? OR attempts >= max_attempts THEN NULL ELSE ? END,"
                 + " died = CASE WHEN ? OR attempts >= max_attempts THEN ? ELSE NULL END,"
                 + " error = ?, token = NULL, lease_until = NULL"
-                + " WHERE id = ? AND token = ? AND state = 2 RETURNING state";
+                + " WHERE id = ? AND token = ? AND state = 2";
+        failSql = failUpdate + " RETURNING state";
+        failExpiredSql = failUpdate + " AND lease_until <= ? RETURNING state";
         rescheduleSql = "UPDATE " + task + " SET state = 1, due = ?, attempts = attempts - 1,"
                 + " token = NULL, lease_until = NULL WHERE id = ? AND token = ? AND state = 2";
         unclaimSql = "UPDATE " + task + " SET state = 0, pos = -nextval('" + seq + "'), attempts = attempts - 1,"
@@ -126,10 +135,10 @@ public class PostgresTaskStore implements TaskStore {
         purgeSql = "DELETE FROM " + task + " WHERE state = 3 AND died <= ?";
         putScheduleSql = "INSERT INTO " + schedule
                 + " (id, event, account, queue, cron, data, max_attempts, rev, next_fire)"
-                + " VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)"
+                + " VALUES (?, ?, ?, ?, ?, ?, ?, nextval('" + scheduleSeq + "'), ?)"
                 + " ON CONFLICT (id) DO UPDATE SET event = EXCLUDED.event, account = EXCLUDED.account,"
                 + " queue = EXCLUDED.queue, cron = EXCLUDED.cron, data = EXCLUDED.data,"
-                + " max_attempts = EXCLUDED.max_attempts, rev = " + schedule + ".rev + 1,"
+                + " max_attempts = EXCLUDED.max_attempts, rev = nextval('" + scheduleSeq + "'),"
                 + " next_fire = CASE WHEN " + schedule + ".cron = EXCLUDED.cron THEN " + schedule
                 + ".next_fire ELSE EXCLUDED.next_fire END";
         dueScheduleSql = "SELECT * FROM " + schedule + " WHERE next_fire <= ? ORDER BY next_fire LIMIT ?";
@@ -176,8 +185,9 @@ public class PostgresTaskStore implements TaskStore {
                         + " cron text NOT NULL,"
                         + " data text,"
                         + " max_attempts integer NOT NULL,"
-                        + " rev integer NOT NULL,"
+                        + " rev bigint NOT NULL,"
                         + " next_fire timestamptz NOT NULL)",
+                "CREATE SEQUENCE IF NOT EXISTS " + scheduleSeq,
                 "CREATE INDEX IF NOT EXISTS " + schedule + "_due ON " + schedule + " (next_fire)");
     }
 
@@ -308,6 +318,7 @@ public class PostgresTaskStore implements TaskStore {
 
     @Override
     public List<TaskRecord> deadTasks(int limit) {
+        if (limit <= 0) return List.of();
         return withConnection(c -> {
             try (var ps = c.prepareStatement(deadSql)) {
                 ps.setInt(1, limit);
@@ -340,15 +351,15 @@ public class PostgresTaskStore implements TaskStore {
 
     @Override
     public List<TaskRecord> claim(List<String> queues, int count, String tokenBase, Duration lease) {
+        var distinct = new LinkedHashSet<>(queues).toArray(String[]::new);
         return withConnection(c -> {
-            Array queueArray = c.createArrayOf("text", queues.toArray(String[]::new));
+            Array queueArray = c.createArrayOf("text", distinct);
             try (var ps = c.prepareStatement(claimSql)) {
                 ps.setArray(1, queueArray);
-                ps.setArray(2, queueArray);
+                ps.setInt(2, count);
                 ps.setInt(3, count);
-                ps.setArray(4, queueArray);
-                ps.setString(5, tokenBase);
-                setInstant(ps, 6, Instant.now().plus(lease));
+                ps.setString(4, tokenBase);
+                setInstant(ps, 5, Instant.now().plus(lease));
                 return readAll(ps);
             } finally {
                 queueArray.free();
@@ -395,10 +406,20 @@ public class PostgresTaskStore implements TaskStore {
     /** {@code keepDeadFor} is not needed here: dead rows stay until {@link #purgeDeadTasks} removes them. */
     @Override
     public FailOutcome fail(String id, String token, Duration retryDelay, String error, Duration keepDeadFor) {
+        return fail(failSql, false, id, token, retryDelay, error);
+    }
+
+    @Override
+    public FailOutcome failExpired(String id, String token, Duration retryDelay, String error, Duration keepDeadFor) {
+        return fail(failExpiredSql, true, id, token, retryDelay, error);
+    }
+
+    private FailOutcome fail(
+            String sql, boolean onlyIfExpired, String id, String token, Duration retryDelay, String error) {
         var now = Instant.now();
         boolean forceDead = retryDelay == null;
         return withConnection(c -> {
-            try (var ps = c.prepareStatement(failSql)) {
+            try (var ps = c.prepareStatement(sql)) {
                 ps.setBoolean(1, forceDead);
                 ps.setBoolean(2, forceDead);
                 setInstant(ps, 3, forceDead ? null : now.plus(retryDelay));
@@ -407,6 +428,7 @@ public class PostgresTaskStore implements TaskStore {
                 ps.setString(6, error);
                 ps.setString(7, id);
                 ps.setString(8, token);
+                if (onlyIfExpired) setInstant(ps, 9, now);
                 try (var rs = ps.executeQuery()) {
                     if (!rs.next()) return FailOutcome.LOST;
                     return rs.getInt(1) == DEAD ? FailOutcome.DEAD : FailOutcome.RETRY;
@@ -490,7 +512,7 @@ public class PostgresTaskStore implements TaskStore {
                                 rs.getString("cron"),
                                 rs.getString("data"),
                                 rs.getInt("max_attempts"),
-                                rs.getInt("rev"));
+                                rs.getLong("rev"));
                         result.add(new DueSchedule(definition.scheduleId(), getInstant(rs, "next_fire"), definition));
                     }
                 }
@@ -505,7 +527,7 @@ public class PostgresTaskStore implements TaskStore {
             try (var ps = c.prepareStatement(commitScheduleSql)) {
                 setInstant(ps, 1, nextFire);
                 ps.setString(2, due.scheduleId());
-                ps.setInt(3, due.definition().revision());
+                ps.setLong(3, due.definition().revision());
                 setInstant(ps, 4, due.fireAt());
                 ps.setString(5, o.id());
                 ps.setString(6, o.queue());

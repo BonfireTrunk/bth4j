@@ -4,7 +4,9 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -63,6 +65,8 @@ public class BackgroundRunner implements Runnable {
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final AtomicBoolean stopped = new AtomicBoolean(false);
     private final Object lifecycleLock = new Object();
+    /** owned here, not by the processor, so that a restarted processor keeps renewing tasks already running */
+    private final Map<String, Task> runningTasks = new ConcurrentHashMap<>();
 
     private volatile boolean stopRunner = false;
     private volatile ScheduledFuture<?> monitoringTask;
@@ -283,6 +287,7 @@ public class BackgroundRunner implements Runnable {
                 .setLease(leaseDuration)
                 .setIdlePollInterval(idlePollInterval)
                 .setClaimBatchSize(claimBatchSize)
+                .setRunning(runningTasks)
                 .create();
         service.start();
         log.info("Task processor with id {} started", service.threadId());

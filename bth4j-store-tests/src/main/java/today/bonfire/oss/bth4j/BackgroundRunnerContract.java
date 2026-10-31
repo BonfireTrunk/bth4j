@@ -211,10 +211,11 @@ public abstract class BackgroundRunnerContract {
 
         TestTaskProcessors.completionLatch = new CountDownLatch(1);
         assertThat(taskOps.retryDeadTask(t.uniqueId())).isTrue();
+        // the runner may already have claimed the retried task, which counts its first fresh attempt
         assertThat(taskOps.getTask(t.uniqueId()))
                 .get()
                 .extracting(Task::attempts)
-                .isEqualTo(0);
+                .isIn(0, 1);
 
         // the retried task fails its two fresh attempts and dies again; wait for that so it leaves no activity behind
         Task deadAgain = null;

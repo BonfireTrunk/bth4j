@@ -16,6 +16,7 @@ import today.bonfire.oss.bth4j.TestEvents;
 import today.bonfire.oss.bth4j.common.QueuesHolder;
 import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
 import today.bonfire.oss.bth4j.store.FailOutcome;
+import today.bonfire.oss.bth4j.store.RecurringDefinition;
 import today.bonfire.oss.bth4j.store.TaskStore;
 
 /**
@@ -215,6 +216,17 @@ public abstract class TaskOpsContract {
         assertThat(ops.leasedCount()).isEqualTo(1);
         assertThat(ops.getTask("a").orElseThrow().token()).isEqualTo(claimed.token());
         assertThat(ops.queueSize("def")).isZero();
+    }
+
+    @Test
+    void claimWithAQueueNamedTwiceReturnsEachTaskOnce() {
+        ops.enqueue(task("a", TestEvents.REGULAR_TASK).build());
+        ops.enqueue(task("b", TestEvents.REGULAR_TASK).queueName("hi").build());
+
+        var claimed = ops.claim(List.of("hi", "def", "hi"), 5, "tok", LEASE);
+
+        assertThat(claimed).extracting(Task::uniqueId).containsExactly("b", "a");
+        assertThat(ops.leasedCount()).isEqualTo(2);
     }
 
     @Test
@@ -418,6 +430,40 @@ public abstract class TaskOpsContract {
         assertThat(ops.reclaim(10)).isEmpty();
     }
 
+    @Test
+    void failExpiredRetriesATaskWhoseLeaseIsStillExpired() throws InterruptedException {
+        ops.enqueue(task("a", TestEvents.RETRY_TASK).build());
+        var worker =
+                ops.claim(List.of("def"), 1, "short", Duration.ofMillis(50)).getFirst();
+        Thread.sleep(100);
+        var expired = ops.reclaim(10).getFirst();
+
+        assertThat(ops.failExpired(expired, Duration.ofMillis(10), "lease expired"))
+                .isEqualTo(FailOutcome.RETRY);
+
+        assertThat(ops.leasedCount()).isZero();
+        assertThat(ops.scheduledCount()).isEqualTo(1);
+        assertThat(ops.ack(worker)).isFalse();
+    }
+
+    @Test
+    void failExpiredIsLostWhenTheWorkerRenewedInBetween() throws InterruptedException {
+        ops.enqueue(task("a", TestEvents.REGULAR_TASK).build());
+        var worker =
+                ops.claim(List.of("def"), 1, "short", Duration.ofMillis(50)).getFirst();
+        Thread.sleep(100);
+        var expired = ops.reclaim(10).getFirst();
+        assertThat(expired.token()).isEqualTo(worker.token());
+
+        // the worker was only stalled: it renews between the reclaim and the failure
+        assertThat(ops.renew(List.of(worker), LEASE)).isEqualTo(1);
+
+        assertThat(ops.failExpired(expired, Duration.ZERO, "lease expired")).isEqualTo(FailOutcome.LOST);
+        assertThat(ops.leasedCount()).isEqualTo(1);
+        assertThat(ops.scheduledCount()).isZero();
+        assertThat(ops.ack(worker)).isTrue();
+    }
+
     // ---- reschedule and unclaim ----
 
     @Test
@@ -470,6 +516,15 @@ public abstract class TaskOpsContract {
         assertThat(stored.lastError()).isNull();
         assertThat(ops.retryDeadTask("a")).isFalse();
         assertThat(claim(List.of("def"), 1)).extracting(Task::uniqueId).containsExactly("a");
+    }
+
+    @Test
+    void deadTasksWithNonPositiveLimitIsEmpty() {
+        makeDead("a");
+
+        assertThat(ops.deadTasks(0)).isEmpty();
+        assertThat(ops.deadTasks(-1)).isEmpty();
+        assertThat(ops.deadTasks(1)).extracting(Task::uniqueId).containsExactly("a");
     }
 
     @Test
@@ -540,7 +595,34 @@ public abstract class TaskOpsContract {
         assertThat(next).isBeforeOrEqualTo(end.plusSeconds(120));
         var due = ops.cronDue(Instant.now().plus(Duration.ofHours(1)), 10).getFirst();
         assertThat(due.definition().cron()).isEqualTo("*/2 * * * *");
-        assertThat(due.definition().revision()).isEqualTo(2);
+    }
+
+    @Test
+    void registeringAgainChangesTheRevision() {
+        ops.addRecurringTask(recurring("r", "* * * * *"));
+        var first = dueDefinition("r").revision();
+
+        ops.addRecurringTask(recurring("r", "*/2 * * * *"));
+
+        assertThat(dueDefinition("r").revision()).isGreaterThan(first);
+    }
+
+    @Test
+    void registeringAgainWithoutDataClearsIt() {
+        ops.addRecurringTask(recurring("r", "* * * * *"), new Payload("n", 5));
+        assertThat(dueDefinition("r").data()).contains("\"name\":\"n\"");
+
+        ops.addRecurringTask(recurring("r", "* * * * *"));
+
+        assertThat(dueDefinition("r").data()).isNull();
+    }
+
+    private RecurringDefinition dueDefinition(String scheduleId) {
+        return ops.cronDue(Instant.now().plus(Duration.ofHours(1)), 100).stream()
+                .filter(d -> d.scheduleId().equals(scheduleId))
+                .findFirst()
+                .orElseThrow()
+                .definition();
     }
 
     @Test
@@ -559,7 +641,7 @@ public abstract class TaskOpsContract {
         var d = due.getFirst();
         assertThat(d.scheduleId()).isEqualTo("r");
         assertThat(d.fireAt()).isEqualTo(ops.recurringTasks().get("r"));
-        assertThat(d.definition().revision()).isEqualTo(1);
+        assertThat(d.definition().revision()).isPositive();
         assertThat(d.definition().event()).isEqualTo(TestEvents.RECURRING.value());
         assertThat(d.definition().account()).isEqualTo("7");
         assertThat(d.definition().queue()).isEqualTo("hi");
@@ -607,6 +689,22 @@ public abstract class TaskOpsContract {
 
         assertThat(ops.cronCommit(due, due.fireAt().plusSeconds(60))).isFalse();
         assertThat(ops.scheduledCount()).isZero();
+    }
+
+    @Test
+    void cronCommitAfterDeleteAndRecreateIsRejected() {
+        ops.addRecurringTask(recurring("r", "* * * * *"));
+        var stale = ops.cronDue(Instant.now().plus(Duration.ofHours(1)), 10).getFirst();
+        assertThat(ops.deleteRecurringTask("r")).isTrue();
+        ops.addRecurringTask(recurring("r", "* * * * *"));
+        var fresh = ops.cronDue(Instant.now().plus(Duration.ofHours(1)), 10).getFirst();
+
+        // same id, same cron and normally the same fire time, but a stale definition must not commit
+        assertThat(ops.cronCommit(stale, stale.fireAt().plusSeconds(60))).isFalse();
+
+        assertThat(ops.scheduledCount()).isZero();
+        assertThat(ops.recurringTasks().get("r")).isEqualTo(fresh.fireAt());
+        assertThat(ops.cronCommit(fresh, fresh.fireAt().plusSeconds(60))).isTrue();
     }
 
     @Test
