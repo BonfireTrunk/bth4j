@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.0.0] - 2026-10-31
 
 3.0 is a redesign of 2.x: a new public API, a new coordination protocol and a storage interface with Redis,
 PostgreSQL and in-memory implementations. 3.0 cannot read 2.x data: drain the 2.x queues before upgrading,
