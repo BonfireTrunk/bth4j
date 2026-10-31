@@ -13,8 +13,8 @@ public sealed interface Concurrency {
     }
 
     /**
-     * The limit starts at the number of processors and moves between {@code min} and {@code max} with CPU load
-     * and throughput, measured once per second.
+     * The limit starts at {@code min} and moves between {@code min} and {@code max} with CPU load and
+     * throughput, measured once per second.
      */
     record Adaptive(int min, int max) implements Concurrency {
         public Adaptive {

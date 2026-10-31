@@ -3,7 +3,7 @@ package today.bonfire.oss.bth4j.exceptions;
 public class Errors {
     public static final String OPERATION_NOT_ALLOWED = "ERR10_Operation not allowed ";
     public static final String CONFIGURATION_ERROR = "ERR11_Error in configuration ";
-    public static final String DATASTORE_ERROR = "ERR12_Error in redis connection ";
+    public static final String DATASTORE_ERROR = "ERR12_Error in the task store ";
 
     public static class Tasks {
         public static final String CANNOT_CREATE_TASK = "ERR01_Cannot create task ";

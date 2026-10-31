@@ -7,59 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-This release replaces the coordination protocol of 2.x. 3.0 cannot read 2.x queues: drain them before
-upgrading, or start 3.0 with a new namespace. Redis 7.0 or newer is required. See `docs/design-3.0.md`.
+3.0 is a redesign of 2.x: a new public API, a new coordination protocol and a storage interface with Redis,
+PostgreSQL and in-memory implementations. 3.0 cannot read 2.x data: drain the 2.x queues before upgrading,
+or start 3.0 with a new Redis namespace. Requires Java 21, and Redis 7.0 or newer or PostgreSQL 9.5 or
+newer, depending on the store. See `docs/design-3.0.md`.
 
-### Changed (3.0, breaking)
+### Changed (breaking)
 
-- The library is split into `bth4j-core` (task model, runner, services, the `TaskStore` interface), `bth4j-redis` (the Redis store) and `bth4j-postgres` (the PostgreSQL store). Applications depend on a store module; the single `bth4j` artifact is gone.
-- Storage is behind `today.bonfire.oss.bth4j.store.TaskStore`: enqueue, claim and the token-checked transitions (including `failExpired`, which maintenance uses so that a lease renewed after the expiry scan is left alone), each of which a store must make atomic. `BackgroundRunner.Builder.taskStore(TaskStore)` replaces `jedisClient` and `namespacePrefix`; the Redis store is `new RedisTaskStore(jedis, "namespace")`. `TaskOps` takes a store instead of a Jedis client. A store on another engine implements the same interface.
-- Every task state transition in the Redis store is one atomic Lua script that checks the task's lease token. A worker that lost its lease cannot complete, fail or reschedule the task any more. Failed tasks are retried immediately after the configured delay instead of after the stale timeout, and a task that runs longer than the lease keeps renewing it instead of being executed twice.
-- Tasks are stored as one hash per id and queues hold ids. The pipe-separated task string is gone, duplicate ids are rejected by `TaskOps.enqueue`, and `Task` exposes `attempts()`, `maxAttempts()`, `scheduleId()`, `data()` and `lastError()`. `accountId()` is a `String`.
-- All keys carry the namespace as a hash tag (`{BTH}:...`), so the library works on Redis Cluster.
-- The task processor reserves executor slots first, then claims up to that many tasks from all queues in one call, and sleeps for `idlePollInterval` (default 500 ms) only when that call found nothing. There are no locks anywhere.
-- `TaskOps`: `enqueue(Task)` and `enqueue(Task, data)` replace `addTaskToQueue`; `addRecurringTask(Task[, data])` returns the schedule id, `deleteRecurringTask(String)` takes it; new `getTask`, `decodeData`, `recurringTasks`, `leasedCount`, `scheduledCount`, `deadCount`, `deadTasks`, `retryDeadTask` and `purgeDeadTasks`.
-- Recurring definitions produce each occurrence exactly once across instances (`<scheduleId>:<fireAt>` ids); missed occurrences are skipped; re-registering with the same cron expression keeps the next fire time; the data given to `addRecurringTask` is passed to every occurrence, and re-registering without data clears it. Definition revisions come from a store-wide counter, so a deleted and recreated definition never repeats one.
-- `stopRunner()` no longer blocks on a fixed 30 second wait for the maintenance scheduler; the configured `shutdownTimeout` applies to it as well.
-- `BackgroundExecutor` contract: `reserve(max, wait)`, `release(n)`, `execute`, `activeCount`, `shutdown`, `awaitTermination`. `isPoolFull` and `getExecutor` are gone. `DefaultVtExecutor` has a configurable upper bound for its adaptive limit.
-- `BackgroundRunner.Builder`: `leaseDuration` replaces `staleTaskTimeout`, `idlePollInterval` replaces `taskProcessorQueueCheckInterval`, `scheduledTasksCheckInterval` replaces `delayedTasksQueueCheckInterval`, `serviceCheckInterval` replaces `BGThreadCheckInterval`, `recurringTasksQueueAheadDuration` and `recurringTasksCheckInterval` are renamed accordingly, `taskRetryDelay` takes a `Function<Integer, Duration>` with exponential backoff and jitter as default, new `deadTaskRetention` and `claimBatchSize`; `cronLockDuration` is gone. `build()` no longer stores the default executor in the builder.
-- `stopRunner()` keeps renewing the leases of running tasks until they finish or the shutdown timeout elapses.
-- `THC` is gone; the Redis key layout lives in `bth4j-redis`. `QueuesHolder` holds logical queue names.
+- The single `bth4j` artifact is split into `bth4j-core`, `bth4j-redis` and `bth4j-postgres`, with `bth4j-testing` for tests. Applications depend on `bth4j-core` and one store module.
+- Task types: `Event` (and the `eventParser` setting) is replaced by `TaskType<T>`, declared once per kind of task with `TaskType.of(name, PayloadClass.class)`, `TaskType.of(name, PayloadCodec)` or `TaskType.of(name)` and `payloadVersion(n)`. The same constant is used to enqueue and to register the processor.
+- Producers: `TaskOps` is replaced by `TaskClient`, reached with `BackgroundRunner.client()` or built on its own with `TaskClient.builder()`. `Task` and `Task.Builder` are replaced by the immutable `TaskRequest` (queue, account, `at`, `delay`, `uniqueKey`, `maxAttempts`, headers, `id`, plus `startBy`, `maxRun` and `retryPolicy`, which are stored but not enforced yet). `enqueue` returns `EnqueueResult.Accepted` or `Duplicate` instead of a boolean, and throws `EnqueueFailedException` (carrying the id to retry with) when the store cannot be reached. Recurring definitions are `ScheduleDefinition` with `putSchedule`, `deleteSchedule` and `schedules`.
+- Processors: `TaskProcessor<T>` is a functional interface `process(TaskContext, T)`; `dataTypeClass()` is gone. `TaskContext` gives the task, id, attempt, headers, clock, `progress`, `step` and the cancel flag. `TaskCallbacks` and `taskHandlerDecorators` / `recurringTaskHandlerDecorators` are replaced by `TaskObserver` and the sealed `TaskEvent` (`Started`, `Succeeded`, `Retrying`, `Died`, `Rescheduled`, `Cancelled`, `LeaseExpired`, `Deferred`, `ScheduleFired`, `Purged`).
+- Task ids are 64-bit numbers allocated by the client in blocks (`TaskClient.nextId()`, `idBlockSize`); the text ids with the `|` separator and the pipe-separated task string are gone. Queue names and task type names are stored as numeric ids from registries in the store, and there are no foreign keys.
+- The coordination protocol is lease and revision based. Every state change is one atomic store call that checks the task's `revision` (the fence); a worker that lost its lease cannot complete, fail, reschedule or checkpoint the task. The stale-task timeout, the lock-based maintenance and the lease token are gone: `leaseDuration` replaces `staleTaskTimeout`, and an expired lease is retried by `failExpired`, which also leaves a lease alone that was renewed after the expiry scan.
+- Task states are QUEUED, SCHEDULED, LEASED, SUCCEEDED, DEAD, CANCELLED and EXPIRED. Succeeded tasks are kept (48 hours by default) instead of removed, dead tasks are kept 90 days by default, and a retention of zero removes the record at the transition. The CANCELLED and EXPIRED transitions do not exist yet.
+- Failures are recorded on the task (the last 20, with type, message and stack). Retries follow a `RetryPolicy` (exponential backoff with jitter by default) instead of `taskRetryDelay` and `Event.retryCount()`; the attempts are `maxAttempts` per request, `defaultMaxAttempts` (10) otherwise.
+- `BackgroundRunner`: `BackgroundRunner.builder()` replaces `new BackgroundRunner.Builder()`, `start()` replaces `run()` and `stop()` replaces `stopRunner()`; new `quiet()`, `resume()`, `registry()`, `client()` and `workerId()`. The builder takes `store(FullStore)` instead of `jedisClient` and `namespacePrefix`, `concurrency(Concurrency)` instead of choosing an executor, and its settings were renamed or added: `idlePollInterval` replaces `taskProcessorQueueCheckInterval`, `scheduledTasksCheckInterval` replaces `delayedTasksQueueCheckInterval`, `serviceCheckInterval` replaces `BGThreadCheckInterval`, `succeededRetention`, `deadRetention`, `cancelledRetention`, `keepSucceededPayload`, `purgeInterval`, `purgeBatchSize`, `claimBatchSize`, `idBlockSize`, `defaultMaxAttempts`, `workerLabel`, `observer`, `retryPolicy`, `clock`. `cronLockDuration` and `recurringTasksQueueAheadDuration` are gone; occurrences are created when they come due.
+- Concurrency: the default is a fixed limit of twice the number of processors on virtual threads; `Concurrency.adaptive(min, max)` keeps the adaptive limit. `DefaultPtExecutor` is removed. `BackgroundExecutor` has the contract `reserve(max, wait)`, `release(n)`, `execute`, `activeCount`, `shutdown`, `awaitTermination`; `isPoolFull` and `getExecutor` are gone.
+- Unknown task types: a runner claims only the types it has processors for (PostgreSQL filters in the claim query, Redis defers them 5 seconds without an attempt, the in-memory store skips them).
+- Recurring definitions: each fire time creates one task exactly once across instances (the commit compares the definition revision and the fire time); missed fire times are skipped; re-registering with the same expression keeps the next fire time; definition revisions come from a counter that never resets.
+- `stop()` waits for services and running tasks up to `shutdownTimeout` (default 30 seconds), keeps renewing the leases of running tasks meanwhile, and shuts down the task executor.
+- The Redis key layout lives in `bth4j-redis` (`THC` is gone). All keys carry the namespace as a hash tag, so the store works on Redis Cluster, and every transition is one Lua script that reads Redis time.
+- `QueuesHolder` holds logical queue names; the default queues are `Q:DEF`, `Q:LOW`, `Q:MED` and `Q:HIGH` with `Q:DEF` as default.
 
 ### Added
 
-- `bth4j-postgres`: `PostgresTaskStore(DataSource, prefix)` keeps tasks in `<prefix>_task` and `<prefix>_schedule`, claims with one bounded index scan per queue under `FOR UPDATE SKIP LOCKED` and checks lease tokens in single `UPDATE` statements. `createSchema()` and `schemaStatements()` provide the DDL. Uses only `java.sql`; needs PostgreSQL 9.5 or newer and the application's driver.
-- `bth4j-store-tests`: the contract tests (`TaskOpsContract`, `BackgroundRunnerContract`, `ThroughputContract`) that every store must pass; both store modules run them.
-- `BackgroundRunner.Builder.shutdownTimeout(Duration)`: how long `stopRunner()` waits for the services and for running tasks (default 30 seconds). `stopRunner()` now also shuts down the task executor and waits for running tasks before returning.
-- `BackgroundExecutor.awaitTermination(Duration)` default method and `CustomThread.waitTillDone(Duration)`.
-- `TaskRescheduleException(long, String, Throwable)` constructor; a negative delay is rejected.
-- `TaskCallbacks` is now public, so applications can build the callbacks that the builder already accepted.
-- Builder settings are validated: durations must be positive, `build()` fails early on a missing event parser or Jedis client and on an invalid queue configuration, and `cronLockDuration` returns the builder for chaining.
-- Task validation: the `|` separator is rejected in ids, account ids and queue names, cron expressions are validated when the task is built, and a recurring event requires a cron expression unless an execution time is set.
-- Unit tests for the builder, task, queue holder, executors, custom thread, task operations and runner wrapper.
+- `bth4j-core`: `TaskType`, `PayloadCodec`, `TaskRequest`, `Uniqueness`, `EnqueueResult`, `TaskClient`, `TaskProcessor`, `TaskContext`, `TaskView`, `TaskProcessorRegistry`, `RetryPolicy`, `TaskObserver`, `TaskEvent`, `Concurrency`, `ScheduleDefinition`, and the store SPI in `today.bonfire.oss.bth4j.spi` (`TaskStore`, `ExecutionStore`, `MaintenanceStore`, `ScheduleStore`, `InspectionStore`, `FullStore`, `TaskRecord`, `TaskState`).
+- `bth4j-redis`: `RedisTaskStore(UnifiedJedis, namespace)`: one hash per task with only the fields that are set, sorted sets for queues and state indexes, one Lua script per transition. Requires Redis 7.0 or newer because the scripts read the clock before writing (effect replication).
+- `bth4j-postgres`: `PostgresTaskStore(DataSource, prefix)`: tables `<prefix>_task`, `_queue`, `_event`, `_worker`, `_schedule` and `_meta`, partial indexes per state, claims with one bounded index scan per queue under `FOR UPDATE SKIP LOCKED`, revision-checked `UPDATE` statements. `init()` creates the schema under an advisory lock and `schemaStatements()` provides the DDL for migration tools. Uses only `java.sql`. The SQL uses `FOR UPDATE SKIP LOCKED` and `ON CONFLICT`, so PostgreSQL 9.5 or newer is required; it is tested on 17.
+- `bth4j-testing`: `InMemoryStore` and `MutableClock` for tests of applications.
+- `bth4j-store-tests`: `StoreContract`, the tests every store must pass; all three stores run it. Not published.
+- Steps: `TaskContext.step(name, ...)` stores the result of each step durably, so a retry resumes after the last completed step. At least once per step; side effects belong inside steps.
+- Unique keys with a keep window (`Uniqueness.keepFor(duration)`), enforced by a partial unique index in PostgreSQL and a key string in Redis.
+- Client-allocated ids and safe enqueue retries after a lost reply (`TaskClient.nextId()`, `TaskRequest.Builder.id`).
+- Progress text for operators (`TaskContext.progress`), account labels and headers on tasks, a worker registry with a label per runner.
+- Retention and purge per terminal state, with unique-key release; `quiet()` and `resume()` on the runner.
+- Inspection on the client: `task(id)`, `counts()` and `tasks(state, queue, afterId, limit)`.
+- Builder settings are validated, and `build()` fails early on a missing store or an invalid queue configuration.
 - GitHub Actions workflows for pull request builds, CLA checks and releases, using the shared BonfireTrunk workflows.
 - `CHANGELOG.md` and a Contributing section in the README.
 
-### Fixed
+### Removed
 
-- Default retry delay used XOR (`retryCount ^ 3`) instead of the cube of the retry count.
-- `Task.Builder.newTask(uniqueId)` ignored the given id and generated a new one.
-- Data set with `Task.setData(Object)` was dropped when `TaskOps.addTaskToQueue(task, null)` was called.
-- The default queue depended on `Set` iteration order; the default queues are now kept in insertion order with `Q:DEF` first.
-- `TaskOps.getDataForTask(String, Class)` threw a `TaskDataException` for a missing key instead of returning null, and lost the cause.
-- Service threads could miss a stop request: the stop flag was not volatile and sleeping threads were not interrupted.
-- Callbacks ran before the task state was applied, and an exception thrown by a callback changed the outcome of the task. The state change now happens first and callback errors are only logged.
-- `DefaultPtExecutor.isPoolFull()` could never report full because the executor queue is unbounded; it now counts active and queued tasks.
-- `DefaultVtExecutor` counted completed tasks with a non-atomic counter, blocked the monitor thread when shrinking permits, and leaked a permit when the executor rejected a task.
-- Locks held by the maintenance, scheduled and recurring services were not released when an exception occurred.
-- One bad recurring task entry aborted the whole recurring scan; the entry is now skipped and logged.
-- The maintenance service kept the previous temp rotation list for ever, so its memory use grew with every cycle.
-- `BackgroundRunner.run()` and `stopRunner()` were not safe against repeated or concurrent calls.
+- `Event`, `Task`, `Task.Builder`, `TaskOps`, `TaskCallbacks`, and the builder settings `jedisClient`, `namespacePrefix`, `eventParser`, `taskHandlerDecorators`, `recurringTaskHandlerDecorators`, `staleTaskTimeout`, `taskRetryDelay`, `cronLockDuration` and `recurringTasksQueueAheadDuration`.
+- `DefaultPtExecutor`, `THC`, and the single `bth4j` artifact.
+- Text task ids, the pipe-separated task string and the locks of the stale/lock based protocol.
+- Reading 2.x data: queues of a 2.x deployment must be drained before upgrading.
 
 ### Changed
 
-- Jedis moved to 8.0.2 (with simple-object-pool 3.0.0). `JedisPooled` no longer exists in Jedis 8, so `RedisTaskStore` takes a `UnifiedJedis`, for example a `RedisClient` built with `RedisClient.builder()`. Pool settings use `ConnectionPoolConfig.builder()`.
+- Jedis moved to 8.0.2. `JedisPooled` no longer exists in Jedis 8, so `RedisTaskStore` takes a `UnifiedJedis`, for example a `RedisClient` built with `RedisClient.builder()`.
 - Parent POM moved to bonfire-oss-parent 2.1.1. All sources are formatted with palantir-java-format through Spotless, which CI enforces.
-- The Redis integration test now starts its own Redis with Testcontainers and runs under maven-failsafe-plugin in the `integration-test` phase. It no longer expects a Redis on a fixed local port.
+- Integration tests of the store modules start their own Redis or PostgreSQL with Testcontainers and run under maven-failsafe-plugin in the `integration-test` phase; they need Docker.
 - Maven Wrapper upgraded to 3.3.4 with Maven 3.10.0 and a pinned distribution checksum.
-- Lombok removed; the library has no annotation processor any more. Public accessors are unchanged.
+- Lombok removed; the library has no annotation processor any more.

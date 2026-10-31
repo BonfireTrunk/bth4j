@@ -5,7 +5,7 @@ import java.time.Duration;
 /**
  * Executes the task runners picked up from the queues and bounds how many run at once.
  * <p>
- * The task processor reserves slots before it claims tasks from Redis, so that a claimed task always has
+ * The task processor reserves slots before it claims tasks from the store, so that a claimed task always has
  * a slot to run in: {@link #reserve(int, Duration)}, then one {@link #execute(Runnable)} per claimed task,
  * then {@link #release(int)} for the slots it did not use.
  */

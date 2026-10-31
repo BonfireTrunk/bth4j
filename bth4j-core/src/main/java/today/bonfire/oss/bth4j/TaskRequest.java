@@ -216,13 +216,13 @@ public final class TaskRequest<T> {
             return this;
         }
 
-        /** The task expires instead of running when it has not started by then. */
+        /** Reserved: stored with the task, acted on by a later version (expiry when not started by then). */
         public Builder<T> startBy(Instant startBy) {
             this.startBy = startBy;
             return this;
         }
 
-        /** An attempt that runs longer than this is treated as failed. */
+        /** Reserved: stored with the task, acted on by a later version (fail an attempt that runs longer). */
         public Builder<T> maxRun(Duration maxRun) {
             if (maxRun != null && (maxRun.isNegative() || maxRun.isZero())) {
                 throw new TaskValidationException("maxRun must be positive");
@@ -231,7 +231,7 @@ public final class TaskRequest<T> {
             return this;
         }
 
-        /** Names a retry policy registered with the runner; null uses the default. */
+        /** Reserved: stored with the task; this version applies the runner's retry policy to every task. */
         public Builder<T> retryPolicy(String name) {
             this.retryPolicy = name;
             return this;
