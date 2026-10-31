@@ -17,6 +17,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
@@ -24,6 +25,7 @@ import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
+import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
@@ -844,5 +846,379 @@ class PostgresTaskStoreIT {
         assertThat(store.deleteRecurring("gone")).isTrue();
         assertThat(store.deleteRecurring("gone")).isFalse();
         assertThat(store.recurringSchedules()).isEmpty();
+    }
+    // ---- wave 2: cancellation and expiry -------------------------------------------------------------
+
+    @Test
+    void finishCancelledEndsALeasedTaskAndReleasesItsKey() {
+        var t = enqueueAndClaim(task(newId()).uniqueKey("c1"));
+        assertThat(store.finishCancelled(t.id(), t.revision() - 1, "stop", false))
+                .isFalse();
+        assertThat(store.finishCancelled(t.id(), t.revision(), "stop", false)).isTrue();
+
+        var r = get(t.id());
+        assertThat(r.state()).isEqualTo(TaskState.CANCELLED);
+        assertThat(r.revision()).isEqualTo(t.revision() + 1);
+        assertThat(r.cancelReason()).isEqualTo("stop");
+        assertThat(r.cancelRequestedAt()).isNotNull();
+        assertThat(r.stateChanged()).isEqualTo(r.cancelRequestedAt());
+        assertThat(r.data()).isNull();
+        assertThat(r.workerId()).isEqualTo(worker);
+        assertThat(r.leaseUntil()).isNull();
+        assertThat(r.uniqueKey()).isNull();
+        assertThat(store.finishCancelled(t.id(), r.revision(), "again", false)).isFalse();
+        assertThat(store.enqueue(task(newId()).uniqueKey("c1").build())).isEqualTo(EnqueueOutcome.STORED);
+    }
+
+    @Test
+    void finishCancelledKeepsThePayloadAndTheRequestTimeAndStartsAKeyWindow() throws Exception {
+        var t = enqueueAndClaim(task(newId()).uniqueKey("c2").keyKeep(Duration.ofHours(1)));
+        assertThat(store.cancel(t.id(), t.revision(), "operator")).isEqualTo(CancelOutcome.REQUESTED);
+        var requested = get(t.id()).cancelRequestedAt();
+        Thread.sleep(5);
+
+        assertThat(store.finishCancelled(t.id(), t.revision(), "operator", true))
+                .isTrue();
+
+        var r = get(t.id());
+        assertThat(r.cancelRequestedAt()).isEqualTo(requested);
+        assertThat(r.data()).isEqualTo(t.data());
+        assertThat(r.uniqueKey()).isEqualTo("c2");
+        assertThat(r.keyUntil()).isAfter(r.stateChanged());
+    }
+
+    @Test
+    void cancelEndsWaitingTasksAndOnlyRequestsItForLeasedOnes() {
+        long queued = newId();
+        store.enqueue(task(queued).uniqueKey("q").build());
+        long scheduled = newId();
+        store.enqueue(task(scheduled).due(Instant.now().plusSeconds(60)).build());
+
+        assertThat(store.cancel(queued, 1, "x")).isEqualTo(CancelOutcome.STALE);
+        assertThat(store.cancel(queued, 0, "not needed")).isEqualTo(CancelOutcome.CANCELLED);
+        assertThat(store.cancel(scheduled, 0, "not needed")).isEqualTo(CancelOutcome.CANCELLED);
+        var c = get(queued);
+        assertThat(c.state()).isEqualTo(TaskState.CANCELLED);
+        assertThat(c.revision()).isEqualTo(1);
+        assertThat(c.cancelReason()).isEqualTo("not needed");
+        assertThat(c.cancelRequestedAt()).isEqualTo(c.stateChanged());
+        assertThat(c.data()).isEqualTo("payload-" + queued);
+        assertThat(c.uniqueKey()).isNull();
+        assertThat(get(scheduled).state()).isEqualTo(TaskState.CANCELLED);
+        assertThat(store.cancel(queued, 1, "again")).isEqualTo(CancelOutcome.STALE);
+        assertThat(store.cancel(newId(), 0, "missing")).isEqualTo(CancelOutcome.STALE);
+
+        var leased = enqueueAndClaim(task(newId()));
+        assertThat(store.cancel(leased.id(), leased.revision(), "stop")).isEqualTo(CancelOutcome.REQUESTED);
+        var r = get(leased.id());
+        assertThat(r.state()).isEqualTo(TaskState.LEASED);
+        assertThat(r.revision()).isEqualTo(leased.revision());
+        assertThat(r.cancelReason()).isEqualTo("stop");
+        assertThat(store.renew(List.of(new LeaseRef(leased.id(), leased.revision())), LEASE))
+                .containsExactly(new LeaseStatus(leased.id(), true, true));
+        assertThat(store.reclaim(10)).isEmpty();
+    }
+
+    @Test
+    void claimSkipsPassedDeadlinesAndExpireMovesThem() throws Exception {
+        var leased = enqueueAndClaim(task(newId()));
+        long late = newId();
+        store.enqueue(task(late)
+                .uniqueKey("late")
+                .startBy(Instant.now().plusMillis(100))
+                .build());
+        long lateScheduled = newId();
+        store.enqueue(task(lateScheduled)
+                .due(Instant.now().plusSeconds(60))
+                .startBy(Instant.now().plusMillis(100))
+                .build());
+        long fine = newId();
+        store.enqueue(task(fine).startBy(Instant.now().plusSeconds(60)).build());
+        Thread.sleep(150);
+        sql("UPDATE " + prefix + "_task SET start_by = now() - interval '1 second' WHERE id = " + leased.id());
+
+        assertThat(claim(10)).extracting(TaskRecord::id).containsExactly(fine);
+        assertThat(store.expire(10)).containsExactlyInAnyOrder(late, lateScheduled);
+
+        var r = get(late);
+        assertThat(r.state()).isEqualTo(TaskState.EXPIRED);
+        assertThat(r.revision()).isEqualTo(1);
+        assertThat(r.uniqueKey()).isNull();
+        assertThat(get(lateScheduled).state()).isEqualTo(TaskState.EXPIRED);
+        assertThat(get(leased.id()).state()).isEqualTo(TaskState.LEASED);
+        assertThat(store.expire(10)).isEmpty();
+        assertThat(store.expire(0)).isEmpty();
+        assertThat(store.enqueue(task(newId()).uniqueKey("late").build())).isEqualTo(EnqueueOutcome.STORED);
+    }
+
+    @Test
+    void expireWorksInBatchesOldestDeadlineFirst() throws Exception {
+        long base = store.allocateIds(3);
+        var now = Instant.now();
+        store.enqueue(task(base).startBy(now.plusMillis(60)).build());
+        store.enqueue(task(base + 1).startBy(now.plusMillis(20)).build());
+        store.enqueue(task(base + 2).startBy(now.plusMillis(40)).build());
+        Thread.sleep(100);
+
+        assertThat(store.expire(2)).containsExactlyInAnyOrder(base + 1, base + 2);
+        assertThat(store.expire(2)).containsExactly(base);
+    }
+
+    // ---- wave 2: admin -------------------------------------------------------------------------------
+
+    @Test
+    void retryReturnsATerminalTaskToItsQueue() {
+        var steps = Map.of("one", new StepResult(Instant.now().truncatedTo(ChronoUnit.MILLIS), "1"));
+        var t = enqueueAndClaim(task(newId()).maxAttempts(1).uniqueKey("r").keyKeep(Duration.ofHours(1)));
+        store.saveSteps(t.id(), t.revision(), steps);
+        store.fail(t.id(), t.revision(), failure(1), null, true);
+        var dead = get(t.id());
+
+        assertThat(store.retry(t.id(), dead.revision() - 1)).isFalse();
+        assertThat(store.retry(t.id(), dead.revision())).isTrue();
+
+        var r = get(t.id());
+        assertThat(r.state()).isEqualTo(TaskState.QUEUED);
+        assertThat(r.revision()).isEqualTo(dead.revision() + 1);
+        assertThat(r.attempts()).isZero();
+        assertThat(r.due()).isAfterOrEqualTo(dead.stateChanged());
+        assertThat(r.workerId()).isNull();
+        assertThat(r.uniqueKey()).isNull();
+        assertThat(r.keyKeep()).isNull();
+        assertThat(r.keyUntil()).isNull();
+        assertThat(r.failures()).hasSize(1);
+        assertThat(r.steps()).isEqualTo(steps);
+        assertThat(r.data()).isEqualTo(t.data());
+        assertThat(store.retry(t.id(), r.revision())).isFalse();
+        assertThat(claim(1)).extracting(TaskRecord::id).containsExactly(t.id());
+    }
+
+    @Test
+    void retryWorksForCancelledAndExpiredTasks() throws Exception {
+        long cancelled = newId();
+        store.enqueue(task(cancelled).build());
+        store.cancel(cancelled, 0, "oops");
+        long expired = newId();
+        store.enqueue(task(expired).startBy(Instant.now().plusMillis(20)).build());
+        Thread.sleep(50);
+        store.expire(10);
+
+        assertThat(store.retry(cancelled, 1)).isTrue();
+        assertThat(store.retry(expired, 1)).isTrue();
+        var c = get(cancelled);
+        assertThat(c.cancelRequestedAt()).isNull();
+        assertThat(c.cancelReason()).isNull();
+        assertThat(get(expired).startBy()).isNull();
+        assertThat(claim(5)).extracting(TaskRecord::id).containsExactlyInAnyOrder(cancelled, expired);
+    }
+
+    @Test
+    void deleteRemovesAnyTaskButALeasedOne() {
+        var leased = enqueueAndClaim(task(newId()));
+        var done = enqueueAndClaim(task(newId()));
+        store.ack(done.id(), done.revision(), true, true);
+        long queued = newId();
+        store.enqueue(task(queued).uniqueKey("d").build());
+
+        assertThat(store.delete(queued, 1)).isFalse();
+        assertThat(store.delete(queued, 0)).isTrue();
+        assertThat(store.getTask(queued)).isEmpty();
+        assertThat(store.enqueue(task(newId()).uniqueKey("d").build())).isEqualTo(EnqueueOutcome.STORED);
+        assertThat(store.delete(leased.id(), leased.revision())).isFalse();
+        assertThat(get(leased.id()).state()).isEqualTo(TaskState.LEASED);
+        assertThat(store.delete(done.id(), done.revision() + 1)).isTrue();
+        assertThat(store.delete(done.id(), done.revision() + 1)).isFalse();
+    }
+
+    @Test
+    void aPausedQueueIsNotClaimedFrom() {
+        int other = store.queueId("other");
+        long a = newId();
+        long b = newId();
+        store.enqueue(task(a).build());
+        store.enqueue(task(b).queueId(other).build());
+
+        store.pauseQueue(queue, true);
+        assertThat(store.queues())
+                .containsExactly(new QueueInfo(queue, "default", true), new QueueInfo(other, "other", false));
+        assertThat(store.claim(new ClaimRequest(List.of(queue, other), 5, LEASE, worker, null)))
+                .extracting(TaskRecord::id)
+                .containsExactly(b);
+
+        store.pauseQueue(queue, false);
+        assertThat(store.queues().getFirst().paused()).isFalse();
+        assertThat(claim(5)).extracting(TaskRecord::id).containsExactly(a);
+    }
+
+    @Test
+    void heartbeatsAreListedAndStaleWorkersPurged() throws Exception {
+        int second = store.allocateWorkerId("host:2");
+        store.heartbeat(worker, 5);
+
+        var workers = store.workers();
+        assertThat(workers).extracting(w -> w.id()).containsExactly(worker, second);
+        var w = workers.getFirst();
+        assertThat(w.label()).isEqualTo("host:1");
+        assertThat(w.running()).isEqualTo(5);
+        assertThat(w.lastSeen()).isAfterOrEqualTo(w.startedAt());
+        assertThat(workers.get(1).running()).isZero();
+
+        assertThat(store.purgeWorkers(Duration.ofHours(1))).isZero();
+        Thread.sleep(100);
+        store.heartbeat(worker, 1);
+        assertThat(store.purgeWorkers(Duration.ofMillis(50))).isEqualTo(1);
+        assertThat(store.workers()).extracting(x -> x.id()).containsExactly(worker);
+    }
+
+    // ---- wave 2: schedule controls -------------------------------------------------------------------
+
+    private RecurringDefinition fullDefinition(String id) {
+        return new RecurringDefinition(
+                id,
+                event,
+                2,
+                queue,
+                "acme",
+                "0 9 * * *",
+                "Europe/Berlin",
+                RecurringDefinition.MISFIRE_CATCH_UP,
+                3,
+                null,
+                true,
+                "{}",
+                5,
+                false,
+                0);
+    }
+
+    private RecurringDefinition fixedDelay(String id, long delayMs) {
+        return new RecurringDefinition(
+                id, event, 1, queue, null, null, null, null, 0, delayMs, false, null, 1, false, 0);
+    }
+
+    @Test
+    void recurringDefinitionsRoundTripEveryField() {
+        var at = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MICROS);
+        store.putRecurring(fullDefinition("b-cron"), at);
+        store.putRecurring(fixedDelay("a-delay", 60_000), at.plusSeconds(1));
+
+        var all = store.recurringDefinitions();
+        assertThat(all).extracting(x -> x.definition().scheduleId()).containsExactly("a-delay", "b-cron");
+        var delay = all.getFirst();
+        assertThat(delay.definition().withRevision(0)).isEqualTo(fixedDelay("a-delay", 60_000));
+        assertThat(delay.definition().revision()).isPositive();
+        assertThat(delay.nextFire()).isEqualTo(at.plusSeconds(1));
+        assertThat(all.get(1).definition().withRevision(0)).isEqualTo(fullDefinition("b-cron"));
+
+        store.putRecurring(fixedDelay("a-delay", 60_000), at.plusSeconds(500));
+        assertThat(store.recurringSchedules()).containsEntry("a-delay", at.plusSeconds(1));
+        store.putRecurring(fixedDelay("a-delay", 30_000), at.plusSeconds(500));
+        assertThat(store.recurringSchedules()).containsEntry("a-delay", at.plusSeconds(500));
+        var zoneChanged = new RecurringDefinition(
+                "b-cron", event, 2, queue, "acme", "0 9 * * *", "UTC", null, 0, null, false, "{}", 5, false, 0);
+        store.putRecurring(zoneChanged, at.plusSeconds(700));
+        assertThat(store.recurringSchedules()).containsEntry("b-cron", at.plusSeconds(700));
+    }
+
+    @Test
+    void aPausedDefinitionIsNotDueAndCannotCommit() {
+        var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MICROS);
+        store.putRecurring(definition("p", "0 * * * *"), fireAt);
+        var due = store.dueRecurring(Instant.now(), 10).getFirst();
+
+        assertThat(store.pauseRecurring("p", true)).isTrue();
+        assertThat(store.dueRecurring(Instant.now(), 10)).isEmpty();
+        assertThat(store.recurringDefinitions().getFirst().definition().paused())
+                .isTrue();
+        assertThat(store.recurringDefinitions().getFirst().nextFire()).isEqualTo(fireAt);
+        assertThat(store.commitRecurring(
+                        due, fireAt.plusSeconds(3600), task(newId()).build()))
+                .isFalse();
+
+        assertThat(store.pauseRecurring("p", false)).isTrue();
+        assertThat(store.dueRecurring(Instant.now(), 10)).hasSize(1);
+        assertThat(store.pauseRecurring("missing", true)).isFalse();
+    }
+
+    @Test
+    void setNextFireReplacesTheFireTimeAndFencesAnOlderCommit() {
+        var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MICROS);
+        store.putRecurring(definition("n", "0 * * * *"), fireAt);
+        var due = store.dueRecurring(Instant.now(), 10).getFirst();
+        var later = fireAt.plusSeconds(120);
+
+        assertThat(store.setNextFire("n", later)).isTrue();
+        assertThat(store.recurringSchedules()).containsEntry("n", later);
+        assertThat(store.commitRecurring(
+                        due, fireAt.plusSeconds(3600), task(newId()).build()))
+                .isFalse();
+        assertThat(store.setNextFire("missing", later)).isFalse();
+    }
+
+    @Test
+    void anOccurrenceWhoseKeyIsHeldIsSkippedButTheDefinitionAdvances() {
+        var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MICROS);
+        store.putRecurring(definition("o", "* * * * *"), fireAt);
+        long first = newId();
+        var d1 = store.dueRecurring(Instant.now(), 10).getFirst();
+        assertThat(store.commitRecurring(
+                        d1,
+                        fireAt.plusSeconds(1),
+                        task(first).uniqueKey("sched:o").build()))
+                .isTrue();
+        assertThat(store.promote(10).moved()).isEqualTo(1);
+
+        long second = newId();
+        var d2 = store.dueRecurring(Instant.now(), 10).getFirst();
+        assertThat(d2.fireAt()).isEqualTo(fireAt.plusSeconds(1));
+        assertThat(store.commitRecurring(
+                        d2,
+                        fireAt.plusSeconds(2),
+                        task(second).uniqueKey("sched:o").build()))
+                .isTrue();
+
+        assertThat(store.getTask(second)).isEmpty();
+        assertThat(get(first).state()).isEqualTo(TaskState.QUEUED);
+        assertThat(store.recurringSchedules()).containsEntry("o", fireAt.plusSeconds(2));
+
+        var t = claim(1).getFirst();
+        store.ack(t.id(), t.revision(), true, true);
+        long third = newId();
+        var d3 = store.dueRecurring(Instant.now(), 10).getFirst();
+        assertThat(store.commitRecurring(
+                        d3,
+                        fireAt.plusSeconds(3),
+                        task(third).uniqueKey("sched:o").build()))
+                .isTrue();
+        assertThat(get(third).uniqueKey()).isEqualTo("sched:o");
+        assertThat(get(third).scheduleId()).isEqualTo("o");
+    }
+
+    // ---- wave 2: transactional enqueue ---------------------------------------------------------------
+
+    @Test
+    void enqueueOnTheCallersConnectionFollowsItsTransaction() throws SQLException {
+        long rolledBack = newId();
+        long committed = newId();
+        try (var c = PostgresTestSupport.dataSource().getConnection()) {
+            c.setAutoCommit(false);
+            assertThat(store.enqueue(c, task(rolledBack).build())).isEqualTo(EnqueueOutcome.STORED);
+            assertThat(store.getTask(rolledBack)).isEmpty();
+            c.rollback();
+
+            assertThat(store.enqueue(c, task(committed).uniqueKey("tx").build()))
+                    .isEqualTo(EnqueueOutcome.STORED);
+            assertThat(store.enqueue(c, task(committed).build())).isEqualTo(EnqueueOutcome.EXISTS);
+            assertThat(store.enqueue(c, task(newId()).uniqueKey("tx").build()))
+                    .isEqualTo(new EnqueueOutcome.DuplicateKey(committed));
+            assertThat(store.getTask(committed)).isEmpty();
+            c.commit();
+            assertThat(c.isClosed()).isFalse();
+            c.setAutoCommit(true);
+        }
+        assertThat(store.getTask(rolledBack)).isEmpty();
+        assertThat(get(committed).state()).isEqualTo(TaskState.QUEUED);
+        assertThatThrownBy(() -> store.enqueue(null, task(newId()).build()))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }
