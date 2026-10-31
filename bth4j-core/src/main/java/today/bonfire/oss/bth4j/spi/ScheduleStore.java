@@ -25,7 +25,10 @@ public interface ScheduleStore extends TaskStore {
 
     /**
      * Stores the occurrence (SCHEDULED for {@link DueSchedule#fireAt()}) and advances the definition to
-     * {@code nextFire}, unless the definition's revision or next fire time changed meanwhile.
+     * {@code nextFire}, unless the definition's revision or next fire time changed meanwhile. When the
+     * occurrence names a unique key that another task holds, the definition is still advanced and the
+     * method still reports true, but the occurrence is not stored; this is how an overlapping occurrence is
+     * skipped.
      *
      * @return true when committed
      */

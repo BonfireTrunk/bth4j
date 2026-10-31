@@ -2,6 +2,7 @@ package today.bonfire.oss.bth4j.service;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -9,6 +10,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import today.bonfire.oss.bth4j.QueuePolicy;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.executor.BackgroundExecutor;
 import today.bonfire.oss.bth4j.executor.CustomThread;
@@ -19,14 +21,17 @@ import today.bonfire.oss.bth4j.spi.TaskRecord;
 /**
  * Claims tasks and hands them to the executor.
  * <p>
- * Every iteration first reserves executor slots, then claims at most that many tasks in one call, so a
- * claimed task always has a slot. The queues are tried round robin. When nothing was claimed the thread
- * sleeps for the idle poll interval; one claim covers all queues, so an idle runner costs one store call
- * per interval. A quiet runner keeps the loop but claims nothing.
+ * Every iteration first reserves executor slots, then claims at most that many tasks, so a claimed task
+ * always has a slot. Without queue policies one claim covers all queues, tried round robin, so an idle
+ * runner costs one store call per poll interval. With queue policies the free slots are shared between the
+ * queues in proportion to their weights and capped by their concurrency limits, one claim per queue. When
+ * nothing was claimed the thread sleeps for the idle poll interval. A quiet runner keeps the loop but claims
+ * nothing.
  * <p>
- * A renewal thread extends the leases of all running tasks every third of the lease duration and passes
- * cancel requests on to the running executions. It keeps running after {@link #stopThread()} until
- * {@link #stopLeaseRenewal()} is called, so that tasks still finishing during shutdown keep their leases.
+ * A renewal thread extends the leases of all running tasks every third of the lease duration, passes cancel
+ * requests on to the running executions and requests the cancellation of tasks past their maximum run time.
+ * It keeps running after {@link #stopThread()} until {@link #stopLeaseRenewal()} is called, so that tasks
+ * still finishing during shutdown keep their leases.
  */
 public class TaskProcessorService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(TaskProcessorService.class);
@@ -34,6 +39,9 @@ public class TaskProcessorService extends CustomThread {
     private final BackgroundExecutor executor;
     private final TaskExecution.Settings settings;
     private final List<Integer> queueIds;
+    private final List<Integer> distinctQueueIds;
+    private final Map<Integer, QueuePolicy> policies;
+    private final boolean policed;
     private final Set<Integer> knownEventIds;
     private final int workerId;
     private final Duration lease;
@@ -42,6 +50,8 @@ public class TaskProcessorService extends CustomThread {
     private final AtomicInteger queueOffset = new AtomicInteger();
     /** shared with the runner so that a restarted processor keeps renewing the tasks its predecessor started */
     private final Map<Long, TaskExecution> running;
+
+    private final Map<Integer, AtomicInteger> runningPerQueue = new ConcurrentHashMap<>();
 
     private final Thread renewer;
     private volatile boolean renewalRunning = true;
@@ -52,6 +62,9 @@ public class TaskProcessorService extends CustomThread {
         this.executor = b.executor;
         this.settings = b.settings;
         this.queueIds = List.copyOf(b.queueIds);
+        this.distinctQueueIds = List.copyOf(new LinkedHashSet<>(b.queueIds));
+        this.policies = Map.copyOf(b.queuePolicies);
+        this.policed = policies.values().stream().anyMatch(p -> !p.equals(QueuePolicy.DEFAULT));
         this.knownEventIds = Set.copyOf(b.knownEventIds);
         this.workerId = b.workerId;
         this.running = b.running;
@@ -59,6 +72,7 @@ public class TaskProcessorService extends CustomThread {
         this.idlePollInterval = b.idlePollInterval;
         this.claimBatchSize = b.claimBatchSize;
         this.quiet = b.quiet;
+        for (var e : running.values()) runningInQueue(e.queueId()).incrementAndGet();
         this.renewer = new Thread(b.group, this::renewLeases, b.threadName + "-lease");
         this.renewer.setDaemon(true);
     }
@@ -103,15 +117,18 @@ public class TaskProcessorService extends CustomThread {
         }
         List<TaskRecord> tasks;
         try {
-            tasks = settings.store().claim(new ClaimRequest(rotatedQueues(), slots, lease, workerId, knownEventIds));
+            tasks = policed ? claimShared(slots) : claim(rotatedQueues(), slots);
+            settings.status().claimed();
         } catch (RuntimeException e) {
             executor.release(slots);
+            settings.status().storeError(e);
             throw e;
         }
         executor.release(slots - tasks.size());
         for (var record : tasks) {
             var execution = new TaskExecution(record, settings, this::finished);
             running.put(record.id(), execution);
+            runningInQueue(record.queueId()).incrementAndGet();
             try {
                 executor.execute(execution);
             } catch (RuntimeException e) {
@@ -124,17 +141,82 @@ public class TaskProcessorService extends CustomThread {
         }
     }
 
+    private List<TaskRecord> claim(List<Integer> queues, int count) {
+        return settings.store().claim(new ClaimRequest(queues, count, lease, workerId, knownEventIds));
+    }
+
+    /**
+     * Shares {@code slots} between the queues by weight, each capped by its remaining concurrency, and claims
+     * from each queue with a share. Slots a queue could not fill are offered once more to the queues that
+     * filled theirs, so an empty queue does not idle the others.
+     */
+    private List<TaskRecord> claimShared(int slots) {
+        var order = rotatedDistinctQueues();
+        var caps = new int[order.size()];
+        int totalWeight = 0;
+        for (int i = 0; i < order.size(); i++) {
+            var policy = policies.getOrDefault(order.get(i), QueuePolicy.DEFAULT);
+            int cap = policy.maxConcurrent() == 0
+                    ? slots
+                    : Math.max(
+                            0,
+                            policy.maxConcurrent()
+                                    - runningInQueue(order.get(i)).get());
+            caps[i] = Math.min(cap, slots);
+            if (caps[i] > 0) totalWeight += policy.weight();
+        }
+        if (totalWeight == 0) return List.of();
+        var shares = new int[order.size()];
+        int given = 0;
+        for (int i = 0; i < order.size(); i++) {
+            if (caps[i] == 0) continue;
+            int weight =
+                    policies.getOrDefault(order.get(i), QueuePolicy.DEFAULT).weight();
+            shares[i] = Math.min(caps[i], slots * weight / totalWeight);
+            given += shares[i];
+        }
+        for (int i = 0; given < slots && i < order.size(); i++) {
+            if (shares[i] < caps[i]) {
+                shares[i]++;
+                given++;
+            }
+        }
+        var claimed = new ArrayList<TaskRecord>(slots);
+        var filled = new boolean[order.size()];
+        for (int i = 0; i < order.size(); i++) {
+            if (shares[i] == 0) continue;
+            var got = claim(List.of(order.get(i)), shares[i]);
+            claimed.addAll(got);
+            filled[i] = got.size() == shares[i];
+            caps[i] -= got.size();
+        }
+        int left = slots - claimed.size();
+        for (int i = 0; left > 0 && i < order.size(); i++) {
+            if (!filled[i] || caps[i] == 0) continue;
+            var got = claim(List.of(order.get(i)), Math.min(left, caps[i]));
+            claimed.addAll(got);
+            left -= got.size();
+        }
+        return claimed;
+    }
+
+    private AtomicInteger runningInQueue(int queueId) {
+        return runningPerQueue.computeIfAbsent(queueId, q -> new AtomicInteger());
+    }
+
     private void returnToQueue(TaskExecution execution, RuntimeException cause) {
         try {
             if (!settings.store().unclaim(execution.taskId(), execution.revision())) {
                 log.warn("Task {} was rejected by the executor and its lease was lost", execution.taskId());
             }
         } catch (RuntimeException e) {
+            settings.status().storeError(e);
             log.error(
                     "Task {} was rejected by the executor and could not be returned to its queue",
                     execution.taskId(),
                     e);
         }
+        settings.status().issue("executor-rejected", cause.toString(), execution.taskId());
         log.warn("Executor rejected task {}, returned to its queue", execution.taskId(), cause);
     }
 
@@ -143,16 +225,26 @@ public class TaskProcessorService extends CustomThread {
      * when a retry was claimed while this attempt was finishing.
      */
     private void finished(TaskExecution execution) {
-        running.remove(execution.taskId(), execution);
+        if (running.remove(execution.taskId(), execution)) {
+            runningInQueue(execution.queueId()).decrementAndGet();
+        }
     }
 
     /** The queues to process, starting one position later on every call. */
     private List<Integer> rotatedQueues() {
-        int n = queueIds.size();
+        return rotate(queueIds);
+    }
+
+    private List<Integer> rotatedDistinctQueues() {
+        return rotate(distinctQueueIds);
+    }
+
+    private List<Integer> rotate(List<Integer> ids) {
+        int n = ids.size();
         int start = Math.floorMod(queueOffset.getAndIncrement(), n);
         var rotated = new ArrayList<Integer>(n);
         for (int i = 0; i < n; i++) {
-            rotated.add(queueIds.get((start + i) % n));
+            rotated.add(ids.get((start + i) % n));
         }
         return rotated;
     }
@@ -163,6 +255,7 @@ public class TaskProcessorService extends CustomThread {
             sleepQuietly(interval);
             if (running.isEmpty()) continue;
             var executions = List.copyOf(running.values());
+            cancelOverrunning(executions);
             var refs = new ArrayList<LeaseRef>(executions.size());
             for (var e : executions) refs.add(new LeaseRef(e.taskId(), e.revision()));
             try {
@@ -174,15 +267,30 @@ public class TaskProcessorService extends CustomThread {
                     if (!status.owned()) {
                         lost++;
                         execution.leaseLost();
+                        settings.status().issue("lease-lost", "lease not renewed", execution.taskId());
                     } else if (status.cancelRequested()) {
-                        execution.requestCancel();
+                        execution.requestCancel(null);
                     }
                 }
                 if (lost > 0) {
                     log.warn("{} of {} leases could not be renewed, those tasks were taken over", lost, refs.size());
                 }
             } catch (RuntimeException e) {
+                settings.status().storeError(e);
                 log.error("Lease renewal failed for {} running tasks", refs.size(), e);
+            }
+        }
+    }
+
+    private void cancelOverrunning(List<TaskExecution> executions) {
+        var now = settings.clock().instant();
+        for (var e : executions) {
+            var maxRun = e.maxRun();
+            var started = e.startedAt();
+            if (maxRun == null || started == null || e.cancelRequested()) continue;
+            if (now.isAfter(started.plus(maxRun))) {
+                log.warn("Task {} exceeded its maximum run time of {}, requesting cancellation", e.taskId(), maxRun);
+                e.requestCancel("max run time " + maxRun + " exceeded");
             }
         }
     }
@@ -221,6 +329,7 @@ public class TaskProcessorService extends CustomThread {
         private BackgroundExecutor executor;
         private TaskExecution.Settings settings;
         private List<Integer> queueIds;
+        private Map<Integer, QueuePolicy> queuePolicies = Map.of();
         private Set<Integer> knownEventIds;
         private int workerId;
         private Duration lease = Duration.ofSeconds(60);
@@ -251,6 +360,12 @@ public class TaskProcessorService extends CustomThread {
 
         public Builder queueIds(List<Integer> queueIds) {
             this.queueIds = queueIds;
+            return this;
+        }
+
+        /** Policies by queue id; queues without one get {@link QueuePolicy#DEFAULT}. */
+        public Builder queuePolicies(Map<Integer, QueuePolicy> queuePolicies) {
+            this.queuePolicies = queuePolicies;
             return this;
         }
 
