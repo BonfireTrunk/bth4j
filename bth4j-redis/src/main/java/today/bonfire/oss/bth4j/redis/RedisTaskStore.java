@@ -14,8 +14,10 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import redis.clients.jedis.Response;
 import redis.clients.jedis.UnifiedJedis;
 import redis.clients.jedis.exceptions.JedisException;
+import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
@@ -26,14 +28,17 @@ import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
+import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecordJson;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
+import today.bonfire.oss.bth4j.spi.RecurringSchedule;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
+import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /**
  * {@link FullStore} on Redis 7.0 or newer: one hash per task, sorted sets for the queues and the state indexes,
@@ -131,11 +136,8 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public int allocateWorkerId(String label) {
-        return guard(() -> {
-            var id = (int) jedis.incr(keys.seqWorker);
-            jedis.hset(keys.worker(id), Map.of("label", label == null ? "" : label, "started", ms(Instant.now())));
-            return id;
-        });
+        var args = List.of(label == null ? "" : label);
+        return (int) num(guard(() -> scripts.run(RedisScripts.WORKER_REGISTER, args)));
     }
 
     @Override
@@ -394,10 +396,29 @@ public class RedisTaskStore implements FullStore {
                 String.valueOf(d.queueId()),
                 F_PAYLOAD_VERSION,
                 String.valueOf(d.payloadVersion()),
-                F_CRON,
-                d.cron(),
                 F_MAX_ATTEMPTS,
                 String.valueOf(d.maxAttempts())));
+        if (d.cron() != null) {
+            args.addAll(List.of(F_CRON, d.cron()));
+        }
+        if (d.zone() != null) {
+            args.addAll(List.of(F_ZONE, d.zone()));
+        }
+        if (d.misfire() != null) {
+            args.addAll(List.of(F_MISFIRE, d.misfire()));
+        }
+        if (d.catchUpMax() != 0) {
+            args.addAll(List.of(F_CATCH_UP, String.valueOf(d.catchUpMax())));
+        }
+        if (d.fixedDelayMs() != null) {
+            args.addAll(List.of(F_FIXED_DELAY, String.valueOf(d.fixedDelayMs())));
+        }
+        if (d.overlapSkip()) {
+            args.addAll(List.of(F_OVERLAP_SKIP, "1"));
+        }
+        if (d.paused()) {
+            args.addAll(List.of(F_PAUSED, "1"));
+        }
         if (d.account() != null) {
             args.addAll(List.of(F_ACCOUNT, d.account()));
         }
@@ -415,8 +436,7 @@ public class RedisTaskStore implements FullStore {
     @Override
     public Map<String, Instant> recurringSchedules() {
         var result = new LinkedHashMap<String, Instant>();
-        guard(() -> jedis.zrangeWithScores(keys.cron, 0, -1))
-                .forEach(t -> result.put(t.getElement(), Instant.ofEpochMilli((long) t.getScore())));
+        recurringDefinitions().forEach(r -> result.put(r.definition().scheduleId(), r.nextFire()));
         return result;
     }
 
@@ -430,22 +450,28 @@ public class RedisTaskStore implements FullStore {
             var e = (List<Object>) entry;
             var id = (String) e.get(0);
             var fireAt = Instant.ofEpochMilli((long) Double.parseDouble((String) e.get(1)));
-            var d = toMap(e, 2);
-            out.add(new DueSchedule(
-                    id,
-                    fireAt,
-                    new RecurringDefinition(
-                            id,
-                            Integer.parseInt(d.get(F_EVENT)),
-                            Integer.parseInt(d.get(F_PAYLOAD_VERSION)),
-                            Integer.parseInt(d.get(F_QUEUE)),
-                            d.get(F_ACCOUNT),
-                            d.get(F_CRON),
-                            d.get(F_DATA),
-                            Integer.parseInt(d.get(F_MAX_ATTEMPTS)),
-                            Long.parseLong(d.get(F_REVISION)))));
+            out.add(new DueSchedule(id, fireAt, definition(id, toMap(e, 2))));
         }
         return out;
+    }
+
+    private static RecurringDefinition definition(String id, Map<String, String> d) {
+        return new RecurringDefinition(
+                id,
+                Integer.parseInt(d.get(F_EVENT)),
+                Integer.parseInt(d.get(F_PAYLOAD_VERSION)),
+                Integer.parseInt(d.get(F_QUEUE)),
+                d.get(F_ACCOUNT),
+                d.get(F_CRON),
+                d.get(F_ZONE),
+                d.get(F_MISFIRE),
+                d.containsKey(F_CATCH_UP) ? Integer.parseInt(d.get(F_CATCH_UP)) : 0,
+                d.containsKey(F_FIXED_DELAY) ? Long.parseLong(d.get(F_FIXED_DELAY)) : null,
+                "1".equals(d.get(F_OVERLAP_SKIP)),
+                d.get(F_DATA),
+                Integer.parseInt(d.get(F_MAX_ATTEMPTS)),
+                "1".equals(d.get(F_PAUSED)),
+                Long.parseLong(d.get(F_REVISION)));
     }
 
     @Override
@@ -611,70 +637,138 @@ public class RedisTaskStore implements FullStore {
         return map;
     }
 
-    // wave 2 stubs: replaced by the module owner (see tmp/plans/wave-2-spec.md)
+    // ---- wave 2: cancel, expiry, admin, workers ------------------------------------------------------
+
+    private static String reason(String reason) {
+        return reason == null ? "" : reason;
+    }
 
     @Override
     public boolean finishCancelled(long id, int revision, String reason, boolean keepPayload) {
-        throw new UnsupportedOperationException("wave 2");
+        var args = List.of(String.valueOf(id), String.valueOf(revision), reason(reason), keepPayload ? "1" : "0");
+        return num(guard(() -> scripts.run(RedisScripts.FINISH_CANCELLED, args))) == 1;
     }
 
     @Override
-    public java.util.List<Long> expire(int limit) {
-        throw new UnsupportedOperationException("wave 2");
+    @SuppressWarnings("unchecked")
+    public List<Long> expire(int limit) {
+        var r = (List<Object>) guard(() -> scripts.run(RedisScripts.EXPIRE, List.of(String.valueOf(limit))));
+        return r.stream().map(o -> Long.parseLong((String) o)).toList();
     }
 
     @Override
-    public int purgeWorkers(java.time.Duration staleAfter) {
-        throw new UnsupportedOperationException("wave 2");
+    public int purgeWorkers(Duration staleAfter) {
+        var args = List.of(String.valueOf(staleAfter.toMillis()));
+        return (int) num(guard(() -> scripts.run(RedisScripts.PURGE_WORKERS, args)));
     }
 
     @Override
-    public today.bonfire.oss.bth4j.spi.CancelOutcome cancel(long id, int revision, String reason) {
-        throw new UnsupportedOperationException("wave 2");
+    public CancelOutcome cancel(long id, int revision, String reason) {
+        var args = List.of(String.valueOf(id), String.valueOf(revision), reason(reason));
+        return CancelOutcome.valueOf((String) guard(() -> scripts.run(RedisScripts.CANCEL, args)));
     }
 
     @Override
     public boolean retry(long id, int revision) {
-        throw new UnsupportedOperationException("wave 2");
+        var args = List.of(String.valueOf(id), String.valueOf(revision));
+        return num(guard(() -> scripts.run(RedisScripts.RETRY, args))) == 1;
     }
 
     @Override
     public boolean delete(long id, int revision) {
-        throw new UnsupportedOperationException("wave 2");
+        var args = List.of(String.valueOf(id), String.valueOf(revision));
+        return num(guard(() -> scripts.run(RedisScripts.DELETE, args))) == 1;
     }
 
     @Override
     public void pauseQueue(int queueId, boolean paused) {
-        throw new UnsupportedOperationException("wave 2");
+        guard(() -> {
+            if (paused) {
+                jedis.sadd(keys.paused, String.valueOf(queueId));
+            } else {
+                jedis.srem(keys.paused, String.valueOf(queueId));
+            }
+        });
     }
 
     @Override
-    public java.util.List<today.bonfire.oss.bth4j.spi.QueueInfo> queues() {
-        throw new UnsupportedOperationException("wave 2");
+    public List<QueueInfo> queues() {
+        return guard(() -> {
+            var paused = jedis.smembers(keys.paused);
+            return names("queue").entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey())
+                    .map(e -> new QueueInfo(e.getKey(), e.getValue(), paused.contains(String.valueOf(e.getKey()))))
+                    .toList();
+        });
     }
 
     @Override
     public void heartbeat(int workerId, int running) {
-        throw new UnsupportedOperationException("wave 2");
+        var args = List.of(String.valueOf(workerId), String.valueOf(running));
+        guard(() -> scripts.run(RedisScripts.HEARTBEAT, args));
     }
 
     @Override
-    public java.util.List<today.bonfire.oss.bth4j.spi.WorkerInfo> workers() {
-        throw new UnsupportedOperationException("wave 2");
+    public List<WorkerInfo> workers() {
+        return guard(() -> {
+            var ids = jedis.zrange(keys.workers, 0, -1).stream()
+                    .map(Integer::valueOf)
+                    .sorted()
+                    .toList();
+            var hashes = new ArrayList<Response<Map<String, String>>>(ids.size());
+            try (var pipeline = jedis.pipelined()) {
+                ids.forEach(id -> hashes.add(pipeline.hgetAll(keys.worker(id))));
+                pipeline.sync();
+            }
+            var out = new ArrayList<WorkerInfo>(ids.size());
+            for (var i = 0; i < ids.size(); i++) {
+                var h = hashes.get(i).get();
+                if (h.isEmpty()) {
+                    continue;
+                }
+                out.add(new WorkerInfo(
+                        ids.get(i),
+                        h.getOrDefault(F_LABEL, ""),
+                        Instant.ofEpochMilli(Long.parseLong(h.get(F_STARTED))),
+                        Instant.ofEpochMilli(Long.parseLong(h.get(F_SEEN))),
+                        Integer.parseInt(h.getOrDefault(F_RUNNING, "0"))));
+            }
+            return out;
+        });
     }
 
+    // ---- wave 2: schedule controls -------------------------------------------------------------------
+
     @Override
-    public java.util.List<today.bonfire.oss.bth4j.spi.RecurringSchedule> recurringDefinitions() {
-        throw new UnsupportedOperationException("wave 2");
+    public List<RecurringSchedule> recurringDefinitions() {
+        return guard(() -> {
+            var ids = jedis.smembers(keys.cronDefinitions).stream().sorted().toList();
+            var hashes = new ArrayList<Response<Map<String, String>>>(ids.size());
+            try (var pipeline = jedis.pipelined()) {
+                ids.forEach(id -> hashes.add(pipeline.hgetAll(keys.cronDefinition(id))));
+                pipeline.sync();
+            }
+            var out = new ArrayList<RecurringSchedule>(ids.size());
+            for (var i = 0; i < ids.size(); i++) {
+                var h = hashes.get(i).get();
+                if (!h.isEmpty()) {
+                    out.add(new RecurringSchedule(
+                            definition(ids.get(i), h), Instant.ofEpochMilli(Long.parseLong(h.get(F_NEXT)))));
+                }
+            }
+            return out;
+        });
     }
 
     @Override
     public boolean pauseRecurring(String scheduleId, boolean paused) {
-        throw new UnsupportedOperationException("wave 2");
+        var args = List.of(scheduleId, paused ? "1" : "0");
+        return num(guard(() -> scripts.run(RedisScripts.CRON_PAUSE, args))) == 1;
     }
 
     @Override
-    public boolean setNextFire(String scheduleId, java.time.Instant nextFire) {
-        throw new UnsupportedOperationException("wave 2");
+    public boolean setNextFire(String scheduleId, Instant nextFire) {
+        var args = List.of(scheduleId, ms(nextFire));
+        return num(guard(() -> scripts.run(RedisScripts.CRON_SET_NEXT, args))) == 1;
     }
 }
