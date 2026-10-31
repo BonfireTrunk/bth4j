@@ -89,7 +89,14 @@ public final class DefaultAdminOps implements AdminOps {
         if (reason != null && reason.length() > MAX_REASON) {
             throw new TaskValidationException("reason longer than " + MAX_REASON + " characters");
         }
-        return store.cancel(id, revision, reason == null || reason.isBlank() ? "cancelled by operator" : reason);
+        var outcome = store.cancel(id, revision, reason == null || reason.isBlank() ? "cancelled by operator" : reason);
+        if (outcome == CancelOutcome.CANCELLED) {
+            // a waiting fixed-delay occurrence re-arms nothing, so its definition would stay parked
+            store.getTask(id)
+                    .filter(RecurringTaskService::isFixedDelayOccurrence)
+                    .ifPresent(r -> store.pauseRecurring(r.scheduleId(), true));
+        }
+        return outcome;
     }
 
     @Override

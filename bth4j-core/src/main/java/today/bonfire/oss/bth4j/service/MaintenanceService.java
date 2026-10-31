@@ -112,11 +112,11 @@ public class MaintenanceService extends CustomThread {
             return;
         }
         Instant retryAt = null;
-        if (e.attempts() < e.maxAttempts()) {
-            var record = store.getTask(e.id()).orElse(null);
-            if (record != null && decide(record) instanceof RetryPolicy.Decision.RetryAfter r) {
-                retryAt = clock.instant().plus(r.delay());
-            }
+        var record = store.getTask(e.id()).orElse(null);
+        if (e.attempts() < e.maxAttempts()
+                && record != null
+                && decide(record) instanceof RetryPolicy.Decision.RetryAfter r) {
+            retryAt = clock.instant().plus(r.delay());
         }
         var failure = new FailureInfo(
                 e.attempts(), clock.instant(), "lease-expired", "lease expired after attempt " + e.attempts(), null);
@@ -125,6 +125,24 @@ public class MaintenanceService extends CustomThread {
         if (outcome != FailOutcome.LOST) {
             observer.emit(
                     new TaskEvent.LeaseExpired(e.id(), e.attempts(), e.maxAttempts(), outcome == FailOutcome.DEAD));
+        }
+        if (outcome == FailOutcome.DEAD) pauseParkedSchedule(record, TaskState.DEAD);
+    }
+
+    /**
+     * A fixed-delay definition is re-armed by its occurrence's own execution, so an occurrence that ends here
+     * would leave it parked forever; pausing makes that visible and lets an operator resume it.
+     */
+    private void pauseParkedSchedule(TaskRecord record, TaskState ended) {
+        if (!RecurringTaskService.isFixedDelayOccurrence(record)) return;
+        try {
+            store.pauseRecurring(record.scheduleId(), true);
+            var detail = "schedule " + record.scheduleId() + " paused: occurrence ended " + ended;
+            status.issue("schedule-paused", detail, record.id());
+            log.warn(detail);
+        } catch (RuntimeException e) {
+            status.storeError(e);
+            log.error("Could not pause schedule {} after task {}", record.scheduleId(), record.id(), e);
         }
     }
 
@@ -136,6 +154,7 @@ public class MaintenanceService extends CustomThread {
         log.warn("Lease of cancelled task {} expired, task ended as cancelled: {}", e.id(), applied);
         if (applied && record != null) {
             observer.emit(new TaskEvent.Cancelled(names.view(record), reason, Outcome.APPLIED));
+            pauseParkedSchedule(record, TaskState.CANCELLED);
         }
     }
 

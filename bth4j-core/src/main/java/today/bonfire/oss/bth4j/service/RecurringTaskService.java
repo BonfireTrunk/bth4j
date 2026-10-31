@@ -40,6 +40,14 @@ public class RecurringTaskService extends CustomThread {
 
     public static final String OVERLAP_KEY_PREFIX = "sched:";
 
+    /** True for an occurrence of a fixed-delay definition; its definition is parked until the occurrence ends. */
+    public static boolean isFixedDelayOccurrence(TaskRecord r) {
+        return r != null
+                && r.scheduleId() != null
+                && r.headers() != null
+                && r.headers().containsKey(FIXED_DELAY_HEADER);
+    }
+
     private final ScheduleStore store;
     private final InspectionStore inspection;
     private final IdAllocator ids;

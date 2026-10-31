@@ -232,6 +232,7 @@ class DefaultAdminOpsTest {
 
     @Test
     void cancelReturnsEachStoreOutcomeUnchanged() {
+        handlers.put("getTask", a -> Optional.empty());
         for (var outcome : CancelOutcome.values()) {
             handlers.put("cancel", a -> outcome);
 
@@ -242,6 +243,7 @@ class DefaultAdminOpsTest {
     @Test
     void cancelPassesTheReasonToTheStore() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
+        handlers.put("getTask", a -> Optional.empty());
 
         ops.cancel(1, 2, "duplicate");
 
@@ -251,6 +253,7 @@ class DefaultAdminOpsTest {
     @Test
     void cancelWithoutAReasonUsesTheOperatorDefault() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
+        handlers.put("getTask", a -> Optional.empty());
 
         ops.cancel(1, 2, null);
         ops.cancel(1, 2, "   ");
@@ -261,8 +264,47 @@ class DefaultAdminOpsTest {
     }
 
     @Test
+    void cancelOfAWaitingFixedDelayOccurrencePausesItsDefinition() {
+        handlers.put("cancel", a -> CancelOutcome.CANCELLED);
+        handlers.put("pauseRecurring", a -> true);
+        handlers.put(
+                "getTask",
+                a -> Optional.of(TaskRecord.builder()
+                        .id((Long) a[0])
+                        .queueId(OTHER_QUEUE_ID)
+                        .eventId(EVENT_ID)
+                        .state(TaskState.CANCELLED)
+                        .scheduleId("poll")
+                        .headers(Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT5S"))
+                        .build()));
+
+        ops.cancel(7, 1, "stop");
+
+        assertThat(calls).containsExactly("cancel[7, 1, stop]", "getTask[7]", "pauseRecurring[poll, true]");
+    }
+
+    @Test
+    void cancelOfAnOrdinaryTaskDoesNotTouchSchedules() {
+        handlers.put("cancel", a -> CancelOutcome.CANCELLED);
+        handlers.put("getTask", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
+
+        ops.cancel(7, 1, "stop");
+
+        assertThat(calls).containsExactly("cancel[7, 1, stop]", "getTask[7]");
+    }
+
+    @Test
+    void cancelRequestedOnARunningTaskDoesNotLookTheTaskUp() {
+        handlers.put("cancel", a -> CancelOutcome.REQUESTED);
+
+        assertThat(ops.cancel(7, 1, "stop")).isEqualTo(CancelOutcome.REQUESTED);
+        assertThat(calls).containsExactly("cancel[7, 1, stop]");
+    }
+
+    @Test
     void cancelRejectsAReasonLongerThan512CharactersWithoutCallingTheStore() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
+        handlers.put("getTask", a -> Optional.empty());
 
         assertThatThrownBy(() -> ops.cancel(1, 2, "x".repeat(513))).isInstanceOf(TaskValidationException.class);
         assertThat(calls).isEmpty();

@@ -26,7 +26,7 @@ public interface AdminOps {
 
     Optional<TaskView> task(long id);
 
-    /** @param queue null for all queues; results are ordered by id and start after {@code afterId} */
+    /** @param queue null for all queues; results are ordered by state change time then id and start after {@code afterId} */
     List<TaskView> tasks(TaskState state, String queue, long afterId, int limit);
 
     boolean retry(long id, int revision);
