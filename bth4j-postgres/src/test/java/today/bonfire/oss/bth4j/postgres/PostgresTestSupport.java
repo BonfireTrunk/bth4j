@@ -8,7 +8,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /** One PostgreSQL container and one pool for all integration tests of the module. Needs Docker. */
 public final class PostgresTestSupport {
-    private static final PostgreSQLContainer CONTAINER = new PostgreSQLContainer("postgres:17-alpine");
+    private static final PostgreSQLContainer CONTAINER =
+            new PostgreSQLContainer(System.getProperty("bth4j.postgres.image", "postgres:18-alpine"));
     private static HikariDataSource dataSource;
 
     private PostgresTestSupport() {}

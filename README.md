@@ -58,8 +58,8 @@ The metrics and the admin HTTP server are separate modules; add them when you us
 | Module | Content |
 |---|---|
 | `bth4j-core` | task model, runner, services, the store interface (`today.bonfire.oss.bth4j.spi`) |
-| `bth4j-redis` | `RedisTaskStore`: Redis 7.0 or newer, also on Redis Cluster; uses Jedis |
-| `bth4j-postgres` | `PostgresTaskStore`: PostgreSQL 9.5 or newer; uses only `java.sql`, the application supplies the JDBC driver and a pooled `DataSource` |
+| `bth4j-redis` | `RedisTaskStore`: Redis 7.0 or newer or Valkey, also on Redis Cluster; uses Jedis. Tested on Redis 8.8 and Valkey 9.1.3 |
+| `bth4j-postgres` | `PostgresTaskStore`: PostgreSQL 9.5 or newer, tested on 18; uses only `java.sql`, the application supplies the JDBC driver and a pooled `DataSource` |
 | `bth4j-testing` | `InMemoryStore` and `MutableClock` for tests of applications |
 | `bth4j-micrometer` | `MicrometerTaskObserver` and `MicrometerRunnerMetrics`; `micrometer-core` is a provided dependency, the application supplies it |
 | `bth4j-admin-http` | `AdminHttpServer`: a JSON admin API over `AdminOps` on the JDK HTTP server, with users, roles and sessions; no dependencies besides `bth4j-core` |
@@ -642,6 +642,11 @@ clock.advance(Duration.ofHours(1));                 // the task is promoted and 
 Redis and PostgreSQL stores, so behaviour in tests matches production. The services still wait in real
 time between their checks, so a test that moves the clock should poll for the result (for example with
 Awaitility) instead of asserting at once.
+
+The integration tests of the store modules start containers with Testcontainers: `redis:8.8-alpine` and
+`postgres:18-alpine` by default. `./mvnw -pl bth4j-redis -am verify -Pvalkey` runs the Redis suite against
+`valkey/valkey:9.1.3-alpine`, and `-Dbth4j.redis.image=...` or `-Dbth4j.postgres.image=...` selects any
+other image.
 
 ## Upgrading from 2.x
 
