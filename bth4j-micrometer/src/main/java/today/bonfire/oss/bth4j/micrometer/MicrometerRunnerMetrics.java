@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 import today.bonfire.oss.bth4j.AdminOps;
+import today.bonfire.oss.bth4j.BackgroundRunner;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.spi.TaskState;
 
@@ -74,6 +75,10 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
      * @param registry where the gauges are registered
      * @param refresh how often health and counts are read; must be positive
      */
+    public static MicrometerRunnerMetrics bind(BackgroundRunner runner, MeterRegistry registry, Duration refresh) {
+        return bind(runner.admin(), runner::runningTasks, registry, Tags.empty(), refresh);
+    }
+
     public static MicrometerRunnerMetrics bind(
             AdminOps admin, Supplier<Integer> running, MeterRegistry registry, Duration refresh) {
         return bind(admin, running, registry, Tags.empty(), refresh);

@@ -433,7 +433,6 @@ public final class BackgroundRunner {
                 .purgeInterval(config.purgeInterval)
                 .retention(retention)
                 .keepDead(!config.deadRetention.isZero())
-                .keepPayload(config.keepSucceededPayload)
                 .batchSize(config.claimBatchSize * 4)
                 .purgeBatchSize(config.purgeBatchSize)
                 .worker(workerId, runningTasks::size)

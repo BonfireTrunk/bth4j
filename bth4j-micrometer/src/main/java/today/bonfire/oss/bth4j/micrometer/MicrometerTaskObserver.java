@@ -70,6 +70,7 @@ public final class MicrometerTaskObserver implements TaskObserver {
             case TaskEvent.Rescheduled e -> countTask(e.task(), "rescheduled", e.outcome());
             case TaskEvent.Cancelled e -> countTask(e.task(), "cancelled", e.outcome());
             case TaskEvent.LeaseExpired e -> count(UNKNOWN, UNKNOWN, "lease_lost", TaskEvent.Outcome.APPLIED);
+            case TaskEvent.Expired e -> count(UNKNOWN, UNKNOWN, "expired", TaskEvent.Outcome.APPLIED);
             case TaskEvent.Deferred e ->
                 registry.counter(DEFERRED, commonTags.and("event", e.event())).increment();
             case TaskEvent.ScheduleFired e ->

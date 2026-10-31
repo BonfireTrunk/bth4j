@@ -28,6 +28,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.ExecutionStore;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
+import today.bonfire.oss.bth4j.spi.InspectionStore;
 import today.bonfire.oss.bth4j.spi.ScheduleStore;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
@@ -52,6 +53,7 @@ public final class TaskExecution implements Runnable, TaskContext {
     public record Settings(
             ExecutionStore store,
             ScheduleStore schedules,
+            InspectionStore inspection,
             Names names,
             Codecs codecs,
             TaskProcessorRegistry registry,
@@ -207,11 +209,24 @@ public final class TaskExecution implements Runnable, TaskContext {
         }
     }
 
-    private void cancelled(String reason) {
+    private void cancelled(String given) {
+        var reason = cancelReason == null ? storedCancelReason(given) : given;
         log.info("Task {} cancelled: {}", record.id(), reason);
-        var outcome = apply(() -> s.store().finishCancelled(record.id(), record.revision(), reason, s.keepPayload()));
+        var outcome = apply(() -> s.store().finishCancelled(record.id(), record.revision(), reason, true));
         s.observer().emit(new TaskEvent.Cancelled(view, reason, outcome));
         afterTerminal(TaskState.CANCELLED, outcome);
+    }
+
+    /** A request that arrived through renew carries no reason; the operator's reason is on the record. */
+    private String storedCancelReason(String fallback) {
+        try {
+            return s.inspection()
+                    .getTask(record.id())
+                    .map(TaskRecord::cancelReason)
+                    .orElse(fallback);
+        } catch (RuntimeException e) {
+            return fallback;
+        }
     }
 
     private RetryPolicy.Decision decide(Exception e) {

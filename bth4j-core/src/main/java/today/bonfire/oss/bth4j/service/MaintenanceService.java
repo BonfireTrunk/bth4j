@@ -43,7 +43,6 @@ public class MaintenanceService extends CustomThread {
     private final Duration purgeInterval;
     private final Map<TaskState, Duration> retention;
     private final boolean keepDead;
-    private final boolean keepPayload;
     private final int batchSize;
     private final int purgeBatchSize;
     private final int workerId;
@@ -62,7 +61,6 @@ public class MaintenanceService extends CustomThread {
         this.purgeInterval = b.purgeInterval;
         this.retention = Map.copyOf(b.retention);
         this.keepDead = b.keepDead;
-        this.keepPayload = b.keepPayload;
         this.batchSize = b.batchSize;
         this.purgeBatchSize = b.purgeBatchSize;
         this.workerId = b.workerId;
@@ -134,7 +132,7 @@ public class MaintenanceService extends CustomThread {
     private void cancelExpired(ExpiredLease e) {
         var record = store.getTask(e.id()).orElse(null);
         var reason = record != null && record.cancelReason() != null ? record.cancelReason() : "cancel requested";
-        var applied = store.finishCancelled(e.id(), e.revision(), reason, keepPayload);
+        var applied = store.finishCancelled(e.id(), e.revision(), reason, true);
         log.warn("Lease of cancelled task {} expired, task ended as cancelled: {}", e.id(), applied);
         if (applied && record != null) {
             observer.emit(new TaskEvent.Cancelled(names.view(record), reason, Outcome.APPLIED));
@@ -247,7 +245,6 @@ public class MaintenanceService extends CustomThread {
         private Duration purgeInterval = Duration.ofMinutes(1);
         private Map<TaskState, Duration> retention = Map.of();
         private boolean keepDead = true;
-        private boolean keepPayload;
         private int batchSize = 100;
         private int purgeBatchSize = 500;
         private int workerId;
@@ -312,12 +309,6 @@ public class MaintenanceService extends CustomThread {
 
         public Builder keepDead(boolean keepDead) {
             this.keepDead = keepDead;
-            return this;
-        }
-
-        /** Whether the payload of a task cancelled after its worker died is kept. */
-        public Builder keepPayload(boolean keepPayload) {
-            this.keepPayload = keepPayload;
             return this;
         }
 

@@ -37,6 +37,7 @@ public final class RunnerServices {
         this.settings = new TaskExecution.Settings(
                 store,
                 store,
+                store,
                 names,
                 codecs,
                 registry,
