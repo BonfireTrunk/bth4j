@@ -569,28 +569,96 @@ class RedisWave2IT {
     }
 
     @Test
-    void putTakesThePausedFlagOfTheNewDefinitionAndKeepsTheFireTimeWhileTheCronIsUnchanged() {
+    void putKeepsTheFireTimeOnlyWhenCronZoneAndFixedDelayAreAllUnchanged() {
         var fire = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
+        var later = fire.plusSeconds(600);
         store.putRecurring(cron("s"), fire);
-        store.putRecurring(cron("s").withPaused(true), fire.plusSeconds(600));
 
-        assertThat(jedis.zscore(keys.cron, "s")).isNull();
-        assertThat(store.recurringDefinitions().getFirst().nextFire()).isEqualTo(fire);
+        store.putRecurring(cron("s"), later);
+        assertThat(store.recurringSchedules()).containsEntry("s", fire);
+
+        store.putRecurring(zoned("s", "Asia/Kolkata"), later);
+        assertThat(store.recurringSchedules()).containsEntry("s", later);
+        store.putRecurring(zoned("s", "Asia/Kolkata"), fire);
+        assertThat(store.recurringSchedules()).containsEntry("s", later);
+
+        store.putRecurring(zoned("s", "Europe/Berlin"), fire);
+        assertThat(store.recurringSchedules()).containsEntry("s", fire);
+
+        var delay = fixedDelay("d", 1000L);
+        store.putRecurring(delay, fire);
+        store.putRecurring(delay, later);
+        assertThat(store.recurringSchedules()).containsEntry("d", fire);
+        store.putRecurring(fixedDelay("d", 2000L), later);
+        assertThat(store.recurringSchedules()).containsEntry("d", later);
+
+        store.putRecurring(cron("s"), fire.plusSeconds(1));
+        assertThat(store.recurringSchedules()).containsEntry("s", fire.plusSeconds(1));
+    }
+
+    private RecurringDefinition zoned(String id, String zone) {
+        return new RecurringDefinition(
+                id, event, 2, queue, "acme", "* * * * *", zone, null, 0, null, false, null, 5, false, 0);
+    }
+
+    private RecurringDefinition fixedDelay(String id, long ms) {
+        return new RecurringDefinition(id, event, 2, queue, null, null, null, null, 0, ms, false, null, 5, false, 0);
+    }
+
+    @Test
+    void replacingADefinitionKeepsItsPausedFlagAndAZsetPlacement() {
+        var fire = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
+        store.putRecurring(cron("s").withPaused(true), fire);
         assertThat(store.recurringDefinitions().getFirst().definition().paused())
                 .isTrue();
+        assertThat(jedis.zscore(keys.cron, "s")).isNull();
 
-        var zoned = new RecurringDefinition(
-                "s", event, 2, queue, "acme", "* * * * *", "Asia/Kolkata", null, 0, null, false, null, 5, false, 0);
-        store.putRecurring(zoned, fire.plusSeconds(600));
+        store.putRecurring(cron("s").withPaused(false), fire);
 
-        assertThat(store.recurringSchedules()).containsEntry("s", fire);
+        assertThat(store.recurringDefinitions().getFirst().definition().paused())
+                .isTrue();
+        assertThat(jedis.zscore(keys.cron, "s")).isNull();
+
+        store.pauseRecurring("s", false);
+        store.putRecurring(cron("s").withPaused(true), fire);
+
+        assertThat(store.recurringDefinitions().getFirst().definition().paused())
+                .isFalse();
         assertThat(jedis.zscore(keys.cron, "s")).isNotNull();
+        assertThat(store.dueRecurring(fire, 10)).hasSize(1);
+    }
 
-        var changed = new RecurringDefinition(
-                "s", event, 2, queue, "acme", "0 * * * *", null, null, 0, null, false, null, 5, false, 0);
-        store.putRecurring(changed, fire.plusSeconds(600));
+    @Test
+    void commitIsRejectedWhenTheDefinitionWasPausedAfterItWasRead() {
+        var fire = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MILLIS);
+        store.putRecurring(cron("s"), fire);
+        var due = store.dueRecurring(Instant.now(), 10).getFirst();
+        store.pauseRecurring("s", true);
 
-        assertThat(store.recurringSchedules()).containsEntry("s", fire.plusSeconds(600));
+        assertThat(store.commitRecurring(due, fire.plusSeconds(60), task(80).build()))
+                .isFalse();
+
+        assertThat(store.getTask(80)).isEmpty();
+        assertThat(store.recurringDefinitions().getFirst().nextFire()).isEqualTo(fire);
+        store.pauseRecurring("s", false);
+        assertThat(store.commitRecurring(due, fire.plusSeconds(60), task(80).build()))
+                .isTrue();
+    }
+
+    @Test
+    void retryOfAnExpiredTaskClearsStartByAndMakesItClaimable() {
+        enqueued(task(1).startBy(past()));
+        store.expire(10);
+        var expired = store.getTask(1).orElseThrow();
+
+        assertThat(store.retry(1, expired.revision())).isTrue();
+
+        assertThat(store.getTask(1).orElseThrow().startBy()).isNull();
+        assertThat(jedis.zscore(keys.startBy, "1")).isNull();
+        assertThat(store.expire(10)).isEmpty();
+        assertThat(store.claim(new ClaimRequest(List.of(queue), 1, LEASE, 1, null)))
+                .extracting(TaskRecord::id)
+                .containsExactly(1L);
     }
 
     @Test

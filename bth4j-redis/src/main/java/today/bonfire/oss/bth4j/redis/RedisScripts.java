@@ -402,17 +402,21 @@ final class RedisScripts {
 
     /**
      * ARGV: schedule id, next fire ms, then field/value pairs. The fire time is kept when the schedule shape
-     * (the cron expression, empty for fixed delay) is unchanged. The revision comes from the counter, so no two
+     * (cron expression, zone and fixed delay) is unchanged. The revision comes from the counter, so no two
      * definitions under the same id share one. The fire time is also stored in the hash as {@code next}; a
-     * paused definition is left out of the {@code cron} zset and keeps it there.
+     * paused definition is left out of the {@code cron} zset and keeps it there. Replacing an existing definition
+     * keeps its paused flag and ignores the given one; a new definition stores the flag as given.
      */
     static final String CRON_PUT = PRELUDE + """
             local ckey = P .. 'cron:' .. ARGV[2]
             local function shape()
-              return redis.call('HGET', ckey, 'cron') or ''
+              return (redis.call('HGET', ckey, 'cron') or '') .. '|' .. (redis.call('HGET', ckey, 'zone') or '')
+                  .. '|' .. (redis.call('HGET', ckey, 'fd') or '')
             end
-            local before = redis.call('EXISTS', ckey) == 1 and shape() or nil
+            local existed = redis.call('EXISTS', ckey) == 1
+            local before = existed and shape() or nil
             local kept = redis.call('HGET', ckey, 'next')
+            local wasPaused = redis.call('HGET', ckey, 'paused')
             local fields = {}
             for i = 4, #ARGV do fields[#fields + 1] = ARGV[i] end
             redis.call('DEL', ckey)
@@ -421,6 +425,9 @@ final class RedisScripts {
             local nextFire = ARGV[3]
             if kept and before == shape() then nextFire = kept end
             redis.call('HSET', ckey, 'rev', rev, 'next', nextFire)
+            if existed then
+              if wasPaused then redis.call('HSET', ckey, 'paused', wasPaused) else redis.call('HDEL', ckey, 'paused') end
+            end
             redis.call('SADD', P .. 'crondefs', ARGV[2])
             if redis.call('HGET', ckey, 'paused') == '1' then
               redis.call('ZREM', P .. 'cron', ARGV[2])
@@ -452,12 +459,13 @@ final class RedisScripts {
     /**
      * ARGV: schedule id, definition revision, fire at ms, next fire ms, occurrence id, unique key or '', then the
      * occurrence's field/value pairs. Stores the occurrence as SCHEDULED for the fire time and advances the
-     * definition, unless the revision or the stored fire time changed. An occurrence that exists already or whose
+     * definition, unless the revision or the stored fire time changed or the definition is paused. An occurrence that exists already or whose
      * unique key is held is not stored again; the definition still advances. Returns 1 when committed.
      */
     static final String CRON_COMMIT = PRELUDE + """
             local ckey = P .. 'cron:' .. ARGV[2]
             if redis.call('HGET', ckey, 'rev') ~= ARGV[3] then return 0 end
+            if redis.call('HGET', ckey, 'paused') == '1' then return 0 end
             local score = redis.call('ZSCORE', P .. 'cron', ARGV[2])
             if not score or tonumber(score) ~= tonumber(ARGV[4]) then return 0 end
             local uk = ARGV[7] ~= '' and ARGV[7] or nil
@@ -529,7 +537,10 @@ final class RedisScripts {
             return 'STALE'
             """;
 
-    /** ARGV: id, revision. DEAD, CANCELLED or EXPIRED back to QUEUED. Returns 1, or 0 on a mismatch. */
+    /**
+     * ARGV: id, revision. DEAD, CANCELLED or EXPIRED back to QUEUED. The start-by time is cleared as well, so a
+     * retried EXPIRED task is not expired again. Returns 1, or 0 on a mismatch.
+     */
     static final String RETRY = PRELUDE + """
             local id = ARGV[2]
             local tkey = P .. 't:' .. id
@@ -545,8 +556,8 @@ final class RedisScripts {
               if redis.call('GET', kkey) == id then redis.call('DEL', kkey) end
             end
             redis.call('HSET', tkey, 'due', at, 'att', 0)
-            redis.call('HDEL', tkey, 'wid', 'lease', 'cra', 'crs', 'kk', 'ku', 'uk')
-            track(tkey, id)
+            redis.call('HDEL', tkey, 'wid', 'lease', 'cra', 'crs', 'kk', 'ku', 'uk', 'sb')
+            redis.call('ZREM', P .. 'startby', id)
             return 1
             """;
 
