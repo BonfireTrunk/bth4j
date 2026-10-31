@@ -130,18 +130,20 @@ public class PostgresTaskStore implements FullStore {
         insertSql = "INSERT INTO " + task
                 + " (id, revision, queue_id, event_id, payload_version, state, attempts, max_attempts, created,"
                 + " due, state_changed, data, account, headers, unique_key, key_keep_ms, retry_policy, schedule_id,"
-                + " retry_of, start_by, max_run_ms, progress, steps, failures)"
+                + " retry_of, start_by, max_run_ms, cancel_requested_at, cancel_reason, progress, steps, failures)"
                 + " SELECT u.id, u.revision, u.queue_id, u.event_id, u.payload_version,"
                 + " CASE WHEN u.due > now() THEN 1 ELSE 0 END, u.attempts, u.max_attempts, u.created,"
                 + " COALESCE(u.due, now()), now(), u.data, u.account, u.headers::jsonb, u.unique_key, u.key_keep_ms,"
-                + " u.retry_policy, u.schedule_id, u.retry_of, u.start_by, u.max_run_ms, u.progress,"
+                + " u.retry_policy, u.schedule_id, u.retry_of, u.start_by, u.max_run_ms, u.cancel_requested_at,"
+                + " u.cancel_reason, u.progress,"
                 + " u.steps::jsonb, u.failures::jsonb"
                 + " FROM unnest(?::bigint[], ?::int[], ?::int[], ?::int[], ?::int[], ?::int[], ?::int[],"
                 + " ?::timestamptz[], ?::timestamptz[], ?::text[], ?::text[], ?::text[], ?::text[], ?::bigint[],"
-                + " ?::text[], ?::text[], ?::bigint[], ?::timestamptz[], ?::int[], ?::text[], ?::text[], ?::text[])"
+                + " ?::text[], ?::text[], ?::bigint[], ?::timestamptz[], ?::int[], ?::timestamptz[], ?::text[],"
+                + " ?::text[], ?::text[], ?::text[])"
                 + " WITH ORDINALITY AS u(id, revision, queue_id, event_id, payload_version, attempts, max_attempts,"
                 + " created, due, data, account, headers, unique_key, key_keep_ms, retry_policy, schedule_id,"
-                + " retry_of, start_by, max_run_ms, progress, steps, failures, ord)"
+                + " retry_of, start_by, max_run_ms, cancel_requested_at, cancel_reason, progress, steps, failures, ord)"
                 + " ORDER BY u.ord"
                 + " ON CONFLICT DO NOTHING RETURNING id";
         claimSql = claimSql(false);
@@ -532,6 +534,8 @@ public class PostgresTaskStore implements FullStore {
         var retryOf = new Long[n];
         var startBy = new String[n];
         var maxRun = new Integer[n];
+        var cancelRequestedAt = new String[n];
+        var cancelReason = new String[n];
         var progress = new String[n];
         var steps = new String[n];
         var failures = new String[n];
@@ -558,13 +562,37 @@ public class PostgresTaskStore implements FullStore {
             retryOf[i] = t.retryOf();
             startBy[i] = text(t.startBy());
             maxRun[i] = t.maxRun() == null ? null : Math.toIntExact(t.maxRun().toMillis());
+            cancelRequestedAt[i] = text(t.cancelRequestedAt());
+            cancelReason[i] = t.cancelReason();
             progress[i] = t.progress();
             steps[i] = RecordJson.encodeSteps(t.steps());
             failures[i] = RecordJson.encodeFailures(t.failures());
         }
         Object[][] columns = {
-            ids, revisions, queueIds, eventIds, payloadVersions, attempts, maxAttempts, created, due, data, account,
-            headers, uniqueKey, keyKeep, retryPolicy, scheduleId, retryOf, startBy, maxRun, progress, steps, failures
+            ids,
+            revisions,
+            queueIds,
+            eventIds,
+            payloadVersions,
+            attempts,
+            maxAttempts,
+            created,
+            due,
+            data,
+            account,
+            headers,
+            uniqueKey,
+            keyKeep,
+            retryPolicy,
+            scheduleId,
+            retryOf,
+            startBy,
+            maxRun,
+            cancelRequestedAt,
+            cancelReason,
+            progress,
+            steps,
+            failures
         };
         var arrays = new ArrayList<Array>();
         try (var ps = c.prepareStatement(insertSql)) {
