@@ -682,4 +682,71 @@ public final class InMemoryStore implements FullStore {
             lock.unlock();
         }
     }
+
+    // wave 2 stubs: replaced by the module owner (see tmp/plans/wave-2-spec.md)
+
+    @Override
+    public boolean finishCancelled(long id, int revision, String reason, boolean keepPayload) {
+        throw new UnsupportedOperationException("wave 2");
+    }
+
+    @Override
+    public java.util.List<Long> expire(int limit) {
+        throw new UnsupportedOperationException("wave 2");
+    }
+
+    @Override
+    public int purgeWorkers(java.time.Duration staleAfter) {
+        throw new UnsupportedOperationException("wave 2");
+    }
+
+    @Override
+    public today.bonfire.oss.bth4j.spi.CancelOutcome cancel(long id, int revision, String reason) {
+        throw new UnsupportedOperationException("wave 2");
+    }
+
+    @Override
+    public boolean retry(long id, int revision) {
+        throw new UnsupportedOperationException("wave 2");
+    }
+
+    @Override
+    public boolean delete(long id, int revision) {
+        throw new UnsupportedOperationException("wave 2");
+    }
+
+    @Override
+    public void pauseQueue(int queueId, boolean paused) {
+        throw new UnsupportedOperationException("wave 2");
+    }
+
+    @Override
+    public java.util.List<today.bonfire.oss.bth4j.spi.QueueInfo> queues() {
+        throw new UnsupportedOperationException("wave 2");
+    }
+
+    @Override
+    public void heartbeat(int workerId, int running) {
+        throw new UnsupportedOperationException("wave 2");
+    }
+
+    @Override
+    public java.util.List<today.bonfire.oss.bth4j.spi.WorkerInfo> workers() {
+        throw new UnsupportedOperationException("wave 2");
+    }
+
+    @Override
+    public java.util.List<today.bonfire.oss.bth4j.spi.RecurringSchedule> recurringDefinitions() {
+        throw new UnsupportedOperationException("wave 2");
+    }
+
+    @Override
+    public boolean pauseRecurring(String scheduleId, boolean paused) {
+        throw new UnsupportedOperationException("wave 2");
+    }
+
+    @Override
+    public boolean setNextFire(String scheduleId, java.time.Instant nextFire) {
+        throw new UnsupportedOperationException("wave 2");
+    }
 }

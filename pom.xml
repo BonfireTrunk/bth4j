@@ -21,6 +21,8 @@
         <module>bth4j-testing</module>
         <module>bth4j-redis</module>
         <module>bth4j-postgres</module>
+        <module>bth4j-micrometer</module>
+        <module>bth4j-admin-http</module>
     </modules>
 
     <properties>
@@ -30,6 +32,7 @@
         <testcontainers.version>2.0.5</testcontainers.version>
         <fastjson2.version>2.0.56</fastjson2.version>
         <postgresql.version>42.7.14</postgresql.version>
+        <micrometer.version>1.15.0</micrometer.version>
         <hikaricp.version>7.1.0</hikaricp.version>
         <maven-failsafe-plugin.version>3.6.1</maven-failsafe-plugin.version>
     </properties>

@@ -30,4 +30,22 @@ public interface ScheduleStore extends TaskStore {
      * @return true when committed
      */
     boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord occurrence);
+
+    /** @return every definition with its next fire time, in id order */
+    List<RecurringSchedule> recurringDefinitions();
+
+    /**
+     * Pauses or resumes a definition. A paused definition keeps its next fire time but is left out of
+     * {@link #dueRecurring}.
+     *
+     * @return false when no definition with that id exists
+     */
+    boolean pauseRecurring(String scheduleId, boolean paused);
+
+    /**
+     * Replaces the next fire time (trigger now, or re-arm a fixed-delay definition after an occurrence ended).
+     *
+     * @return false when no definition with that id exists
+     */
+    boolean setNextFire(String scheduleId, Instant nextFire);
 }
