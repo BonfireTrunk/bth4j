@@ -189,10 +189,9 @@ class DefaultVtExecutorTest {
     }
 
     @Test
-    void maxConcurrencyBelowProcessorCountIsClampedToProcessorCount() {
-        var executor = new DefaultVtExecutor(2);
+    void maxConcurrencyBelowMinimumIsClampedToMinimum() {
+        var executor = new DefaultVtExecutor(4, 2);
         created.add(executor);
-        assertThat(executor.getCurrentMaxThreads())
-                .isEqualTo(Runtime.getRuntime().availableProcessors());
+        assertThat(executor.getCurrentMaxThreads()).isEqualTo(4);
     }
 }

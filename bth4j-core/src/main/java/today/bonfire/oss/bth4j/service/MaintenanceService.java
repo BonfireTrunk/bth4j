@@ -1,41 +1,60 @@
 package today.bonfire.oss.bth4j.service;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import today.bonfire.oss.bth4j.RetryPolicy;
+import today.bonfire.oss.bth4j.TaskEvent;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.executor.CustomThread;
+import today.bonfire.oss.bth4j.spi.ExpiredLease;
+import today.bonfire.oss.bth4j.spi.FailOutcome;
+import today.bonfire.oss.bth4j.spi.FailureInfo;
+import today.bonfire.oss.bth4j.spi.FullStore;
+import today.bonfire.oss.bth4j.spi.TaskState;
 
 /**
- * Housekeeping: fails tasks whose lease expired (so they are retried or die) and purges dead tasks
- * past their retention. Jobs run on the scheduler thread itself; {@link #stopThread()} returns at once
- * and {@link #waitTillDone(Duration)} waits for a job in progress.
+ * Housekeeping: fails tasks whose lease expired (so they are retried or die), purges finished tasks past
+ * their retention and releases unique keys whose window passed. Jobs run on the scheduler thread itself;
+ * {@link #stopThread()} returns at once and {@link #waitTillDone(Duration)} waits for a job in progress.
  */
 public class MaintenanceService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(MaintenanceService.class);
-    private static final Duration DEAD_PURGE_INTERVAL = Duration.ofHours(1);
 
     private final ScheduledExecutorService executor;
-    private final TaskOps taskOps;
+    private final FullStore store;
+    private final Names names;
+    private final RetryPolicy retryPolicy;
+    private final Observers observer;
+    private final Clock clock;
     private final Duration checkInterval;
-    private final Duration deadRetention;
-    private final Function<Integer, Duration> taskRetryDelay;
+    private final Duration purgeInterval;
+    private final Map<TaskState, Duration> retention;
+    private final boolean keepDead;
     private final int batchSize;
+    private final int purgeBatchSize;
 
-    MaintenanceService(Builder builder) {
-        super(builder.group, builder.threadName);
-        this.taskOps = builder.taskOps;
-        this.checkInterval = builder.checkInterval;
-        this.deadRetention = builder.deadRetention;
-        this.taskRetryDelay = builder.taskRetryDelay;
-        this.batchSize = builder.batchSize;
+    MaintenanceService(Builder b) {
+        super(b.group, b.threadName);
+        this.store = b.store;
+        this.names = b.names;
+        this.retryPolicy = b.retryPolicy;
+        this.observer = b.observer;
+        this.clock = b.clock;
+        this.checkInterval = b.checkInterval;
+        this.purgeInterval = b.purgeInterval;
+        this.retention = Map.copyOf(b.retention);
+        this.keepDead = b.keepDead;
+        this.batchSize = b.batchSize;
+        this.purgeBatchSize = b.purgeBatchSize;
         this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
-            var thread = new Thread(builder.group, r, builder.threadName + "-scheduler");
+            var thread = new Thread(b.group, r, b.threadName + "-scheduler");
             thread.setDaemon(true);
             return thread;
         });
@@ -45,21 +64,21 @@ public class MaintenanceService extends CustomThread {
     public void run() {
         var delay = checkInterval.toMillis();
         executor.scheduleWithFixedDelay(this::reclaimExpiredLeases, delay, delay, TimeUnit.MILLISECONDS);
-        executor.scheduleWithFixedDelay(
-                this::purgeDeadTasks, delay, DEAD_PURGE_INTERVAL.toMillis(), TimeUnit.MILLISECONDS);
+        executor.scheduleWithFixedDelay(this::purge, delay, purgeInterval.toMillis(), TimeUnit.MILLISECONDS);
     }
 
     private void reclaimExpiredLeases() {
         try {
-            log.trace("Maintenance Service: reclaiming expired leases");
             int count;
             do {
-                var expired = taskOps.reclaim(batchSize);
+                var expired = store.reclaim(batchSize);
                 count = expired.size();
                 for (var e : expired) {
-                    var delay = retryDelay(e.attempts());
-                    var outcome = taskOps.failExpired(e, delay, "lease expired after attempt " + e.attempts());
-                    log.warn("Lease of task {} expired after attempt {}: {}", e.id(), e.attempts(), outcome);
+                    try {
+                        handleExpired(e);
+                    } catch (RuntimeException ex) {
+                        log.error("Could not handle the expired lease of task {}", e.id(), ex);
+                    }
                 }
             } while (count == batchSize && canContinueProcessing);
         } catch (Exception e) {
@@ -67,19 +86,55 @@ public class MaintenanceService extends CustomThread {
         }
     }
 
-    private Duration retryDelay(int attempts) {
-        var delay = taskRetryDelay.apply(attempts);
-        return delay == null || delay.isNegative() ? Duration.ZERO : delay;
+    private void handleExpired(ExpiredLease e) {
+        Instant retryAt = null;
+        // a cancelled task whose worker died must not run again; until the CANCELLED transition exists it dies
+        if (e.attempts() < e.maxAttempts() && !e.cancelRequested()) {
+            var record = store.getTask(e.id()).orElse(null);
+            if (record != null && decide(record) instanceof RetryPolicy.Decision.RetryAfter r) {
+                retryAt = clock.instant().plus(r.delay());
+            }
+        }
+        var failure = new FailureInfo(
+                e.attempts(), clock.instant(), "lease-expired", "lease expired after attempt " + e.attempts(), null);
+        var outcome = store.failExpired(e.id(), e.revision(), failure, retryAt, keepDead);
+        log.warn("Lease of task {} expired after attempt {}: {}", e.id(), e.attempts(), outcome);
+        if (outcome != FailOutcome.LOST) {
+            observer.emit(
+                    new TaskEvent.LeaseExpired(e.id(), e.attempts(), e.maxAttempts(), outcome == FailOutcome.DEAD));
+        }
     }
 
-    private void purgeDeadTasks() {
+    private RetryPolicy.Decision decide(today.bonfire.oss.bth4j.spi.TaskRecord record) {
         try {
-            var removed = taskOps.purgeDeadTasks(Instant.now().minus(deadRetention));
-            if (removed > 0) {
-                log.info("Maintenance Service: purged {} dead tasks", removed);
+            var d = retryPolicy.decide(names.view(record), null);
+            return d != null ? d : RetryPolicy.Decision.retryAfter(Duration.ZERO);
+        } catch (RuntimeException policyError) {
+            log.error("Retry policy failed for expired task {}, retrying at once", record.id(), policyError);
+            return RetryPolicy.Decision.retryAfter(Duration.ZERO);
+        }
+    }
+
+    private void purge() {
+        try {
+            for (var entry : retention.entrySet()) {
+                long removed = 0;
+                long batch;
+                do {
+                    batch = store.purge(entry.getKey(), entry.getValue(), purgeBatchSize);
+                    removed += batch;
+                } while (batch == purgeBatchSize && canContinueProcessing);
+                if (removed > 0) {
+                    log.info("Purged {} {} tasks", removed, entry.getKey());
+                    observer.emit(new TaskEvent.Purged(entry.getKey(), removed));
+                }
             }
+            int released;
+            do {
+                released = store.releaseKeys(purgeBatchSize);
+            } while (released == purgeBatchSize && canContinueProcessing);
         } catch (Exception e) {
-            log.error("Error in purging dead tasks", e);
+            log.error("Error in purging finished tasks", e);
         }
     }
 
@@ -87,21 +142,15 @@ public class MaintenanceService extends CustomThread {
     @Override
     public void stopThread() {
         super.stopThread();
-        log.info("Maintenance Service: Stopping executor");
         executor.shutdown();
     }
 
-    /** Waits until the scheduler has terminated, which includes a job that is still running. */
     @Override
     public void waitTillDone() throws InterruptedException {
         executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
     }
 
-    /**
-     * Waits for the scheduler to terminate. A job still running when the timeout elapses is interrupted.
-     *
-     * @return true when the scheduler terminated in time
-     */
+    /** A job still running when the timeout elapses is interrupted. @return true when terminated in time */
     @Override
     public boolean waitTillDone(Duration timeout) throws InterruptedException {
         if (executor.awaitTermination(timeout.toNanos(), TimeUnit.NANOSECONDS)) {
@@ -119,56 +168,88 @@ public class MaintenanceService extends CustomThread {
     public static class Builder {
         private ThreadGroup group;
         private String threadName;
-        private TaskOps taskOps;
-        private Duration checkInterval = Duration.ofSeconds(30);
-        private Duration deadRetention = Duration.ofDays(30);
-        private Function<Integer, Duration> taskRetryDelay = attempts -> Duration.ZERO;
+        private FullStore store;
+        private Names names;
+        private RetryPolicy retryPolicy = RetryPolicy.defaultPolicy();
+        private Observers observer = new Observers(null);
+        private Clock clock = Clock.systemUTC();
+        private Duration checkInterval = Duration.ofSeconds(5);
+        private Duration purgeInterval = Duration.ofMinutes(1);
+        private Map<TaskState, Duration> retention = Map.of();
+        private boolean keepDead = true;
         private int batchSize = 100;
+        private int purgeBatchSize = 500;
 
-        public Builder() {}
-
-        public Builder setGroup(ThreadGroup group) {
+        public Builder group(ThreadGroup group) {
             this.group = group;
             return this;
         }
 
-        public Builder setThreadName(String threadName) {
+        public Builder threadName(String threadName) {
             this.threadName = threadName;
             return this;
         }
 
-        public Builder setTaskOps(TaskOps taskOps) {
-            this.taskOps = taskOps;
+        public Builder store(FullStore store) {
+            this.store = store;
             return this;
         }
 
-        public Builder setCheckInterval(Duration checkInterval) {
+        public Builder names(Names names) {
+            this.names = names;
+            return this;
+        }
+
+        public Builder retryPolicy(RetryPolicy retryPolicy) {
+            this.retryPolicy = retryPolicy;
+            return this;
+        }
+
+        public Builder observer(Observers observer) {
+            this.observer = observer;
+            return this;
+        }
+
+        public Builder clock(Clock clock) {
+            this.clock = clock;
+            return this;
+        }
+
+        public Builder checkInterval(Duration checkInterval) {
             this.checkInterval = checkInterval;
             return this;
         }
 
-        public Builder setDeadRetention(Duration deadRetention) {
-            this.deadRetention = deadRetention;
+        public Builder purgeInterval(Duration purgeInterval) {
+            this.purgeInterval = purgeInterval;
             return this;
         }
 
-        public Builder setTaskRetryDelay(Function<Integer, Duration> taskRetryDelay) {
-            this.taskRetryDelay = taskRetryDelay;
+        /** Retention per terminal state; a state that is missing is never purged by this runner. */
+        public Builder retention(Map<TaskState, Duration> retention) {
+            this.retention = retention;
             return this;
         }
 
-        public Builder setBatchSize(int batchSize) {
+        public Builder keepDead(boolean keepDead) {
+            this.keepDead = keepDead;
+            return this;
+        }
+
+        public Builder batchSize(int batchSize) {
             this.batchSize = batchSize;
             return this;
         }
 
+        public Builder purgeBatchSize(int purgeBatchSize) {
+            this.purgeBatchSize = purgeBatchSize;
+            return this;
+        }
+
         public MaintenanceService create() {
-            if (group == null) {
-                throw new TaskConfigurationError("ThreadGroup is required");
-            }
-            if (threadName == null) {
-                throw new TaskConfigurationError("ThreadName is required");
-            }
+            if (group == null || threadName == null)
+                throw new TaskConfigurationError("group and threadName are required");
+            if (store == null || names == null) throw new TaskConfigurationError("store and names are required");
             return new MaintenanceService(this);
         }
     }

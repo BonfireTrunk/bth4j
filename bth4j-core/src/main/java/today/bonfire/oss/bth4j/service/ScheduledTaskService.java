@@ -5,18 +5,19 @@ import java.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.executor.CustomThread;
+import today.bonfire.oss.bth4j.spi.MaintenanceStore;
 
 /** Moves scheduled tasks whose time has come into their queues. Any number of instances may run it. */
 public class ScheduledTaskService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(ScheduledTaskService.class);
 
-    private final TaskOps taskOps;
+    private final MaintenanceStore store;
     private final Duration pollInterval;
     private final int batchSize;
 
     ScheduledTaskService(Builder builder) {
         super(builder.group, builder.threadName);
-        this.taskOps = builder.taskOps;
+        this.store = builder.store;
         this.pollInterval = builder.pollInterval;
         this.batchSize = builder.batchSize;
     }
@@ -26,7 +27,7 @@ public class ScheduledTaskService extends CustomThread {
         try {
             while (this.canContinueProcessing) {
                 try {
-                    var r = taskOps.promote(batchSize);
+                    var r = store.promote(batchSize);
                     if (r.moved() > 0) {
                         log.trace("Moved {} scheduled tasks to their queues", r.moved());
                     }
@@ -74,7 +75,7 @@ public class ScheduledTaskService extends CustomThread {
     public static class Builder {
         private ThreadGroup group;
         private String threadName;
-        private TaskOps taskOps;
+        private MaintenanceStore store;
         private Duration pollInterval = Duration.ofSeconds(1);
         private int batchSize = 100;
 
@@ -90,8 +91,8 @@ public class ScheduledTaskService extends CustomThread {
             return this;
         }
 
-        public Builder setTaskOps(TaskOps taskOps) {
-            this.taskOps = taskOps;
+        public Builder setStore(MaintenanceStore store) {
+            this.store = store;
             return this;
         }
 

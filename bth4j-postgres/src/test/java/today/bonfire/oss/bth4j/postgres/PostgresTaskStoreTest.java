@@ -32,10 +32,11 @@ class PostgresTaskStoreTest {
     void schemaStatementsUseThePrefix() {
         var statements = new PostgresTaskStore(DATA_SOURCE, "app").schemaStatements();
 
-        assertThat(statements).hasSize(9);
-        assertThat(statements.getFirst()).startsWith("CREATE TABLE IF NOT EXISTS app_task (");
+        assertThat(statements).hasSize(17);
+        assertThat(statements.getFirst()).startsWith("CREATE TABLE IF NOT EXISTS app_meta (");
         assertThat(statements).allSatisfy(s -> assertThat(s).contains("app_"));
-        assertThat(statements.getLast()).startsWith("CREATE INDEX IF NOT EXISTS app_schedule_due");
+        assertThat(statements).noneSatisfy(s -> assertThat(s).containsIgnoringCase("REFERENCES"));
+        assertThat(statements.getLast()).startsWith("INSERT INTO app_meta");
     }
 
     @Test

@@ -2,6 +2,7 @@ package today.bonfire.oss.bth4j.redis;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class KeysTest {
@@ -10,41 +11,52 @@ class KeysTest {
 
     @Test
     void everyKeyCarriesNamespaceAsHashTag() {
-        assertThat(keys.scheduled).startsWith("{NS}:");
-        assertThat(keys.leased).startsWith("{NS}:");
-        assertThat(keys.dead).startsWith("{NS}:");
-        assertThat(keys.cron).startsWith("{NS}:");
-        assertThat(keys.taskPrefix).startsWith("{NS}:");
-        assertThat(keys.queuePrefix).startsWith("{NS}:");
-        assertThat(keys.cronPrefix).startsWith("{NS}:");
-        assertThat(keys.task("id")).startsWith("{NS}:");
-        assertThat(keys.queue("q")).startsWith("{NS}:");
-        assertThat(keys.cronDefinition("s")).startsWith("{NS}:");
+        var all = List.of(
+                keys.prefix,
+                keys.meta,
+                keys.seqId,
+                keys.seqWorker,
+                keys.scheduled,
+                keys.leased,
+                keys.queues,
+                keys.keyWindows,
+                keys.cron,
+                keys.cronRevision,
+                keys.task(1),
+                keys.queue(2),
+                keys.index(3, 2),
+                keys.counters(2),
+                keys.uniqueKey("k"),
+                keys.worker(4),
+                keys.cronDefinition("s"),
+                keys.registry("queue"),
+                keys.registryNames("queue"));
+
+        assertThat(all).allSatisfy(k -> assertThat(k).startsWith("{NS}:"));
     }
 
     @Test
-    void composedKeysUsePrefixes() {
-        assertThat(keys.task("id")).isEqualTo(keys.taskPrefix + "id");
-        assertThat(keys.queue("q")).isEqualTo(keys.queuePrefix + "q");
-        assertThat(keys.cronDefinition("s")).isEqualTo(keys.cronPrefix + "s");
-    }
-
-    @Test
-    void namespaceIsKept() {
-        assertThat(keys.namespace).isEqualTo("NS");
+    void layoutMatchesTheDocumentedNames() {
+        assertThat(keys.task(7)).isEqualTo("{NS}:t:7");
+        assertThat(keys.queue(2)).isEqualTo("{NS}:q:2");
+        assertThat(keys.index(4, 2)).isEqualTo("{NS}:idx:4:2");
+        assertThat(keys.counters(2)).isEqualTo("{NS}:c:2");
+        assertThat(keys.uniqueKey("k")).isEqualTo("{NS}:k:k");
+        assertThat(keys.registryNames("event")).isEqualTo("{NS}:reg:event:names");
     }
 
     @Test
     void fixedKeysAreDistinct() {
-        assertThat(java.util.Set.of(
+        assertThat(List.of(
+                        keys.meta,
+                        keys.seqId,
+                        keys.seqWorker,
                         keys.scheduled,
                         keys.leased,
-                        keys.dead,
+                        keys.queues,
+                        keys.keyWindows,
                         keys.cron,
-                        keys.cronRevision,
-                        keys.taskPrefix,
-                        keys.queuePrefix,
-                        keys.cronPrefix))
-                .hasSize(8);
+                        keys.cronRevision))
+                .doesNotHaveDuplicates();
     }
 }

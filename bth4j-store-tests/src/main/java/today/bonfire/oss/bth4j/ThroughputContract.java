@@ -1,92 +1,87 @@
 package today.bonfire.oss.bth4j;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
+import java.time.Duration;
 import java.util.ArrayList;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.Timeout;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import today.bonfire.oss.bth4j.common.Random;
-import today.bonfire.oss.bth4j.executor.DefaultVtExecutor;
-import today.bonfire.oss.bth4j.service.BackgroundRunner;
-import today.bonfire.oss.bth4j.service.Task;
-import today.bonfire.oss.bth4j.store.TaskStore;
+import today.bonfire.oss.bth4j.spi.FullStore;
 
 /**
- * Measures how fast a single runner drains a burst of tasks. The numbers are logged; the assertion is a loose
- * lower bound so that the test does not fail on a slow machine. A store module subclasses it and supplies its
- * {@link TaskStore} through {@link #newStore(String)}.
+ * Measures how fast a store enqueues and executes a large batch of tasks and checks that each one ran exactly
+ * once. The rates are only printed: they depend on the machine, so no assertion is made on them.
  */
-@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Timeout(300)
 public abstract class ThroughputContract {
-    private static final Logger log = LoggerFactory.getLogger(ThroughputContract.class);
-    private static final int TASKS = 5120;
 
-    private BackgroundRunner runner;
+    private static final int TASKS = 10_000;
+    private static final Duration EXECUTE_LIMIT = Duration.ofSeconds(120);
+    private static final AtomicInteger NAMESPACES = new AtomicInteger();
+    private static final TaskType<Void> TYPE = TaskType.of("tp-void");
 
-    protected abstract TaskStore newStore(String namespace);
-
-    @BeforeAll
-    void beforeAll() {
-        runner = new BackgroundRunner.Builder()
-                .taskProcessorRegistry(TestTaskProcessors.createTestRegistry())
-                .eventParser(TestEvents.UNKNOWN::from)
-                .taskExecutor(new DefaultVtExecutor())
-                .claimBatchSize(64)
-                .taskStore(newStore("PERF"))
-                .build();
-        runner.run();
-    }
-
-    @AfterAll
-    protected void afterAll() {
-        runner.stopRunner();
-    }
+    /** @return a store with no state, isolated from every other namespace */
+    protected abstract FullStore newStore(String namespace);
 
     @Test
-    @Timeout(120)
-    void drainsABurstOfTasks() throws InterruptedException {
-        var taskOps = runner.taskOps();
-        TestTaskProcessors.resetCounters();
-        TestTaskProcessors.completionLatch = new CountDownLatch(TASKS);
+    void everyTaskRunsExactlyOnce() throws InterruptedException {
+        var store = newStore("tp" + Long.toString(System.currentTimeMillis(), 36) + NAMESPACES.incrementAndGet());
+        var client = TaskClient.builder()
+                .store(store)
+                .jsonMapper(new JsonMapperTest())
+                .build();
 
-        var enqueueStart = System.nanoTime();
-        var producers = new ArrayList<Thread>();
-        for (int p = 0; p < 16; p++) {
-            var producer = Thread.ofVirtual().unstarted(() -> {
-                for (int i = 0; i < TASKS / 16; i++) {
-                    taskOps.enqueue(Task.Builder.newTask()
-                            .accountId(Random.UIDBASE64())
-                            .event(TestEvents.REGULAR_TASK)
-                            .build());
-                }
-            });
-            producer.start();
-            producers.add(producer);
+        var requests = new ArrayList<TaskRequest<Void>>(TASKS);
+        for (int i = 0; i < TASKS; i++) requests.add(TaskRequest.of(TYPE).build());
+        long enqueueStart = System.nanoTime();
+        var results = client.enqueueAll(requests);
+        long enqueueNanos = System.nanoTime() - enqueueStart;
+        assertThat(results).hasSize(TASKS).allSatisfy(r -> assertThat(r).isInstanceOf(EnqueueResult.Accepted.class));
+
+        var executions = new ConcurrentHashMap<Long, AtomicInteger>();
+        var executed = new AtomicLong();
+        var runner = BackgroundRunner.builder()
+                .store(store)
+                .jsonMapper(new JsonMapperTest())
+                .concurrency(Concurrency.fixed(64))
+                .claimBatchSize(64)
+                .idlePollInterval(Duration.ofMillis(20))
+                .succeededRetention(Duration.ZERO)
+                .shutdownTimeout(Duration.ofSeconds(10))
+                .threadGroupName("tp-" + NAMESPACES.get())
+                .build();
+        runner.registry().register(TYPE, (ctx, payload) -> {
+            executions.computeIfAbsent(ctx.id(), k -> new AtomicInteger()).incrementAndGet();
+            executed.incrementAndGet();
+        });
+
+        long executeNanos;
+        try {
+            long executeStart = System.nanoTime();
+            runner.start();
+            long deadline = executeStart + EXECUTE_LIMIT.toNanos();
+            while (executed.get() < TASKS && System.nanoTime() < deadline) Thread.sleep(10);
+            executeNanos = System.nanoTime() - executeStart;
+            if (executed.get() < TASKS) fail("Only %d of %d tasks ran within %s", executed.get(), TASKS, EXECUTE_LIMIT);
+        } finally {
+            runner.stop();
         }
-        for (var producer : producers) producer.join();
-        var enqueueMillis = (System.nanoTime() - enqueueStart) / 1_000_000;
 
-        assertThat(TestTaskProcessors.completionLatch.await(90, TimeUnit.SECONDS))
-                .isTrue();
-        var totalMillis = (System.nanoTime() - enqueueStart) / 1_000_000;
-
-        log.info(
-                "Enqueued {} tasks in {} ms ({} tasks/s), all processed after {} ms ({} tasks/s end to end)",
+        System.out.printf(
+                "THROUGHPUT [%s] tasks=%d enqueue=%.0f tasks/s (%d ms) execute=%.0f tasks/s (%d ms)%n",
+                store.getClass().getSimpleName(),
                 TASKS,
-                enqueueMillis,
-                TASKS * 1000L / Math.max(1, enqueueMillis),
-                totalMillis,
-                TASKS * 1000L / Math.max(1, totalMillis));
-        assertThat(TestTaskProcessors.regularTaskExecutions.get()).isEqualTo(TASKS);
-        for (int i = 0; i < 100 && taskOps.leasedCount() > 0; i++) Thread.sleep(50);
-        assertThat(taskOps.leasedCount()).isZero();
-        assertThat(TASKS * 1000L / Math.max(1, totalMillis)).isGreaterThan(200);
+                TASKS / (enqueueNanos / 1e9),
+                enqueueNanos / 1_000_000,
+                TASKS / (executeNanos / 1e9),
+                executeNanos / 1_000_000);
+
+        assertThat(executed).hasValue(TASKS);
+        assertThat(executions).hasSize(TASKS);
+        assertThat(executions.values()).allSatisfy(count -> assertThat(count).hasValue(1));
     }
 }

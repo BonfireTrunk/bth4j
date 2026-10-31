@@ -1,9 +1,8 @@
 package today.bonfire.oss.bth4j.exceptions;
 
 /**
- * Exception for invalid task definitions (malformed task string, invalid builder input) and for
- * task failures that should be retried. When thrown by a task processor, the task stays in progress
- * and is retried by the maintenance service after the stale task timeout.
+ * Exception for invalid task definitions and configuration found at runtime. When thrown by a task
+ * processor it counts as a failed attempt like any other exception.
  */
 public class TaskErrorException extends RuntimeException {
 
