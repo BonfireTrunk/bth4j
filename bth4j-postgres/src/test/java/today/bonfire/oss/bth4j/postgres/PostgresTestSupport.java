@@ -29,7 +29,7 @@ public final class PostgresTestSupport {
     /** A store on its own tables, named after the namespace, with the schema created. */
     public static PostgresTaskStore store(String namespace) {
         var store = new PostgresTaskStore(dataSource(), prefix(namespace));
-        store.createSchema();
+        store.init();
         return store;
     }
 
