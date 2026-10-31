@@ -300,7 +300,10 @@ public final class TaskExecution implements Runnable, TaskContext {
         if (name == null || name.isBlank() || name.length() > MAX_STEP_NAME) {
             throw new TaskValidationException("step name must be 1 to " + MAX_STEP_NAME + " characters");
         }
-        var done = steps.get(name);
+        StepResult done;
+        synchronized (steps) {
+            done = steps.get(name);
+        }
         if (done != null) {
             log.debug("Task {} skips step {} completed at {}", record.id(), name, done.at());
             return s.codecs().decodeStep(done.result(), type);
@@ -311,22 +314,28 @@ public final class TaskExecution implements Runnable, TaskContext {
         if (encoded != null && encoded.length() > MAX_STEP_RESULT) {
             throw new TaskValidationException("result of step " + name + " exceeds " + MAX_STEP_RESULT + " characters");
         }
-        var updated = new LinkedHashMap<>(steps);
-        updated.put(name, new StepResult(s.clock().instant(), encoded));
-        long bytes = 0;
-        for (var e : updated.entrySet()) {
-            bytes += e.getKey().length()
-                    + (e.getValue().result() == null ? 0 : e.getValue().result().length());
+        // one section per step so that concurrent steps of one processor never overwrite each other's record
+        synchronized (steps) {
+            var updated = new LinkedHashMap<>(steps);
+            updated.put(name, new StepResult(s.clock().instant(), encoded));
+            long bytes = 0;
+            for (var e : updated.entrySet()) {
+                bytes += e.getKey().length()
+                        + (e.getValue().result() == null
+                                ? 0
+                                : e.getValue().result().length());
+            }
+            if (bytes > MAX_STEPS_BYTES) {
+                throw new TaskValidationException(
+                        "steps of task " + record.id() + " exceed " + MAX_STEPS_BYTES + " bytes");
+            }
+            if (!s.store().saveSteps(record.id(), record.revision(), updated)) {
+                leaseLost = true;
+                throw new TaskLeaseLostException(
+                        "lease of task " + record.id() + " was lost before step " + name + " could be recorded");
+            }
+            steps.put(name, updated.get(name));
         }
-        if (bytes > MAX_STEPS_BYTES) {
-            throw new TaskValidationException("steps of task " + record.id() + " exceed " + MAX_STEPS_BYTES + " bytes");
-        }
-        if (!s.store().saveSteps(record.id(), record.revision(), updated)) {
-            leaseLost = true;
-            throw new TaskLeaseLostException(
-                    "lease of task " + record.id() + " was lost before step " + name + " could be recorded");
-        }
-        steps.put(name, updated.get(name));
         return result;
     }
 

@@ -74,7 +74,11 @@ public class MaintenanceService extends CustomThread {
                 var expired = store.reclaim(batchSize);
                 count = expired.size();
                 for (var e : expired) {
-                    handleExpired(e);
+                    try {
+                        handleExpired(e);
+                    } catch (RuntimeException ex) {
+                        log.error("Could not handle the expired lease of task {}", e.id(), ex);
+                    }
                 }
             } while (count == batchSize && canContinueProcessing);
         } catch (Exception e) {
@@ -84,13 +88,11 @@ public class MaintenanceService extends CustomThread {
 
     private void handleExpired(ExpiredLease e) {
         Instant retryAt = null;
-        if (e.attempts() < e.maxAttempts()) {
+        // a cancelled task whose worker died must not run again; until the CANCELLED transition exists it dies
+        if (e.attempts() < e.maxAttempts() && !e.cancelRequested()) {
             var record = store.getTask(e.id()).orElse(null);
-            if (record != null) {
-                var decision = retryPolicy.decide(names.view(record), null);
-                if (decision instanceof RetryPolicy.Decision.RetryAfter r) {
-                    retryAt = clock.instant().plus(r.delay());
-                }
+            if (record != null && decide(record) instanceof RetryPolicy.Decision.RetryAfter r) {
+                retryAt = clock.instant().plus(r.delay());
             }
         }
         var failure = new FailureInfo(
@@ -100,6 +102,16 @@ public class MaintenanceService extends CustomThread {
         if (outcome != FailOutcome.LOST) {
             observer.emit(
                     new TaskEvent.LeaseExpired(e.id(), e.attempts(), e.maxAttempts(), outcome == FailOutcome.DEAD));
+        }
+    }
+
+    private RetryPolicy.Decision decide(today.bonfire.oss.bth4j.spi.TaskRecord record) {
+        try {
+            var d = retryPolicy.decide(names.view(record), null);
+            return d != null ? d : RetryPolicy.Decision.retryAfter(Duration.ZERO);
+        } catch (RuntimeException policyError) {
+            log.error("Retry policy failed for expired task {}, retrying at once", record.id(), policyError);
+            return RetryPolicy.Decision.retryAfter(Duration.ZERO);
         }
     }
 

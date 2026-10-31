@@ -21,6 +21,7 @@ import today.bonfire.oss.bth4j.spi.TaskState;
 public class RecurringTaskService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(RecurringTaskService.class);
     private static final int MAX_ROUNDS_PER_CYCLE = 100;
+    private static final Duration NEVER = Duration.ofDays(365L * 100);
 
     private final ScheduleStore store;
     private final IdAllocator ids;
@@ -109,12 +110,12 @@ public class RecurringTaskService extends CustomThread {
             var def = d.definition();
             var now = clock.instant();
             var after = d.fireAt().isAfter(now) ? d.fireAt() : now;
-            var next = Cron.next(def.cron(), after);
-            if (next.isEmpty()) {
-                log.error("Recurring task {} never fires again, removing it", d.scheduleId());
-                store.deleteRecurring(d.scheduleId());
-                return false;
-            }
+            // a definition that never fires again still gets this occurrence; parking its next fire far
+            // ahead keeps it out of dueRecurring without a revision-checked delete
+            var next = Cron.next(def.cron(), after).orElseGet(() -> {
+                log.warn("Recurring task {} never fires again after {}", d.scheduleId(), d.fireAt());
+                return d.fireAt().plus(NEVER);
+            });
             var occurrence = TaskRecord.builder()
                     .id(ids.nextId())
                     .queueId(def.queueId())
@@ -128,7 +129,7 @@ public class RecurringTaskService extends CustomThread {
                     .account(def.account())
                     .scheduleId(d.scheduleId())
                     .build();
-            var committed = store.commitRecurring(d, next.get(), occurrence);
+            var committed = store.commitRecurring(d, next, occurrence);
             if (committed) {
                 observer.emit(new TaskEvent.ScheduleFired(d.scheduleId(), occurrence.id(), d.fireAt()));
             }

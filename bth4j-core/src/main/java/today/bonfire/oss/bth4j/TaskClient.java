@@ -79,21 +79,26 @@ public final class TaskClient {
         try {
             return result(record.id(), store.enqueue(record));
         } catch (TaskStoreException e) {
-            throw new EnqueueFailedException(record.id(), e);
+            throw new EnqueueFailedException(List.of(record.id()), 0, e);
         }
     }
 
     /**
-     * Stores several tasks in chunks. The ids are reserved before the first write; when a chunk fails the
-     * exception carries the id of its first task and the caller can retry the whole list with
-     * {@link TaskRequest.Builder#id(long)} set on each request, or just retry the list: tasks already stored
-     * answer accepted again.
+     * Stores several tasks in chunks. Every id is reserved before the first write; when a chunk fails the
+     * exception carries the id of every request, so the caller can retry the same list with
+     * {@link TaskRequest.Builder#id(long)} set from {@link EnqueueFailedException#ids()}: tasks already
+     * stored answer accepted again instead of being stored twice.
      *
      * @return one result per request, in order
      */
     public List<EnqueueResult> enqueueAll(List<? extends TaskRequest<?>> requests) {
         var records = new ArrayList<TaskRecord>(requests.size());
-        for (var r : requests) records.add(toRecord(r));
+        var ids = new ArrayList<Long>(requests.size());
+        for (var r : requests) {
+            var record = toRecord(r);
+            records.add(record);
+            ids.add(record.id());
+        }
         var results = new ArrayList<EnqueueResult>(records.size());
         for (int from = 0; from < records.size(); from += ENQUEUE_CHUNK) {
             var chunk = records.subList(from, Math.min(records.size(), from + ENQUEUE_CHUNK));
@@ -101,7 +106,7 @@ public final class TaskClient {
             try {
                 outcomes = store.enqueueAll(chunk);
             } catch (TaskStoreException e) {
-                throw new EnqueueFailedException(chunk.getFirst().id(), e);
+                throw new EnqueueFailedException(ids, results.size(), e);
             }
             for (int i = 0; i < chunk.size(); i++) {
                 results.add(result(chunk.get(i).id(), outcomes.get(i)));
