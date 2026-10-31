@@ -14,7 +14,7 @@
     <packaging>jar</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>PostgreSQL TaskStore for bth4j: one row per task, SKIP LOCKED claims, token-checked updates. Uses only java.sql; the application supplies the JDBC driver. PostgreSQL 9.5 or newer.</description>
+    <description>PostgreSQL TaskStore for bth4j: one row per task, SKIP LOCKED claims, revision-checked updates. Uses only java.sql; the application supplies the JDBC driver. PostgreSQL 9.5 or newer.</description>
 
     <properties>
         <module.name>bonfire.oss.bth4j.postgres</module.name>
