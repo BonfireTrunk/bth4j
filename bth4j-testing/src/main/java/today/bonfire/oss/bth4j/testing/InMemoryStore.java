@@ -6,15 +6,18 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
+import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
@@ -25,13 +28,16 @@ import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
+import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
+import today.bonfire.oss.bth4j.spi.RecurringSchedule;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
+import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /**
  * A {@link FullStore} that keeps everything in memory, for tests of applications that use bth4j. Every
@@ -54,6 +60,8 @@ public final class InMemoryStore implements FullStore {
     private final Map<String, Recurring> recurring = new HashMap<>();
     private final Map<String, Integer> queueIds = new LinkedHashMap<>();
     private final Map<String, Integer> eventIds = new LinkedHashMap<>();
+    private final Set<Integer> pausedQueues = new HashSet<>();
+    private final Map<Integer, WorkerInfo> workers = new TreeMap<>();
     private long nextTaskId = 1;
     private int nextWorkerId = 1;
     private long recurringRevision;
@@ -98,7 +106,10 @@ public final class InMemoryStore implements FullStore {
     public int allocateWorkerId(String label) {
         lock.lock();
         try {
-            return nextWorkerId++;
+            int id = nextWorkerId++;
+            Instant now = clock.instant();
+            workers.put(id, new WorkerInfo(id, label, now, now, 0));
+            return id;
         } finally {
             lock.unlock();
         }
@@ -227,12 +238,16 @@ public final class InMemoryStore implements FullStore {
             Set<Integer> known = request.knownEventIds();
             List<TaskRecord> claimed = new ArrayList<>();
             for (int queueId : request.queueIds()) {
+                if (pausedQueues.contains(queueId)) {
+                    continue;
+                }
                 int missing = request.count() - claimed.size();
                 if (missing <= 0) {
                     break;
                 }
                 List<TaskRecord> candidates = tasks.values().stream()
                         .filter(t -> t.state() == TaskState.QUEUED && t.queueId() == queueId)
+                        .filter(t -> t.startBy() == null || t.startBy().isAfter(now))
                         .filter(t -> known == null || known.contains(t.eventId()))
                         .sorted(BY_DUE)
                         .limit(missing)
@@ -562,11 +577,19 @@ public final class InMemoryStore implements FullStore {
                     definition.queueId(),
                     definition.account(),
                     definition.cron(),
+                    definition.zone(),
+                    definition.misfire(),
+                    definition.catchUpMax(),
+                    definition.fixedDelayMs(),
+                    definition.overlapSkip(),
                     definition.data(),
                     definition.maxAttempts(),
+                    definition.paused(),
                     ++recurringRevision);
             Recurring old = recurring.get(definition.scheduleId());
-            Instant fire = old != null && old.definition().cron().equals(definition.cron()) ? old.nextFire() : nextFire;
+            Instant fire = old != null && Objects.equals(old.definition().cron(), definition.cron())
+                    ? old.nextFire()
+                    : nextFire;
             recurring.put(definition.scheduleId(), new Recurring(stored, fire));
         } finally {
             lock.unlock();
@@ -600,6 +623,7 @@ public final class InMemoryStore implements FullStore {
         lock.lock();
         try {
             return recurring.entrySet().stream()
+                    .filter(e -> !e.getValue().definition().paused())
                     .filter(e -> !e.getValue().nextFire().isAfter(upTo))
                     .sorted(Comparator.comparing((Map.Entry<String, Recurring> e) ->
                                     e.getValue().nextFire())
@@ -683,70 +707,252 @@ public final class InMemoryStore implements FullStore {
         }
     }
 
-    // wave 2 stubs: replaced by the module owner (see tmp/plans/wave-2-spec.md)
-
     @Override
     public boolean finishCancelled(long id, int revision, String reason, boolean keepPayload) {
-        throw new UnsupportedOperationException("wave 2");
+        lock.lock();
+        try {
+            TaskRecord t = tasks.get(id);
+            if (t == null || !fenced(t, revision)) {
+                return false;
+            }
+            Instant now = clock.instant();
+            TaskRecord.Builder b = t.toBuilder()
+                    .state(TaskState.CANCELLED)
+                    .revision(t.revision() + 1)
+                    .stateChanged(now)
+                    .cancelReason(reason)
+                    .cancelRequestedAt(t.cancelRequestedAt() != null ? t.cancelRequestedAt() : now)
+                    .leaseUntil(null);
+            if (!keepPayload) {
+                b.data(null);
+            }
+            finish(t, b, now);
+            return true;
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
-    public java.util.List<Long> expire(int limit) {
-        throw new UnsupportedOperationException("wave 2");
+    public List<Long> expire(int limit) {
+        lock.lock();
+        try {
+            Instant now = clock.instant();
+            List<TaskRecord> overdue = tasks.values().stream()
+                    .filter(t -> (t.state() == TaskState.QUEUED || t.state() == TaskState.SCHEDULED)
+                            && t.startBy() != null
+                            && !t.startBy().isAfter(now))
+                    .sorted(Comparator.comparing(TaskRecord::startBy).thenComparingLong(TaskRecord::id))
+                    .limit(limit)
+                    .toList();
+            for (TaskRecord t : overdue) {
+                finish(
+                        t,
+                        t.toBuilder()
+                                .state(TaskState.EXPIRED)
+                                .revision(t.revision() + 1)
+                                .stateChanged(now),
+                        now);
+            }
+            return overdue.stream().map(TaskRecord::id).toList();
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
-    public int purgeWorkers(java.time.Duration staleAfter) {
-        throw new UnsupportedOperationException("wave 2");
+    public int purgeWorkers(Duration staleAfter) {
+        lock.lock();
+        try {
+            Instant cutoff = clock.instant().minus(staleAfter);
+            int before = workers.size();
+            workers.values().removeIf(w -> w.lastSeen().isBefore(cutoff));
+            return before - workers.size();
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
-    public today.bonfire.oss.bth4j.spi.CancelOutcome cancel(long id, int revision, String reason) {
-        throw new UnsupportedOperationException("wave 2");
+    public CancelOutcome cancel(long id, int revision, String reason) {
+        lock.lock();
+        try {
+            TaskRecord t = tasks.get(id);
+            if (t == null || t.revision() != revision) {
+                return CancelOutcome.STALE;
+            }
+            Instant now = clock.instant();
+            if (t.state() == TaskState.QUEUED || t.state() == TaskState.SCHEDULED) {
+                finish(
+                        t,
+                        t.toBuilder()
+                                .state(TaskState.CANCELLED)
+                                .revision(t.revision() + 1)
+                                .stateChanged(now)
+                                .cancelReason(reason)
+                                .cancelRequestedAt(now),
+                        now);
+                return CancelOutcome.CANCELLED;
+            }
+            if (t.state() == TaskState.LEASED) {
+                tasks.put(
+                        id,
+                        t.toBuilder()
+                                .cancelReason(reason)
+                                .cancelRequestedAt(now)
+                                .build());
+                return CancelOutcome.REQUESTED;
+            }
+            return CancelOutcome.STALE;
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
     public boolean retry(long id, int revision) {
-        throw new UnsupportedOperationException("wave 2");
+        lock.lock();
+        try {
+            TaskRecord t = tasks.get(id);
+            if (t == null
+                    || t.revision() != revision
+                    || (t.state() != TaskState.DEAD
+                            && t.state() != TaskState.CANCELLED
+                            && t.state() != TaskState.EXPIRED)) {
+                return false;
+            }
+            Instant now = clock.instant();
+            if (t.uniqueKey() != null) {
+                keyHolders.remove(t.uniqueKey(), id);
+            }
+            tasks.put(
+                    id,
+                    t.toBuilder()
+                            .state(TaskState.QUEUED)
+                            .due(now)
+                            .stateChanged(now)
+                            .attempts(0)
+                            .revision(t.revision() + 1)
+                            .cancelRequestedAt(null)
+                            .cancelReason(null)
+                            .workerId(null)
+                            .leaseUntil(null)
+                            .keyKeep(null)
+                            .keyUntil(null)
+                            .uniqueKey(null)
+                            .build());
+            return true;
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
     public boolean delete(long id, int revision) {
-        throw new UnsupportedOperationException("wave 2");
+        lock.lock();
+        try {
+            TaskRecord t = tasks.get(id);
+            if (t == null || t.revision() != revision || t.state() == TaskState.LEASED) {
+                return false;
+            }
+            remove(t);
+            return true;
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
     public void pauseQueue(int queueId, boolean paused) {
-        throw new UnsupportedOperationException("wave 2");
+        lock.lock();
+        try {
+            if (paused) {
+                pausedQueues.add(queueId);
+            } else {
+                pausedQueues.remove(queueId);
+            }
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
-    public java.util.List<today.bonfire.oss.bth4j.spi.QueueInfo> queues() {
-        throw new UnsupportedOperationException("wave 2");
+    public List<QueueInfo> queues() {
+        lock.lock();
+        try {
+            return queueIds.entrySet().stream()
+                    .map(e -> new QueueInfo(e.getValue(), e.getKey(), pausedQueues.contains(e.getValue())))
+                    .sorted(Comparator.comparingInt(QueueInfo::id))
+                    .toList();
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
     public void heartbeat(int workerId, int running) {
-        throw new UnsupportedOperationException("wave 2");
+        lock.lock();
+        try {
+            WorkerInfo w = workers.get(workerId);
+            if (w != null) {
+                workers.put(workerId, new WorkerInfo(w.id(), w.label(), w.startedAt(), clock.instant(), running));
+            }
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
-    public java.util.List<today.bonfire.oss.bth4j.spi.WorkerInfo> workers() {
-        throw new UnsupportedOperationException("wave 2");
+    public List<WorkerInfo> workers() {
+        lock.lock();
+        try {
+            return List.copyOf(workers.values());
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
-    public java.util.List<today.bonfire.oss.bth4j.spi.RecurringSchedule> recurringDefinitions() {
-        throw new UnsupportedOperationException("wave 2");
+    public List<RecurringSchedule> recurringDefinitions() {
+        lock.lock();
+        try {
+            return recurring.entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey())
+                    .map(e -> new RecurringSchedule(
+                            e.getValue().definition(), e.getValue().nextFire()))
+                    .toList();
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
     public boolean pauseRecurring(String scheduleId, boolean paused) {
-        throw new UnsupportedOperationException("wave 2");
+        lock.lock();
+        try {
+            Recurring r = recurring.get(scheduleId);
+            if (r == null) {
+                return false;
+            }
+            recurring.put(scheduleId, new Recurring(r.definition().withPaused(paused), r.nextFire()));
+            return true;
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
-    public boolean setNextFire(String scheduleId, java.time.Instant nextFire) {
-        throw new UnsupportedOperationException("wave 2");
+    public boolean setNextFire(String scheduleId, Instant nextFire) {
+        lock.lock();
+        try {
+            Recurring r = recurring.get(scheduleId);
+            if (r == null) {
+                return false;
+            }
+            recurring.put(scheduleId, new Recurring(r.definition(), nextFire));
+            return true;
+        } finally {
+            lock.unlock();
+        }
     }
 }
