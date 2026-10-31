@@ -9,7 +9,8 @@ package today.bonfire.oss.bth4j.redis;
  * <ul>
  * <li>{@code meta} hash (field {@code schema}); {@code seq:id}, {@code seq:worker}, {@code seq:queue},
  * {@code seq:event} counters</li>
- * <li>{@code reg:queue} name to id, {@code reg:queue:names} id to name, the same for {@code reg:event}</li>
+ * <li>{@code reg:queue} and {@code reg:event} hashes, name to id; listings invert them with one HGETALL and
+ * purge walks the queue ids with HVALS</li>
  * <li>{@code w:<id>} hash (label, started, seen, running); {@code workers} zset of worker ids scored by the last
  * heartbeat ms, which {@code purgeWorkers} walks</li>
  * <li>{@code paused} set of queue ids that CLAIM skips</li>
@@ -20,7 +21,7 @@ package today.bonfire.oss.bth4j.redis;
  * <li>{@code q:<qid>} zset of QUEUED ids scored by due ms; {@code scheduled} zset scored by due ms;
  * {@code leased} zset scored by lease expiry ms</li>
  * <li>{@code idx:<state>:<qid>} zset scored by stateChanged ms, for LEASED and the terminal states</li>
- * <li>{@code c:<qid>} hash of counters, one field per state code; {@code queues} set of queue ids</li>
+ * <li>{@code c:<qid>} hash of counters, one field per state code</li>
  * <li>{@code k:<key>} string holding the id of the task that owns a unique key, with a PEXPIRE when the key
  * is kept for a window after the task ended; {@code keys} zset (keyUntil ms) of finished tasks whose hash
  * still names a key</li>
@@ -83,7 +84,6 @@ public final class Keys {
     public final String seqWorker;
     public final String scheduled;
     public final String leased;
-    public final String queues;
     public final String keyWindows;
     public final String cron;
     public final String cronDefinitions;
@@ -101,7 +101,6 @@ public final class Keys {
         this.seqWorker = prefix + "seq:worker";
         this.scheduled = prefix + "scheduled";
         this.leased = prefix + "leased";
-        this.queues = prefix + "queues";
         this.keyWindows = prefix + "keys";
         this.cron = prefix + "cron";
         this.cronDefinitions = prefix + "crondefs";
@@ -142,9 +141,5 @@ public final class Keys {
     /** registry hash name to id; {@code kind} is {@code queue} or {@code event} */
     public String registry(String kind) {
         return prefix + "reg:" + kind;
-    }
-
-    public String registryNames(String kind) {
-        return prefix + "reg:" + kind + ":names";
     }
 }

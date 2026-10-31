@@ -342,8 +342,8 @@ registries:
 
 | Registry | Id type | Redis | PostgreSQL |
 |---|---|---|---|
-| queue | smallint, 1 to 32767 | `reg:queue` (name to id), `reg:queue:names` (id to name), `seq:queue`, `queues` set | `<prefix>_queue(id smallserial, name unique, paused)` |
-| event | smallint, 1 to 32767 | `reg:event`, `reg:event:names`, `seq:event` | `<prefix>_event(id smallserial, name unique)` |
+| queue | smallint, 1 to 32767 | `reg:queue` (name to id; listings invert it, purge walks its values), `seq:queue` | `<prefix>_queue(id smallserial, name unique, paused)` |
+| event | smallint, 1 to 32767 | `reg:event` (name to id), `seq:event` | `<prefix>_event(id smallserial, name unique)` |
 | worker | integer | `seq:worker`, `w:<id>` hash (label, started, seen, running), `workers` zset | `<prefix>_worker(id serial, label, started_at, last_seen, running)` |
 
 Ids are permanent and never reused, so `Names` caches both directions for the life of the process; a miss
@@ -368,8 +368,7 @@ key only routes the call.
 |---|---|---|
 | `meta` | hash | `schema` (version) |
 | `seq:id`, `seq:worker`, `seq:queue`, `seq:event` | string | counters |
-| `reg:queue`, `reg:queue:names`, `reg:event`, `reg:event:names` | hash | registries |
-| `queues` | set | queue ids that exist (the purge walks these) |
+| `reg:queue`, `reg:event` | hash | registries, name to id |
 | `w:<id>` | hash | worker: `label`, `started`, `seen`, `running` |
 | `workers` | zset | worker ids, score last heartbeat ms |
 | `paused` | set | queue ids that claims skip |
@@ -392,10 +391,16 @@ Definition hash `cron:<sid>`: `ev`, `q`, `pv`, `max`, `rev`, `next` (the next fi
 paused) and the optional `acc`, `data`, `cron`, `zone`, `mf` (misfire), `cum` (catch-up max), `fd` (fixed delay ms), `os` (overlap skip, `1`) and
 `paused` (`1`).
 
-One script per transition. `RedisScripts` has one script for each store call (ENQUEUE, CLAIM, RENEW, ACK,
-FAIL, RESCHEDULE, UNCLAIM, SET_FIELD, PROMOTE, RECLAIM, PURGE, RELEASE_KEYS, REGISTER, the recurring
-operations CRON_PUT, CRON_DELETE, CRON_DUE, CRON_COMMIT, CRON_PAUSE and CRON_SET_NEXT, and the wave 2 scripts
-EXPIRE, FINISH_CANCELLED, CANCEL, RETRY, DELETE, WORKER_REGISTER, HEARTBEAT and PURGE_WORKERS). Each script reads the clock with `redis.call('TIME')` inside the script, so due
+One script per transition. `RedisScripts` has one script for each call that changes state under the fence
+(ENQUEUE, CLAIM, RENEW, ACK, FAIL, RESCHEDULE, UNCLAIM, SET_FIELD, PROMOTE, PURGE, RELEASE_KEYS, REGISTER,
+the recurring operations CRON_PUT, CRON_DELETE, CRON_COMMIT, CRON_PAUSE and CRON_SET_NEXT, and the wave 2
+scripts EXPIRE, FINISH_CANCELLED, CANCEL, RETRY, DELETE, WORKER_REGISTER and PURGE_WORKERS; 24 in all). The
+reads and the heartbeat are plain commands: `reclaim` is a ZRANGE on `leased` followed by one pipelined HMGET
+per id (an entry whose hash is gone is removed from `leased` on the spot), `dueRecurring` is a ZRANGE on `cron`
+followed by pipelined HGETALLs (a definition deleted between the two reads is skipped), and `heartbeat` is a
+ZADD XX CH on `workers` followed by a HSET when the worker still exists. The two that compare against scores
+written by scripts (`reclaim`, `heartbeat`) first read the server clock with TIME, so every comparison uses
+Redis time. Each script reads the clock with `redis.call('TIME')` inside the script, so due
 times, leases and retention all use Redis time and not the client's. Reading the clock before a write
 requires effect replication, the default since Redis 7.0, which is the reason for the version
 requirement. Each state change goes through the same three helpers (`move`, `enter`, `leave`), which keep

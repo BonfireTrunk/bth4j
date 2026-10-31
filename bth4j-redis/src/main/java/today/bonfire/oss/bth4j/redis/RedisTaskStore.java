@@ -2,6 +2,7 @@ package today.bonfire.oss.bth4j.redis;
 
 import static today.bonfire.oss.bth4j.redis.Keys.*;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -11,12 +12,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import redis.clients.jedis.Protocol;
 import redis.clients.jedis.Response;
 import redis.clients.jedis.UnifiedJedis;
 import redis.clients.jedis.exceptions.JedisException;
+import redis.clients.jedis.params.ZAddParams;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
@@ -171,10 +175,18 @@ public class RedisTaskStore implements FullStore {
     }
 
     private Map<Integer, String> names(String kind) {
-        var raw = guard(() -> jedis.hgetAll(keys.registryNames(kind)));
-        var out = new LinkedHashMap<Integer, String>();
-        raw.forEach((id, name) -> out.put(Integer.valueOf(id), name));
+        var raw = guard(() -> jedis.hgetAll(keys.registry(kind)));
+        var out = new TreeMap<Integer, String>();
+        raw.forEach((name, id) -> out.put(Integer.valueOf(id), name));
         return out;
+    }
+
+    /** Redis server time in ms, so that every comparison with a score written by a script uses the same clock. */
+    private long serverNow() {
+        @SuppressWarnings("unchecked")
+        var t = (List<byte[]>) jedis.sendCommand(keys.meta, Protocol.Command.TIME);
+        return Long.parseLong(new String(t.get(0), StandardCharsets.US_ASCII)) * 1000
+                + Long.parseLong(new String(t.get(1), StandardCharsets.US_ASCII)) / 1000;
     }
 
     // ---- execution -----------------------------------------------------------------------------------
@@ -345,19 +357,34 @@ public class RedisTaskStore implements FullStore {
     @Override
     @SuppressWarnings("unchecked")
     public List<ExpiredLease> reclaim(int limit) {
-        var r = (List<Object>) guard(() -> scripts.run(RedisScripts.RECLAIM, List.of(String.valueOf(limit))));
-        var out = new ArrayList<ExpiredLease>(r.size());
-        for (var entry : r) {
-            var e = (List<Object>) entry;
-            out.add(new ExpiredLease(
-                    num(e.get(0)),
-                    (int) num(e.get(1)),
-                    (int) num(e.get(2)),
-                    (int) num(e.get(3)),
-                    (int) num(e.get(4)),
-                    num(e.get(5)) == 1));
-        }
-        return out;
+        return guard(() -> {
+            var ids = jedis.zrangeByScore(keys.leased, "-inf", String.valueOf(serverNow()), 0, limit);
+            var fields = new ArrayList<Response<List<String>>>(ids.size());
+            try (var pipeline = jedis.pipelined()) {
+                ids.forEach(id -> fields.add(pipeline.hmget(
+                        keys.task(Long.parseLong(id)), F_REVISION, F_ATTEMPTS, F_MAX_ATTEMPTS, F_EVENT, F_CANCEL_AT)));
+                pipeline.sync();
+            }
+            var out = new ArrayList<ExpiredLease>(ids.size());
+            var orphans = new ArrayList<String>();
+            for (var i = 0; i < ids.size(); i++) {
+                var v = fields.get(i).get();
+                if (v.get(0) == null) {
+                    orphans.add(ids.get(i));
+                    continue;
+                }
+                out.add(new ExpiredLease(
+                        Long.parseLong(ids.get(i)),
+                        Integer.parseInt(v.get(0)),
+                        Integer.parseInt(v.get(1)),
+                        Integer.parseInt(v.get(2)),
+                        Integer.parseInt(v.get(3)),
+                        v.get(4) != null));
+            }
+            // a leased entry whose hash is gone cannot be reclaimed; failExpired would find no task anyway
+            if (!orphans.isEmpty()) jedis.zrem(keys.leased, orphans.toArray(String[]::new));
+            return out;
+        });
     }
 
     @Override
@@ -443,16 +470,24 @@ public class RedisTaskStore implements FullStore {
     @Override
     @SuppressWarnings("unchecked")
     public List<DueSchedule> dueRecurring(Instant upTo, int limit) {
-        var r = (List<Object>)
-                guard(() -> scripts.run(RedisScripts.CRON_DUE, List.of(ms(upTo), String.valueOf(limit))));
-        var out = new ArrayList<DueSchedule>(r.size());
-        for (var entry : r) {
-            var e = (List<Object>) entry;
-            var id = (String) e.get(0);
-            var fireAt = Instant.ofEpochMilli((long) Double.parseDouble((String) e.get(1)));
-            out.add(new DueSchedule(id, fireAt, definition(id, toMap(e, 2))));
-        }
-        return out;
+        return guard(() -> {
+            var due = jedis.zrangeByScoreWithScores(keys.cron, "-inf", ms(upTo), 0, limit);
+            var hashes = new ArrayList<Response<Map<String, String>>>(due.size());
+            try (var pipeline = jedis.pipelined()) {
+                due.forEach(t -> hashes.add(pipeline.hgetAll(keys.cronDefinition(t.getElement()))));
+                pipeline.sync();
+            }
+            var out = new ArrayList<DueSchedule>(due.size());
+            for (var i = 0; i < due.size(); i++) {
+                var h = hashes.get(i).get();
+                // deleted between the two reads: CRON_DELETE removed the hash, the zset entry went with it
+                if (h.isEmpty()) continue;
+                var id = due.get(i).getElement();
+                out.add(new DueSchedule(
+                        id, Instant.ofEpochMilli((long) due.get(i).getScore()), definition(id, h)));
+            }
+            return out;
+        });
     }
 
     private static RecurringDefinition definition(String id, Map<String, String> d) {
@@ -522,7 +557,7 @@ public class RedisTaskStore implements FullStore {
     }
 
     private List<Integer> sortedQueueIds() {
-        return jedis.smembers(keys.queues).stream()
+        return jedis.hvals(keys.registry("queue")).stream()
                 .map(Integer::valueOf)
                 .sorted()
                 .toList();
@@ -702,10 +737,15 @@ public class RedisTaskStore implements FullStore {
         });
     }
 
+    /** ZADD XX only touches a registered worker, so one that purgeWorkers removed is not brought back. */
     @Override
     public void heartbeat(int workerId, int running) {
-        var args = List.of(String.valueOf(workerId), String.valueOf(running));
-        guard(() -> scripts.run(RedisScripts.HEARTBEAT, args));
+        guard(() -> {
+            var at = serverNow();
+            var id = String.valueOf(workerId);
+            if (jedis.zadd(keys.workers, at, id, ZAddParams.zAddParams().xx().ch()) == 0) return;
+            jedis.hset(keys.worker(workerId), Map.of(F_SEEN, String.valueOf(at), F_RUNNING, String.valueOf(running)));
+        });
     }
 
     @Override

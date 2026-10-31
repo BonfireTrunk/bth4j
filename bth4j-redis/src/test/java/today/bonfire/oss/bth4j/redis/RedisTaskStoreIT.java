@@ -166,7 +166,7 @@ class RedisTaskStoreIT {
         assertThat(new RedisTaskStore(jedis, keys.namespace).queueId("other")).isEqualTo(other);
         assertThat(store.queueNames()).containsEntry(queue, "default").containsEntry(other, "other");
         assertThat(store.eventNames()).containsEntry(event, "send");
-        assertThat(jedis.smembers(keys.queues)).contains(String.valueOf(queue), String.valueOf(other));
+        assertThat(jedis.hvals(keys.registry("queue"))).contains(String.valueOf(queue), String.valueOf(other));
     }
 
     @Test

@@ -18,7 +18,6 @@ class KeysTest {
                 keys.seqWorker,
                 keys.scheduled,
                 keys.leased,
-                keys.queues,
                 keys.keyWindows,
                 keys.cron,
                 keys.cronRevision,
@@ -29,8 +28,7 @@ class KeysTest {
                 keys.uniqueKey("k"),
                 keys.worker(4),
                 keys.cronDefinition("s"),
-                keys.registry("queue"),
-                keys.registryNames("queue"));
+                keys.registry("queue"));
 
         assertThat(all).allSatisfy(k -> assertThat(k).startsWith("{NS}:"));
     }
@@ -42,7 +40,7 @@ class KeysTest {
         assertThat(keys.index(4, 2)).isEqualTo("{NS}:idx:4:2");
         assertThat(keys.counters(2)).isEqualTo("{NS}:c:2");
         assertThat(keys.uniqueKey("k")).isEqualTo("{NS}:k:k");
-        assertThat(keys.registryNames("event")).isEqualTo("{NS}:reg:event:names");
+        assertThat(keys.registry("event")).isEqualTo("{NS}:reg:event");
     }
 
     @Test
@@ -53,7 +51,6 @@ class KeysTest {
                         keys.seqWorker,
                         keys.scheduled,
                         keys.leased,
-                        keys.queues,
                         keys.keyWindows,
                         keys.cron,
                         keys.cronRevision))

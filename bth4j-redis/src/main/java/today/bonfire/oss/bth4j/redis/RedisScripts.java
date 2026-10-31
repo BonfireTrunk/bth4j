@@ -323,21 +323,6 @@ final class RedisScripts {
             return {moved, -1}
             """;
 
-    /** ARGV: limit. Returns {id, revision, attempts, max, event, cancel requested (1/0)} per expired lease. */
-    static final String RECLAIM = PRELUDE + """
-            local ids = redis.call('ZRANGE', P .. 'leased', '-inf', now(), 'BYSCORE', 'LIMIT', 0, ARGV[2])
-            local out = {}
-            for _, id in ipairs(ids) do
-              local v = redis.call('HMGET', P .. 't:' .. id, 'rev', 'att', 'max', 'ev', 'cra')
-              if v[1] then
-                out[#out + 1] = {id, v[1], v[2], v[3], v[4], v[5] and 1 or 0}
-              else
-                redis.call('ZREM', P .. 'leased', id)
-              end
-            end
-            return out
-            """;
-
     /**
      * ARGV: state, retention ms, limit. Walks the idx zsets of every queue oldest first. A task whose key window
      * is still open is skipped and the next page starts behind it, so held tasks cannot starve the purge.
@@ -348,7 +333,7 @@ final class RedisScripts {
             local cutoff = at - tonumber(ARGV[3])
             local remaining = tonumber(ARGV[4])
             local removed = 0
-            for _, qid in ipairs(redis.call('SMEMBERS', P .. 'queues')) do
+            for _, qid in ipairs(redis.call('HVALS', P .. 'reg:queue')) do
               local ikey = P .. 'idx:' .. state .. ':' .. qid
               local skipped = 0
               while remaining > 0 do
@@ -395,8 +380,6 @@ final class RedisScripts {
             end
             id = redis.call('INCR', seq)
             redis.call('HSET', reg, ARGV[3], id)
-            redis.call('HSET', reg .. ':names', id, ARGV[3])
-            if ARGV[2] == 'queue' then redis.call('SADD', P .. 'queues', id) end
             return id
             """;
 
@@ -442,18 +425,6 @@ final class RedisScripts {
             redis.call('ZREM', P .. 'cron', ARGV[2])
             redis.call('SREM', P .. 'crondefs', ARGV[2])
             return redis.call('DEL', P .. 'cron:' .. ARGV[2])
-            """;
-
-    /** ARGV: up to ms, limit. Returns {schedule id, fire at, field, value, ...} per due definition. */
-    static final String CRON_DUE = PRELUDE + """
-            local due = redis.call('ZRANGE', P .. 'cron', '-inf', ARGV[2], 'BYSCORE', 'WITHSCORES', 'LIMIT', 0, ARGV[3])
-            local out = {}
-            for i = 1, #due, 2 do
-              local entry = {due[i], due[i + 1]}
-              for _, x in ipairs(redis.call('HGETALL', P .. 'cron:' .. due[i])) do entry[#entry + 1] = x end
-              out[#out + 1] = entry
-            end
-            return out
             """;
 
     /**
@@ -587,16 +558,6 @@ final class RedisScripts {
             redis.call('HSET', P .. 'w:' .. id, 'label', ARGV[2], 'started', at, 'seen', at, 'running', 0)
             redis.call('ZADD', P .. 'workers', at, id)
             return id
-            """;
-
-    /** ARGV: worker id, running. A worker that was purged is not brought back. */
-    static final String HEARTBEAT = PRELUDE + """
-            local wkey = P .. 'w:' .. ARGV[2]
-            if redis.call('EXISTS', wkey) == 0 then return 0 end
-            local at = now()
-            redis.call('HSET', wkey, 'seen', at, 'running', ARGV[3])
-            redis.call('ZADD', P .. 'workers', at, ARGV[2])
-            return 1
             """;
 
     /** ARGV: stale after ms. Removes workers last seen strictly before now - stale. Returns how many worker hashes were removed. */
