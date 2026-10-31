@@ -1,31 +1,42 @@
 package today.bonfire.oss.bth4j.service;
 
+import java.time.Clock;
 import java.time.Duration;
-import java.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import today.bonfire.oss.bth4j.TaskEvent;
+import today.bonfire.oss.bth4j.common.Cron;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.executor.CustomThread;
-import today.bonfire.oss.bth4j.store.DueSchedule;
+import today.bonfire.oss.bth4j.spi.DueSchedule;
+import today.bonfire.oss.bth4j.spi.ScheduleStore;
+import today.bonfire.oss.bth4j.spi.TaskRecord;
+import today.bonfire.oss.bth4j.spi.TaskState;
 
 /**
- * Creates the upcoming occurrences of recurring definitions. Any number of instances may run it; the
- * commit of an occurrence is atomic and compares the definition revision and fire time.
+ * Creates the occurrences of recurring definitions as they come due. Any number of instances may run it;
+ * the commit of an occurrence is atomic and compares the definition revision and fire time, so each
+ * occurrence is created once.
  */
 public class RecurringTaskService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(RecurringTaskService.class);
     private static final int MAX_ROUNDS_PER_CYCLE = 100;
 
-    private final TaskOps taskOps;
+    private final ScheduleStore store;
+    private final IdAllocator ids;
+    private final Observers observer;
+    private final Clock clock;
     private final Duration checkInterval;
-    private final Duration queueAheadBy;
     private final int batchSize;
 
-    RecurringTaskService(Builder builder) {
-        super(builder.group, builder.threadName);
-        this.taskOps = builder.taskOps;
-        this.checkInterval = builder.checkInterval;
-        this.queueAheadBy = builder.queueAheadBy;
-        this.batchSize = builder.batchSize;
+    RecurringTaskService(Builder b) {
+        super(b.group, b.threadName);
+        this.store = b.store;
+        this.ids = b.ids;
+        this.observer = b.observer;
+        this.clock = b.clock;
+        this.checkInterval = b.checkInterval;
+        this.batchSize = b.batchSize;
     }
 
     @Override
@@ -33,7 +44,7 @@ public class RecurringTaskService extends CustomThread {
         try {
             while (this.canContinueProcessing) {
                 try {
-                    queueUpcomingTasks();
+                    queueDueOccurrences();
                     Thread.sleep(checkInterval);
                 } catch (InterruptedException e) {
                     if (this.canContinueProcessing) {
@@ -63,14 +74,14 @@ public class RecurringTaskService extends CustomThread {
         }
     }
 
-    private void queueUpcomingTasks() {
+    private void queueDueOccurrences() {
         var queued = 0;
         try {
             for (var round = 0; round < MAX_ROUNDS_PER_CYCLE && this.canContinueProcessing; round++) {
-                var due = taskOps.cronDue(Instant.now().plus(queueAheadBy), batchSize);
+                var due = store.dueRecurring(clock.instant().plus(checkInterval), batchSize);
                 var committed = 0;
                 for (var d : due) {
-                    if (queueIfDue(d)) {
+                    if (commit(d)) {
                         committed++;
                     }
                 }
@@ -93,18 +104,35 @@ public class RecurringTaskService extends CustomThread {
      *
      * @return true when an occurrence was committed
      */
-    private boolean queueIfDue(DueSchedule d) {
+    private boolean commit(DueSchedule d) {
         try {
-            var cron = d.definition().cron();
-            var now = Instant.now();
+            var def = d.definition();
+            var now = clock.instant();
             var after = d.fireAt().isAfter(now) ? d.fireAt() : now;
-            var next = Task.nextExecution(cron, after);
+            var next = Cron.next(def.cron(), after);
             if (next.isEmpty()) {
                 log.error("Recurring task {} never fires again, removing it", d.scheduleId());
-                taskOps.deleteRecurringTask(d.scheduleId());
+                store.deleteRecurring(d.scheduleId());
                 return false;
             }
-            return taskOps.cronCommit(d, next.get());
+            var occurrence = TaskRecord.builder()
+                    .id(ids.nextId())
+                    .queueId(def.queueId())
+                    .eventId(def.eventId())
+                    .payloadVersion(def.payloadVersion())
+                    .state(TaskState.SCHEDULED)
+                    .maxAttempts(def.maxAttempts())
+                    .created(now)
+                    .due(d.fireAt())
+                    .data(def.data())
+                    .account(def.account())
+                    .scheduleId(d.scheduleId())
+                    .build();
+            var committed = store.commitRecurring(d, next.get(), occurrence);
+            if (committed) {
+                observer.emit(new TaskEvent.ScheduleFired(d.scheduleId(), occurrence.id(), d.fireAt()));
+            }
+            return committed;
         } catch (Exception e) {
             log.error("Skipping recurring task {}", d.scheduleId(), e);
             return false;
@@ -114,44 +142,57 @@ public class RecurringTaskService extends CustomThread {
     public static class Builder {
         private ThreadGroup group;
         private String threadName;
-        private TaskOps taskOps;
+        private ScheduleStore store;
+        private IdAllocator ids;
+        private Observers observer = new Observers(null);
+        private Clock clock = Clock.systemUTC();
         private Duration checkInterval = Duration.ofSeconds(10);
-        private Duration queueAheadBy = Duration.ofSeconds(30);
         private int batchSize = 100;
 
-        public Builder() {}
-
-        public Builder setGroup(ThreadGroup group) {
+        public Builder group(ThreadGroup group) {
             this.group = group;
             return this;
         }
 
-        public Builder setThreadName(String threadName) {
+        public Builder threadName(String threadName) {
             this.threadName = threadName;
             return this;
         }
 
-        public Builder setTaskOps(TaskOps taskOps) {
-            this.taskOps = taskOps;
+        public Builder store(ScheduleStore store) {
+            this.store = store;
             return this;
         }
 
-        public Builder setCheckInterval(Duration checkInterval) {
+        public Builder ids(IdAllocator ids) {
+            this.ids = ids;
+            return this;
+        }
+
+        public Builder observer(Observers observer) {
+            this.observer = observer;
+            return this;
+        }
+
+        public Builder clock(Clock clock) {
+            this.clock = clock;
+            return this;
+        }
+
+        public Builder checkInterval(Duration checkInterval) {
             this.checkInterval = checkInterval;
             return this;
         }
 
-        public Builder setQueueAheadBy(Duration queueAheadBy) {
-            this.queueAheadBy = queueAheadBy;
-            return this;
-        }
-
-        public Builder setBatchSize(int batchSize) {
+        public Builder batchSize(int batchSize) {
             this.batchSize = batchSize;
             return this;
         }
 
         public RecurringTaskService create() {
+            if (group == null || threadName == null)
+                throw new TaskConfigurationError("group and threadName are required");
+            if (store == null || ids == null) throw new TaskConfigurationError("store and ids are required");
             return new RecurringTaskService(this);
         }
     }

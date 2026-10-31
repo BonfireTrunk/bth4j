@@ -1,52 +1,29 @@
 package today.bonfire.oss.bth4j.exceptions;
 
+import java.time.Duration;
+
 /**
- * Exception thrown by a task processor to ask for the task to be run again after a delay.
- * The original task is replaced by a new task (new id) that carries the same data and is
- * scheduled to run after {@link #delay()} seconds.
+ * Thrown by a task processor to run the task again after a delay without counting the attempt. The task
+ * keeps its id and payload.
  */
 public class TaskRescheduleException extends RuntimeException {
 
-    /** delay in seconds before the task is run again */
-    private long delay = 0;
+    private final Duration delay;
 
-    private TaskRescheduleException() {}
-
-    /**
-     * @param seconds delay in seconds before the task runs again, must not be negative
-     * @throws IllegalArgumentException if seconds is negative
-     */
-    public TaskRescheduleException(long seconds) {
-        super("Reschedule task in " + seconds + " seconds");
-        delay = requireNonNegative(seconds);
+    /** @param delay how long to wait before the task runs again, not negative */
+    public TaskRescheduleException(Duration delay) {
+        this(delay, "Reschedule task in " + delay, null);
     }
 
-    /**
-     * Reschedules the task without a delay.
-     */
-    public TaskRescheduleException(String message, Throwable cause) {
+    public TaskRescheduleException(Duration delay, String message, Throwable cause) {
         super(message, cause);
-    }
-
-    /**
-     * @param seconds delay in seconds before the task runs again, must not be negative
-     * @param message description of why the task is rescheduled
-     * @param cause   the underlying cause
-     * @throws IllegalArgumentException if seconds is negative
-     */
-    public TaskRescheduleException(long seconds, String message, Throwable cause) {
-        super(message, cause);
-        delay = requireNonNegative(seconds);
-    }
-
-    public long delay() {
-        return delay;
-    }
-
-    private static long requireNonNegative(long seconds) {
-        if (seconds < 0) {
-            throw new IllegalArgumentException("Reschedule delay cannot be negative: " + seconds);
+        if (delay == null || delay.isNegative()) {
+            throw new IllegalArgumentException("Reschedule delay cannot be null or negative: " + delay);
         }
-        return seconds;
+        this.delay = delay;
+    }
+
+    public Duration delay() {
+        return delay;
     }
 }

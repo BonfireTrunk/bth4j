@@ -18,6 +18,7 @@
     <modules>
         <module>bth4j-core</module>
         <module>bth4j-store-tests</module>
+        <module>bth4j-testing</module>
         <module>bth4j-redis</module>
         <module>bth4j-postgres</module>
     </modules>
@@ -75,6 +76,11 @@
             <dependency>
                 <groupId>today.bonfire.oss</groupId>
                 <artifactId>bth4j-store-tests</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>today.bonfire.oss</groupId>
+                <artifactId>bth4j-testing</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

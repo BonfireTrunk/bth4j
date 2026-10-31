@@ -1,55 +1,55 @@
 package today.bonfire.oss.bth4j.redis;
 
+import static today.bonfire.oss.bth4j.redis.Keys.*;
+
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import org.apache.commons.lang3.StringUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import redis.clients.jedis.UnifiedJedis;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
-import today.bonfire.oss.bth4j.store.DueSchedule;
-import today.bonfire.oss.bth4j.store.ExpiredLease;
-import today.bonfire.oss.bth4j.store.FailOutcome;
-import today.bonfire.oss.bth4j.store.PromoteResult;
-import today.bonfire.oss.bth4j.store.RecurringDefinition;
-import today.bonfire.oss.bth4j.store.TaskRecord;
-import today.bonfire.oss.bth4j.store.TaskStore;
+import redis.clients.jedis.exceptions.JedisException;
+import today.bonfire.oss.bth4j.spi.ClaimRequest;
+import today.bonfire.oss.bth4j.spi.DueSchedule;
+import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
+import today.bonfire.oss.bth4j.spi.ExpiredLease;
+import today.bonfire.oss.bth4j.spi.FailOutcome;
+import today.bonfire.oss.bth4j.spi.FailureInfo;
+import today.bonfire.oss.bth4j.spi.FullStore;
+import today.bonfire.oss.bth4j.spi.LeaseRef;
+import today.bonfire.oss.bth4j.spi.LeaseStatus;
+import today.bonfire.oss.bth4j.spi.PromoteResult;
+import today.bonfire.oss.bth4j.spi.RecordJson;
+import today.bonfire.oss.bth4j.spi.RecurringDefinition;
+import today.bonfire.oss.bth4j.spi.StateCounts;
+import today.bonfire.oss.bth4j.spi.StepResult;
+import today.bonfire.oss.bth4j.spi.StoreInfo;
+import today.bonfire.oss.bth4j.spi.TaskRecord;
+import today.bonfire.oss.bth4j.spi.TaskState;
+import today.bonfire.oss.bth4j.spi.TaskStoreException;
 
 /**
- * {@link TaskStore} on Redis 7.0 or newer: one hash per task, lists as queues, sorted sets for the
- * scheduled, leased and dead states, and one Lua script per transition so that every check and its
- * writes run as one unit (see {@code docs/design-3.0.md}). All keys carry the namespace as a hash tag,
- * so the store also works on Redis Cluster. The scripts are called by SHA and loaded on demand.
- * Runners that share a namespace share the work.
+ * {@link FullStore} on Redis 7.0 or newer: one hash per task, sorted sets for the queues and the state indexes,
+ * and one Lua script per transition so that every check and its writes run as one unit (see
+ * {@link Keys} for the layout and {@link RedisScripts} for the scripts). All keys carry the namespace as a hash
+ * tag, so the store also works on Redis Cluster. Runners that share a namespace share the work.
  */
-public class RedisTaskStore implements TaskStore {
-    private static final Logger log = LoggerFactory.getLogger(RedisTaskStore.class);
-    private static final int PURGE_BATCH = 500;
-
-    static final String F_EVENT = "event";
-    static final String F_ACCOUNT = "account";
-    static final String F_QUEUE = "queue";
-    static final String F_CRON = "cron";
-    static final String F_DATA = "data";
-    static final String F_ATTEMPTS = "attempts";
-    static final String F_MAX = "max";
-    static final String F_CREATED = "created";
-    static final String F_DUE = "due";
-    static final String F_TOKEN = "token";
-    static final String F_LEASE = "lease";
-    static final String F_SCHEDULE = "schedule";
-    static final String F_ERROR = "error";
-    static final String F_DIED = "died";
-    static final String F_REV = "rev";
+public class RedisTaskStore implements FullStore {
+    private static final int MAX_FAILURES = 20;
+    private static final int PAGE_CHUNK = 500;
 
     private final UnifiedJedis jedis;
     private final Keys keys;
     private final ScriptRunner scripts;
+    private final Map<String, Integer> queueIds = new ConcurrentHashMap<>();
+    private final Map<String, Integer> eventIds = new ConcurrentHashMap<>();
 
     /**
      * @param jedis     client used for all Redis operations, for example a {@code RedisClient}. The store does not
@@ -58,13 +58,15 @@ public class RedisTaskStore implements TaskStore {
      *                  contain braces.
      */
     public RedisTaskStore(UnifiedJedis jedis, String namespace) {
-        if (jedis == null) throw new TaskConfigurationError("Jedis client is required");
-        if (StringUtils.isBlank(namespace) || namespace.contains("{") || namespace.contains("}")) {
-            throw new TaskConfigurationError("namespace cannot be blank or contain braces");
+        if (jedis == null) {
+            throw new IllegalArgumentException("Jedis client is required");
+        }
+        if (namespace == null || namespace.isBlank() || namespace.contains("{") || namespace.contains("}")) {
+            throw new IllegalArgumentException("namespace cannot be blank or contain braces");
         }
         this.jedis = jedis;
         this.keys = new Keys(namespace);
-        this.scripts = new ScriptRunner(jedis);
+        this.scripts = new ScriptRunner(jedis, keys.meta, keys.prefix);
     }
 
     public Keys keys() {
@@ -76,265 +78,374 @@ public class RedisTaskStore implements TaskStore {
         return "RedisTaskStore[" + keys.namespace + "]";
     }
 
-    // ---- tasks and definitions ----------------------------------------------------------------------
-
-    @Override
-    public boolean enqueue(TaskRecord task) {
-        var args = new ArrayList<String>();
-        args.add(task.id());
-        args.add(task.due() == null ? "" : String.valueOf(task.due().toEpochMilli()));
-        args.addAll(fields(task));
-        var r = (Long) scripts.run(
-                RedisScripts.ENQUEUE,
-                List.of(keys.task(task.id()), keys.scheduled, keys.queue(task.queue()), keys.dead),
-                args);
-        return r == 1;
-    }
-
-    @Override
-    public void putRecurring(RecurringDefinition d, Instant nextFire) {
-        var args = new ArrayList<String>();
-        args.add(d.scheduleId());
-        args.add(keys.cronPrefix);
-        args.add(String.valueOf(nextFire.toEpochMilli()));
-        args.add(F_EVENT);
-        args.add(d.event());
-        args.add(F_ACCOUNT);
-        args.add(d.account());
-        args.add(F_QUEUE);
-        args.add(d.queue());
-        args.add(F_CRON);
-        args.add(d.cron());
-        args.add(F_MAX);
-        args.add(String.valueOf(d.maxAttempts()));
-        if (d.data() != null) {
-            args.add(F_DATA);
-            args.add(d.data());
+    private static <T> T guard(Supplier<T> call) {
+        try {
+            return call.get();
+        } catch (JedisException e) {
+            throw new TaskStoreException("Redis call failed: " + e.getMessage(), e);
         }
-        scripts.run(RedisScripts.CRON_PUT, List.of(keys.cron, keys.cronRevision), args);
+    }
+
+    private static void guard(Runnable call) {
+        guard(() -> {
+            call.run();
+            return null;
+        });
+    }
+
+    private static String ms(Instant t) {
+        return String.valueOf(t.toEpochMilli());
+    }
+
+    private static long num(Object o) {
+        return o instanceof Long l ? l : Long.parseLong((String) o);
+    }
+
+    // ---- identity and registries ---------------------------------------------------------------------
+
+    @Override
+    public StoreInfo info() {
+        return new StoreInfo("redis", StoreInfo.SCHEMA_VERSION);
     }
 
     @Override
-    public boolean deleteRecurring(String scheduleId) {
-        var r = (Long) scripts.run(RedisScripts.CRON_DELETE, List.of(keys.cron), List.of(scheduleId, keys.cronPrefix));
-        return r == 1;
+    public void init() {
+        guard(() -> {
+            var wanted = String.valueOf(StoreInfo.SCHEMA_VERSION);
+            jedis.hsetnx(keys.meta, SCHEMA, wanted);
+            var found = jedis.hget(keys.meta, SCHEMA);
+            if (!wanted.equals(found)) {
+                throw new TaskStoreException(
+                        "Redis namespace " + keys.namespace + " has schema version " + found + ", expected " + wanted);
+            }
+        });
     }
 
     @Override
-    public Map<String, Instant> recurringSchedules() {
-        var result = new HashMap<String, Instant>();
-        jedis.zrangeWithScores(keys.cron, 0, -1)
-                .forEach(t -> result.put(t.getElement(), Instant.ofEpochMilli((long) t.getScore())));
-        return result;
-    }
-
-    @Override
-    public Optional<TaskRecord> getTask(String id) {
-        var hash = jedis.hgetAll(keys.task(id));
-        if (hash.isEmpty()) return Optional.empty();
-        return Optional.of(fromHash(id, hash));
-    }
-
-    @Override
-    public long queueSize(String queue) {
-        return jedis.llen(keys.queue(queue));
-    }
-
-    @Override
-    public long leasedCount() {
-        return jedis.zcard(keys.leased);
-    }
-
-    @Override
-    public long scheduledCount() {
-        return jedis.zcard(keys.scheduled);
-    }
-
-    @Override
-    public long deadCount() {
-        return jedis.zcard(keys.dead);
-    }
-
-    /** Dead tasks whose hash already expired are skipped. */
-    @Override
-    public List<TaskRecord> deadTasks(int limit) {
-        var result = new ArrayList<TaskRecord>();
-        if (limit <= 0) return result;
-        for (var id : jedis.zrange(keys.dead, 0, limit - 1)) {
-            getTask(id).ifPresent(result::add);
+    public long allocateIds(int count) {
+        if (count < 1) {
+            throw new IllegalArgumentException("count must be positive");
         }
-        return result;
+        return guard(() -> jedis.incrBy(keys.seqId, count)) - count + 1;
     }
 
     @Override
-    public boolean retryDeadTask(String id) {
-        var r = (Long) scripts.run(
-                RedisScripts.RETRY_DEAD, List.of(keys.dead), List.of(keys.taskPrefix, keys.queuePrefix, id));
-        return r == 1;
+    public int allocateWorkerId(String label) {
+        return guard(() -> {
+            var id = (int) jedis.incr(keys.seqWorker);
+            jedis.hset(keys.worker(id), Map.of("label", label == null ? "" : label, "started", ms(Instant.now())));
+            return id;
+        });
     }
 
     @Override
-    public long purgeDeadTasks(Instant diedBefore) {
-        long total = 0;
-        long batch;
-        do {
-            batch = (Long) scripts.run(
-                    RedisScripts.DEAD_PURGE,
-                    List.of(keys.dead),
-                    List.of(String.valueOf(diedBefore.toEpochMilli()), String.valueOf(PURGE_BATCH), keys.taskPrefix));
-            total += batch;
-        } while (batch == PURGE_BATCH);
-        return total;
+    public int queueId(String name) {
+        return register("queue", name, queueIds);
     }
 
-    // ---- transitions ---------------------------------------------------------------------------------
+    @Override
+    public int eventId(String name) {
+        return register("event", name, eventIds);
+    }
+
+    private int register(String kind, String name, Map<String, Integer> cache) {
+        var cached = cache.get(name);
+        if (cached != null) {
+            return cached;
+        }
+        var id = (int) num(guard(() -> scripts.run(RedisScripts.REGISTER, List.of(kind, name))));
+        cache.put(name, id);
+        return id;
+    }
+
+    @Override
+    public Map<Integer, String> queueNames() {
+        return names("queue");
+    }
+
+    @Override
+    public Map<Integer, String> eventNames() {
+        return names("event");
+    }
+
+    private Map<Integer, String> names(String kind) {
+        var raw = guard(() -> jedis.hgetAll(keys.registryNames(kind)));
+        var out = new LinkedHashMap<Integer, String>();
+        raw.forEach((id, name) -> out.put(Integer.valueOf(id), name));
+        return out;
+    }
+
+    // ---- execution -----------------------------------------------------------------------------------
+
+    @Override
+    public EnqueueOutcome enqueue(TaskRecord task) {
+        return outcome(guard(() -> scripts.run(RedisScripts.ENQUEUE, enqueueArgs(task))));
+    }
+
+    @Override
+    public List<EnqueueOutcome> enqueueAll(List<TaskRecord> tasks) {
+        if (tasks.isEmpty()) {
+            return List.of();
+        }
+        var calls = tasks.stream().map(RedisTaskStore::enqueueArgs).toList();
+        return guard(() -> scripts.runAll(RedisScripts.ENQUEUE, calls)).stream()
+                .map(RedisTaskStore::outcome)
+                .toList();
+    }
+
+    private static List<String> enqueueArgs(TaskRecord t) {
+        var args = new ArrayList<String>();
+        args.add(String.valueOf(t.id()));
+        args.add(t.due() == null ? "" : ms(t.due()));
+        args.add(t.uniqueKey() == null ? "" : t.uniqueKey());
+        args.addAll(TaskHashes.fields(t));
+        return args;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static EnqueueOutcome outcome(Object result) {
+        var r = (List<Object>) result;
+        return switch ((int) num(r.get(0))) {
+            case 1 -> EnqueueOutcome.STORED;
+            case 0 -> EnqueueOutcome.EXISTS;
+            default -> new EnqueueOutcome.DuplicateKey(num(r.get(1)));
+        };
+    }
 
     @Override
     @SuppressWarnings("unchecked")
-    public List<TaskRecord> claim(List<String> queues, int count, String tokenBase, Duration lease) {
-        var scriptKeys = new ArrayList<String>(queues.size() + 1);
-        scriptKeys.add(keys.leased);
-        queues.forEach(q -> scriptKeys.add(keys.queue(q)));
-        var r = (List<Object>) scripts.run(
-                RedisScripts.CLAIM,
-                scriptKeys,
-                List.of(
-                        String.valueOf(System.currentTimeMillis()),
-                        String.valueOf(lease.toMillis()),
-                        tokenBase,
-                        String.valueOf(count),
-                        keys.taskPrefix));
+    public List<TaskRecord> claim(ClaimRequest request) {
+        var known = request.knownEventIds();
+        if (request.count() < 1 || request.queueIds().isEmpty() || (known != null && known.isEmpty())) {
+            return List.of();
+        }
+        var args = new ArrayList<String>();
+        args.add(String.valueOf(request.count()));
+        args.add(String.valueOf(request.lease().toMillis()));
+        args.add(String.valueOf(request.workerId()));
+        args.add(known == null ? "" : known.stream().map(String::valueOf).collect(Collectors.joining(",")));
+        request.queueIds().forEach(q -> args.add(String.valueOf(q)));
+        var r = (List<Object>) guard(() -> scripts.run(RedisScripts.CLAIM, args));
         var tasks = new ArrayList<TaskRecord>(r.size());
         for (var entry : r) {
             var flat = (List<Object>) entry;
-            tasks.add(fromHash((String) flat.getFirst(), toMap(flat, 1)));
+            tasks.add(TaskHashes.fromHash(Long.parseLong((String) flat.getFirst()), toMap(flat, 1)));
         }
         return tasks;
     }
 
     @Override
-    public int renew(Map<String, String> tokensById, Duration lease) {
-        if (tokensById.isEmpty()) return 0;
-        var args = new ArrayList<String>(2 + tokensById.size() * 2);
-        args.add(String.valueOf(System.currentTimeMillis() + lease.toMillis()));
-        args.add(keys.taskPrefix);
-        tokensById.forEach((id, token) -> {
-            args.add(id);
-            args.add(token);
-        });
-        return ((Long) scripts.run(RedisScripts.RENEW, List.of(keys.leased), args)).intValue();
+    @SuppressWarnings("unchecked")
+    public List<LeaseStatus> renew(List<LeaseRef> leases, Duration lease) {
+        if (leases.isEmpty()) {
+            return List.of();
+        }
+        var args = new ArrayList<String>();
+        args.add(String.valueOf(lease.toMillis()));
+        for (var l : leases) {
+            args.add(String.valueOf(l.id()));
+            args.add(String.valueOf(l.revision()));
+        }
+        var r = (List<Object>) guard(() -> scripts.run(RedisScripts.RENEW, args));
+        var out = new ArrayList<LeaseStatus>(leases.size());
+        for (var i = 0; i < leases.size(); i++) {
+            var code = num(r.get(i));
+            out.add(new LeaseStatus(leases.get(i).id(), code > 0, code == 2));
+        }
+        return out;
     }
 
     @Override
-    public boolean ack(String id, String token) {
-        var r = (Long) scripts.run(RedisScripts.ACK, List.of(keys.leased), List.of(keys.taskPrefix, id, token));
-        return r == 1;
+    public boolean ack(long id, int revision, boolean keep, boolean keepPayload) {
+        var args = List.of(String.valueOf(id), String.valueOf(revision), keep ? "1" : "0", keepPayload ? "1" : "0");
+        return num(guard(() -> scripts.run(RedisScripts.ACK, args))) == 1;
     }
 
     @Override
-    public FailOutcome fail(String id, String token, Duration retryDelay, String error, Duration keepDeadFor) {
-        return fail(id, token, retryDelay, error, keepDeadFor, "");
+    public FailOutcome fail(long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead) {
+        return fail(id, revision, failure, retryAt, keepDead, false);
     }
 
     @Override
-    public FailOutcome failExpired(String id, String token, Duration retryDelay, String error, Duration keepDeadFor) {
-        return fail(id, token, retryDelay, error, keepDeadFor, "expired");
+    public FailOutcome failExpired(long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead) {
+        return fail(id, revision, failure, retryAt, keepDead, true);
     }
 
+    /**
+     * The failures list is read, extended and written back whole. Only the holder of the current revision passes
+     * the script's fence, and the revision does not change between this read and that write for it.
+     */
     private FailOutcome fail(
-            String id, String token, Duration retryDelay, String error, Duration keepDeadFor, String onlyIf) {
-        var r = (String) scripts.run(
-                RedisScripts.FAIL,
-                List.of(keys.leased, keys.scheduled, keys.dead),
-                List.of(
-                        keys.taskPrefix,
-                        id,
-                        token,
-                        String.valueOf(System.currentTimeMillis()),
-                        retryDelay == null ? "dead" : String.valueOf(retryDelay.toMillis()),
-                        StringUtils.defaultString(error),
-                        String.valueOf(Math.max(1, keepDeadFor.toMillis())),
-                        onlyIf));
-        return FailOutcome.valueOf(r.toUpperCase());
+            long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead, boolean expiredOnly) {
+        return guard(() -> {
+            var failures = new ArrayList<FailureInfo>();
+            var current = RecordJson.decodeFailures(jedis.hget(keys.task(id), F_FAILURES));
+            if (current != null) {
+                failures.addAll(current);
+            }
+            failures.add(failure);
+            var kept = failures.subList(Math.max(0, failures.size() - MAX_FAILURES), failures.size());
+            var r = (String) scripts.run(
+                    RedisScripts.FAIL,
+                    List.of(
+                            String.valueOf(id),
+                            String.valueOf(revision),
+                            retryAt == null ? "" : ms(retryAt),
+                            keepDead ? "1" : "0",
+                            expiredOnly ? "1" : "0",
+                            RecordJson.encodeFailures(kept)));
+            return FailOutcome.valueOf(r);
+        });
     }
 
     @Override
-    public boolean reschedule(String id, String token, Instant due) {
-        var r = (Long) scripts.run(
-                RedisScripts.RESCHEDULE,
-                List.of(keys.leased, keys.scheduled),
-                List.of(keys.taskPrefix, id, token, String.valueOf(due.toEpochMilli())));
-        return r == 1;
+    public boolean reschedule(long id, int revision, Instant due) {
+        var args = List.of(String.valueOf(id), String.valueOf(revision), ms(due));
+        return num(guard(() -> scripts.run(RedisScripts.RESCHEDULE, args))) == 1;
     }
 
     @Override
-    public boolean unclaim(String id, String token) {
-        var r = (Long) scripts.run(
-                RedisScripts.UNCLAIM, List.of(keys.leased), List.of(keys.taskPrefix, keys.queuePrefix, id, token));
-        return r == 1;
+    public boolean unclaim(long id, int revision) {
+        var args = List.of(String.valueOf(id), String.valueOf(revision));
+        return num(guard(() -> scripts.run(RedisScripts.UNCLAIM, args))) == 1;
     }
+
+    @Override
+    public boolean saveSteps(long id, int revision, Map<String, StepResult> steps) {
+        return setField(id, revision, F_STEPS, RecordJson.encodeSteps(steps));
+    }
+
+    @Override
+    public boolean progress(long id, int revision, String progress) {
+        return setField(id, revision, F_PROGRESS, progress);
+    }
+
+    private boolean setField(long id, int revision, String field, String value) {
+        var args = List.of(
+                String.valueOf(id),
+                String.valueOf(revision),
+                field,
+                value == null ? "" : value,
+                value == null ? "1" : "0");
+        return num(guard(() -> scripts.run(RedisScripts.SET_FIELD, args))) == 1;
+    }
+
+    // ---- maintenance ---------------------------------------------------------------------------------
 
     @Override
     @SuppressWarnings("unchecked")
     public PromoteResult promote(int limit) {
-        var r = (List<Object>) scripts.run(
-                RedisScripts.PROMOTE,
-                List.of(keys.scheduled),
-                List.of(
-                        String.valueOf(System.currentTimeMillis()),
-                        String.valueOf(limit),
-                        keys.taskPrefix,
-                        keys.queuePrefix));
-        var hasNext = (Long) r.get(1) == 1;
-        return new PromoteResult(
-                ((Long) r.getFirst()).intValue(), hasNext ? Instant.ofEpochMilli((Long) r.get(2)) : null);
+        var r = (List<Object>) guard(() -> scripts.run(RedisScripts.PROMOTE, List.of(String.valueOf(limit))));
+        var next = num(r.get(1));
+        return new PromoteResult((int) num(r.get(0)), next < 0 ? null : Instant.ofEpochMilli(next));
     }
 
     @Override
     @SuppressWarnings("unchecked")
     public List<ExpiredLease> reclaim(int limit) {
-        var r = (List<Object>) scripts.run(
-                RedisScripts.RECLAIM,
-                List.of(keys.leased),
-                List.of(String.valueOf(System.currentTimeMillis()), String.valueOf(limit), keys.taskPrefix));
-        var result = new ArrayList<ExpiredLease>(r.size());
+        var r = (List<Object>) guard(() -> scripts.run(RedisScripts.RECLAIM, List.of(String.valueOf(limit))));
+        var out = new ArrayList<ExpiredLease>(r.size());
         for (var entry : r) {
             var e = (List<Object>) entry;
-            result.add(new ExpiredLease(
-                    (String) e.get(0),
-                    (String) e.get(1),
-                    Integer.parseInt((String) e.get(2)),
-                    Integer.parseInt((String) e.get(3)),
-                    (String) e.get(4)));
+            out.add(new ExpiredLease(
+                    num(e.get(0)),
+                    (int) num(e.get(1)),
+                    (int) num(e.get(2)),
+                    (int) num(e.get(3)),
+                    (int) num(e.get(4)),
+                    num(e.get(5)) == 1));
         }
+        return out;
+    }
+
+    @Override
+    public long purge(TaskState state, Duration retention, int limit) {
+        if (!state.isTerminal()) {
+            throw new IllegalArgumentException("purge needs a terminal state, got " + state);
+        }
+        var args = List.of(String.valueOf(state.code()), String.valueOf(retention.toMillis()), String.valueOf(limit));
+        return num(guard(() -> scripts.run(RedisScripts.PURGE, args)));
+    }
+
+    @Override
+    public int releaseKeys(int limit) {
+        return (int) num(guard(() -> scripts.run(RedisScripts.RELEASE_KEYS, List.of(String.valueOf(limit)))));
+    }
+
+    @Override
+    public Instant nextDue() {
+        var head = guard(() -> jedis.zrangeWithScores(keys.scheduled, 0, 0));
+        return head.isEmpty()
+                ? null
+                : Instant.ofEpochMilli((long) head.getFirst().getScore());
+    }
+
+    // ---- schedules -----------------------------------------------------------------------------------
+
+    @Override
+    public void putRecurring(RecurringDefinition d, Instant nextFire) {
+        var args = new ArrayList<String>();
+        args.add(d.scheduleId());
+        args.add(ms(nextFire));
+        args.addAll(List.of(
+                F_EVENT,
+                String.valueOf(d.eventId()),
+                F_QUEUE,
+                String.valueOf(d.queueId()),
+                F_PAYLOAD_VERSION,
+                String.valueOf(d.payloadVersion()),
+                F_CRON,
+                d.cron(),
+                F_MAX_ATTEMPTS,
+                String.valueOf(d.maxAttempts())));
+        if (d.account() != null) {
+            args.addAll(List.of(F_ACCOUNT, d.account()));
+        }
+        if (d.data() != null) {
+            args.addAll(List.of(F_DATA, d.data()));
+        }
+        guard(() -> scripts.run(RedisScripts.CRON_PUT, args));
+    }
+
+    @Override
+    public boolean deleteRecurring(String scheduleId) {
+        return num(guard(() -> scripts.run(RedisScripts.CRON_DELETE, List.of(scheduleId)))) == 1;
+    }
+
+    @Override
+    public Map<String, Instant> recurringSchedules() {
+        var result = new LinkedHashMap<String, Instant>();
+        guard(() -> jedis.zrangeWithScores(keys.cron, 0, -1))
+                .forEach(t -> result.put(t.getElement(), Instant.ofEpochMilli((long) t.getScore())));
         return result;
     }
 
     @Override
     @SuppressWarnings("unchecked")
     public List<DueSchedule> dueRecurring(Instant upTo, int limit) {
-        var r = (List<Object>) scripts.run(
-                RedisScripts.CRON_DUE,
-                List.of(keys.cron),
-                List.of(String.valueOf(upTo.toEpochMilli()), String.valueOf(limit), keys.cronPrefix));
-        var result = new ArrayList<DueSchedule>(r.size());
+        var r = (List<Object>)
+                guard(() -> scripts.run(RedisScripts.CRON_DUE, List.of(ms(upTo), String.valueOf(limit))));
+        var out = new ArrayList<DueSchedule>(r.size());
         for (var entry : r) {
             var e = (List<Object>) entry;
             var id = (String) e.get(0);
             var fireAt = Instant.ofEpochMilli((long) Double.parseDouble((String) e.get(1)));
             var d = toMap(e, 2);
-            var definition = new RecurringDefinition(
+            out.add(new DueSchedule(
                     id,
-                    d.get(F_EVENT),
-                    d.get(F_ACCOUNT),
-                    d.get(F_QUEUE),
-                    d.get(F_CRON),
-                    d.get(F_DATA),
-                    parseInt(d.get(F_MAX), 0),
-                    d.get(F_REV) == null ? 0 : Long.parseLong(d.get(F_REV)));
-            result.add(new DueSchedule(id, fireAt, definition));
+                    fireAt,
+                    new RecurringDefinition(
+                            id,
+                            Integer.parseInt(d.get(F_EVENT)),
+                            Integer.parseInt(d.get(F_PAYLOAD_VERSION)),
+                            Integer.parseInt(d.get(F_QUEUE)),
+                            d.get(F_ACCOUNT),
+                            d.get(F_CRON),
+                            d.get(F_DATA),
+                            Integer.parseInt(d.get(F_MAX_ATTEMPTS)),
+                            Long.parseLong(d.get(F_REVISION)))));
         }
-        return result;
+        return out;
     }
 
     @Override
@@ -342,74 +453,161 @@ public class RedisTaskStore implements TaskStore {
         var args = new ArrayList<String>();
         args.add(due.scheduleId());
         args.add(String.valueOf(due.definition().revision()));
-        args.add(String.valueOf(due.fireAt().toEpochMilli()));
-        args.add(String.valueOf(nextFire.toEpochMilli()));
-        args.add(occurrence.id());
-        args.add(keys.cronPrefix);
-        args.add(keys.taskPrefix);
-        args.addAll(fields(occurrence));
-        var r = (Long) scripts.run(RedisScripts.CRON_COMMIT, List.of(keys.cron, keys.scheduled, keys.dead), args);
-        return r == 1;
+        args.add(ms(due.fireAt()));
+        args.add(ms(nextFire));
+        args.add(String.valueOf(occurrence.id()));
+        args.add(occurrence.uniqueKey() == null ? "" : occurrence.uniqueKey());
+        args.addAll(TaskHashes.fields(occurrence));
+        return num(guard(() -> scripts.run(RedisScripts.CRON_COMMIT, args))) == 1;
     }
 
-    // ---- hash mapping --------------------------------------------------------------------------------
+    // ---- inspection ----------------------------------------------------------------------------------
 
-    private static List<String> fields(TaskRecord t) {
-        var fields = new ArrayList<String>();
-        fields.add(F_EVENT);
-        fields.add(t.event());
-        fields.add(F_ACCOUNT);
-        fields.add(t.account());
-        fields.add(F_QUEUE);
-        fields.add(t.queue());
-        fields.add(F_ATTEMPTS);
-        fields.add(String.valueOf(t.attempts()));
-        fields.add(F_MAX);
-        fields.add(String.valueOf(t.maxAttempts()));
-        fields.add(F_CREATED);
-        fields.add(String.valueOf(t.created().toEpochMilli()));
-        if (t.data() != null) {
-            fields.add(F_DATA);
-            fields.add(t.data());
-        }
-        if (t.scheduleId() != null) {
-            fields.add(F_SCHEDULE);
-            fields.add(t.scheduleId());
-        }
-        return fields;
+    @Override
+    public Optional<TaskRecord> getTask(long id) {
+        var hash = guard(() -> jedis.hgetAll(keys.task(id)));
+        return hash.isEmpty() ? Optional.empty() : Optional.of(TaskHashes.fromHash(id, hash));
     }
 
-    static TaskRecord fromHash(String id, Map<String, String> h) {
-        return new TaskRecord(
-                id,
-                h.get(F_EVENT),
-                h.get(F_ACCOUNT),
-                h.get(F_QUEUE),
-                h.get(F_DATA),
-                parseInt(h.get(F_ATTEMPTS), 0),
-                parseInt(h.get(F_MAX), 0),
-                parseInstant(h.get(F_CREATED)),
-                parseInstant(h.get(F_DUE)),
-                h.get(F_TOKEN),
-                parseInstant(h.get(F_LEASE)),
-                h.get(F_SCHEDULE),
-                h.get(F_ERROR),
-                parseInstant(h.get(F_DIED)));
+    @Override
+    public Map<Integer, StateCounts> counts() {
+        return guard(() -> {
+            var out = new LinkedHashMap<Integer, StateCounts>();
+            for (var qid : sortedQueueIds()) {
+                var h = jedis.hgetAll(keys.counters(qid));
+                out.put(
+                        qid,
+                        new StateCounts(
+                                count(h, 0),
+                                count(h, 1),
+                                count(h, 2),
+                                count(h, 3),
+                                count(h, 4),
+                                count(h, 5),
+                                count(h, 6)));
+            }
+            return out;
+        });
+    }
+
+    private static long count(Map<String, String> h, int state) {
+        var v = h.get(String.valueOf(state));
+        return v == null ? 0 : Long.parseLong(v);
+    }
+
+    private List<Integer> sortedQueueIds() {
+        return jedis.smembers(keys.queues).stream()
+                .map(Integer::valueOf)
+                .sorted()
+                .toList();
+    }
+
+    /**
+     * Lists from the structure that holds the state: {@code idx:<state>:<qid>} for LEASED and the terminal states,
+     * {@code q:<qid>} for QUEUED and the global {@code scheduled} zset for SCHEDULED (filtered by queue in Java).
+     * Order is by the zset score, then numeric id: stateChanged for the indexed states, due for QUEUED and
+     * SCHEDULED. The cursor is the score read from the {@code afterId} task, so each page costs a seek plus at
+     * most one chunk of 500 per zset; when that task no longer exists, ids after it are listed from the start.
+     */
+    @Override
+    public List<TaskRecord> tasks(TaskState state, Integer queueId, long afterId, int limit) {
+        if (limit < 1) {
+            return List.of();
+        }
+        return guard(() -> {
+            var cursor = afterId > 0 ? cursorScore(state, afterId) : null;
+            var entries = new ArrayList<Entry>();
+            if (state == TaskState.SCHEDULED) {
+                entries.addAll(
+                        page(keys.scheduled, cursor, afterId, limit, id -> queueId == null || queueOf(id) == queueId));
+            } else {
+                var qids = queueId == null ? sortedQueueIds() : List.of(queueId);
+                for (var qid : qids) {
+                    var zset = state == TaskState.QUEUED ? keys.queue(qid) : keys.index(state.code(), qid);
+                    entries.addAll(page(zset, cursor, afterId, limit, id -> true));
+                }
+            }
+            entries.sort(ORDER);
+            var out = new ArrayList<TaskRecord>();
+            for (var e : entries.subList(0, Math.min(limit, entries.size()))) {
+                getTask(e.id()).ifPresent(out::add);
+            }
+            return out;
+        });
+    }
+
+    private record Entry(double score, long id) {}
+
+    private static final Comparator<Entry> ORDER =
+            Comparator.comparingDouble(Entry::score).thenComparingLong(Entry::id);
+
+    private Double cursorScore(TaskState state, long afterId) {
+        var v = jedis.hmget(
+                keys.task(afterId),
+                F_STATE,
+                state == TaskState.QUEUED || state == TaskState.SCHEDULED ? F_DUE : F_STATE_CHANGED);
+        return v.get(0) != null && v.get(1) != null && Integer.parseInt(v.get(0)) == state.code()
+                ? Double.valueOf(v.get(1))
+                : null;
+    }
+
+    private int queueOf(long id) {
+        var q = jedis.hget(keys.task(id), F_QUEUE);
+        return q == null ? -1 : Integer.parseInt(q);
+    }
+
+    /**
+     * Reads one zset in (score, numeric id) order after the cursor. Redis breaks score ties by member bytes, so a
+     * chunk's trailing score group is re-read whole before it is ordered by number.
+     */
+    private List<Entry> page(
+            String zset, Double cursor, long afterId, int limit, java.util.function.LongPredicate accept) {
+        var out = new ArrayList<Entry>();
+        var min = cursor == null ? "-inf" : String.valueOf((long) cursor.doubleValue());
+        while (out.size() < limit) {
+            var chunk = jedis.zrangeByScoreWithScores(zset, min, "+inf", 0, PAGE_CHUNK);
+            if (chunk.isEmpty()) {
+                break;
+            }
+            var full = chunk.size() == PAGE_CHUNK;
+            var lastScore = chunk.getLast().getScore();
+            String nextMin = null;
+            if (full) {
+                var kept = chunk.stream().filter(t -> t.getScore() < lastScore).toList();
+                if (kept.isEmpty()) {
+                    var group = (long) lastScore;
+                    chunk = jedis.zrangeByScoreWithScores(
+                            zset, String.valueOf(group), String.valueOf(group), 0, Integer.MAX_VALUE);
+                    nextMin = "(" + group;
+                } else {
+                    chunk = kept;
+                    nextMin = String.valueOf((long) lastScore);
+                }
+            }
+            var ordered = new ArrayList<Entry>(chunk.size());
+            for (var t : chunk) {
+                ordered.add(new Entry(t.getScore(), Long.parseLong(t.getElement())));
+            }
+            ordered.sort(ORDER);
+            for (var e : ordered) {
+                var after = cursor == null ? e.id() > afterId : ORDER.compare(e, new Entry(cursor, afterId)) > 0;
+                if (after && accept.test(e.id())) {
+                    out.add(e);
+                }
+            }
+            if (nextMin == null) {
+                break;
+            }
+            min = nextMin;
+        }
+        return out;
     }
 
     private static Map<String, String> toMap(List<Object> flat, int from) {
         var map = new HashMap<String, String>();
-        for (int i = from; i + 1 < flat.size(); i += 2) {
+        for (var i = from; i + 1 < flat.size(); i += 2) {
             map.put((String) flat.get(i), (String) flat.get(i + 1));
         }
         return map;
-    }
-
-    private static int parseInt(String s, int fallback) {
-        return s == null ? fallback : Integer.parseInt(s);
-    }
-
-    private static Instant parseInstant(String millis) {
-        return millis == null ? null : Instant.ofEpochMilli(Long.parseLong(millis));
     }
 }

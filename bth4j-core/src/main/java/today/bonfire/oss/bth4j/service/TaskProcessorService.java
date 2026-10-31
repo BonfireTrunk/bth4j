@@ -4,18 +4,17 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Consumer;
-import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import today.bonfire.oss.bth4j.common.QueuesHolder;
-import today.bonfire.oss.bth4j.common.Random;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.executor.BackgroundExecutor;
 import today.bonfire.oss.bth4j.executor.CustomThread;
+import today.bonfire.oss.bth4j.spi.ClaimRequest;
+import today.bonfire.oss.bth4j.spi.LeaseRef;
+import today.bonfire.oss.bth4j.spi.TaskRecord;
 
 /**
  * Claims tasks and hands them to the executor.
@@ -23,48 +22,43 @@ import today.bonfire.oss.bth4j.executor.CustomThread;
  * Every iteration first reserves executor slots, then claims at most that many tasks in one call, so a
  * claimed task always has a slot. The queues are tried round robin. When nothing was claimed the thread
  * sleeps for the idle poll interval; one claim covers all queues, so an idle runner costs one store call
- * per interval.
+ * per interval. A quiet runner keeps the loop but claims nothing.
  * <p>
- * A renewal thread extends the leases of all running tasks every third of the lease duration. It keeps
- * running after {@link #stopThread()} until {@link #stopLeaseRenewal()} is called, so that tasks still
- * finishing during shutdown keep their leases.
+ * A renewal thread extends the leases of all running tasks every third of the lease duration and passes
+ * cancel requests on to the running executions. It keeps running after {@link #stopThread()} until
+ * {@link #stopLeaseRenewal()} is called, so that tasks still finishing during shutdown keep their leases.
  */
 public class TaskProcessorService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(TaskProcessorService.class);
 
     private final BackgroundExecutor executor;
-    private final TaskOps taskOps;
-    private final QueuesHolder queuesHolder;
-    private final TaskCallbacks regularCallbacks;
-    private final TaskCallbacks recurringCallbacks;
-    private final Consumer<Task> taskHandler;
-    private final Function<Integer, Duration> retryDelay;
+    private final TaskExecution.Settings settings;
+    private final List<Integer> queueIds;
+    private final Set<Integer> knownEventIds;
+    private final int workerId;
     private final Duration lease;
     private final Duration idlePollInterval;
     private final int claimBatchSize;
-
-    private final String instanceId = Random.generateNewToken(6);
-    private final AtomicLong claimCounter = new AtomicLong();
     private final AtomicInteger queueOffset = new AtomicInteger();
     /** shared with the runner so that a restarted processor keeps renewing the tasks its predecessor started */
-    private final Map<String, Task> running;
+    private final Map<Long, TaskExecution> running;
 
     private final Thread renewer;
     private volatile boolean renewalRunning = true;
+    private volatile boolean quiet;
 
     private TaskProcessorService(Builder b) {
         super(b.group, b.threadName);
         this.executor = b.executor;
-        this.taskOps = b.taskOps;
+        this.settings = b.settings;
+        this.queueIds = List.copyOf(b.queueIds);
+        this.knownEventIds = Set.copyOf(b.knownEventIds);
+        this.workerId = b.workerId;
         this.running = b.running;
-        this.queuesHolder = taskOps.queuesHolder();
-        this.regularCallbacks = b.regularCallbacks;
-        this.recurringCallbacks = b.recurringCallbacks;
-        this.retryDelay = b.retryDelay;
         this.lease = b.lease;
         this.idlePollInterval = b.idlePollInterval;
         this.claimBatchSize = b.claimBatchSize;
-        this.taskHandler = task -> b.registry.executeTask(task, taskOps::decodeData);
+        this.quiet = b.quiet;
         this.renewer = new Thread(b.group, this::renewLeases, b.threadName + "-lease");
         this.renewer.setDaemon(true);
     }
@@ -98,28 +92,31 @@ public class TaskProcessorService extends CustomThread {
     }
 
     private void processOnce() throws InterruptedException {
+        if (quiet) {
+            Thread.sleep(idlePollInterval);
+            return;
+        }
         int slots = executor.reserve(claimBatchSize, idlePollInterval);
         if (slots == 0 || !canContinueProcessing) {
             executor.release(slots);
             return;
         }
-        List<Task> tasks;
+        List<TaskRecord> tasks;
         try {
-            tasks = taskOps.claim(rotatedQueues(), slots, instanceId + ":" + claimCounter.incrementAndGet(), lease);
+            tasks = settings.store().claim(new ClaimRequest(rotatedQueues(), slots, lease, workerId, knownEventIds));
         } catch (RuntimeException e) {
             executor.release(slots);
             throw e;
         }
         executor.release(slots - tasks.size());
-        for (var task : tasks) {
-            running.put(task.uniqueId(), task);
-            var callbacks = task.event().isRecurring() ? recurringCallbacks : regularCallbacks;
+        for (var record : tasks) {
+            var execution = new TaskExecution(record, settings, this::finished);
+            running.put(record.id(), execution);
             try {
-                executor.execute(
-                        new TaskRunnerWrapper(task, taskHandler, callbacks, taskOps, retryDelay, this::finished));
+                executor.execute(execution);
             } catch (RuntimeException e) {
-                finished(task);
-                returnToQueue(task, e);
+                finished(execution);
+                returnToQueue(execution, e);
             }
         }
         if (tasks.isEmpty()) {
@@ -127,34 +124,35 @@ public class TaskProcessorService extends CustomThread {
         }
     }
 
-    private void returnToQueue(Task task, RuntimeException cause) {
+    private void returnToQueue(TaskExecution execution, RuntimeException cause) {
         try {
-            if (!taskOps.unclaim(task)) {
-                log.warn("Task {} was rejected by the executor and its lease was lost", task.uniqueId());
+            if (!settings.store().unclaim(execution.taskId(), execution.revision())) {
+                log.warn("Task {} was rejected by the executor and its lease was lost", execution.taskId());
             }
         } catch (RuntimeException e) {
             log.error(
-                    "Task {} was rejected by the executor and could not be returned to its queue", task.uniqueId(), e);
+                    "Task {} was rejected by the executor and could not be returned to its queue",
+                    execution.taskId(),
+                    e);
         }
-        log.warn("Executor rejected task {}, returned to its queue", task.uniqueId(), cause);
+        log.warn("Executor rejected task {}, returned to its queue", execution.taskId(), cause);
     }
 
     /**
      * Removes this attempt from the running tasks. Only this attempt: the same id may already be running again
-     * when a retry was claimed while this attempt's callbacks were still executing.
+     * when a retry was claimed while this attempt was finishing.
      */
-    private void finished(Task task) {
-        running.remove(task.uniqueId(), task);
+    private void finished(TaskExecution execution) {
+        running.remove(execution.taskId(), execution);
     }
 
     /** The queues to process, starting one position later on every call. */
-    private List<String> rotatedQueues() {
-        var queues = queuesHolder.queuesToProcess;
-        int n = queues.size();
+    private List<Integer> rotatedQueues() {
+        int n = queueIds.size();
         int start = Math.floorMod(queueOffset.getAndIncrement(), n);
-        var rotated = new ArrayList<String>(n);
+        var rotated = new ArrayList<Integer>(n);
         for (int i = 0; i < n; i++) {
-            rotated.add(queues.get((start + i) % n));
+            rotated.add(queueIds.get((start + i) % n));
         }
         return rotated;
     }
@@ -164,15 +162,27 @@ public class TaskProcessorService extends CustomThread {
         while (renewalRunning) {
             sleepQuietly(interval);
             if (running.isEmpty()) continue;
-            var tasks = List.copyOf(running.values());
+            var executions = List.copyOf(running.values());
+            var refs = new ArrayList<LeaseRef>(executions.size());
+            for (var e : executions) refs.add(new LeaseRef(e.taskId(), e.revision()));
             try {
-                int renewed = taskOps.renew(tasks, lease);
-                if (renewed < tasks.size()) {
-                    log.warn(
-                            "Only {} of {} leases could be renewed, the others were taken over", renewed, tasks.size());
+                var statuses = settings.store().renew(refs, lease);
+                int lost = 0;
+                for (int i = 0; i < statuses.size() && i < executions.size(); i++) {
+                    var status = statuses.get(i);
+                    var execution = executions.get(i);
+                    if (!status.owned()) {
+                        lost++;
+                        execution.leaseLost();
+                    } else if (status.cancelRequested()) {
+                        execution.requestCancel();
+                    }
+                }
+                if (lost > 0) {
+                    log.warn("{} of {} leases could not be renewed, those tasks were taken over", lost, refs.size());
                 }
             } catch (RuntimeException e) {
-                log.error("Lease renewal failed for {} running tasks", tasks.size(), e);
+                log.error("Lease renewal failed for {} running tasks", refs.size(), e);
             }
         }
     }
@@ -190,6 +200,15 @@ public class TaskProcessorService extends CustomThread {
         return running.size();
     }
 
+    /** Stops claiming new tasks; running ones finish. */
+    public void quiet(boolean quiet) {
+        this.quiet = quiet;
+    }
+
+    public boolean isQuiet() {
+        return quiet;
+    }
+
     /** Stops renewing leases. Call it after the executor has terminated. */
     public void stopLeaseRenewal() {
         renewalRunning = false;
@@ -200,79 +219,85 @@ public class TaskProcessorService extends CustomThread {
         private ThreadGroup group;
         private String threadName;
         private BackgroundExecutor executor;
-        private TaskOps taskOps;
-        private TaskProcessorRegistry registry;
-        private TaskCallbacks regularCallbacks = TaskCallbacks.noOp();
-        private TaskCallbacks recurringCallbacks = TaskCallbacks.noOp();
-        private Function<Integer, Duration> retryDelay = attempt -> Duration.ZERO;
+        private TaskExecution.Settings settings;
+        private List<Integer> queueIds;
+        private Set<Integer> knownEventIds;
+        private int workerId;
         private Duration lease = Duration.ofSeconds(60);
-        private Duration idlePollInterval = Duration.ofSeconds(1);
+        private Duration idlePollInterval = Duration.ofMillis(500);
         private int claimBatchSize = 32;
-        private Map<String, Task> running = new ConcurrentHashMap<>();
+        private boolean quiet;
+        private Map<Long, TaskExecution> running = new ConcurrentHashMap<>();
 
-        public Builder setGroup(ThreadGroup group) {
+        public Builder group(ThreadGroup group) {
             this.group = group;
             return this;
         }
 
-        public Builder setThreadName(String threadName) {
+        public Builder threadName(String threadName) {
             this.threadName = threadName;
             return this;
         }
 
-        public Builder setExecutor(BackgroundExecutor executor) {
+        public Builder executor(BackgroundExecutor executor) {
             this.executor = executor;
             return this;
         }
 
-        public Builder setTaskOps(TaskOps taskOps) {
-            this.taskOps = taskOps;
+        public Builder settings(TaskExecution.Settings settings) {
+            this.settings = settings;
             return this;
         }
 
-        public Builder setTaskProcessorRegistry(TaskProcessorRegistry registry) {
-            this.registry = registry;
+        public Builder queueIds(List<Integer> queueIds) {
+            this.queueIds = queueIds;
             return this;
         }
 
-        public Builder setCallbacks(TaskCallbacks regular, TaskCallbacks recurring) {
-            this.regularCallbacks = regular == null ? TaskCallbacks.noOp() : regular;
-            this.recurringCallbacks = recurring == null ? TaskCallbacks.noOp() : recurring;
+        public Builder knownEventIds(Set<Integer> knownEventIds) {
+            this.knownEventIds = knownEventIds;
             return this;
         }
 
-        public Builder setRetryDelay(Function<Integer, Duration> retryDelay) {
-            this.retryDelay = retryDelay;
+        public Builder workerId(int workerId) {
+            this.workerId = workerId;
             return this;
         }
 
-        public Builder setLease(Duration lease) {
+        public Builder lease(Duration lease) {
             this.lease = lease;
             return this;
         }
 
-        public Builder setIdlePollInterval(Duration idlePollInterval) {
+        public Builder idlePollInterval(Duration idlePollInterval) {
             this.idlePollInterval = idlePollInterval;
             return this;
         }
 
-        public Builder setClaimBatchSize(int claimBatchSize) {
+        public Builder claimBatchSize(int claimBatchSize) {
             this.claimBatchSize = claimBatchSize;
             return this;
         }
 
+        public Builder quiet(boolean quiet) {
+            this.quiet = quiet;
+            return this;
+        }
+
         /** The tasks being executed, to hand over from a processor that died to its replacement. */
-        public Builder setRunning(Map<String, Task> running) {
+        public Builder running(Map<Long, TaskExecution> running) {
             this.running = running;
             return this;
         }
 
         public TaskProcessorService create() {
-            if (registry == null) throw new TaskConfigurationError("TaskProcessorRegistry is required");
-            if (executor == null) throw new TaskConfigurationError("TaskExecutor is required");
-            if (taskOps == null) throw new TaskConfigurationError("TaskOps is required");
-            if (group == null || threadName == null)
+            if (settings == null) throw new TaskConfigurationError("settings are required");
+            if (executor == null) throw new TaskConfigurationError("executor is required");
+            if (queueIds == null || queueIds.isEmpty()) throw new TaskConfigurationError("queueIds are required");
+            if (knownEventIds == null) throw new TaskConfigurationError("knownEventIds are required");
+            if (group == null || threadName == null) {
                 throw new TaskConfigurationError("Thread group and name are required");
+            }
             return new TaskProcessorService(this);
         }
     }
