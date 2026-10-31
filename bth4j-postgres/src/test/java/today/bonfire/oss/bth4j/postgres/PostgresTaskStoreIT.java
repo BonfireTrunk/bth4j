@@ -1141,6 +1141,30 @@ class PostgresTaskStoreIT {
     }
 
     @Test
+    void reputtingADefinitionKeepsItsPausedFlag() {
+        var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MICROS);
+        store.putRecurring(definition("kept", "0 * * * *"), fireAt);
+        store.pauseRecurring("kept", true);
+
+        store.putRecurring(definition("kept", "0 * * * *"), fireAt);
+        assertThat(store.recurringDefinitions().getFirst().definition().paused())
+                .isTrue();
+        assertThat(store.dueRecurring(Instant.now(), 10)).isEmpty();
+
+        store.pauseRecurring("kept", false);
+        store.putRecurring(definition("kept", "0 * * * *").withPaused(true), fireAt);
+        assertThat(store.recurringDefinitions().getFirst().definition().paused())
+                .isFalse();
+        assertThat(store.dueRecurring(Instant.now(), 10)).hasSize(1);
+
+        store.putRecurring(definition("new", "0 * * * *").withPaused(true), fireAt);
+        assertThat(store.recurringDefinitions())
+                .filteredOn(s -> s.definition().scheduleId().equals("new"))
+                .singleElement()
+                .satisfies(s -> assertThat(s.definition().paused()).isTrue());
+    }
+
+    @Test
     void setNextFireReplacesTheFireTimeAndFencesAnOlderCommit() {
         var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MICROS);
         store.putRecurring(definition("n", "0 * * * *"), fireAt);
