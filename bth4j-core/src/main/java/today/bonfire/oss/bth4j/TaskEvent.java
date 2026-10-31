@@ -15,6 +15,9 @@ public sealed interface TaskEvent {
         LOST
     }
 
+    /** A task passed its {@link TaskView#startBy()} before it could run and was moved to EXPIRED. */
+    record Expired(long id) implements TaskEvent {}
+
     /** A task was claimed and its processor is about to run. */
     record Started(TaskView task, int workerId) implements TaskEvent {}
 

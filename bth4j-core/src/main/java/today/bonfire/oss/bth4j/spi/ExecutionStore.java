@@ -98,4 +98,13 @@ public interface ExecutionStore extends TaskStore {
      * @return false when the revision did not match
      */
     boolean progress(long id, int revision, String progress);
+
+    /**
+     * Ends a LEASED task whose worker stopped it on a cancel request: state CANCELLED, {@code cancelReason}
+     * set, {@code cancelRequestedAt} kept or set now, lease cleared, unique key handled like {@link #ack}.
+     *
+     * @param keepPayload false drops {@link TaskRecord#data()}
+     * @return false when the revision did not match
+     */
+    boolean finishCancelled(long id, int revision, String reason, boolean keepPayload);
 }

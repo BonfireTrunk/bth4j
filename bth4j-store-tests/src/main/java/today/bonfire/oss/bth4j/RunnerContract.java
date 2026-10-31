@@ -573,6 +573,350 @@ public abstract class RunnerContract {
         assertThat(Collections.unmodifiableSet(executions.keySet())).containsExactlyInAnyOrderElementsOf(ids);
     }
 
+    // ---- wave 2: cancellation, expiry, policies, admin, health ------------------------------------------
+
+    @Test
+    void cancelRequestWhileRunningEndsTheTaskAsCancelled() throws Exception {
+        var started = new CountDownLatch(1);
+        var events = new CopyOnWriteArrayList<TaskEvent>();
+        var runner = startRunner(
+                b -> b.observer(events::add),
+                r -> r.register(VOID_TYPE, (ctx, payload) -> {
+                    started.countDown();
+                    while (true) {
+                        ctx.checkCancelled();
+                        pause(10);
+                    }
+                }));
+        long id = enqueue(TaskRequest.of(VOID_TYPE).build());
+        assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
+        var running = awaitState(id, TaskState.LEASED);
+
+        var outcome = runner.admin().cancel(id, running.revision(), "operator says stop");
+
+        assertThat(outcome).isEqualTo(today.bonfire.oss.bth4j.spi.CancelOutcome.REQUESTED);
+        var done = awaitState(id, TaskState.CANCELLED);
+        assertThat(done.cancelReason()).isEqualTo("operator says stop");
+        assertThat(done.revision()).isEqualTo(running.revision() + 1);
+        assertThat(done.data()).isNull();
+        await("the cancelled event", () -> eventNames(events, id).contains("Cancelled"));
+        assertThat(eventNames(events, id)).containsExactly("Started", "Cancelled");
+    }
+
+    @Test
+    void cancelOfAQueuedTaskIsImmediateAndRetryBringsItBack() throws Exception {
+        var ran = new CountDownLatch(1);
+        var runner = buildRunner(b -> {}, r -> r.register(VOID_TYPE, (ctx, payload) -> ran.countDown()));
+        runner.quiet();
+        runner.start();
+        long id = enqueue(TaskRequest.of(VOID_TYPE).build());
+        var queued = client.task(id).orElseThrow();
+
+        assertThat(runner.admin().cancel(id, queued.revision(), null))
+                .isEqualTo(today.bonfire.oss.bth4j.spi.CancelOutcome.CANCELLED);
+        var cancelled = client.task(id).orElseThrow();
+        assertThat(cancelled.state()).isEqualTo(TaskState.CANCELLED);
+        assertThat(cancelled.cancelReason()).isEqualTo("cancelled by operator");
+        assertThat(runner.admin().cancel(id, queued.revision(), null))
+                .isEqualTo(today.bonfire.oss.bth4j.spi.CancelOutcome.STALE);
+
+        assertThat(runner.admin().retry(id, cancelled.revision())).isTrue();
+        runner.resume();
+        awaitState(id, TaskState.SUCCEEDED);
+        assertThat(ran.await(20, TimeUnit.SECONDS)).isTrue();
+    }
+
+    @Test
+    void maxRunCancelsATaskThatRunsTooLong() {
+        startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {
+            while (true) {
+                ctx.checkCancelled();
+                pause(10);
+            }
+        }));
+
+        long id =
+                enqueue(TaskRequest.of(VOID_TYPE).maxRun(Duration.ofMillis(200)).build());
+
+        var done = awaitState(id, TaskState.CANCELLED);
+        assertThat(done.cancelReason()).contains("max run time");
+    }
+
+    @Test
+    void interruptOnCancelWakesABlockedProcessor() throws Exception {
+        var interruptible = TaskType.of("rc-interruptible").interruptOnCancel();
+        var started = new CountDownLatch(1);
+        var runner = startRunner(r -> r.register(interruptible, (ctx, payload) -> {
+            started.countDown();
+            Thread.sleep(30_000);
+        }));
+        long id = enqueue(TaskRequest.of(interruptible).build());
+        assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
+        var running = awaitState(id, TaskState.LEASED);
+
+        runner.admin().cancel(id, running.revision(), "wake up");
+
+        var done = awaitState(id, TaskState.CANCELLED);
+        assertThat(done.cancelReason()).isEqualTo("wake up");
+    }
+
+    @Test
+    void taskThatMissesItsStartByTimeExpiresWithoutRunning() throws Exception {
+        var ran = new CountDownLatch(1);
+        var events = new CopyOnWriteArrayList<TaskEvent>();
+        var runner = buildRunner(
+                b -> b.observer(events::add), r -> r.register(VOID_TYPE, (ctx, payload) -> ran.countDown()));
+        runner.quiet();
+        runner.start();
+
+        long id = enqueue(
+                TaskRequest.of(VOID_TYPE).startBy(Instant.now().plusMillis(300)).build());
+
+        var expired = awaitState(id, TaskState.EXPIRED);
+        assertThat(expired.attempts()).isZero();
+        runner.resume();
+        pause(300);
+        assertThat(ran.getCount()).isEqualTo(1);
+        await("the expired event", () -> eventNames(events, id).contains("Expired"));
+    }
+
+    @Test
+    void namedRetryPolicyDecidesAndAnUnknownNameFallsBackToTheDefault() {
+        var calls = new AtomicInteger();
+        var runner = startRunner(
+                b -> b.retryPolicy("never", (task, error) -> RetryPolicy.Decision.dead("policy says no")),
+                r -> r.register(VOID_TYPE, (ctx, payload) -> {
+                    calls.incrementAndGet();
+                    throw new IllegalStateException("boom");
+                }));
+
+        long never = enqueue(TaskRequest.of(VOID_TYPE).retryPolicy("never").build());
+        long unknown = enqueue(TaskRequest.of(VOID_TYPE)
+                .retryPolicy("no-such-policy")
+                .maxAttempts(2)
+                .build());
+
+        var dead = awaitState(never, TaskState.DEAD);
+        assertThat(dead.attempts()).isEqualTo(1);
+        var retried = awaitTask(unknown, "to reach attempt 2", v -> v.attempts() >= 2);
+        assertThat(retried.attempts()).isEqualTo(2);
+        await(
+                "the retry-policy issue",
+                () -> runner.issues().stream().anyMatch(i -> i.kind().equals("retry-policy")));
+    }
+
+    @Test
+    void pausedQueueIsNotClaimedUntilResumed() {
+        var ran = new CountDownLatch(1);
+        var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> ran.countDown()));
+        runner.admin().pauseQueue("Q:DEF", true);
+        assertThat(runner.admin().queues()).anyMatch(q -> q.name().equals("Q:DEF") && q.paused());
+
+        long id = enqueue(TaskRequest.of(VOID_TYPE).build());
+        pause(400);
+        assertThat(client.task(id).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
+
+        runner.admin().pauseQueue("Q:DEF", false);
+
+        awaitState(id, TaskState.SUCCEEDED);
+        assertThat(ran.getCount()).isZero();
+    }
+
+    @Test
+    void drainWaitsForRunningTasksAndHealthReportsTheRunner() throws Exception {
+        var started = new CountDownLatch(1);
+        var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {
+            started.countDown();
+            pause(400);
+        }));
+        assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.RUNNING);
+        assertThat(runner.health().workerId()).isPositive();
+
+        long id = enqueue(TaskRequest.of(VOID_TYPE).build());
+        assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
+        assertThat(runner.health().running()).isEqualTo(1);
+
+        assertThat(runner.drain(Duration.ofSeconds(10))).isTrue();
+
+        assertThat(runner.runningTasks()).isZero();
+        assertThat(client.task(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        var health = runner.health();
+        assertThat(health.status()).isEqualTo(RunnerHealth.Status.QUIET);
+        assertThat(health.lastClaimAt()).isNotNull();
+        await(
+                "the worker heartbeat",
+                () -> runner.admin().workers().stream()
+                        .anyMatch(w -> w.id() == runner.workerId() && w.lastSeen() != null));
+        assertThat(runner.admin().health()).isPresent();
+    }
+
+    @Test
+    void fixedDelayScheduleReArmsAfterSuccessAndPausesAfterADeadOccurrence() {
+        var okRuns = new AtomicInteger();
+        var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> okRuns.incrementAndGet())
+                .register(OTHER_TYPE, (ctx, payload) -> {
+                    throw new TaskUnrecoverableException("always");
+                }));
+
+        client.putSchedule(ScheduleDefinition.every("tick", VOID_TYPE, Duration.ofSeconds(1)));
+        client.putSchedule(ScheduleDefinition.every("broken", OTHER_TYPE, Duration.ofSeconds(1)));
+
+        await("two ticks", () -> okRuns.get() >= 2);
+        await(
+                "the broken schedule to pause",
+                () -> runner.admin().schedules().stream().anyMatch(s -> s.id().equals("broken") && s.paused()));
+        var broken = runner.admin().schedules().stream()
+                .filter(s -> s.id().equals("broken"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(broken.fixedDelay()).isEqualTo(Duration.ofSeconds(1));
+        assertThat(runner.issues()).anyMatch(i -> i.kind().equals("schedule-paused"));
+        var tick = runner.admin().schedules().stream()
+                .filter(s -> s.id().equals("tick"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(tick.paused()).isFalse();
+        assertThat(tick.nextFire()).isAfter(Instant.now().minusSeconds(2));
+    }
+
+    @Test
+    void misfireFireOnceNowCreatesOneOccurrenceAndMovesOn() {
+        var runs = new AtomicInteger();
+        var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));
+        registerLate(
+                "late-once",
+                "* * * * *",
+                today.bonfire.oss.bth4j.spi.RecurringDefinition.MISFIRE_FIRE_ONCE_NOW,
+                0,
+                Duration.ofMinutes(10));
+
+        await("one catch-up run", () -> runs.get() == 1);
+        await("a future fire time", () -> client.schedules().get("late-once").isAfter(Instant.now()));
+        pause(300);
+        assertThat(runs.get()).isEqualTo(1);
+        assertThat(runner.issues()).anyMatch(i -> i.kind().equals("schedule-misfire"));
+    }
+
+    @Test
+    void misfireSkipCreatesNothing() {
+        var runs = new AtomicInteger();
+        var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));
+        registerLate(
+                "late-skip",
+                "* * * * *",
+                today.bonfire.oss.bth4j.spi.RecurringDefinition.MISFIRE_SKIP,
+                0,
+                Duration.ofMinutes(10));
+
+        await("a future fire time", () -> client.schedules().get("late-skip").isAfter(Instant.now()));
+        pause(300);
+        assertThat(runs.get()).isZero();
+        assertThat(client.tasks(TaskState.QUEUED, null, 0, 10)).isEmpty();
+        assertThat(runner.issues()).anyMatch(i -> i.kind().equals("schedule-misfire"));
+    }
+
+    @Test
+    void misfireCatchUpCreatesAtMostTheConfiguredOccurrences() {
+        var runs = new AtomicInteger();
+        startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));
+        registerLate(
+                "late-catch",
+                "* * * * *",
+                today.bonfire.oss.bth4j.spi.RecurringDefinition.MISFIRE_CATCH_UP,
+                2,
+                Duration.ofMinutes(10));
+
+        await("two catch-up runs", () -> runs.get() == 2);
+        await("a future fire time", () -> client.schedules().get("late-catch").isAfter(Instant.now()));
+        pause(300);
+        assertThat(runs.get()).isEqualTo(2);
+    }
+
+    @Test
+    void overlapSkipDoesNotStartASecondOccurrenceWhileTheFirstRuns() throws Exception {
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var runs = new AtomicInteger();
+        var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {
+            runs.incrementAndGet();
+            started.countDown();
+            release.await();
+        }));
+        client.putSchedule(
+                ScheduleDefinition.of("guarded", VOID_TYPE, "0 0 1 1 *").overlap(Overlap.SKIP));
+
+        assertThat(runner.admin().triggerSchedule("guarded")).isTrue();
+        assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
+        assertThat(runner.admin().triggerSchedule("guarded")).isTrue();
+        await(
+                "the overlap issue",
+                () -> runner.issues().stream().anyMatch(i -> i.kind().equals("schedule-overlap")));
+        assertThat(runs.get()).isEqualTo(1);
+        var guarded = runner.admin().schedules().stream()
+                .filter(s -> s.id().equals("guarded"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(guarded.overlapSkip()).isTrue();
+        assertThat(guarded.nextFire()).isAfter(Instant.now());
+
+        release.countDown();
+        await(
+                "the first occurrence to finish",
+                () -> client.tasks(TaskState.LEASED, null, 0, 10).isEmpty());
+        assertThat(runner.admin().triggerSchedule("guarded")).isTrue();
+        await("a second run", () -> runs.get() == 2);
+    }
+
+    @Test
+    void scheduleZoneAndPauseAreStoredAndVisible() {
+        var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {}));
+        client.putSchedule(ScheduleDefinition.of("kolkata", VOID_TYPE, "30 9 * * *")
+                .zone(java.time.ZoneId.of("Asia/Kolkata"))
+                .misfire(Misfire.SKIP));
+
+        var view = runner.admin().schedules().stream()
+                .filter(s -> s.id().equals("kolkata"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(view.zone()).isEqualTo("Asia/Kolkata");
+        assertThat(view.misfire()).isEqualTo("SKIP");
+        assertThat(view.cron()).isEqualTo("30 9 * * *");
+        assertThat(view.nextFire().atZone(java.time.ZoneId.of("Asia/Kolkata")).getHour())
+                .isEqualTo(9);
+
+        assertThat(runner.admin().pauseSchedule("kolkata", true)).isTrue();
+        assertThat(runner.admin().schedules().stream()
+                        .filter(s -> s.id().equals("kolkata"))
+                        .findFirst()
+                        .orElseThrow()
+                        .paused())
+                .isTrue();
+        assertThat(runner.admin().pauseSchedule("kolkata", false)).isTrue();
+        assertThat(runner.admin().pauseSchedule("missing", true)).isFalse();
+        assertThat(runner.admin().deleteSchedule("kolkata")).isTrue();
+    }
+
+    /** Stores a cron definition whose next fire is {@code late} in the past, as a runner that was down would find it. */
+    private void registerLate(String id, String cron, String misfire, int catchUpMax, Duration late) {
+        var def = new today.bonfire.oss.bth4j.spi.RecurringDefinition(
+                id,
+                store.eventId(VOID_TYPE.name()),
+                1,
+                store.queueId("Q:DEF"),
+                null,
+                cron,
+                null,
+                misfire,
+                catchUpMax,
+                null,
+                false,
+                null,
+                3,
+                false,
+                0);
+        store.putRecurring(def, Instant.now().minus(late));
+    }
+
     private static List<String> eventNames(List<TaskEvent> events, long id) {
         var names = new ArrayList<String>();
         for (var event : List.copyOf(events)) {
@@ -591,6 +935,7 @@ public abstract class RunnerContract {
             case TaskEvent.Cancelled e -> e.task().id();
             case TaskEvent.LeaseExpired e -> e.id();
             case TaskEvent.Deferred e -> e.id();
+            case TaskEvent.Expired e -> e.id();
             case TaskEvent.ScheduleFired e -> e.taskId();
             case TaskEvent.Purged e -> -1L;
         };

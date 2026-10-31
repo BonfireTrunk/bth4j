@@ -19,8 +19,14 @@ public final class TaskType<T> {
     private final Class<T> payloadClass;
     private final PayloadCodec<T> codec;
     private final int payloadVersion;
+    private final boolean interruptOnCancel;
 
     private TaskType(String name, Class<T> payloadClass, PayloadCodec<T> codec, int payloadVersion) {
+        this(name, payloadClass, codec, payloadVersion, false);
+    }
+
+    private TaskType(
+            String name, Class<T> payloadClass, PayloadCodec<T> codec, int payloadVersion, boolean interruptOnCancel) {
         if (StringUtils.isBlank(name) || name.length() > 128) {
             throw new TaskConfigurationError("Task type name must be 1 to 128 characters: " + name);
         }
@@ -31,6 +37,7 @@ public final class TaskType<T> {
         this.payloadClass = payloadClass;
         this.codec = codec;
         this.payloadVersion = payloadVersion;
+        this.interruptOnCancel = interruptOnCancel;
     }
 
     /** A task type whose payload is written as JSON by the configured mapper. */
@@ -49,7 +56,20 @@ public final class TaskType<T> {
     }
 
     public TaskType<T> payloadVersion(int version) {
-        return new TaskType<>(name, payloadClass, codec, version);
+        return new TaskType<>(name, payloadClass, codec, version, interruptOnCancel);
+    }
+
+    /**
+     * Interrupts the processor's thread when a cancel request arrives or the task's maximum run time passes,
+     * so blocking calls and sleeps wake up. Off by default: the processor must then poll
+     * {@link TaskContext#checkCancelled()}.
+     */
+    public TaskType<T> interruptOnCancel() {
+        return new TaskType<>(name, payloadClass, codec, payloadVersion, true);
+    }
+
+    public boolean isInterruptOnCancel() {
+        return interruptOnCancel;
     }
 
     public String name() {

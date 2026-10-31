@@ -27,11 +27,14 @@ import today.bonfire.oss.bth4j.executor.BackgroundExecutor;
 import today.bonfire.oss.bth4j.executor.CustomThread;
 import today.bonfire.oss.bth4j.executor.DefaultVtExecutor;
 import today.bonfire.oss.bth4j.executor.FixedExecutor;
+import today.bonfire.oss.bth4j.service.DefaultAdminOps;
 import today.bonfire.oss.bth4j.service.MaintenanceService;
 import today.bonfire.oss.bth4j.service.Names;
 import today.bonfire.oss.bth4j.service.Observers;
 import today.bonfire.oss.bth4j.service.RecurringTaskService;
+import today.bonfire.oss.bth4j.service.RetryPolicies;
 import today.bonfire.oss.bth4j.service.RunnerServices;
+import today.bonfire.oss.bth4j.service.RunnerStatus;
 import today.bonfire.oss.bth4j.service.ScheduledTaskService;
 import today.bonfire.oss.bth4j.service.TaskExecution;
 import today.bonfire.oss.bth4j.service.TaskProcessorService;
@@ -59,6 +62,9 @@ public final class BackgroundRunner {
     private final ThreadGroup threadGroup;
     private final ScheduledExecutorService scheduler;
     private final QueuesHolder queues;
+    private final RunnerStatus status;
+    private final RetryPolicies retryPolicies;
+    private final AdminOps admin;
 
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final AtomicBoolean stopped = new AtomicBoolean(false);
@@ -83,6 +89,8 @@ public final class BackgroundRunner {
         this.queues = b.queues();
         this.names = new Names(store);
         this.observer = new Observers(b.observer);
+        this.status = new RunnerStatus(b.clock);
+        this.retryPolicies = new RetryPolicies(b.retryPolicy, b.namedRetryPolicies);
         this.taskExecutor = b.taskExecutor != null
                 ? b.taskExecutor
                 : switch (b.concurrency) {
@@ -98,6 +106,7 @@ public final class BackgroundRunner {
                 .queues(queues)
                 .names(names)
                 .build();
+        this.admin = new DefaultAdminOps(store, names, queues, b.clock, this::health, status::issues);
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread thread = new Thread(threadGroup, r, "BackgroundRunner-Monitor");
             thread.setDaemon(true);
@@ -129,6 +138,33 @@ public final class BackgroundRunner {
         return runningTasks.size();
     }
 
+    /** Operator view and operations, including this runner's {@link #health()} and {@link #issues()}. */
+    public AdminOps admin() {
+        return admin;
+    }
+
+    public RunnerHealth health() {
+        var s = stopped.get()
+                ? RunnerHealth.Status.STOPPED
+                : !started.get()
+                        ? RunnerHealth.Status.NEW
+                        : quiet ? RunnerHealth.Status.QUIET : RunnerHealth.Status.RUNNING;
+        return new RunnerHealth(
+                s,
+                workerId,
+                runningTasks.size(),
+                status.lastClaimAt(),
+                status.lastMaintenanceAt(),
+                status.lastStoreErrorAt(),
+                status.lastStoreError(),
+                status.issueCount());
+    }
+
+    /** @return what this runner noticed and an operator should look at, oldest first, at most 100 */
+    public List<Issue> issues() {
+        return status.issues();
+    }
+
     /**
      * Starts all services and the monitor that restarts a service if its thread dies. Returns after
      * starting. Calling it a second time, or after {@link #stop()}, logs a warning and does nothing.
@@ -152,6 +188,8 @@ public final class BackgroundRunner {
             workerId = store.allocateWorkerId(config.workerLabel);
             var queueIds = new ArrayList<Integer>();
             for (var q : queues.queuesToProcess) queueIds.add(names.queueId(q));
+            var policies = new LinkedHashMap<Integer, QueuePolicy>();
+            config.queuePolicies.forEach((q, p) -> policies.put(names.queueId(q), p));
             var eventIds = new HashSet<Integer>();
             for (var e : registry.typeNames()) eventIds.add(names.eventId(e));
             services = new RunnerServices(
@@ -160,13 +198,15 @@ public final class BackgroundRunner {
                     client.codecs(),
                     client.ids(),
                     registry,
-                    config.retryPolicy,
+                    retryPolicies,
                     observer,
                     config.clock,
+                    status,
                     !config.succeededRetention.isZero(),
                     config.keepSucceededPayload,
                     !config.deadRetention.isZero(),
                     List.copyOf(queueIds),
+                    policies,
                     Set.copyOf(eventIds),
                     workerId);
             taskProcessorService = startTaskProcessorService();
@@ -200,6 +240,27 @@ public final class BackgroundRunner {
 
     public boolean isQuiet() {
         return quiet;
+    }
+
+    /**
+     * {@link #quiet()}, then waits until no task runs on this instance or the timeout passes. The runner
+     * stays quiet afterwards; call {@link #resume()} or {@link #stop()}.
+     *
+     * @return true when every running task finished within the timeout
+     */
+    public boolean drain(Duration timeout) {
+        quiet();
+        var deadline = System.nanoTime() + timeout.toNanos();
+        while (!runningTasks.isEmpty()) {
+            if (System.nanoTime() >= deadline) return false;
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return runningTasks.isEmpty();
+            }
+        }
+        return true;
     }
 
     private void checkServices() {
@@ -341,9 +402,11 @@ public final class BackgroundRunner {
                 .group(threadGroup)
                 .threadName("RecurringTaskService")
                 .store(store)
+                .inspection(store)
                 .ids(client.ids())
                 .observer(observer)
                 .clock(config.clock)
+                .status(status)
                 .checkInterval(config.recurringTasksCheckInterval)
                 .batchSize(config.claimBatchSize * 4)
                 .create();
@@ -362,15 +425,18 @@ public final class BackgroundRunner {
                 .threadName("Maintenance")
                 .store(store)
                 .names(names)
-                .retryPolicy(config.retryPolicy)
+                .retryPolicies(retryPolicies)
                 .observer(observer)
                 .clock(config.clock)
+                .status(status)
                 .checkInterval(config.maintenanceCheckInterval)
                 .purgeInterval(config.purgeInterval)
                 .retention(retention)
                 .keepDead(!config.deadRetention.isZero())
                 .batchSize(config.claimBatchSize * 4)
                 .purgeBatchSize(config.purgeBatchSize)
+                .worker(workerId, runningTasks::size)
+                .workerStaleAfter(config.workerStaleAfter)
                 .create();
         service.start();
         return service;
@@ -384,10 +450,13 @@ public final class BackgroundRunner {
         private Concurrency concurrency = Concurrency.defaultConcurrency();
         private BackgroundExecutor taskExecutor;
         private RetryPolicy retryPolicy = RetryPolicy.defaultPolicy();
+        private final Map<String, RetryPolicy> namedRetryPolicies = new LinkedHashMap<>();
+        private final Map<String, QueuePolicy> queuePolicies = new LinkedHashMap<>();
+        private Duration workerStaleAfter = Duration.ofMinutes(10);
         private TaskObserver observer;
         private String workerLabel = defaultWorkerLabel();
         private String threadGroupName = "bgr";
-        private Duration succeededRetention = Duration.ofHours(48);
+        private Duration succeededRetention = Duration.ofMinutes(10);
         private Duration deadRetention = Duration.ofDays(90);
         private Duration cancelledRetention = Duration.ofHours(48);
         private boolean keepSucceededPayload;
@@ -461,6 +530,37 @@ public final class BackgroundRunner {
             return this;
         }
 
+        /**
+         * A policy requests may pick by name with {@code TaskRequest.retryPolicy(name)}. A task naming an
+         * unknown policy uses the default one and the runner records an issue.
+         */
+        public Builder retryPolicy(String name, RetryPolicy retryPolicy) {
+            if (StringUtils.isBlank(name) || name.length() > 64) {
+                throw new TaskConfigurationError("retry policy name must be 1 to 64 characters");
+            }
+            if (retryPolicy == null) throw new TaskConfigurationError("retryPolicy cannot be null");
+            this.namedRetryPolicies.put(name, retryPolicy);
+            return this;
+        }
+
+        /**
+         * How this runner shares its slots between queues. The queue must be one it processes; queues without
+         * a policy get {@link QueuePolicy#DEFAULT}. Any policy other than the default switches the runner from
+         * one claim per cycle to one claim per queue.
+         */
+        public Builder queue(String name, QueuePolicy policy) {
+            if (StringUtils.isBlank(name)) throw new TaskConfigurationError("queue name cannot be blank");
+            if (policy == null) throw new TaskConfigurationError("policy cannot be null");
+            this.queuePolicies.put(name, policy);
+            return this;
+        }
+
+        /** Worker rows without a heartbeat for this long are deleted by the purge. Default 10 minutes. */
+        public Builder workerStaleAfter(Duration staleAfter) {
+            this.workerStaleAfter = requirePositive(staleAfter, "workerStaleAfter");
+            return this;
+        }
+
         public Builder observer(TaskObserver observer) {
             this.observer = observer;
             return this;
@@ -482,7 +582,7 @@ public final class BackgroundRunner {
             return this;
         }
 
-        /** How long succeeded tasks are kept for inspection. Zero removes them at once. Default 48 hours. */
+        /** How long succeeded tasks are kept for inspection. Zero removes them at once. Default 10 minutes. */
         public Builder succeededRetention(Duration retention) {
             this.succeededRetention = requireNonNegative(retention, "succeededRetention");
             return this;
@@ -632,6 +732,11 @@ public final class BackgroundRunner {
             }
             if (!availableQueues.contains(defaultQueue)) {
                 throw new TaskConfigurationError("Default queue " + defaultQueue + " is not an available queue");
+            }
+            for (var q : queuePolicies.keySet()) {
+                if (!queuesToProcess.contains(q)) {
+                    throw new TaskConfigurationError("Queue policy for " + q + ", which this runner does not process");
+                }
             }
             return new QueuesHolder(availableQueues, queuesToProcess, defaultQueue);
         }

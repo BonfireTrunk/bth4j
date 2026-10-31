@@ -19,6 +19,7 @@ import today.bonfire.oss.bth4j.exceptions.EnqueueFailedException;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.service.Codecs;
+import today.bonfire.oss.bth4j.service.DefaultAdminOps;
 import today.bonfire.oss.bth4j.service.IdAllocator;
 import today.bonfire.oss.bth4j.service.Names;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
@@ -45,6 +46,7 @@ public final class TaskClient {
     private final QueuesHolder queues;
     private final Clock clock;
     private final int defaultMaxAttempts;
+    private final AdminOps admin;
 
     TaskClient(Builder b) {
         this.store = b.store;
@@ -54,6 +56,7 @@ public final class TaskClient {
         this.queues = b.queues;
         this.clock = b.clock;
         this.defaultMaxAttempts = b.defaultMaxAttempts;
+        this.admin = new DefaultAdminOps(store, names, queues, clock, null, null);
     }
 
     public static Builder builder() {
@@ -115,6 +118,20 @@ public final class TaskClient {
         return results;
     }
 
+    /**
+     * Validates and encodes a request into the record the store would receive, with its id allocated, for
+     * callers that write the record themselves, for example inside their own database transaction with
+     * {@code PostgresTaskStore.enqueue(Connection, TaskRecord)}.
+     */
+    public TaskRecord prepare(TaskRequest<?> request) {
+        return toRecord(request);
+    }
+
+    /** Operator view and operations over this store; runner health and issues are empty here. */
+    public AdminOps admin() {
+        return admin;
+    }
+
     private static EnqueueResult result(long id, EnqueueOutcome outcome) {
         return switch (outcome) {
             case EnqueueOutcome.Stored s -> new EnqueueResult.Accepted(id);
@@ -168,16 +185,28 @@ public final class TaskClient {
 
     /**
      * Creates or replaces a recurring definition. Re-registering with the same cron expression keeps the next
-     * fire time; a changed expression resets it.
+     * fire time; a changed expression resets it. A fixed-delay definition first fires one delay from now.
      *
      * @return the next fire time
      */
     public <T> Instant putSchedule(ScheduleDefinition<T> definition) {
-        Cron.validate(definition.cron());
         var now = clock.instant();
-        var next = Cron.next(definition.cron(), now)
-                .orElseThrow(() -> new TaskValidationException("Cron expression never fires: " + definition.cron()));
+        Instant next;
+        if (definition.isFixedDelay()) {
+            next = now.plus(definition.fixedDelay());
+        } else {
+            Cron.validate(definition.cron());
+            var zone = definition.zone();
+            next = Cron.next(definition.cron(), now, zone)
+                    .orElseThrow(
+                            () -> new TaskValidationException("Cron expression never fires: " + definition.cron()));
+        }
         var type = definition.type();
+        var misfire = switch (definition.misfire()) {
+            case Misfire.Skip s -> RecurringDefinition.MISFIRE_SKIP;
+            case Misfire.FireOnceNow f -> RecurringDefinition.MISFIRE_FIRE_ONCE_NOW;
+            case Misfire.CatchUp c -> RecurringDefinition.MISFIRE_CATCH_UP;
+        };
         var stored = new RecurringDefinition(
                 definition.id(),
                 names.eventId(type.name()),
@@ -185,11 +214,21 @@ public final class TaskClient {
                 names.queueId(queues.getValidQueue(definition.queue())),
                 definition.account(),
                 definition.cron(),
+                definition.zone() == null ? null : definition.zone().getId(),
+                misfire,
+                definition.misfire() instanceof Misfire.CatchUp c ? c.max() : 0,
+                definition.fixedDelay() == null ? null : definition.fixedDelay().toMillis(),
+                definition.overlap() == Overlap.SKIP,
                 codecs.encode(type, definition.payload()),
                 definition.maxAttempts() != null ? definition.maxAttempts() : defaultMaxAttempts,
+                false,
                 0);
         store.putRecurring(stored, next);
-        log.info("Registered schedule {} ({}) next at {}", definition.id(), definition.cron(), next);
+        log.info(
+                "Registered schedule {} ({}) next at {}",
+                definition.id(),
+                definition.isFixedDelay() ? "every " + definition.fixedDelay() : definition.cron(),
+                next);
         return next;
     }
 

@@ -10,7 +10,7 @@ BTH4J handles three kinds of work:
 
 * **Immediate tasks:** enqueued and run as soon as a worker is free.
 * **Scheduled tasks:** enqueued with a delay or a run time.
-* **Recurring tasks:** a cron definition that creates one task per fire time.
+* **Recurring tasks:** a cron or fixed-delay definition that creates one task per fire time.
 
 A task has a type (`TaskType`) with a payload, a queue, an optional unique key, a retry budget and, while
 running, a lease that the runner renews. A processor can split its work into durable steps so that a retry
@@ -40,13 +40,33 @@ Add `bth4j-core` and one store module. Add `bth4j-testing` for tests.
 </dependency>
 ```
 
+The metrics and the admin HTTP server are separate modules; add them when you use them:
+
+```xml
+<dependency>
+    <groupId>today.bonfire.oss</groupId>
+    <artifactId>bth4j-micrometer</artifactId>
+    <version>3.0.0</version>
+</dependency>
+<dependency>
+    <groupId>today.bonfire.oss</groupId>
+    <artifactId>bth4j-admin-http</artifactId>
+    <version>3.0.0</version>
+</dependency>
+```
+
 | Module | Content |
 |---|---|
 | `bth4j-core` | task model, runner, services, the store interface (`today.bonfire.oss.bth4j.spi`) |
 | `bth4j-redis` | `RedisTaskStore`: Redis 7.0 or newer, also on Redis Cluster; uses Jedis |
 | `bth4j-postgres` | `PostgresTaskStore`: PostgreSQL 9.5 or newer; uses only `java.sql`, the application supplies the JDBC driver and a pooled `DataSource` |
 | `bth4j-testing` | `InMemoryStore` and `MutableClock` for tests of applications |
-| `bth4j-store-tests` | `StoreContract`, the tests every store must pass (not published) |
+| `bth4j-micrometer` | `MicrometerTaskObserver` and `MicrometerRunnerMetrics`; `micrometer-core` is a provided dependency, the application supplies it |
+| `bth4j-admin-http` | `AdminHttpServer`: a JSON admin API over `AdminOps` on the JDK HTTP server, with users, roles and sessions; no dependencies besides `bth4j-core` |
+| `bth4j-store-tests` | `StoreContract` and `RunnerContract`, the tests every store must pass (not published) |
+
+The `dashboard/` directory is not a Maven module: it holds the operator dashboard, a static Vue app that the
+admin HTTP server can serve (see "Admin HTTP server and dashboard").
 
 Requires Java 21.
 
@@ -135,12 +155,14 @@ enqueue --(no due)--> QUEUED --claim--> LEASED --ack--> SUCCEEDED
                   +-------reschedule------+  +--lease expired-------> retried by maintenance
 ```
 
-CANCELLED and EXPIRED are reserved: nothing moves a task there in this version.
+A task also ends CANCELLED (an operator cancelled it, its processor threw `TaskCancelledException` or it ran
+past its `maxRun`) or EXPIRED (its `startBy` passed before it could start). From DEAD, CANCELLED or EXPIRED
+an operator can send it back to QUEUED with `AdminOps.retry`.
 
 A runner is made of four services: the task processor (claims in batches and runs the tasks, renews their
 leases), the scheduled task service (promotes due tasks), the recurring task service (creates occurrences of
-recurring definitions) and the maintenance service (retries expired leases, purges finished tasks, releases
-unique keys). A monitor restarts a service whose thread died.
+recurring definitions) and the maintenance service (retries expired leases, expires tasks past their
+`startBy`, writes the worker heartbeat, purges finished tasks, releases unique keys, removes stale workers). A monitor restarts a service whose thread died.
 
 ## Usage
 
@@ -183,12 +205,28 @@ a task at most 64 KiB.
 | `delay(duration)` / `at(instant)` | run later; the last one set wins |
 | `uniqueKey(key)` / `uniqueKey(key, Uniqueness.keepFor(d))` | at most one task holds the key; released when the task finishes, or `d` after |
 | `maxAttempts(n)` | attempts before the task is dead; the runner default when absent |
+| `startBy(instant)` | the task expires if it has not started by then, see "Cancelling tasks"; must not be before the run time |
+| `maxRun(duration)` | an attempt running longer is asked to stop, see "Cancelling tasks" |
+| `retryPolicy(name)` | a retry policy registered on the runner with that name, see "Retries" |
 | `account(text)`, `header(name, value)` | application labels, stored with the task (8 KiB of headers) |
 | `id(id)` | an id from `client.nextId()`, see below |
 
 `enqueue` returns `Accepted(id)` or `Duplicate(existingId)`; `enqueueAll` stores many requests in chunks.
-Payloads are limited to 256 KiB. A request also accepts `startBy`, `maxRun` and `retryPolicy`; they are
-stored with the task but not acted on in this version.
+Payloads are limited to 256 KiB.
+
+`client.prepare(request)` validates and encodes a request into a `TaskRecord` with its id allocated, without
+writing it. With PostgreSQL, `PostgresTaskStore.enqueue(Connection, TaskRecord)` stores that record on your
+own connection and does not commit, so the task exists only if your transaction commits:
+
+```java
+TaskRecord record = client.prepare(TaskRequest.of(SEND_MAIL, mail).build());
+try (Connection c = dataSource.getConnection()) {
+    c.setAutoCommit(false);
+    // ... your own writes on c ...
+    postgresStore.enqueue(c, record);
+    c.commit();
+}
+```
 
 If the store cannot be reached, `enqueue` throws `EnqueueFailedException` and the caller does not know
 whether the task was stored. Ids are allocated by the client before the write, so the retry is safe:
@@ -203,15 +241,90 @@ try {
 }
 ```
 
+### Cancelling tasks
+
+An operator cancels a task through `AdminOps` (see "Admin API"), with the revision it saw:
+
+```java
+AdminOps admin = runner.admin();
+TaskView task = admin.task(id).orElseThrow();
+CancelOutcome outcome = admin.cancel(task.id(), task.revision(), "customer withdrew the order");
+```
+
+A QUEUED or SCHEDULED task becomes CANCELLED at once (`CANCELLED`). A LEASED task only gets the request
+(`REQUESTED`): the running runner sees it on the next lease renewal, within a third of `leaseDuration`, and
+the task ends CANCELLED when the processor stops. `STALE` means the revision or state had changed and nothing
+was done. The reason (default "cancelled by operator", at most 512 characters) stays on the task.
+
+The processor decides how to stop. `ctx.cancelRequested()` shows the request and `ctx.checkCancelled()`
+throws `TaskCancelledException`, which ends the task CANCELLED. A task type declared with `interruptOnCancel()`
+also has its thread interrupted, so sleeps and blocking calls wake up; the exception that follows is treated
+as the cancellation:
+
+```java
+static final TaskType<Export> EXPORT = TaskType.of("export", Export.class).interruptOnCancel();
+
+runner.registry().register(EXPORT, (ctx, export) -> {
+    for (var part : export.parts()) {
+        ctx.checkCancelled();                     // ends the task as cancelled when an operator asked
+        write(part);
+    }
+});
+```
+
+Starting a new `ctx.step` also checks. A processor that never checks and is not interruptible runs to its end
+and the task ends SUCCEEDED; the request is not applied after a normal return. If the worker dies while a cancel is pending, maintenance
+ends the task CANCELLED when its lease expires instead of retrying it.
+
+`maxRun(duration)` uses the same path: when an attempt has run longer, the lease renewal asks it to stop with
+the reason "max run time ... exceeded". `startBy(instant)` expires a task that did not start in time:
+claims skip it, maintenance moves it to EXPIRED and the observer receives `TaskEvent.Expired`.
+
+```java
+client.enqueue(TaskRequest.of(EXPORT, export)
+        .startBy(Instant.now().plus(Duration.ofMinutes(10)))   // expired, not run, if no worker was free by then
+        .maxRun(Duration.ofMinutes(30))                        // asked to stop after 30 minutes
+        .build());
+```
+
 ### Recurring tasks
 
 `client.putSchedule(ScheduleDefinition.of(id, type, payload, cron))` creates or replaces a definition and
 returns the next fire time; `.queue(...)`, `.account(...)` and `.maxAttempts(...)` refine it. The cron
-expression has 5 fields (Unix format) and is evaluated in UTC. Each fire time creates one task, exactly once
-across all instances. Missed fire times are skipped: after downtime a definition fires once for the stored
-fire time and then continues from now. Registering the same id with the same expression keeps the next
-fire time; a changed expression resets it. `client.deleteSchedule(id)` and `client.schedules()` remove and
-list definitions.
+expression has 5 fields (Unix format). Each fire time creates one task, exactly once across all instances.
+Registering the same id with the same timing (expression, zone and delay) keeps the next fire time; changed
+timing resets it. `client.deleteSchedule(id)` and `client.schedules()` remove and list definitions.
+
+More options on `ScheduleDefinition`:
+
+```java
+// cron in a time zone (UTC by default); a fire time that does not exist in a DST gap moves to the next valid
+// instant, a repeated hour fires once
+client.putSchedule(ScheduleDefinition.of("daily-digest", DIGEST, "0 8 * * *")
+        .zone(ZoneId.of("Europe/Berlin")));
+
+// misfire: what happens when a fire time was missed by more than the threshold (below)
+client.putSchedule(ScheduleDefinition.of("hourly-sync", SYNC, "0 * * * *")
+        .misfire(Misfire.catchUp(3)));          // Misfire.SKIP, Misfire.FIRE_ONCE_NOW (default), Misfire.catchUp(max)
+
+// overlap: no new occurrence while the previous one has not finished
+client.putSchedule(ScheduleDefinition.of("nightly-report", NIGHTLY_REPORT, "30 2 * * *")
+        .overlap(Overlap.SKIP));
+
+// fixed delay: the next occurrence is due one delay after the previous one succeeded
+client.putSchedule(ScheduleDefinition.every("poll-feed", POLL_FEED, Duration.ofMinutes(5)));
+```
+
+The misfire threshold is twice `recurringTasksCheckInterval`, at least one minute. `SKIP` creates nothing and
+continues from now, `FIRE_ONCE_NOW` creates one task now, `CATCH_UP` creates one task per missed fire time up
+to `max` (the most recent ones when more were missed) and continues from now. Every misfire is recorded as an
+issue. With `Overlap.SKIP`, an occurrence is skipped (and an issue `schedule-overlap` recorded) while the task
+of the previous one is not finished. A fixed-delay definition (at least 1 second) first fires one delay after
+registration; if an occurrence ends DEAD or CANCELLED (in its processor, through an expired lease or by an
+operator cancel) the definition is paused and an issue `schedule-paused` is recorded, so a failing job does
+not run again until an operator resumes it. Pausing,
+resuming and triggering a definition are `AdminOps` operations; a paused cron definition keeps its stored next
+fire time.
 
 ### Queues
 
@@ -225,6 +338,26 @@ BackgroundRunner.builder()
                          "default")                                 // queue of requests that name none
 ```
 
+### Queue policies and pausing
+
+A `QueuePolicy(weight, maxConcurrent)` shares a runner's free executor slots between its queues. Free slots
+are divided in proportion to the weights (default 1), each queue is capped at `maxConcurrent` tasks of that
+queue running on this runner at once (0 means no limit), and a queue that cannot fill its share lets the others
+use it. A runner with any policy claims once per queue instead of once per cycle; queues without a policy have
+weight 1 and no limit. Limits are per runner, not per fleet.
+
+```java
+BackgroundRunner.builder()
+        .configureQueues(List.of("default", "mail", "reports"), List.of("default", "mail", "reports"), "default")
+        .queue("mail", QueuePolicy.weight(3))                   // three times the share of the others
+        .queue("reports", QueuePolicy.maxConcurrent(2))         // never more than two reports at once here
+        .queue("default", new QueuePolicy(2, 0))
+```
+
+`admin.pauseQueue("mail", true)` makes every runner stop claiming from that queue, and
+`admin.pauseQueue("mail", false)` resumes it. Enqueueing to a paused queue still works. A runner notices the
+change on its next claim.
+
 ### Retries
 
 The default retry policy waits 1 s after the first failed attempt, doubles per attempt, caps at 1 hour and
@@ -232,10 +365,23 @@ varies each delay by up to 20 percent. Replace it with `retryPolicy(RetryPolicy.
 `RetryPolicy.fixed(delay)` or your own `RetryPolicy`, which returns `RetryAfter(delay)` or `Dead(reason)`.
 The runner ends the task as dead anyway when the attempts are used up (10 by default).
 
+Register policies under a name and let a request choose one:
+
+```java
+BackgroundRunner.builder()
+        .retryPolicy("slow-api", RetryPolicy.exponential(Duration.ofMinutes(1), Duration.ofHours(6)))
+        ...
+
+client.enqueue(TaskRequest.of(SEND_MAIL, mail).retryPolicy("slow-api").build());
+```
+
+A task that names a policy the runner does not have uses the default policy, and the runner records a
+`retry-policy` issue.
+
 ### Observing a runner
 
 A `TaskObserver` receives `TaskEvent`s (`Started`, `Succeeded`, `Retrying`, `Died`, `Rescheduled`,
-`LeaseExpired`, `Deferred`, `ScheduleFired`, `Purged`). It runs on the thread that produced the event,
+`Cancelled`, `Expired`, `LeaseExpired`, `Deferred`, `ScheduleFired`, `Purged`). It runs on the thread that produced the event,
 after the outcome was applied, and an exception in it never changes a task:
 
 ```java
@@ -249,6 +395,9 @@ BackgroundRunner.builder()
         })
 ```
 
+`new LoggingTaskObserver()` is a ready observer that writes one SLF4J line per event (logger `bth4j.tasks`) and
+puts `bth4j.task`, `bth4j.event` and `bth4j.queue` in the MDC; pass your own `Logger` to use another name.
+
 ### Inspection
 
 ```java
@@ -259,10 +408,132 @@ client.tasks(TaskState.DEAD, "mail", 0, 100);     // oldest state change first; 
 
 A `TaskView` carries state, attempts, due time, the last failures, completed steps and progress.
 
+### Health and issues
+
+```java
+RunnerHealth health = runner.health();     // status NEW, RUNNING, QUIET or STOPPED; workerId, running tasks,
+                                           // lastClaimAt, lastMaintenanceAt, lastStoreErrorAt, lastStoreError, issueCount
+List<Issue> issues = runner.issues();      // the last 100 things an operator should look at, oldest first
+boolean drained = runner.drain(Duration.ofSeconds(30));   // quiet, then wait for the running tasks
+```
+
+An `Issue` has a time, a kind, a detail and the task id when there is one. The kinds are `unknown-event`,
+`store-error`, `lease-lost`, `retry-policy`, `executor-rejected`, `schedule-misfire`, `schedule-overlap` and
+`schedule-paused`. Issues live in the memory of the runner that saw them. `drain` leaves the runner quiet
+(call `resume()` to claim again, or `stop()`), and returns whether every running task finished in time; use it
+before a rolling restart.
+
+Each runner also writes a heartbeat (last seen time and running tasks) to the worker registry every
+`maintenanceCheckInterval`, and maintenance deletes workers that were silent for `workerStaleAfter` (10
+minutes by default). `admin.workers()` lists them.
+
+### Admin API
+
+`AdminOps` is the operator's view and set of operations over one store. `runner.admin()` also reports that
+runner's health and issues; `client.admin()` works in a process without a runner, where `health()` is empty and
+`issues()` is an empty list.
+
+```java
+AdminOps admin = runner.admin();
+
+admin.counts();                                    // Map<queue name, StateCounts>
+admin.queues();                                    // id, name, paused
+admin.tasks(TaskState.DEAD, "mail", 0, 100);       // oldest state change first, afterId for paging; queue null for all
+admin.task(id);                                    // Optional<TaskView>
+admin.retry(id, revision);                         // DEAD, CANCELLED or EXPIRED back to QUEUED, attempts reset
+admin.cancel(id, revision, "reason");              // CANCELLED, REQUESTED or STALE
+admin.delete(id, revision);                        // any state but LEASED
+admin.pauseQueue("mail", true);
+admin.schedules();                                 // ScheduleView: cron, zone, misfire, fixed delay, paused, next fire
+admin.pauseSchedule("poll-feed", false);           // resume; a fixed-delay definition is re-armed one delay from now
+admin.triggerSchedule("nightly-report");           // fires at the next recurring check
+admin.deleteSchedule("nightly-report");
+admin.workers();
+admin.purgeStaleWorkers(Duration.ofMinutes(10));
+```
+
+Every change to a task takes the revision the operator saw. If the task changed meanwhile, nothing is done and
+the call returns `false` or `STALE`. A retried task keeps its failures and steps, but loses its unique key (the
+key was released when the task ended and may belong to another task now) and its `startBy`, so a retried
+expired task does not expire again.
+
+### Metrics
+
+`bth4j-micrometer` needs `micrometer-core` on the classpath. Register the observer for events and bind the
+gauges for state:
+
+```java
+MeterRegistry registry = ...;                      // your Micrometer registry
+
+var runner = BackgroundRunner.builder()
+        .store(store)
+        .observer(new MicrometerTaskObserver(registry, Tags.of("app", "billing")))
+        .build();
+...
+runner.start();
+MicrometerRunnerMetrics metrics = MicrometerRunnerMetrics.bind(runner, registry, Duration.ofSeconds(15));
+// on shutdown: metrics.close();
+```
+
+| Meter | Type | Tags |
+|---|---|---|
+| `bth4j.tasks` | counter | `event`, `queue`, `result` (`succeeded`, `retried`, `died`, `rescheduled`, `cancelled`, `expired`, `lease_lost`), `outcome` (`applied`, `lost`) |
+| `bth4j.task.duration` | timer | `event`, `queue` |
+| `bth4j.deferred` | counter | `event` |
+| `bth4j.schedule.fired` | counter | none |
+| `bth4j.purged` | counter | `state` |
+| `bth4j.runner.running` | gauge | none |
+| `bth4j.runner.up` | gauge | none; 1 while the runner is RUNNING |
+| `bth4j.tasks.state` | gauge | `state`, `queue` |
+
+The observer's tags are only names and results, never ids or messages, so the number of meters stays bounded.
+`expired` and `lease_lost` are counted with `event` and `queue` set to `unknown`. The gauges are refreshed by
+one daemon thread every `refresh`, so a scrape never reads the store.
+
+### Admin HTTP server and dashboard
+
+`bth4j-admin-http` serves `AdminOps` as a JSON API under `/api/v1` on the JDK HTTP server:
+
+```java
+var server = AdminHttpServer.builder()
+        .admin(runner.admin())
+        .bind("127.0.0.1", 8787)                          // the default
+        .user("ops", System.getenv("BTH4J_OPS_PASSWORD"), Role.ADMIN)
+        .user("support", System.getenv("BTH4J_SUPPORT_PASSWORD"), Role.VIEWER)
+        .staticDir(Path.of("dashboard"))                  // serves the dashboard at http://127.0.0.1:8787/
+        .build();
+server.start();
+// on shutdown: server.stop();
+```
+
+At least one user is required. `Role.ADMIN` may read and change; `Role.VIEWER` may read everything, including
+task payloads, and every mutation answers 403. A client signs in with `POST /api/v1/session` (`{"user", "password"}`),
+receives the `bth4j_session` cookie (`HttpOnly`, `SameSite=Strict`) and a CSRF token in the reply, and sends the token
+as `X-CSRF-Token` on every POST and DELETE. Sessions are kept in memory, last 12 hours after the last request
+(`sessionTtl`) and end when the server stops. Five failed logins in a row block that remote address for 10
+seconds (HTTP 429). A stale revision is answered 409, an unknown id 404; task ids and revisions are JSON strings.
+The endpoints are `me`, `session`, `health`, `overview`, `queues` (with `pause` and `resume`), `tasks` (list
+with `state`, `queue`, `after` and `limit` up to 200, one task, its `payload`, `retry`, `cancel`, delete),
+`schedules` (with `pause`, `resume`, `trigger`, delete), `workers` and `issues`.
+
+The server speaks plain HTTP unless `https(SSLContext)` is set, which also marks the cookie `Secure`; keep it
+on the loopback interface or behind TLS. `corsOrigin("https://dashboard.example.com")` lets a browser app on
+another origin call the API with credentials.
+
+The dashboard is the static Vue 3 app in `dashboard/` (no build step; it loads Vue from jsDelivr at a pinned
+version, or from a local copy for air-gapped hosts). It shows overview, queues, tasks with filters and detail
+(timeline, steps, failures, payload on request), dead tasks, schedules, workers and issues, and offers retry,
+cancel (with a reason), delete, pause and trigger to admins. The files come from the repository checkout:
+point `staticDir` at the `dashboard` directory, or copy it to your own static host and set
+`window.BTH4J_API` in `index.html` (the dashboard and API hosts must then share a registrable domain because of
+the `SameSite=Strict` cookie). Details are in [dashboard/README.md](dashboard/README.md). `dashboard/dev/fake-api.py`
+serves sample data without Java.
+
 ### Retention
 
-Finished tasks are kept for inspection, then purged by the maintenance service: succeeded tasks 48 hours
-(their payload is dropped unless `keepSucceededPayload(true)`), dead tasks 90 days. A retention of
+Finished tasks are kept for inspection, then purged by the maintenance service: succeeded tasks 10 minutes
+(their payload is dropped unless `keepSucceededPayload(true)`), dead tasks 90 days, cancelled and expired
+tasks 48 hours. A retention of
 `Duration.ZERO` removes the task at the transition instead. A unique key with `keepFor` keeps its task
 until the window ends.
 
@@ -285,10 +556,12 @@ All settings are on `BackgroundRunner.builder()`.
 | `concurrency` | `Concurrency.fixed(max(2, 2 x processors))` | how many tasks run at once; `fixed(n)` or `adaptive(min, max)` |
 | `taskExecutor` | built from `concurrency` | a custom `BackgroundExecutor`; the runner shuts it down |
 | `retryPolicy` | exponential, 1 s doubling, capped at 1 h, 20 % jitter | delay after a failed attempt |
+| `retryPolicy(name, policy)` | none | adds a named policy that requests choose with `TaskRequest.retryPolicy(name)`; name 1 to 64 characters; may be called several times |
+| `queue(name, QueuePolicy)` | `QueuePolicy.DEFAULT` (weight 1, no limit) | share of free slots and concurrency limit of a queue on this runner |
 | `observer` | none | receives every `TaskEvent` |
 | `workerLabel` | JVM name (`pid@host`) | identifies this process in the worker registry; 1 to 128 characters |
 | `threadGroupName` | `bgr` | name of the runner's thread group |
-| `succeededRetention` | 48 hours | how long succeeded tasks are kept; zero removes them at once |
+| `succeededRetention` | 10 minutes | how long succeeded tasks are kept; zero removes them at once |
 | `deadRetention` | 90 days | how long dead tasks are kept; zero removes them at once |
 | `cancelledRetention` | 48 hours | how long cancelled and expired tasks are kept |
 | `keepSucceededPayload` | false | keep the payload of succeeded tasks (dropped on success by default) |
@@ -299,9 +572,10 @@ All settings are on `BackgroundRunner.builder()`.
 | `claimBatchSize` | 32 | most tasks claimed in one call, bounded by free executor slots |
 | `shutdownTimeout` | 30 s | how long `stop()` waits for services and running tasks |
 | `serviceCheckInterval` | 10 s | how often a dead service thread is restarted |
-| `maintenanceCheckInterval` | 5 s (at least 1 s) | how often expired leases are looked for |
+| `maintenanceCheckInterval` | 5 s (at least 1 s) | how often expired leases are looked for, tasks past `startBy` are expired and the worker heartbeat is written |
+| `workerStaleAfter` | 10 minutes | worker registry rows without a heartbeat for this long are deleted by the purge |
 | `scheduledTasksCheckInterval` | 1 s (at least 10 ms) | upper bound of the wait between promotions of due scheduled tasks; it wakes earlier for the next due task |
-| `recurringTasksCheckInterval` | 10 s | how often recurring definitions are checked |
+| `recurringTasksCheckInterval` | 10 s | how often recurring definitions are checked; twice this value (at least 1 minute) is the misfire threshold |
 | `idBlockSize` | 64 (1 to 100000) | task ids the client reserves per store call |
 | `defaultMaxAttempts` | 10 (1 to 32767) | attempts for requests that do not set `maxAttempts` |
 | `configureQueues` | `Q:DEF`, `Q:LOW`, `Q:MED`, `Q:HIGH`; default queue `Q:DEF` | available queues, queues this instance processes (round robin), default queue |
@@ -336,7 +610,7 @@ required (`SKIP LOCKED`, `ON CONFLICT`); the tests run on 17.
 ### Other stores
 
 The store interface is `today.bonfire.oss.bth4j.spi.FullStore`. A store on another engine implements it and
-subclasses `StoreContract` from `bth4j-store-tests`; see "The store SPI and how to implement a store" in
+subclasses `StoreContract` and `RunnerContract` from `bth4j-store-tests`; see "The store SPI and how to implement a store" in
 [docs/design-3.0.md](docs/design-3.0.md).
 
 ## Testing
@@ -378,15 +652,19 @@ changes is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Limitations
 
-- Cron expressions use the 5 field Unix format and are evaluated in UTC.
-- Cancelling a task and expiring it after a start-by deadline are not available yet; `startBy`, `maxRun`
-  and `TaskRequest.retryPolicy` are stored but not acted on.
-- There is no admin API or dashboard; use `TaskClient` for inspection.
+- Cron expressions use the 5 field Unix format.
+- Cancelling a running task is cooperative: the processor has to call `checkCancelled()` or be declared with
+  `interruptOnCancel()`, and it is noticed on the next lease renewal.
+- `QueuePolicy` limits apply to one runner, not to the fleet; there are no fleet-wide concurrency limits, rate
+  limits or priority bands.
+- Issues are kept in the memory of the runner that recorded them (the last 100) and are lost on restart.
+- Admin sessions of `AdminHttpServer` are in memory and the server has no user store beyond the users given to
+  the builder; put TLS (`https`) or a TLS-terminating proxy in front of it when it is not on the loopback interface.
 - The Redis store needs Redis 7.0 or newer, the PostgreSQL store PostgreSQL 9.5 or newer, and Java 21 or
   later is required.
 
 ## Contributing
 
 - Build and test with the Maven Wrapper: `./mvnw verify`. Java 21 or later is required.
-- The build has the modules `bth4j-core`, `bth4j-redis`, `bth4j-postgres` and `bth4j-testing`, released together under one version, plus `bth4j-store-tests` (the contract tests, not published). Unit tests run in the `test` phase. The integration tests (`*IT` in the store modules) start a Redis or PostgreSQL container with Testcontainers in the `integration-test` phase and need Docker.
+- The build has the modules `bth4j-core`, `bth4j-redis`, `bth4j-postgres`, `bth4j-micrometer`, `bth4j-admin-http` and `bth4j-testing`, released together under one version, plus `bth4j-store-tests` (the contract tests, not published). Unit tests run in the `test` phase. The integration tests (`*IT` in the store modules) start a Redis or PostgreSQL container with Testcontainers in the `integration-test` phase and need Docker.
 - Versioning: the first change after a release bumps the version in `pom.xml` to the next `-SNAPSHOT`. A release is a pull request titled `Release X.Y.Z` that sets the final version and adds a `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md`; merging it publishes the release.
