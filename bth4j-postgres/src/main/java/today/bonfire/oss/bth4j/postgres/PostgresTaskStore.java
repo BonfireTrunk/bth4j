@@ -186,7 +186,8 @@ public class PostgresTaskStore implements FullStore {
                 + "   ORDER BY state_changed LIMIT ? FOR UPDATE SKIP LOCKED)";
         releaseKeysSql = "UPDATE " + task + " SET unique_key = NULL, key_until = NULL WHERE id IN (SELECT id FROM "
                 + task + "   WHERE key_until <= now() ORDER BY key_until LIMIT ? FOR UPDATE SKIP LOCKED)";
-        // the stored next fire time survives a re-put that keeps the timing (cron, zone, fixed delay) unchanged
+        // the stored next fire time survives a re-put that keeps the timing (cron, zone, fixed delay) unchanged;
+        // paused is only taken from a new definition, so a runner re-putting at start cannot undo an operator's pause
         putScheduleSql = "INSERT INTO " + schedule
                 + " (id, event_id, payload_version, queue_id, account, cron, zone, misfire, catch_up_max,"
                 + " fixed_delay_ms, overlap_skip, data, max_attempts, paused, rev, next_fire)"
@@ -196,7 +197,7 @@ public class PostgresTaskStore implements FullStore {
                 + " account = EXCLUDED.account, cron = EXCLUDED.cron, zone = EXCLUDED.zone,"
                 + " misfire = EXCLUDED.misfire, catch_up_max = EXCLUDED.catch_up_max,"
                 + " fixed_delay_ms = EXCLUDED.fixed_delay_ms, overlap_skip = EXCLUDED.overlap_skip,"
-                + " data = EXCLUDED.data, max_attempts = EXCLUDED.max_attempts, paused = EXCLUDED.paused,"
+                + " data = EXCLUDED.data, max_attempts = EXCLUDED.max_attempts,"
                 + " rev = nextval('" + scheduleSeq + "'),"
                 + " next_fire = CASE WHEN " + schedule + ".cron IS NOT DISTINCT FROM EXCLUDED.cron"
                 + " AND " + schedule + ".zone IS NOT DISTINCT FROM EXCLUDED.zone"
