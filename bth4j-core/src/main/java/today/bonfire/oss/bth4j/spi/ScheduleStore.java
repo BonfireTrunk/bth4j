@@ -25,9 +25,30 @@ public interface ScheduleStore extends TaskStore {
 
     /**
      * Stores the occurrence (SCHEDULED for {@link DueSchedule#fireAt()}) and advances the definition to
-     * {@code nextFire}, unless the definition's revision or next fire time changed meanwhile.
+     * {@code nextFire}, unless the definition's revision or next fire time changed meanwhile. When the
+     * occurrence names a unique key that another task holds, the definition is still advanced and the
+     * method still reports true, but the occurrence is not stored; this is how an overlapping occurrence is
+     * skipped.
      *
      * @return true when committed
      */
     boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord occurrence);
+
+    /** @return every definition with its next fire time, in id order */
+    List<RecurringSchedule> recurringDefinitions();
+
+    /**
+     * Pauses or resumes a definition. A paused definition keeps its next fire time but is left out of
+     * {@link #dueRecurring}.
+     *
+     * @return false when no definition with that id exists
+     */
+    boolean pauseRecurring(String scheduleId, boolean paused);
+
+    /**
+     * Replaces the next fire time (trigger now, or re-arm a fixed-delay definition after an occurrence ended).
+     *
+     * @return false when no definition with that id exists
+     */
+    boolean setNextFire(String scheduleId, Instant nextFire);
 }

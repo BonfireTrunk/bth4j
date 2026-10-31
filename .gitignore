@@ -325,3 +325,5 @@ google-services.json
 
 # misc rules for ai tools
 .windsurfrules
+
+.claude/worktrees/
