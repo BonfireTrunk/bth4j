@@ -11,7 +11,7 @@ Modules:
 | Artifact | Content |
 |---|---|
 | `bth4j-core` | public API, runner, services, the store SPI (`today.bonfire.oss.bth4j.spi`); no dependency on a particular store |
-| `bth4j-redis` | `RedisTaskStore`, Redis 7.0 or newer, Jedis |
+| `bth4j-redis` | `RedisTaskStore`, Redis 7.4 or newer or Valkey 9 or newer, Jedis |
 | `bth4j-postgres` | `PostgresTaskStore`, PostgreSQL 9.5 or newer, `java.sql` only |
 | `bth4j-testing` | `InMemoryStore` and `MutableClock` for tests of applications |
 | `bth4j-micrometer` | `MicrometerTaskObserver` and `MicrometerRunnerMetrics`; `micrometer-core` is provided |
@@ -28,8 +28,9 @@ Applications depend on `bth4j-core` and one store module.
   per ownership, no locks between instances.
 - A small fixed cost per task. A task record has 14 always-present fields; everything else is written
   only when set, so a plain task costs about 100 bytes of fixed columns in PostgreSQL and 14 hash
-  fields in Redis (a Redis hash whose payload exceeds 64 bytes leaves the compact encoding, where every
-  field costs roughly 60 to 80 bytes of overhead, so field count matters more than value size).
+  fields in Redis. The payload, steps and failures live in keys of their own, so the task hash stays a
+  listpack (a hash with a value over 64 bytes leaves that encoding and every field then costs roughly
+  60 to 80 bytes of overhead; headers, account, progress or a cancel reason over 64 bytes still do that).
 - Identical behaviour on every store, enforced by one shared contract test (`StoreContract`).
 - A producer API that survives lost replies: ids are known before the write, so an enqueue can be
   retried safely.
@@ -211,11 +212,13 @@ A key is held while the task is not terminal. What happens afterwards is the `Un
 - `UNTIL_DONE` (default): the key is released at the transition to a terminal state.
 - `keepFor(duration)`: the key stays held for the duration after the task became terminal (the keep
   window). `keyKeep` is stored on the task at enqueue; at the terminal transition `keyUntil =
-  stateChanged + keyKeep` is set. Redis keeps `k:<key>` alive with `PEXPIRE`; PostgreSQL keeps the key
-  column until `key_until`.
+  stateChanged + keyKeep` is set. Redis keeps `k:<key>` alive with `PEXPIREAT` and gives the `uk`, `kk`
+  and `ku` fields of the kept hash the same expiry with `HPEXPIREAT`; PostgreSQL keeps the key column
+  until `key_until`.
 
-The window ends when `releaseKeys` clears it (maintenance runs it with every purge), or earlier when a new
-enqueue finds an expired key and clears it inline. While a window is open the task row cannot be purged
+The window ends when the key expires (Redis, where `releaseKeys` has nothing to do and returns 0) or when
+`releaseKeys` clears it (PostgreSQL; maintenance runs it with every purge), or earlier when a new enqueue
+finds an expired key and clears it inline. While a window is open the task row cannot be purged
 (see Retention), and a task with a window is kept as SUCCEEDED or DEAD even if the retention is zero.
 
 ## Retention and purge
@@ -241,8 +244,10 @@ holding a keep window, which is kept (its payload dropped for SUCCEEDED) until t
 purge removes it. A succeeded task also drops its payload (`data`) unless `keepSucceededPayload` is set;
 its `steps` are kept.
 
-Redis task hashes never get a TTL; the purge is the only remover. The purge runs every `purgeInterval`
-(default 1 minute) in batches of `purgeBatchSize` (default 500) until a batch removes fewer.
+Redis task hashes never get a TTL; the purge is the only remover, and it removes the hash together with
+the payload, steps and failures keys. The purge runs every `purgeInterval` (default 1 minute) in batches of
+`purgeBatchSize` (default 500) until a batch removes fewer; on Redis one call examines at most
+max(4 x batch, 1000) index entries, so tasks holding a key window cannot make a call unbounded.
 
 ## Steps
 
@@ -373,28 +378,35 @@ key only routes the call.
 | `workers` | zset | worker ids, score last heartbeat ms |
 | `paused` | set | queue ids that claims skip |
 | `startby` | zset | QUEUED and SCHEDULED ids that have a `sb`, score `sb` ms |
-| `t:<id>` | hash | the task; only non-null fields; no TTL |
+| `t:<id>` | hash | the task; only non-null fields, every value short, so it stays a listpack; no TTL |
+| `d:<id>` | string | the payload |
+| `st:<id>` | string | the steps as JSON |
+| `f:<id>` | list | the failures, one JSON object each, the last 20 kept |
 | `q:<qid>` | zset | QUEUED ids, score `due` ms |
-| `scheduled` | zset | SCHEDULED ids, score `due` ms |
+| `sched:<qid>` | zset | SCHEDULED ids, score `due` ms |
 | `leased` | zset | LEASED ids, score lease expiry ms |
 | `idx:<state>:<qid>` | zset | ids in LEASED and the terminal states, score `stateChanged` ms |
-| `c:<qid>` | hash | counters, one field per state code |
-| `k:<key>` | string | id of the task that holds a unique key; `PEXPIRE` while a keep window runs |
-| `keys` | zset | finished tasks whose hash still names a key, score `keyUntil` ms |
+| `k:<key>` | string | id of the task that holds a unique key; `PEXPIREAT` while a keep window runs |
 | `cron`, `cron:<sid>`, `crondefs`, `cronrev` | zset, hash, set, string | next fire times of definitions that are not paused, definitions, ids of all definitions, revision counter |
 
-Task hash fields: `rev`, `q`, `ev`, `pv`, `state`, `att`, `max`, `created`, `due`, `sc`, `data`, `wid`,
-`lease` always or when applicable; `ca` (claimedAt), `acc`, `hdr`, `uk`, `kk`, `ku`, `rp`, `sid`, `rof`,
-`sb`, `mr`, `cra`, `crs`, `prg`, `steps`, `fl` only when set. Times are epoch milliseconds.
+The counts per queue and state are the cardinalities of `q:`, `sched:` and the `idx:` zsets (one pipelined
+ZCARD each), so they cannot drift from the structures that hold the tasks.
+
+Task hash fields: `rev`, `q`, `ev`, `pv`, `state`, `att`, `max`, `created`, `due`, `sc` always; `wid`,
+`lease`, `ca` (claimedAt) from the first claim on, where `lease` only means something while LEASED and
+`wid` while LEASED or terminal (the transitions leave them in place and the reader ignores them); `acc`,
+`hdr`, `uk`, `kk`, `ku`, `rp`, `sid`, `rof`, `sb`, `mr`, `cra`, `crs`, `prg` only when set. The `uk`, `kk`
+and `ku` fields of a finished task expire with its key (hash field expiry, Redis 7.4 or Valkey 9). Times
+are epoch milliseconds.
 
 Definition hash `cron:<sid>`: `ev`, `q`, `pv`, `max`, `rev`, `next` (the next fire, kept also while
 paused) and the optional `acc`, `data`, `cron`, `zone`, `mf` (misfire), `cum` (catch-up max), `fd` (fixed delay ms), `os` (overlap skip, `1`) and
 `paused` (`1`).
 
 One script per transition. `RedisScripts` has one script for each call that changes state under the fence
-(ENQUEUE, CLAIM, RENEW, ACK, FAIL, RESCHEDULE, UNCLAIM, SET_FIELD, PROMOTE, PURGE, RELEASE_KEYS, REGISTER,
+(ENQUEUE, CLAIM, RENEW, ACK, FAIL, RESCHEDULE, UNCLAIM, WRITE, PROMOTE, PURGE, REGISTER,
 the recurring operations CRON_PUT, CRON_DELETE, CRON_COMMIT, CRON_PAUSE and CRON_SET_NEXT, and the wave 2
-scripts EXPIRE, FINISH_CANCELLED, CANCEL, RETRY, DELETE, WORKER_REGISTER and PURGE_WORKERS; 24 in all). The
+scripts EXPIRE, FINISH_CANCELLED, CANCEL, RETRY, DELETE, WORKER_REGISTER and PURGE_WORKERS; 23 in all). The
 reads and the heartbeat are plain commands: `reclaim` is a ZRANGE on `leased` followed by one pipelined HMGET
 per id (an entry whose hash is gone is removed from `leased` on the spot), `dueRecurring` is a ZRANGE on `cron`
 followed by pipelined HGETALLs (a definition deleted between the two reads is skipped), and `heartbeat` is a
@@ -402,9 +414,15 @@ ZADD XX CH on `workers` followed by a HSET when the worker still exists. The two
 written by scripts (`reclaim`, `heartbeat`) first read the server clock with TIME, so every comparison uses
 Redis time. Each script reads the clock with `redis.call('TIME')` inside the script, so due
 times, leases and retention all use Redis time and not the client's. Reading the clock before a write
-requires effect replication, the default since Redis 7.0, which is the reason for the version
-requirement. Each state change goes through the same three helpers (`move`, `enter`, `leave`), which keep
-the hash, the structure that represents the state and the `c:` counter together.
+requires effect replication, the default since Redis 7.0. Each state change goes through the same three
+helpers (`move`, `enter`, `leave`), which keep the hash and the structure that represents the state
+together. The scripts are written for the command count: zset writes are collected per key and sent as one
+variadic ZREM or ZADD per key at the end of the call (a claim of 32 tasks costs about 3 commands per task
+plus a handful per batch, instead of 11 per task), the hash is read with one HMGET and written with one HSET
+per task, and the revision and the attempt count are computed in Lua from the values just read. Ids never go
+through Lua numbers (a double keeps 53 bits); only revisions, attempts and times do, and a duplicate unique
+key reports its holder as a string. Because the zset writes are deferred, scans inside one call page by
+offset: every id examined is still in place until the flush.
 
 A script is called by its SHA-1 with `EVALSHA`; on `NOSCRIPT` it is loaded once with `SCRIPT LOAD`,
 routed by the declared key. Queue order is by score `due`; equal scores tie by member bytes (the id as
@@ -601,7 +619,7 @@ does not expire again.
 
 - `claim` never returns a task with `startBy <= now`. PostgreSQL filters it in the query
   (`start_by IS NULL OR start_by > now()`); Redis checks `sb` for each popped member and, when it has passed,
-  performs the EXPIRED transition inline (state 6, revision +1, index, counters, key release) and continues
+  performs the EXPIRED transition inline (state 6, revision +1, index, key release) and continues
   with the next member.
 - `MaintenanceStore.expire(limit)` moves QUEUED and SCHEDULED tasks with `startBy <= now` to EXPIRED (revision
   +1, `stateChanged`, unique key handled like a terminal transition) and returns their ids. PostgreSQL uses

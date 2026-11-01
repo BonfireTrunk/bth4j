@@ -58,7 +58,7 @@ The metrics and the admin HTTP server are separate modules; add them when you us
 | Module | Content |
 |---|---|
 | `bth4j-core` | task model, runner, services, the store interface (`today.bonfire.oss.bth4j.spi`) |
-| `bth4j-redis` | `RedisTaskStore`: Redis 7.0 or newer or Valkey, also on Redis Cluster; uses Jedis. Tested on Redis 8.8 and Valkey 9.1.3 |
+| `bth4j-redis` | `RedisTaskStore`: Redis 7.4 or newer or Valkey 9 or newer, also on Redis Cluster; uses Jedis. Tested on Redis 8.8 and Valkey 9.1.3 |
 | `bth4j-postgres` | `PostgresTaskStore`: PostgreSQL 9.5 or newer, tested on 18; uses only `java.sql`, the application supplies the JDBC driver and a pooled `DataSource` |
 | `bth4j-testing` | `InMemoryStore` and `MutableClock` for tests of applications |
 | `bth4j-micrometer` | `MicrometerTaskObserver` and `MicrometerRunnerMetrics`; `micrometer-core` is a provided dependency, the application supplies it |
@@ -594,7 +594,9 @@ var store = new RedisTaskStore(jedis, "my-app");   // UnifiedJedis (for example 
 ```
 
 The namespace prefixes every key and carries the Redis Cluster hash tag, so all keys of a store share one
-slot. The store does not close the Jedis client. Redis 7.0 or newer is required.
+slot. The store does not close the Jedis client. Redis 7.4 or newer, or Valkey 9 or newer, is required (the
+store expires the key fields of finished tasks with hash field expiry). A namespace written by bth4j 3.0 has
+another layout and is refused by `init`; start 3.1 with a new namespace.
 
 ### PostgreSQL
 
@@ -665,8 +667,8 @@ changes is in [CHANGELOG.md](CHANGELOG.md).
 - Issues are kept in the memory of the runner that recorded them (the last 100) and are lost on restart.
 - Admin sessions of `AdminHttpServer` are in memory and the server has no user store beyond the users given to
   the builder; put TLS (`https`) or a TLS-terminating proxy in front of it when it is not on the loopback interface.
-- The Redis store needs Redis 7.0 or newer, the PostgreSQL store PostgreSQL 9.5 or newer, and Java 21 or
-  later is required.
+- The Redis store needs Redis 7.4 or newer or Valkey 9 or newer, the PostgreSQL store PostgreSQL 9.5 or
+  newer, and Java 21 or later is required.
 
 ## Contributing
 

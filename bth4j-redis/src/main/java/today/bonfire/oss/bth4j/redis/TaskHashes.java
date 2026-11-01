@@ -17,8 +17,8 @@ final class TaskHashes {
     private TaskHashes() {}
 
     /**
-     * The non-null fields of a new task as field/value pairs. State, due and stateChanged are left out: the
-     * script sets them from the store clock.
+     * The non-null hash fields of a new task as field/value pairs. State, due and stateChanged are left out:
+     * the script sets them from the store clock. The payload, steps and failures live in their own keys.
      */
     static List<String> fields(TaskRecord t) {
         var f = new ArrayList<String>();
@@ -29,7 +29,6 @@ final class TaskHashes {
         put(f, F_ATTEMPTS, t.attempts());
         put(f, F_MAX_ATTEMPTS, t.maxAttempts());
         put(f, F_CREATED, t.created());
-        put(f, F_DATA, t.data());
         put(f, F_WORKER, t.workerId());
         put(f, F_LEASE, t.leaseUntil());
         put(f, F_CLAIMED_AT, t.claimedAt());
@@ -46,27 +45,33 @@ final class TaskHashes {
         put(f, F_CANCEL_AT, t.cancelRequestedAt());
         put(f, F_CANCEL_REASON, t.cancelReason());
         put(f, F_PROGRESS, t.progress());
-        put(f, F_STEPS, RecordJson.encodeSteps(t.steps()));
-        put(f, F_FAILURES, RecordJson.encodeFailures(t.failures()));
         return f;
     }
 
-    static TaskRecord fromHash(long id, Map<String, String> h) {
+    /**
+     * @param h        the task hash
+     * @param data     the {@code d:<id>} string, or null
+     * @param steps    the {@code st:<id>} string, or null
+     * @param failures the {@code f:<id>} entries in order, empty when there are none
+     */
+    static TaskRecord fromHash(long id, Map<String, String> h, String data, String steps, List<String> failures) {
+        var state = TaskState.fromCode(integer(h, F_STATE));
+        var leased = state == TaskState.LEASED;
         return TaskRecord.builder()
                 .id(id)
                 .revision(integer(h, F_REVISION))
                 .queueId(integer(h, F_QUEUE))
                 .eventId(integer(h, F_EVENT))
                 .payloadVersion(integer(h, F_PAYLOAD_VERSION))
-                .state(TaskState.fromCode(integer(h, F_STATE)))
+                .state(state)
                 .attempts(integer(h, F_ATTEMPTS))
                 .maxAttempts(integer(h, F_MAX_ATTEMPTS))
                 .created(instant(h, F_CREATED))
                 .due(instant(h, F_DUE))
                 .stateChanged(instant(h, F_STATE_CHANGED))
-                .data(h.get(F_DATA))
-                .workerId(h.containsKey(F_WORKER) ? integer(h, F_WORKER) : null)
-                .leaseUntil(instant(h, F_LEASE))
+                .data(data)
+                .workerId((leased || state.isTerminal()) && h.containsKey(F_WORKER) ? integer(h, F_WORKER) : null)
+                .leaseUntil(leased ? instant(h, F_LEASE) : null)
                 .claimedAt(instant(h, F_CLAIMED_AT))
                 .account(h.get(F_ACCOUNT))
                 .headers(RecordJson.decodeHeaders(h.get(F_HEADERS)))
@@ -81,8 +86,13 @@ final class TaskHashes {
                 .cancelRequestedAt(instant(h, F_CANCEL_AT))
                 .cancelReason(h.get(F_CANCEL_REASON))
                 .progress(h.get(F_PROGRESS))
-                .steps(RecordJson.decodeSteps(h.get(F_STEPS)))
-                .failures(RecordJson.decodeFailures(h.get(F_FAILURES)))
+                .steps(RecordJson.decodeSteps(steps))
+                .failures(
+                        failures.isEmpty()
+                                ? null
+                                : failures.stream()
+                                        .map(RecordJson::decodeFailure)
+                                        .toList())
                 .build();
     }
 

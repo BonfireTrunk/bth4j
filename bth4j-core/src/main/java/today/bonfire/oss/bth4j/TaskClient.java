@@ -97,8 +97,10 @@ public final class TaskClient {
     public List<EnqueueResult> enqueueAll(List<? extends TaskRequest<?>> requests) {
         var records = new ArrayList<TaskRecord>(requests.size());
         var ids = new ArrayList<Long>(requests.size());
+        var fresh = (int) requests.stream().filter(r -> r.id() == null).count();
+        var nextId = fresh == 0 ? 0 : this.ids.nextIds(fresh);
         for (var r : requests) {
-            var record = toRecord(r);
+            var record = toRecord(r, r.id() != null ? r.id() : nextId++);
             records.add(record);
             ids.add(record.id());
         }
@@ -141,6 +143,10 @@ public final class TaskClient {
     }
 
     <T> TaskRecord toRecord(TaskRequest<T> request) {
+        return toRecord(request, request.id() != null ? request.id() : ids.nextId());
+    }
+
+    private <T> TaskRecord toRecord(TaskRequest<T> request, long id) {
         var type = request.type();
         var now = clock.instant();
         Instant due = request.at();
@@ -149,7 +155,7 @@ public final class TaskClient {
             throw new TaskValidationException("startBy is before the run time");
         }
         var b = TaskRecord.builder()
-                .id(request.id() != null ? request.id() : ids.nextId())
+                .id(id)
                 .queueId(names.queueId(queues.getValidQueue(request.queue())))
                 .eventId(names.eventId(type.name()))
                 .payloadVersion(type.payloadVersion())
