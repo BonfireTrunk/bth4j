@@ -2607,29 +2607,64 @@ public abstract class StoreContract {
     }
 
     @Test
-    void cursorWalkTerminatesAndListsEachTaskOnceWhileATaskIsDeferred() {
+    void cursorWalkTerminatesAndListsEachUnmovedTaskOnceWhileTasksAreClaimedAndDeferredBetweenPages() {
         int other = store.eventId("other");
-        List<Long> all = new ArrayList<>();
-        all.add(put(task(queue, other).due(millis(now().minusSeconds(60)))));
-        for (int i = 0; i < 9; i++) {
-            all.add(putNew());
+        for (int limit : new int[] {1, 3, 4}) {
+            int walkQueue = store.queueId("defer" + limit);
+            List<Long> all = new ArrayList<>();
+            long deferred = put(task(walkQueue, other).due(millis(now().minusSeconds(60))));
+            all.add(deferred);
+            for (int i = 0; i < 9; i++) {
+                all.add(put(task(walkQueue, event)));
+            }
+            List<Long> seen = new ArrayList<>();
+            List<Long> moved = new ArrayList<>();
+            moved.add(deferred);
+            String cursor = null;
+            boolean ended = false;
+            for (int page = 0; page < 50 && !ended; page++) {
+                TaskPage got = store.tasks(TaskState.QUEUED, walkQueue, cursor, limit);
+                got.items().forEach(t -> seen.add(t.id()));
+                cursor = got.next();
+                ended = cursor == null;
+                if (page == 0) {
+                    List<TaskRecord> claimed = claim(3, LEASE, Set.of(event), walkQueue);
+                    assertThat(claimed).hasSize(3);
+                    claimed.forEach(t -> moved.add(t.id()));
+                }
+            }
+            assertThat(ended).as("limit %d terminates", limit).isTrue();
+            List<Long> unmoved = new ArrayList<>(all);
+            unmoved.removeAll(moved);
+            for (long id : unmoved) {
+                assertThat(seen).as("limit %d, task %d", limit, id).containsOnlyOnce(id);
+            }
         }
-        List<TaskRecord> claimed = claim(3, LEASE, Set.of(event));
-        assertThat(claimed).hasSize(3);
-        List<Long> queued = new ArrayList<>(all);
-        claimed.forEach(t -> queued.remove(t.id()));
-        for (int limit : new int[] {1, 3, 4, 20}) {
+    }
+
+    @Test
+    void cursorWalkKeepsIdOrderInsideAGroupOfTasksWithTheSameSortValue() {
+        for (int i = 0; i < 7; i++) {
+            put(task());
+        }
+        List<TaskRecord> group = claim(7);
+        assertThat(group).hasSize(7);
+        assertThat(group.stream().map(t -> t.stateChanged().toEpochMilli()).distinct())
+                .as("one claim gives the group a single sort value")
+                .hasSize(1);
+        List<Long> byId = group.stream().map(TaskRecord::id).sorted().toList();
+        for (int limit : new int[] {1, 2, 3}) {
             List<Long> seen = new ArrayList<>();
             String cursor = null;
             for (int page = 0; page < 30; page++) {
-                TaskPage got = store.tasks(TaskState.QUEUED, null, cursor, limit);
+                TaskPage got = store.tasks(TaskState.LEASED, null, cursor, limit);
                 got.items().forEach(t -> seen.add(t.id()));
-                if (got.next() == null) {
+                cursor = got.next();
+                if (cursor == null) {
                     break;
                 }
-                cursor = got.next();
             }
-            assertThat(seen).as("limit %d", limit).containsExactlyInAnyOrderElementsOf(queued);
+            assertThat(seen).as("limit %d", limit).containsExactlyElementsOf(byId);
         }
     }
 

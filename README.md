@@ -412,8 +412,9 @@ client.tasks(TaskState.DEAD, "mail", page.next(), 100);   // next is null after 
 
 Paging with `afterId` re-reads the last task of the previous page; if that task changed state in between, the listing
 can end early (PostgreSQL) or repeat (Redis). The cursor form returns a `TaskViewPage` whose `next` is an opaque
-position in the listing, so the walk does not depend on any one task; a malformed cursor throws
-`IllegalArgumentException`.
+position in the listing, so the walk does not depend on the last task of the previous page. A task whose own position
+moves while the walk runs (for example a deferral) can still be seen twice (moved later) or missed (moved earlier).
+A malformed cursor throws `IllegalArgumentException`.
 
 A `TaskView` carries state, attempts, due time, the last failures, completed steps and progress.
 
@@ -526,10 +527,11 @@ The endpoints are `me`, `session`, `health`, `overview`, `queues` (with `pause` 
 with `state`, `queue`, `cursor` or `after`, and `limit` up to 200; one task, its `payload`, `retry`, `cancel`, delete),
 `schedules` (with `pause`, `resume`, `trigger`, delete), `workers` and `issues`.
 
-`GET /api/v1/tasks` pages in two forms. With `after=<id>` the reply is a JSON array of tasks, as before, and paging is
-best effort (see "Inspection"). With no `cursor` (with or without `after`) the reply is that array. With `cursor=<value>` the reply is
+`GET /api/v1/tasks` pages in two forms. With no `cursor` (with or without `after=<id>`) the reply is a JSON array of tasks, as
+before, and paging by `after` is best effort (see "Inspection"). With `cursor=<value>` the reply is
 `{"items": [...], "next": "<cursor>" | null}`: pass `next` as `cursor` for the following page; `next` is null after the
-last page. An empty `cursor=` starts at the beginning, and a malformed one is answered 400.
+last page. An empty `cursor=` starts at the beginning, and a malformed one is answered 400. When both `cursor` and
+`after` are sent, `cursor` wins.
 
 The server speaks plain HTTP unless `https(SSLContext)` is set, which also marks the cookie `Secure`; keep it
 on the loopback interface or behind TLS. `corsOrigin("https://dashboard.example.com")` lets a browser app on

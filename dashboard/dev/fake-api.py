@@ -226,7 +226,10 @@ class Handler(BaseHTTPRequestHandler):
     def tasks_api(self, method, segs, q):
         if len(segs) == 1:
             limit = min(int(q.get("limit", 50)), 200)
-            after = int(q.get("after") or q.get("cursor") or -1)
+            try:
+                after = int((q["cursor"] if "cursor" in q else q.get("after")) or -1)
+            except ValueError:
+                return self.send_json(400, {"error": "malformed cursor"})
             rows = [t for t in sorted(tasks.values(), key=lambda t: int(t["id"])) if int(t["id"]) > after
                     and (not q.get("state") or t["state"] == q["state"]) and (not q.get("queue") or t["queue"] == q["queue"])]
             if "cursor" not in q:

@@ -29,7 +29,7 @@ public interface AdminOps {
     /**
      * @param queue null for all queues; results are ordered by state change time then id and start after {@code afterId}.
      *              Paging by {@code afterId} is best effort: a task that changes state between pages can end the
-     *              listing early or repeat it. Use the cursor form for an exact walk.
+     *              listing early or repeat it. Use the cursor form for a walk that does not depend on the last task of the previous page.
      */
     List<TaskView> tasks(TaskState state, String queue, long afterId, int limit);
 
