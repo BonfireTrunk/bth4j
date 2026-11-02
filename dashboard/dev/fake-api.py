@@ -160,7 +160,7 @@ class Handler(BaseHTTPRequestHandler):
     def route(self, method):
         url = urlparse(self.path)
         path = url.path
-        q = {k: v[0] for k, v in parse_qs(url.query).items()}
+        q = {k: v[0] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
         if not path.startswith("/api/"):
             return self.static(path) if method == "GET" else self.send_json(404, {"error": "not found"})
         p = path[len("/api/v1"):] if path.startswith("/api/v1") else path
@@ -226,10 +226,16 @@ class Handler(BaseHTTPRequestHandler):
     def tasks_api(self, method, segs, q):
         if len(segs) == 1:
             limit = min(int(q.get("limit", 50)), 200)
-            after = int(q["after"]) if q.get("after") else -1
+            try:
+                after = int((q["cursor"] if "cursor" in q else q.get("after")) or -1)
+            except ValueError:
+                return self.send_json(400, {"error": "malformed cursor"})
             rows = [t for t in sorted(tasks.values(), key=lambda t: int(t["id"])) if int(t["id"]) > after
                     and (not q.get("state") or t["state"] == q["state"]) and (not q.get("queue") or t["queue"] == q["queue"])]
-            return self.send_json(200, rows[:limit])
+            if "cursor" not in q:
+                return self.send_json(200, rows[:limit])
+            page = rows[:limit]
+            return self.send_json(200, {"items": page, "next": page[-1]["id"] if len(page) == limit else None})
         t = tasks[segs[1]]
         if len(segs) == 2 and method == "GET":
             return self.send_json(200, t)

@@ -29,6 +29,7 @@ import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
 import today.bonfire.oss.bth4j.spi.StateCounts;
+import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
@@ -211,6 +212,23 @@ class DefaultAdminOpsTest {
         ops.tasks(TaskState.QUEUED, "Q:OTHER", 0, 5);
 
         assertThat(calls).contains("tasks[QUEUED, 2, 0, 5]");
+    }
+
+    @Test
+    void cursorTasksMapTheQueueAndReturnTheStoresNextCursor() {
+        handlers.put("tasks", a -> new TaskPage(List.of(record(1, OTHER_QUEUE_ID)), "42:1"));
+
+        var page = ops.tasks(TaskState.QUEUED, "Q:OTHER", "7:3", 5);
+
+        assertThat(calls).contains("tasks[QUEUED, 2, 7:3, 5]");
+        assertThat(page.items()).extracting("queue").containsExactly("Q:OTHER");
+        assertThat(page.next()).isEqualTo("42:1");
+    }
+
+    @Test
+    void cursorTasksRejectAQueueThatIsNotAvailable() {
+        assertThatThrownBy(() -> ops.tasks(TaskState.QUEUED, "Q:MISSING", (String) null, 5))
+                .isInstanceOf(TaskErrorException.class);
     }
 
     @Test

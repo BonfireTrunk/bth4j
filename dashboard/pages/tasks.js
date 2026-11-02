@@ -20,34 +20,47 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
       const bulkBusy = ref(false);
       const admin = isAdmin;
 
-      async function fetchPage(after) {
-        return api.tasks({ state: state.value, queue: queue.value, after, limit: LIMIT });
+      let nextCursor = null;
+      let requestId = 0;
+
+      async function fetchPage(cursor, id) {
+        const page = await api.tasks({ state: state.value, queue: queue.value, cursor: cursor ?? '', limit: LIMIT });
+        if (id !== requestId) return null;
+        nextCursor = page.next;
+        return page.items;
       }
 
       async function load() {
+        const id = ++requestId;
+        nextCursor = null;
+        hasMore.value = false;
         loading.value = true;
         error.value = '';
         try {
-          const page = await fetchPage(undefined);
+          const page = await fetchPage(undefined, id);
+          if (page === null) return;
           rows.value = page;
-          hasMore.value = page.length >= LIMIT;
+          hasMore.value = nextCursor !== null;
         } catch (e) {
+          if (id !== requestId) return;
           error.value = e.message;
           toastError(e);
         } finally {
-          loading.value = false;
+          if (id === requestId) loading.value = false;
         }
       }
 
       async function more() {
-        if (!rows.value.length) return;
+        if (nextCursor === null) return;
+        const id = requestId;
         loadingMore.value = true;
         try {
-          const page = await fetchPage(rows.value[rows.value.length - 1].id);
+          const page = await fetchPage(nextCursor, id);
+          if (page === null) return;
           rows.value = rows.value.concat(page);
-          hasMore.value = page.length >= LIMIT;
+          hasMore.value = nextCursor !== null;
         } catch (e) {
-          toastError(e);
+          if (id === requestId) toastError(e);
         } finally {
           loadingMore.value = false;
         }

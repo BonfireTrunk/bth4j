@@ -412,6 +412,32 @@ class AdminHttpServerTest {
     }
 
     @Test
+    void taskListWithCursorReturnsItemsAndNextAndWalks() throws Exception {
+        start();
+        var login = admin();
+
+        var first = json(get("/api/v1/tasks?state=DEAD&limit=2&cursor=", login));
+        assertThat(items(first)).extracting(t -> t.get("id")).containsExactly("1", "2");
+        assertThat(first).containsEntry("next", "2");
+
+        var second = json(get("/api/v1/tasks?state=DEAD&limit=2&cursor=2", login));
+        assertThat(items(second)).extracting(t -> t.get("id")).containsExactly("4");
+        assertThat(second).containsKey("next").containsEntry("next", null);
+
+        var blank = json(get("/api/v1/tasks?state=DEAD&limit=50&cursor=", login));
+        assertThat(items(blank)).hasSize(3);
+
+        assertThat(jsonList(get("/api/v1/tasks?state=DEAD", login))).hasSize(3);
+        assertThat(ops.calls).contains("tasks DEAD null cursor=null 2", "tasks DEAD null cursor=2 2");
+        assertThat(get("/api/v1/tasks?state=DEAD&cursor=x", login).statusCode()).isEqualTo(400);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> items(Map<String, Object> page) {
+        return (List<Map<String, Object>>) page.get("items");
+    }
+
+    @Test
     void taskJsonHasStringIdsIsoTimesAndNoPayload() throws Exception {
         start();
 

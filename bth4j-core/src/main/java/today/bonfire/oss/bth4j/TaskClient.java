@@ -270,13 +270,30 @@ public final class TaskClient {
      * Lists tasks in one state, oldest state change first.
      *
      * @param queue   a queue name, or null for every queue
-     * @param afterId for paging: only tasks after this one in the listing; 0 starts at the beginning
+     * @param afterId for paging: only tasks after this one in the listing; 0 starts at the beginning. Best effort:
+     *                a task that changes state between pages can end the listing early or repeat it; page with
+     *                {@link #tasks(TaskState, String, String, int)} for a walk that does not depend on the last task of the previous page
      */
     public List<TaskView> tasks(TaskState state, String queue, long afterId, int limit) {
         var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.getValidQueue(queue)));
         var result = new ArrayList<TaskView>();
         for (var r : store.tasks(state, queueId, afterId, limit)) result.add(names.view(r));
         return result;
+    }
+
+    /**
+     * Lists tasks in one state, oldest state change first, paging by a cursor that is a position in the listing.
+     *
+     * @param queue  a queue name, or null for every queue
+     * @param cursor {@link TaskViewPage#next()} of the previous page; null starts at the beginning
+     * @throws IllegalArgumentException if the cursor is malformed
+     */
+    public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
+        var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.getValidQueue(queue)));
+        var page = store.tasks(state, queueId, cursor, limit);
+        var result = new ArrayList<TaskView>();
+        for (var r : page.items()) result.add(names.view(r));
+        return new TaskViewPage(result, page.next());
     }
 
     public FullStore store() {

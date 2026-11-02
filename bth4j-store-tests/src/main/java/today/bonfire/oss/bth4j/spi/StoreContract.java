@@ -19,6 +19,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -2572,6 +2573,123 @@ public abstract class StoreContract {
                 after = got.get(got.size() - 1).id();
             }
             assertThat(seen).as("limit %d", limit).containsExactlyInAnyOrderElementsOf(queued);
+        }
+    }
+
+    @Test
+    void cursorWalkListsEachTaskOnceWhileTheCursorTaskIsCancelledBetweenPages() {
+        for (int limit : new int[] {1, 2, 4}) {
+            int walkQueue = store.queueId("walk" + limit);
+            List<Long> all = new ArrayList<>();
+            for (int i = 0; i < 9; i++) {
+                all.add(put(task(walkQueue, event)));
+            }
+            List<Long> seen = new ArrayList<>();
+            String cursor = null;
+            boolean cancelled = false;
+            for (int page = 0; page < 30; page++) {
+                TaskPage got = store.tasks(TaskState.QUEUED, walkQueue, cursor, limit);
+                got.items().forEach(t -> seen.add(t.id()));
+                if (got.next() == null) {
+                    break;
+                }
+                if (!cancelled) {
+                    TaskRecord last = got.items().get(got.items().size() - 1);
+                    assertThat(store.cancel(last.id(), last.revision(), "between pages"))
+                            .isEqualTo(CancelOutcome.CANCELLED);
+                    cancelled = true;
+                }
+                cursor = got.next();
+            }
+            assertThat(cancelled).isTrue();
+            assertThat(seen).as("limit %d", limit).containsExactlyInAnyOrderElementsOf(all);
+        }
+    }
+
+    @Test
+    void cursorWalkTerminatesAndListsEachUnmovedTaskOnceWhileTasksAreClaimedAndDeferredBetweenPages() {
+        int other = store.eventId("other");
+        for (int limit : new int[] {1, 3, 4}) {
+            int walkQueue = store.queueId("defer" + limit);
+            List<Long> all = new ArrayList<>();
+            long deferred = put(task(walkQueue, other).due(millis(now().minusSeconds(60))));
+            all.add(deferred);
+            for (int i = 0; i < 9; i++) {
+                all.add(put(task(walkQueue, event)));
+            }
+            List<Long> seen = new ArrayList<>();
+            List<Long> moved = new ArrayList<>();
+            moved.add(deferred);
+            String cursor = null;
+            boolean ended = false;
+            for (int page = 0; page < 50 && !ended; page++) {
+                TaskPage got = store.tasks(TaskState.QUEUED, walkQueue, cursor, limit);
+                got.items().forEach(t -> seen.add(t.id()));
+                cursor = got.next();
+                ended = cursor == null;
+                if (page == 0) {
+                    List<TaskRecord> claimed = claim(3, LEASE, Set.of(event), walkQueue);
+                    assertThat(claimed).hasSize(3);
+                    claimed.forEach(t -> moved.add(t.id()));
+                }
+            }
+            assertThat(ended).as("limit %d terminates", limit).isTrue();
+            List<Long> unmoved = new ArrayList<>(all);
+            unmoved.removeAll(moved);
+            for (long id : unmoved) {
+                assertThat(seen).as("limit %d, task %d", limit, id).containsOnlyOnce(id);
+            }
+        }
+    }
+
+    @Test
+    void cursorWalkKeepsIdOrderInsideAGroupOfTasksWithTheSameSortValue() {
+        for (int i = 0; i < 7; i++) {
+            put(task());
+        }
+        List<TaskRecord> group = claim(7);
+        assertThat(group).hasSize(7);
+        assertThat(group.stream().map(t -> t.stateChanged().toEpochMilli()).distinct())
+                .as("one claim gives the group a single sort value")
+                .hasSize(1);
+        List<Long> byId = group.stream().map(TaskRecord::id).sorted().toList();
+        for (int limit : new int[] {1, 2, 3}) {
+            List<Long> seen = new ArrayList<>();
+            String cursor = null;
+            for (int page = 0; page < 30; page++) {
+                TaskPage got = store.tasks(TaskState.LEASED, null, cursor, limit);
+                got.items().forEach(t -> seen.add(t.id()));
+                cursor = got.next();
+                if (cursor == null) {
+                    break;
+                }
+            }
+            assertThat(seen).as("limit %d", limit).containsExactlyElementsOf(byId);
+        }
+    }
+
+    @Test
+    void cursorPageHasNoNextOnTheLastPageAndAMalformedCursorThrows() {
+        long a = putNew();
+        long b = putNew();
+        long c = putNew();
+
+        TaskPage first = store.tasks(TaskState.QUEUED, null, (String) null, 2);
+        assertThat(first.items()).hasSize(2);
+        assertThat(first.next()).isNotNull();
+        TaskPage last = store.tasks(TaskState.QUEUED, null, first.next(), 2);
+        assertThat(last.items()).hasSize(1);
+        assertThat(last.next()).isNull();
+        assertThat(Stream.concat(first.items().stream(), last.items().stream()).map(TaskRecord::id))
+                .containsExactlyInAnyOrder(a, b, c);
+        assertThat(store.tasks(TaskState.QUEUED, null, (String) null, 10).next())
+                .isNull();
+        assertThat(store.tasks(TaskState.DEAD, null, (String) null, 10).items()).isEmpty();
+
+        for (String bad : new String[] {"garbage", "1", ":5", "5:", "a:b", "1:2:3", ""}) {
+            assertThatThrownBy(() -> store.tasks(TaskState.QUEUED, null, bad, 10))
+                    .as("cursor '%s'", bad)
+                    .isInstanceOf(IllegalArgumentException.class);
         }
     }
 

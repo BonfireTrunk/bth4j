@@ -289,6 +289,23 @@ class TaskClientTest {
     }
 
     @Test
+    void tasksWalksWithACursor() {
+        var client = builder().build();
+        var ids = new ArrayList<Long>();
+        for (int i = 0; i < 5; i++)
+            ids.add(client.enqueue(TaskRequest.of(VOID).build()).id());
+
+        var first = client.tasks(TaskState.QUEUED, "Q:DEF", (String) null, 2);
+        var second = client.tasks(TaskState.QUEUED, "Q:DEF", first.next(), 2);
+        var third = client.tasks(TaskState.QUEUED, "Q:DEF", second.next(), 2);
+
+        assertThat(first.items()).extracting(TaskView::id).containsExactlyElementsOf(ids.subList(0, 2));
+        assertThat(second.items()).extracting(TaskView::id).containsExactlyElementsOf(ids.subList(2, 4));
+        assertThat(third.items()).extracting(TaskView::id).containsExactlyElementsOf(ids.subList(4, 5));
+        assertThat(third.next()).isNull();
+    }
+
+    @Test
     void tasksListsOneStateOfOneQueueWithPaging() {
         var client = builder().build();
         var ids = new ArrayList<Long>();
