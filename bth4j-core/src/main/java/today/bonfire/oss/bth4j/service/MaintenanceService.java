@@ -150,7 +150,7 @@ public class MaintenanceService extends CustomThread {
     private void cancelExpired(ExpiredLease e) {
         var record = store.getTask(e.id()).orElse(null);
         var reason = record != null && record.cancelReason() != null ? record.cancelReason() : "cancel requested";
-        var applied = store.finishCancelled(e.id(), e.revision(), reason, true);
+        var applied = store.finishCancelledExpired(e.id(), e.revision(), reason, true);
         log.warn("Lease of cancelled task {} expired, task ended as cancelled: {}", e.id(), applied);
         if (applied && record != null) {
             observer.emit(new TaskEvent.Cancelled(names.view(record), reason, Outcome.APPLIED));

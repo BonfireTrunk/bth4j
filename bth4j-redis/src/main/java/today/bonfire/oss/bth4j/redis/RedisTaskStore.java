@@ -737,7 +737,21 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public boolean finishCancelled(long id, int revision, String reason, boolean keepPayload) {
-        var args = List.of(String.valueOf(id), String.valueOf(revision), reason(reason), keepPayload ? "1" : "0");
+        return finishCancelled(id, revision, reason, keepPayload, false);
+    }
+
+    @Override
+    public boolean finishCancelledExpired(long id, int revision, String reason, boolean keepPayload) {
+        return finishCancelled(id, revision, reason, keepPayload, true);
+    }
+
+    private boolean finishCancelled(long id, int revision, String reason, boolean keepPayload, boolean expiredOnly) {
+        var args = List.of(
+                String.valueOf(id),
+                String.valueOf(revision),
+                reason(reason),
+                keepPayload ? "1" : "0",
+                expiredOnly ? "1" : "0");
         return num(guard(() -> scripts.run(RedisScripts.FINISH_CANCELLED, args))) == 1;
     }
 

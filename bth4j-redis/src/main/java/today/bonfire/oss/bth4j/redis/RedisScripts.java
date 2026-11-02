@@ -255,15 +255,20 @@ final class RedisScripts {
                             "@FIELDS@",
                             Arrays.stream(CLAIM_FIELDS).map(f -> "'" + f + "'").collect(Collectors.joining(", ")));
 
-    /** ARGV: lease ms, then id/revision pairs. Returns per pair 0 (not owned), 1 (owned) or 2 (owned, cancel requested). */
+    /**
+     * ARGV: lease ms, then id/revision pairs. Returns per pair 0 (not owned), 1 (owned) or 2 (owned, cancel
+     * requested). A lease at or before now is not owned: the sweeper may take it over and a late extension
+     * must not undo that.
+     */
     static final String RENEW = PRELUDE + """
-            local lease = now() + tonumber(ARGV[2])
+            local at = now()
+            local lease = at + tonumber(ARGV[2])
             local out = {}
             for i = 3, #ARGV, 2 do
               local id = ARGV[i]
               local tkey = P .. 't:' .. id
-              local v = fence(tkey, ARGV[i + 1], 'cra')
-              if v then
+              local v = fence(tkey, ARGV[i + 1], 'cra', 'lease')
+              if v and tonumber(v[5]) > at then
                 zadd(P .. 'leased', lease, id)
                 redis.call('HSET', tkey, 'lease', lease)
                 out[#out + 1] = v[4] and 2 or 1
@@ -561,15 +566,17 @@ final class RedisScripts {
             """;
 
     /**
-     * ARGV: id, revision, reason or '', keep payload (1/0). LEASED to CANCELLED; the worker id stays, the
-     * cancel request time is kept when there is one. Returns 1, or 0 when the fence fails.
+     * ARGV: id, revision, reason or '', keep payload (1/0), expired only (1/0). LEASED to CANCELLED; the
+     * worker id stays, the cancel request time is kept when there is one. Returns 1, or 0 when the fence
+     * fails or, with expired only, when the stored lease is after now.
      */
     static final String FINISH_CANCELLED = PRELUDE + """
             local id = ARGV[2]
             local tkey = P .. 't:' .. id
-            local v = fence(tkey, ARGV[3], 'uk', 'kk', 'cra')
+            local v = fence(tkey, ARGV[3], 'uk', 'kk', 'cra', 'lease')
             if not v then return 0 end
             local at = now()
+            if ARGV[6] == '1' and tonumber(v[7]) > at then return 0 end
             local extra = {}
             if not v[6] then extra = {'cra', at} end
             if ARGV[4] ~= '' then extra[#extra + 1] = 'crs'; extra[#extra + 1] = ARGV[4] end

@@ -577,13 +577,9 @@ class PostgresTaskStoreIT {
         assertThat(e.eventId()).isEqualTo(event);
         assertThat(e.cancelRequested()).isFalse();
 
-        store.renew(List.of(new LeaseRef(id, t.revision())), Duration.ofMinutes(1));
-        assertThat(store.failExpired(id, t.revision(), failure(1), Instant.now(), true))
-                .isEqualTo(FailOutcome.LOST);
-        assertThat(store.reclaim(10)).isEmpty();
-
-        store.renew(List.of(new LeaseRef(id, t.revision())), Duration.ofMillis(1));
-        Thread.sleep(20);
+        assertThat(store.renew(List.of(new LeaseRef(id, t.revision())), Duration.ofMinutes(1)))
+                .extracting(LeaseStatus::owned)
+                .containsExactly(false);
         assertThat(store.failExpired(id, t.revision(), failure(1), Instant.now(), true))
                 .isEqualTo(FailOutcome.RETRY);
     }

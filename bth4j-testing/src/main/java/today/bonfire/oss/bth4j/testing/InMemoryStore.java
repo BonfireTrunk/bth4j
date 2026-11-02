@@ -282,7 +282,7 @@ public final class InMemoryStore implements FullStore {
                 TaskRecord t = tasks.get(ref.id());
                 if (t == null) {
                     result.add(new LeaseStatus(ref.id(), false, false));
-                } else if (!fenced(t, ref.revision())) {
+                } else if (!fenced(t, ref.revision()) || !t.leaseUntil().isAfter(clock.instant())) {
                     result.add(new LeaseStatus(ref.id(), false, t.cancelRequestedAt() != null));
                 } else {
                     tasks.put(t.id(), t.toBuilder().leaseUntil(until).build());
@@ -713,10 +713,21 @@ public final class InMemoryStore implements FullStore {
 
     @Override
     public boolean finishCancelled(long id, int revision, String reason, boolean keepPayload) {
+        return finishCancelled(id, revision, reason, keepPayload, false);
+    }
+
+    @Override
+    public boolean finishCancelledExpired(long id, int revision, String reason, boolean keepPayload) {
+        return finishCancelled(id, revision, reason, keepPayload, true);
+    }
+
+    private boolean finishCancelled(long id, int revision, String reason, boolean keepPayload, boolean expiredOnly) {
         lock.lock();
         try {
             TaskRecord t = tasks.get(id);
-            if (t == null || !fenced(t, revision)) {
+            if (t == null
+                    || !fenced(t, revision)
+                    || (expiredOnly && t.leaseUntil().isAfter(clock.instant()))) {
                 return false;
             }
             Instant now = clock.instant();
