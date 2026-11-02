@@ -76,6 +76,8 @@ public final class TaskExecution implements Runnable, TaskContext {
     private volatile Instant startedAt;
     /** the thread running the processor, while it runs; the target of an interrupt on cancel */
     private volatile Thread worker;
+    /** the fatal error to rethrow from run(), written by the thread that runs the task only */
+    private Error fatal;
 
     TaskExecution(TaskRecord record, Settings settings, Consumer<TaskExecution> onFinished) {
         this.record = record;
@@ -126,35 +128,60 @@ public final class TaskExecution implements Runnable, TaskContext {
 
     @Override
     public void run() {
-        var started = s.clock().instant();
-        startedAt = started;
-        worker = Thread.currentThread();
         try {
-            s.observer().emit(new TaskEvent.Started(view, record.workerId() == null ? 0 : record.workerId()));
-            var registration = s.registry().get(view.event());
-            if (registration == null) {
-                defer("no processor registered for " + view.event());
-                return;
+            runAttempt();
+        } catch (Throwable t) {
+            if (fatal != null && fatal != t) {
+                fatal.addSuppressed(t);
+                throw fatal;
             }
-            Exception failure = null;
-            try {
-                process(registration);
-            } catch (Exception e) {
-                failure = e;
-            } finally {
-                worker = null;
-                // an interrupt sent for the cancel request must not leak into the executor thread's next task
-                Thread.interrupted();
-            }
-            if (failure == null) {
-                succeed(started);
-            } else {
-                fail(failure);
-            }
+            throw t;
         } finally {
             worker = null;
             onFinished.accept(this);
         }
+        if (fatal != null) throw fatal;
+    }
+
+    private void runAttempt() {
+        var started = s.clock().instant();
+        startedAt = started;
+        worker = Thread.currentThread();
+        emit(new TaskEvent.Started(view, record.workerId() == null ? 0 : record.workerId()));
+        var registration = s.registry().get(view.event());
+        if (registration == null) {
+            defer("no processor registered for " + view.event());
+            return;
+        }
+        Throwable failure = null;
+        try {
+            process(registration);
+        } catch (Throwable t) {
+            failure = t;
+        } finally {
+            worker = null;
+            // an interrupt sent for the cancel request must not leak into the executor thread's next task
+            Thread.interrupted();
+        }
+        if (failure == null) {
+            succeed(started);
+        } else {
+            remember(failure);
+            fail(failure);
+        }
+    }
+
+    /** Keeps a fatal error to rethrow once the bookkeeping is done; an earlier one is attached to the later one. */
+    private void remember(Throwable t) {
+        if (!Failures.fatal(t) || t == fatal) return;
+        var error = (Error) t;
+        if (fatal != null) error.addSuppressed(fatal);
+        fatal = error;
+    }
+
+    private void emit(TaskEvent event) {
+        var error = s.observer().emitReporting(event);
+        if (error != null) remember(error);
     }
 
     @SuppressWarnings("unchecked")
@@ -170,7 +197,7 @@ public final class TaskExecution implements Runnable, TaskContext {
         apply(() -> s.store()
                 .reschedule(record.id(), record.revision(), s.clock().instant().plus(DEFER)));
         s.status().issue("unknown-event", reason, record.id());
-        s.observer().emit(new TaskEvent.Deferred(record.id(), view.event(), reason));
+        emit(new TaskEvent.Deferred(record.id(), view.event(), reason));
     }
 
     private void succeed(Instant started) {
@@ -178,25 +205,30 @@ public final class TaskExecution implements Runnable, TaskContext {
         if (outcome == Outcome.LOST) {
             log.warn("Task {} completed but its lease was lost, it may run again", record.id());
         }
-        s.observer()
-                .emit(new TaskEvent.Succeeded(
-                        view, Duration.between(started, s.clock().instant()), outcome));
+        emit(new TaskEvent.Succeeded(view, Duration.between(started, s.clock().instant()), outcome));
         afterTerminal(TaskState.SUCCEEDED, outcome);
     }
 
-    private void fail(Exception e) {
+    private void fail(Throwable e) {
         switch (e) {
             case TaskRescheduleException ex -> {
                 var due = s.clock().instant().plus(ex.delay());
                 log.info("Rescheduling task {} to {}", record.id(), due);
                 var outcome = apply(() -> s.store().reschedule(record.id(), record.revision(), due));
-                s.observer().emit(new TaskEvent.Rescheduled(view, due, outcome));
+                emit(new TaskEvent.Rescheduled(view, due, outcome));
             }
             case TaskLeaseLostException ex -> log.warn("Task {} stopped: {}", record.id(), text(ex));
             case TaskCancelledException ex ->
                 cancelled(detail() == FailureDetail.FULL ? ex.getMessage() : cancelReason());
             // the processor most likely stopped because of the cancel request (interrupt, closed resource)
-            case Exception ex when cancelRequested -> cancelled(cancelReason());
+            case Throwable ex
+            when cancelRequested -> {
+                log.debug(
+                        "Task {} stopped while a cancel was requested: {}",
+                        record.id(),
+                        Failures.describe(detail(), ex));
+                cancelled(cancelReason());
+            }
             case TaskUnrecoverableException ex -> die(ex, "unrecoverable: " + text(ex));
             case TaskDataException ex -> die(ex, "payload: " + text(ex));
             default -> {
@@ -213,7 +245,7 @@ public final class TaskExecution implements Runnable, TaskContext {
         var reason = cancelReason == null ? storedCancelReason(given) : given;
         log.info("Task {} cancelled: {}", record.id(), reason);
         var outcome = apply(() -> s.store().finishCancelled(record.id(), record.revision(), reason, true));
-        s.observer().emit(new TaskEvent.Cancelled(view, reason, outcome));
+        emit(new TaskEvent.Cancelled(view, reason, outcome));
         afterTerminal(TaskState.CANCELLED, outcome);
     }
 
@@ -224,12 +256,13 @@ public final class TaskExecution implements Runnable, TaskContext {
                     .getTask(record.id())
                     .map(TaskRecord::cancelReason)
                     .orElse(fallback);
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
+            remember(e);
             return fallback;
         }
     }
 
-    private RetryPolicy.Decision decide(Exception e) {
+    private RetryPolicy.Decision decide(Throwable e) {
         var policy = s.retryPolicies().named(record.retryPolicy());
         if (policy == null) {
             s.status().issue("retry-policy", "unknown retry policy " + record.retryPolicy(), record.id());
@@ -239,7 +272,8 @@ public final class TaskExecution implements Runnable, TaskContext {
         try {
             var d = policy.decide(view, e);
             return d != null ? d : RetryPolicy.Decision.retryAfter(Duration.ZERO);
-        } catch (RuntimeException policyError) {
+        } catch (RuntimeException | Error policyError) {
+            remember(policyError);
             if (detail() == FailureDetail.FULL) {
                 log.error("Retry policy failed for task {}, retrying at once", record.id(), policyError);
             } else {
@@ -253,7 +287,7 @@ public final class TaskExecution implements Runnable, TaskContext {
         }
     }
 
-    private void retry(Exception e, Duration delay) {
+    private void retry(Throwable e, Duration delay) {
         var retryAt = s.clock().instant().plus(delay);
         if (detail() == FailureDetail.FULL) {
             log.warn("Task {} failed on attempt {} of {}", record.id(), record.attempts(), record.maxAttempts(), e);
@@ -267,16 +301,16 @@ public final class TaskExecution implements Runnable, TaskContext {
         }
         var result = applyFail(failure(e), retryAt);
         switch (result) {
-            case RETRY -> s.observer().emit(new TaskEvent.Retrying(view, event(e), retryAt, Outcome.APPLIED));
+            case RETRY -> emit(new TaskEvent.Retrying(view, event(e), retryAt, Outcome.APPLIED));
             case DEAD -> {
-                s.observer().emit(new TaskEvent.Died(view, event(e), "attempts exhausted", Outcome.APPLIED));
+                emit(new TaskEvent.Died(view, event(e), "attempts exhausted", Outcome.APPLIED));
                 afterTerminal(TaskState.DEAD, Outcome.APPLIED);
             }
-            case LOST -> s.observer().emit(new TaskEvent.Retrying(view, event(e), retryAt, Outcome.LOST));
+            case LOST -> emit(new TaskEvent.Retrying(view, event(e), retryAt, Outcome.LOST));
         }
     }
 
-    private void die(Exception e, String reason) {
+    private void die(Throwable e, String reason) {
         if (detail() == FailureDetail.FULL) {
             log.error("Task {} failed and will not be retried: {}", record.id(), reason, e);
         } else {
@@ -288,7 +322,7 @@ public final class TaskExecution implements Runnable, TaskContext {
             }
         }
         var outcome = failOutcome(failure(e), null);
-        s.observer().emit(new TaskEvent.Died(view, event(e), reason, outcome));
+        emit(new TaskEvent.Died(view, event(e), reason, outcome));
         afterTerminal(TaskState.DEAD, outcome);
     }
 
@@ -310,7 +344,8 @@ public final class TaskExecution implements Runnable, TaskContext {
                 s.status().issue("schedule-paused", detail, record.id());
                 log.warn(detail);
             }
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
+            remember(e);
             s.status().storeError(e);
             log.error("Could not update schedule {} after task {}", record.scheduleId(), record.id(), e);
         }
@@ -325,7 +360,8 @@ public final class TaskExecution implements Runnable, TaskContext {
             var r = s.store().fail(record.id(), record.revision(), info, retryAt, s.keepDead());
             if (r == FailOutcome.LOST) log.warn("Task {} failed but its lease was lost", record.id());
             return r;
-        } catch (RuntimeException storeError) {
+        } catch (RuntimeException | Error storeError) {
+            remember(storeError);
             logStoreError(storeError);
             return FailOutcome.LOST;
         }
@@ -336,31 +372,38 @@ public final class TaskExecution implements Runnable, TaskContext {
             if (transition.getAsBoolean()) return Outcome.APPLIED;
             s.status().issue("lease-lost", "transition rejected, the lease was taken over", record.id());
             return Outcome.LOST;
-        } catch (RuntimeException storeError) {
+        } catch (RuntimeException | Error storeError) {
+            remember(storeError);
             logStoreError(storeError);
             return Outcome.LOST;
         }
     }
 
-    private void logStoreError(RuntimeException e) {
+    private void logStoreError(Throwable e) {
         s.status().storeError(e);
         log.error(
                 "Unable to update the state of task {}. Its lease expires and maintenance retries it", record.id(), e);
     }
 
-    private FailureInfo failure(Exception e) {
-        return Failures.info(detail(), record.attempts(), s.clock().instant(), e);
+    private FailureInfo failure(Throwable e) {
+        var at = s.clock().instant();
+        try {
+            return Failures.info(detail(), record.attempts(), at, e);
+        } catch (RuntimeException | Error t) {
+            remember(t);
+            return Failures.info(FailureDetail.CLASS_NAME_ONLY, record.attempts(), at, e);
+        }
     }
 
     private FailureDetail detail() {
         return s.failureDetail();
     }
 
-    private Throwable event(Exception e) {
+    private Throwable event(Throwable e) {
         return Failures.forEvent(detail(), e);
     }
 
-    private String text(Exception e) {
+    private String text(Throwable e) {
         return Failures.text(detail(), e);
     }
 

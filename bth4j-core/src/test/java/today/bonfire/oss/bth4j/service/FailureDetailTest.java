@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
@@ -43,7 +44,19 @@ class FailureDetailTest {
     private final List<TaskEvent> events = new ArrayList<>();
     private final AtomicReference<FailureInfo> stored = new AtomicReference<>();
     private final AtomicReference<String> cancelledReason = new AtomicReference<>();
+    private final List<Throwable> policyCalls = new ArrayList<>();
     private Logger executionLogger;
+    private boolean cancelRequested;
+    private int finishedCalls;
+    private RetryPolicy policy;
+    private Error storeFailError;
+    private RunnerStatus status;
+    private Class<? extends TaskEvent> observerFailsOn;
+    private Error observerError;
+    private Error scheduleError;
+    private boolean fixedDelay;
+    private final AtomicReference<Instant> nextFire = new AtomicReference<>();
+    private final AtomicReference<Boolean> paused = new AtomicReference<>();
 
     @BeforeEach
     void attachAppender() {
@@ -157,10 +170,208 @@ class FailureDetailTest {
         return text.toString();
     }
 
-    private void run(FailureDetail detail, RuntimeException failure) {
+    @Test
+    void anErrorGoesThroughTheRetryPolicyAndIsRecorded() {
+        run(FailureDetail.FULL, new AssertionError("boom"));
+
+        assertThat(policyCalls).hasSize(1);
+        assertThat(policyCalls.get(0)).isInstanceOf(AssertionError.class);
+        assertThat(stored.get().type()).isEqualTo(AssertionError.class.getName());
+        assertThat(stored.get().message()).isEqualTo("boom");
+        assertThat(events.get(1)).isInstanceOf(TaskEvent.Retrying.class);
+    }
+
+    @Test
+    void anErrorInClassNameOnlyModeKeepsItsMessageOutOfRecordEventAndLog() {
+        run(FailureDetail.CLASS_NAME_ONLY, new AssertionError("boom"));
+
+        assertThat(stored.get().type()).isEqualTo(AssertionError.class.getName());
+        assertThat(stored.get().message()).isNull();
+        assertThat(stored.get().stack()).isNull();
+        var retrying = (TaskEvent.Retrying) events.get(1);
+        assertThat(retrying.error()).isInstanceOf(RedactedFailure.class);
+        assertThat(retrying.error().toString()).doesNotContain("boom");
+        assertThat(logText()).doesNotContain("boom").contains(AssertionError.class.getName());
+    }
+
+    @Test
+    void aStackOverflowErrorIsRecordedAndNotRethrown() {
+        run(FailureDetail.FULL, new StackOverflowError());
+
+        assertThat(stored.get().type()).isEqualTo(StackOverflowError.class.getName());
+        assertThat(events.get(1)).isInstanceOf(TaskEvent.Retrying.class);
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    @Test
+    void anOutOfMemoryErrorIsRecordedThenRethrown() {
+        var error = new OutOfMemoryError("heap");
+
+        assertThatThrownBy(() -> run(FailureDetail.FULL, error)).isSameAs(error);
+
+        assertThat(stored.get().type()).isEqualTo(OutOfMemoryError.class.getName());
+        assertThat(events.get(1)).isInstanceOf(TaskEvent.Retrying.class);
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    @Test
+    void anErrorWhileACancelIsRequestedEndsCancelled() {
+        cancelRequested = true;
+
+        run(FailureDetail.FULL, new AssertionError("boom"));
+
+        assertThat(events.get(1)).isInstanceOf(TaskEvent.Cancelled.class);
+        assertThat(cancelledReason.get()).isEqualTo("cancel requested");
+        assertThat(stored.get()).isNull();
+        assertThat(policyCalls).isEmpty();
+    }
+
+    @Test
+    void anOutOfMemoryErrorInClassNameOnlyModeIsRedactedAndRethrown() {
+        var error = new OutOfMemoryError("boom");
+
+        assertThatThrownBy(() -> run(FailureDetail.CLASS_NAME_ONLY, error)).isSameAs(error);
+
+        assertThat(stored.get().message()).isNull();
+        assertThat(stored.get().stack()).isNull();
+        assertThat(((TaskEvent.Retrying) events.get(1)).error()).isInstanceOf(RedactedFailure.class);
+        assertThat(logText()).doesNotContain("boom");
+    }
+
+    @Test
+    void anInternalErrorIsRethrown() {
+        var error = new InternalError("boom");
+
+        assertThatThrownBy(() -> run(FailureDetail.FULL, error)).isSameAs(error);
+
+        assertThat(stored.get().type()).isEqualTo(InternalError.class.getName());
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    @Test
+    void aNonFatalErrorFromTheRetryPolicyRetriesAtOnceAndIsAnIssue() {
+        policy = (task, error) -> {
+            throw new AssertionError("policy");
+        };
+
+        run(FailureDetail.FULL, new IllegalStateException("x"));
+
+        assertThat(((TaskEvent.Retrying) events.get(1)).retryAt()).isEqualTo(NOW);
+        assertThat(stored.get().type()).isEqualTo(IllegalStateException.class.getName());
+        assertThat(status.issues()).anyMatch(i -> i.kind().equals("retry-policy"));
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    @Test
+    void aFatalErrorFromTheRetryPolicyIsRecordedThenRethrown() {
+        var first = new IllegalStateException("x");
+        var fatal = new OutOfMemoryError("policy");
+        policy = (task, error) -> {
+            throw fatal;
+        };
+
+        assertThatThrownBy(() -> run(FailureDetail.FULL, first)).isSameAs(fatal);
+
+        assertThat(stored.get().type()).isEqualTo(IllegalStateException.class.getName());
+        assertThat(events.get(1)).isInstanceOf(TaskEvent.Retrying.class);
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    @Test
+    void aLaterFatalErrorCarriesTheProcessorErrorAsSuppressed() {
+        var first = new InternalError("first");
+        var later = new OutOfMemoryError("later");
+        policy = (task, error) -> {
+            throw later;
+        };
+
+        assertThatThrownBy(() -> run(FailureDetail.FULL, first)).isSameAs(later);
+
+        assertThat(later.getSuppressed()).containsExactly(first);
+    }
+
+    @Test
+    void anErrorFromTheStoreLeavesTheTaskLeasedAndDoesNotEscape() {
+        storeFailError = new AssertionError("driver");
+
+        run(FailureDetail.FULL, new IllegalStateException("x"));
+
+        assertThat(stored.get()).isNull();
+        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        assertThat(logText()).contains("Unable to update the state of task 9");
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    @Test
+    void anErrorTheRetryPolicyKillsTheTaskWithIsRecordedAsDied() {
+        policy = (task, error) -> RetryPolicy.Decision.dead("no more");
+
+        run(FailureDetail.CLASS_NAME_ONLY, new AssertionError("boom"));
+
+        var died = (TaskEvent.Died) events.get(1);
+        assertThat(died.error()).isInstanceOf(RedactedFailure.class);
+        assertThat(stored.get().type()).isEqualTo(AssertionError.class.getName());
+        assertThat(logText()).doesNotContain("boom");
+    }
+
+    @Test
+    void aFatalErrorFromTheStoreFailStillEmitsRetryingLostOnceAndIsRethrown() {
+        var error = new OutOfMemoryError("store");
+        storeFailError = error;
+
+        assertThatThrownBy(() -> run(FailureDetail.FULL, new IllegalStateException("x")))
+                .isSameAs(error);
+
+        assertThat(events.stream().filter(TaskEvent.Retrying.class::isInstance))
+                .singleElement()
+                .satisfies(e -> assertThat(((TaskEvent.Retrying) e).outcome()).isEqualTo(TaskEvent.Outcome.LOST));
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    @Test
+    void aNonFatalErrorFromTheObserverIsSwallowedAndTheScheduleIsRearmed() {
+        observerFailsOn = TaskEvent.Succeeded.class;
+        observerError = new AssertionError("observer");
+        fixedDelay = true;
+
+        run(FailureDetail.FULL, null);
+
+        assertThat(nextFire.get()).isEqualTo(NOW.plus(Duration.ofMinutes(1)));
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    @Test
+    void aFatalErrorFromTheObserverIsRethrownAfterTheScheduleIsPaused() {
+        observerFailsOn = TaskEvent.Died.class;
+        var error = new OutOfMemoryError("observer");
+        observerError = error;
+        fixedDelay = true;
+        policy = (task, e) -> RetryPolicy.Decision.dead("no more");
+
+        assertThatThrownBy(() -> run(FailureDetail.FULL, new IllegalStateException("x")))
+                .isSameAs(error);
+
+        assertThat(paused.get()).isTrue();
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    @Test
+    void anErrorFromTheScheduleUpdateLeavesTheTaskSucceededAndIsAStoreError() {
+        scheduleError = new NoClassDefFoundError("x");
+        fixedDelay = true;
+
+        run(FailureDetail.FULL, null);
+
+        assertThat(events.get(1)).isInstanceOf(TaskEvent.Succeeded.class);
+        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    private void run(FailureDetail detail, Throwable failure) {
         var type = TaskType.of("boom");
         TaskProcessor<Void> processor = (ctx, payload) -> {
-            throw failure;
+            if (failure instanceof Error error) throw error;
+            if (failure != null) throw (RuntimeException) failure;
         };
         var registry = new TaskProcessorRegistry().register(type, processor);
         var store = (FullStore) Proxy.newProxyInstance(
@@ -168,12 +379,23 @@ class FailureDetailTest {
                     return switch (method.getName()) {
                         case "queueNames" -> Map.of(1, "Q:DEF");
                         case "eventNames" -> Map.of(1, "boom");
+                        case "ack" -> true;
+                        case "setNextFire" -> {
+                            if (scheduleError != null) throw scheduleError;
+                            nextFire.set((Instant) args[1]);
+                            yield null;
+                        }
+                        case "pauseRecurring" -> {
+                            paused.set((Boolean) args[1]);
+                            yield null;
+                        }
                         case "getTask" -> java.util.Optional.empty();
                         case "finishCancelled" -> {
                             cancelledReason.set((String) args[2]);
                             yield true;
                         }
                         case "fail" -> {
+                            if (storeFailError != null) throw storeFailError;
                             stored.set((FailureInfo) args[2]);
                             yield args[3] == null ? FailOutcome.DEAD : FailOutcome.RETRY;
                         }
@@ -181,6 +403,7 @@ class FailureDetailTest {
                     };
                 });
         var clock = Clock.fixed(NOW, ZoneOffset.UTC);
+        status = new RunnerStatus(clock);
         var settings = new TaskExecution.Settings(
                 store,
                 store,
@@ -188,10 +411,18 @@ class FailureDetailTest {
                 new Names(store),
                 new Codecs(null),
                 registry,
-                RetryPolicies.of(RetryPolicy.fixed(Duration.ofSeconds(1))),
-                new Observers(events::add),
+                RetryPolicies.of((task, error) -> {
+                    policyCalls.add(error);
+                    return policy == null
+                            ? RetryPolicy.Decision.retryAfter(Duration.ofSeconds(1))
+                            : policy.decide(task, error);
+                }),
+                new Observers(event -> {
+                    events.add(event);
+                    if (observerError != null && observerFailsOn.isInstance(event)) throw observerError;
+                }),
                 clock,
-                new RunnerStatus(clock),
+                status,
                 true,
                 false,
                 true,
@@ -203,8 +434,11 @@ class FailureDetailTest {
                 .eventId(1)
                 .state(TaskState.LEASED)
                 .attempts(1)
+                .scheduleId(fixedDelay ? "sched" : null)
+                .headers(fixedDelay ? Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT1M") : null)
+                .cancelRequestedAt(cancelRequested ? NOW : null)
                 .maxAttempts(3)
                 .build();
-        new TaskExecution(record, settings, execution -> {}).run();
+        new TaskExecution(record, settings, execution -> finishedCalls++).run();
     }
 }

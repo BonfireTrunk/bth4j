@@ -161,13 +161,14 @@ public class MaintenanceService extends CustomThread {
         }
     }
 
+    /** An Error from the policy, fatal or not, is logged and answered with an immediate retry; it never ends the maintenance thread. */
     private RetryPolicy.Decision decide(TaskRecord record) {
         var policy = retryPolicies.named(record.retryPolicy());
         if (policy == null) policy = retryPolicies.defaultPolicy();
         try {
             var d = policy.decide(names.view(record), null);
             return d != null ? d : RetryPolicy.Decision.retryAfter(Duration.ZERO);
-        } catch (RuntimeException policyError) {
+        } catch (RuntimeException | Error policyError) {
             if (failureDetail == FailureDetail.FULL) {
                 log.error("Retry policy failed for expired task {}, retrying at once", record.id(), policyError);
             } else {
