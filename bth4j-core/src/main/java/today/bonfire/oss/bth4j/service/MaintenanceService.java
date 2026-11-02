@@ -120,7 +120,8 @@ public class MaintenanceService extends CustomThread {
         }
         var failure = new FailureInfo(
                 e.attempts(), clock.instant(), "lease-expired", "lease expired after attempt " + e.attempts(), null);
-        var outcome = store.failExpired(e.id(), e.revision(), failure, retryAt, keepDead);
+        var outcome = store.failExpired(
+                e.id(), e.revision(), failure, retryAt, keepDead, RecurringTaskService.pauseEffect(record));
         log.warn("Lease of task {} expired after attempt {}: {}", e.id(), e.attempts(), outcome);
         if (outcome != FailOutcome.LOST) {
             observer.emit(
@@ -130,27 +131,22 @@ public class MaintenanceService extends CustomThread {
     }
 
     /**
-     * A fixed-delay definition is re-armed by its occurrence's own execution, so an occurrence that ends here
-     * would leave it parked forever; pausing makes that visible and lets an operator resume it.
+     * The store paused the definition of a fixed-delay occurrence that ended here, in the same step as the
+     * transition, because nothing would re-arm it; this makes that visible so an operator can resume it.
      */
     private void pauseParkedSchedule(TaskRecord record, TaskState ended) {
         if (!RecurringTaskService.isFixedDelayOccurrence(record)) return;
-        try {
-            store.pauseRecurring(record.scheduleId(), true);
-            var detail = "schedule " + record.scheduleId() + " paused: occurrence ended " + ended;
-            status.issue("schedule-paused", detail, record.id());
-            log.warn(detail);
-        } catch (RuntimeException e) {
-            status.storeError(e);
-            log.error("Could not pause schedule {} after task {}", record.scheduleId(), record.id(), e);
-        }
+        var detail = "schedule " + record.scheduleId() + " paused: occurrence ended " + ended;
+        status.issue("schedule-paused", detail, record.id());
+        log.warn(detail);
     }
 
     /** A cancelled task whose worker died must not run again. */
     private void cancelExpired(ExpiredLease e) {
         var record = store.getTask(e.id()).orElse(null);
         var reason = record != null && record.cancelReason() != null ? record.cancelReason() : "cancel requested";
-        var applied = store.finishCancelled(e.id(), e.revision(), reason, true);
+        var applied =
+                store.finishCancelled(e.id(), e.revision(), reason, true, RecurringTaskService.pauseEffect(record));
         log.warn("Lease of cancelled task {} expired, task ended as cancelled: {}", e.id(), applied);
         if (applied && record != null) {
             observer.emit(new TaskEvent.Cancelled(names.view(record), reason, Outcome.APPLIED));

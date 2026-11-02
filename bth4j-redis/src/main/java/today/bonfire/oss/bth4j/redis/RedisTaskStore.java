@@ -37,6 +37,7 @@ import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecordJson;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
+import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
@@ -310,30 +311,47 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public boolean ack(long id, int revision, boolean keep, boolean keepPayload) {
-        var args = List.of(String.valueOf(id), String.valueOf(revision), keep ? "1" : "0", keepPayload ? "1" : "0");
+    public boolean ack(long id, int revision, boolean keep, boolean keepPayload, ScheduleEffect effect) {
+        var args = new ArrayList<>(
+                List.of(String.valueOf(id), String.valueOf(revision), keep ? "1" : "0", keepPayload ? "1" : "0"));
+        args.addAll(effectArgs(effect));
         return num(guard(() -> scripts.run(RedisScripts.ACK, args))) == 1;
     }
 
-    @Override
-    public FailOutcome fail(long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead) {
-        return fail(id, revision, failure, retryAt, keepDead, false);
+    private static List<String> effectArgs(ScheduleEffect effect) {
+        if (effect == null) return List.of("", "", "");
+        return List.of(
+                effect.scheduleId(), String.valueOf(effect.revision()), effect.pauses() ? "" : ms(effect.nextFire()));
     }
 
     @Override
-    public FailOutcome failExpired(long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead) {
-        return fail(id, revision, failure, retryAt, keepDead, true);
+    public FailOutcome fail(
+            long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead, ScheduleEffect effect) {
+        return fail(id, revision, failure, retryAt, keepDead, false, effect);
+    }
+
+    @Override
+    public FailOutcome failExpired(
+            long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead, ScheduleEffect effect) {
+        return fail(id, revision, failure, retryAt, keepDead, true, effect);
     }
 
     private FailOutcome fail(
-            long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead, boolean expiredOnly) {
-        var args = List.of(
+            long id,
+            int revision,
+            FailureInfo failure,
+            Instant retryAt,
+            boolean keepDead,
+            boolean expiredOnly,
+            ScheduleEffect effect) {
+        var args = new ArrayList<>(List.of(
                 String.valueOf(id),
                 String.valueOf(revision),
                 retryAt == null ? "" : ms(retryAt),
                 keepDead ? "1" : "0",
                 expiredOnly ? "1" : "0",
-                RecordJson.encodeFailure(failure));
+                RecordJson.encodeFailure(failure)));
+        args.addAll(effectArgs(effect));
         return FailOutcome.valueOf((String) guard(() -> scripts.run(RedisScripts.FAIL, args)));
     }
 
@@ -447,10 +465,11 @@ public class RedisTaskStore implements FullStore {
     // ---- schedules -----------------------------------------------------------------------------------
 
     @Override
-    public void putRecurring(RecurringDefinition d, Instant nextFire) {
+    public void putRecurring(RecurringDefinition d, Instant nextFire, Instant keepUntil) {
         var args = new ArrayList<String>();
         args.add(d.scheduleId());
         args.add(ms(nextFire));
+        args.add(ms(keepUntil));
         args.addAll(List.of(
                 F_EVENT,
                 String.valueOf(d.eventId()),
@@ -736,8 +755,10 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public boolean finishCancelled(long id, int revision, String reason, boolean keepPayload) {
-        var args = List.of(String.valueOf(id), String.valueOf(revision), reason(reason), keepPayload ? "1" : "0");
+    public boolean finishCancelled(long id, int revision, String reason, boolean keepPayload, ScheduleEffect effect) {
+        var args = new ArrayList<>(
+                List.of(String.valueOf(id), String.valueOf(revision), reason(reason), keepPayload ? "1" : "0"));
+        args.addAll(effectArgs(effect));
         return num(guard(() -> scripts.run(RedisScripts.FINISH_CANCELLED, args))) == 1;
     }
 
@@ -874,5 +895,11 @@ public class RedisTaskStore implements FullStore {
     public boolean setNextFire(String scheduleId, Instant nextFire) {
         var args = List.of(scheduleId, ms(nextFire));
         return num(guard(() -> scripts.run(RedisScripts.CRON_SET_NEXT, args))) == 1;
+    }
+
+    @Override
+    public boolean setNextFire(String scheduleId, long revision, Instant nextFire) {
+        var args = List.of(scheduleId, String.valueOf(revision), ms(nextFire));
+        return num(guard(() -> scripts.run(RedisScripts.CRON_ADVANCE, args))) == 1;
     }
 }

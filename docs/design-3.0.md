@@ -337,8 +337,11 @@ is parked 100 years ahead.
 `putRecurring` assigns a new revision on every put, taken from a counter that never resets (Redis
 `cronrev`, PostgreSQL sequence `<prefix>_schedule_rev`), also after a delete, so a runner holding a stale
 definition can never commit against its replacement. Registering again with the same cron expression
-keeps the stored next fire time as long as the timing (expression, zone, fixed delay) is unchanged; changed
-timing resets it. A re-put keeps the paused flag the definition has; a new definition takes the flag as given.
+keeps the stored next fire time as long as the timing (expression, zone, fixed delay) is unchanged and the
+stored time is not later than the `keepUntil` the caller passes; changed timing resets it. `TaskClient` passes
+the second fire after now for a cron definition and `now + delay` for a fixed delay, so a definition left
+parked or pushed far out by a lost re-arm or a stale write recovers on the next registration, while the margin
+of one fire keeps a healthy definition from firing twice when the clocks of the client and the runner differ. A re-put keeps the paused flag the definition has; a new definition takes the flag as given.
 
 ## Registries and the no-foreign-keys rule
 
@@ -684,13 +687,16 @@ the definition's policy decides:
 
 **Fixed delay.** The occurrence is committed with `due = fireAt` and the next fire time parked 100 years ahead
 (the same parking as a never-fires cron), and carries the header `bth4j.fixed-delay` holding the delay as an
-ISO-8601 duration. When the runner finishes that occurrence, `TaskExecution` looks at the header: on SUCCEEDED
-it calls `setNextFire(scheduleId, now + delay)`; on DEAD or CANCELLED it calls
-`pauseRecurring(scheduleId, true)` and records the issue `schedule-paused`, so a failing job waits for an
-operator. Only an applied outcome acts. The two paths that end an occurrence outside its own execution do the
-same pause: maintenance, when an expired lease leaves the occurrence DEAD or finishes a cancel request, and
-`AdminOps.cancel`, when it cancels a waiting occurrence at once (both recognise the occurrence by its
-`scheduleId` and the `bth4j.fixed-delay` header). An occurrence deleted while waiting leaves the definition
+ISO-8601 duration, and the header `bth4j.schedule-rev` holding the definition revision. The end of that
+occurrence changes the definition in the same atomic step as the task transition, through the `ScheduleEffect`
+argument of `ack`, `fail`, `failExpired` and `finishCancelled`: on SUCCEEDED the next fire time becomes
+`now + delay`; when the task ends DEAD or CANCELLED the definition is paused, and `TaskExecution` records the
+issue `schedule-paused`, so a failing job waits for an operator. The effect does nothing when the definition
+no longer has the revision in the header (an operator replaced or triggered it meanwhile) and a re-arm does
+nothing while the definition is paused. Maintenance passes the pause when an expired lease leaves the
+occurrence DEAD or finishes a cancel request. `AdminOps.cancel`, which cancels a waiting occurrence at once,
+pauses in a second call (it recognises the occurrence by its `scheduleId` and the `bth4j.fixed-delay`
+header). An occurrence deleted while waiting leaves the definition
 parked until an operator resumes or triggers it. `AdminOps.pauseSchedule(id, false)` resumes and re-arms a
 fixed-delay definition at `now + delay`. A new fixed-delay definition first fires one delay after
 `putSchedule`.
@@ -702,7 +708,10 @@ commit by looking the new id up, records the issue `schedule-overlap` and emits 
 
 **Pause and trigger.** `pauseRecurring` keeps the definition and its stored next fire time but excludes it from
 `dueRecurring` and from `commitRecurring`, so an occurrence cannot be committed for a definition paused after
-`dueRecurring` read it. `setNextFire` backs `triggerSchedule` (`next = now`) and the fixed-delay re-arm.
+`dueRecurring` read it. `setNextFire(id, next)` backs `triggerSchedule` (`next = now`) and the resume of a
+fixed-delay definition; it assigns a new revision. The runner's own writes, the misfire advance and the
+fixed-delay re-arm, are `setNextFire(id, revision, next)` or a `ScheduleEffect`: they keep the revision and do
+nothing when the stored revision differs or the definition is paused.
 `putRecurring` takes the paused flag from a new definition only; replacing keeps the stored flag, so a runner
 that registers its schedules at every start cannot undo an operator's pause. `recurringDefinitions()` returns
 each definition with its next fire time for the admin view.

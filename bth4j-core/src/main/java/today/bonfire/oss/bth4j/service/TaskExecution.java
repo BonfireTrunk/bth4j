@@ -30,7 +30,6 @@ import today.bonfire.oss.bth4j.spi.ExecutionStore;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.InspectionStore;
-import today.bonfire.oss.bth4j.spi.ScheduleStore;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
@@ -53,7 +52,6 @@ public final class TaskExecution implements Runnable, TaskContext {
 
     public record Settings(
             ExecutionStore store,
-            ScheduleStore schedules,
             InspectionStore inspection,
             Names names,
             Codecs codecs,
@@ -177,7 +175,12 @@ public final class TaskExecution implements Runnable, TaskContext {
     }
 
     private void succeed(Instant started) {
-        var outcome = apply(() -> s.store().ack(record.id(), record.revision(), s.keepSucceeded(), s.keepPayload()));
+        var delay = view.headers().get(RecurringTaskService.FIXED_DELAY_HEADER);
+        var rearm = delay == null
+                ? null
+                : RecurringTaskService.rearmEffect(record, s.clock().instant().plus(Duration.parse(delay)));
+        var outcome =
+                apply(() -> s.store().ack(record.id(), record.revision(), s.keepSucceeded(), s.keepPayload(), rearm));
         if (outcome == Outcome.LOST) {
             log.warn("Task {} completed but its lease was lost, it may run again", record.id());
         }
@@ -214,7 +217,8 @@ public final class TaskExecution implements Runnable, TaskContext {
     private void cancelled(String given) {
         var reason = cancelReason == null ? storedCancelReason(given) : given;
         log.info("Task {} cancelled: {}", record.id(), reason);
-        var outcome = apply(() -> s.store().finishCancelled(record.id(), record.revision(), reason, true));
+        var pause = RecurringTaskService.pauseEffect(record);
+        var outcome = apply(() -> s.store().finishCancelled(record.id(), record.revision(), reason, true, pause));
         s.observer().emit(new TaskEvent.Cancelled(view, reason, outcome));
         afterTerminal(TaskState.CANCELLED, outcome);
     }
@@ -270,27 +274,16 @@ public final class TaskExecution implements Runnable, TaskContext {
     }
 
     /**
-     * A fixed-delay occurrence re-arms its definition when it succeeds and pauses it otherwise, so a failing
-     * job does not fire again until an operator looks at it.
+     * The store has already re-armed the definition of a succeeded fixed-delay occurrence, or paused it for any
+     * other end, in the same step as the transition, so a job that keeps failing does not fire again until an
+     * operator looks at it. Only the issue is raised here.
      */
     private void afterTerminal(TaskState state, Outcome outcome) {
-        if (outcome != Outcome.APPLIED || record.scheduleId() == null) return;
-        var delay = view.headers().get(RecurringTaskService.FIXED_DELAY_HEADER);
-        if (delay == null) return;
-        try {
-            if (state == TaskState.SUCCEEDED) {
-                var next = s.clock().instant().plus(Duration.parse(delay));
-                s.schedules().setNextFire(record.scheduleId(), next);
-            } else {
-                s.schedules().pauseRecurring(record.scheduleId(), true);
-                var detail = "schedule " + record.scheduleId() + " paused: occurrence ended " + state;
-                s.status().issue("schedule-paused", detail, record.id());
-                log.warn(detail);
-            }
-        } catch (RuntimeException e) {
-            s.status().storeError(e);
-            log.error("Could not update schedule {} after task {}", record.scheduleId(), record.id(), e);
-        }
+        if (state == TaskState.SUCCEEDED || outcome != Outcome.APPLIED || record.scheduleId() == null) return;
+        if (RecurringTaskService.pauseEffect(record) == null) return;
+        var detail = "schedule " + record.scheduleId() + " paused: occurrence ended " + state;
+        s.status().issue("schedule-paused", detail, record.id());
+        log.warn(detail);
     }
 
     private Outcome failOutcome(FailureInfo info, Instant retryAt) {
@@ -299,7 +292,14 @@ public final class TaskExecution implements Runnable, TaskContext {
 
     private FailOutcome applyFail(FailureInfo info, Instant retryAt) {
         try {
-            var r = s.store().fail(record.id(), record.revision(), info, retryAt, s.keepDead());
+            var r = s.store()
+                    .fail(
+                            record.id(),
+                            record.revision(),
+                            info,
+                            retryAt,
+                            s.keepDead(),
+                            RecurringTaskService.pauseEffect(record));
             if (r == FailOutcome.LOST) log.warn("Task {} failed but its lease was lost", record.id());
             return r;
         } catch (RuntimeException storeError) {

@@ -1713,13 +1713,223 @@ public abstract class StoreContract {
     }
 
     @Test
-    void setNextFireKeepsTheRevisionOfTheDefinition() {
+    void setNextFireAssignsANewRevisionAndPausingKeepsIt() {
         Instant fire = millis(now().plusSeconds(60));
         store.putRecurring(definition("a", "* * * * *"), fire);
-        long revision = store.recurringDefinitions().get(0).definition().revision();
+        long revision = revisionOf("a");
         store.setNextFire("a", fire.plusSeconds(5));
+        long triggered = revisionOf("a");
+        assertThat(triggered).isNotEqualTo(revision);
         store.pauseRecurring("a", true);
-        assertThat(store.recurringDefinitions().get(0).definition().revision()).isEqualTo(revision);
+        assertThat(revisionOf("a")).isEqualTo(triggered);
+    }
+
+    private long revisionOf(String scheduleId) {
+        return store.recurringDefinitions().stream()
+                .filter(r -> r.definition().scheduleId().equals(scheduleId))
+                .findFirst()
+                .orElseThrow()
+                .definition()
+                .revision();
+    }
+
+    private Instant nextFireOf(String scheduleId) {
+        return store.recurringSchedules().get(scheduleId);
+    }
+
+    @Test
+    void setNextFireWithTheCurrentRevisionReplacesTheNextFireAndKeepsTheRevision() {
+        Instant fire = millis(now().plusSeconds(60));
+        store.putRecurring(definition("a", "* * * * *"), fire);
+        long revision = revisionOf("a");
+        assertThat(store.setNextFire("a", revision, fire.plusSeconds(500))).isTrue();
+        assertThat(nextFireOf("a")).isEqualTo(fire.plusSeconds(500));
+        assertThat(revisionOf("a")).isEqualTo(revision);
+        assertThat(store.dueRecurring(fire.plusSeconds(500), 10)).hasSize(1);
+    }
+
+    @Test
+    void setNextFireWithAStaleRevisionDoesNothing() {
+        Instant fire = millis(now().plusSeconds(60));
+        store.putRecurring(definition("a", "* * * * *"), fire);
+        long stale = revisionOf("a");
+        store.putRecurring(definition("a", "* * * * *"), fire);
+        assertThat(store.setNextFire("a", stale, fire.plusSeconds(500))).isFalse();
+        assertThat(nextFireOf("a")).isEqualTo(fire);
+
+        long current = revisionOf("a");
+        assertThat(store.setNextFire("a", fire.plusSeconds(10))).isTrue();
+        assertThat(store.setNextFire("a", current, fire.plusSeconds(500))).isFalse();
+        assertThat(nextFireOf("a")).isEqualTo(fire.plusSeconds(10));
+    }
+
+    @Test
+    void setNextFireWithARevisionDoesNothingForAPausedOrUnknownDefinition() {
+        Instant fire = millis(now().plusSeconds(60));
+        store.putRecurring(definition("a", "* * * * *"), fire);
+        long revision = revisionOf("a");
+        assertThat(store.pauseRecurring("a", true)).isTrue();
+        assertThat(store.setNextFire("a", revision, fire.plusSeconds(500))).isFalse();
+        assertThat(nextFireOf("a")).isEqualTo(fire);
+        assertThat(store.setNextFire("missing", 1, fire)).isFalse();
+    }
+
+    private TaskRecord leasedOccurrence(String scheduleId) {
+        return leased(task().scheduleId(scheduleId));
+    }
+
+    @Test
+    void ackRearmsTheDefinitionInTheSameStep() {
+        Instant parked = millis(now().plusSeconds(1).plus(Duration.ofDays(365 * 100L)));
+        store.putRecurring(fullDefinition("a"), parked);
+        long revision = revisionOf("a");
+        TaskRecord running = leasedOccurrence("a");
+        Instant rearmed = millis(now().plusSeconds(90));
+        assertThat(store.ack(
+                        running.id(), running.revision(), true, true, ScheduleEffect.rearm("a", revision, rearmed)))
+                .isTrue();
+        assertThat(get(running.id()).state()).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(nextFireOf("a")).isEqualTo(rearmed);
+        assertThat(revisionOf("a")).isEqualTo(revision);
+        assertThat(store.dueRecurring(rearmed, 10))
+                .extracting(DueSchedule::scheduleId)
+                .containsExactly("a");
+    }
+
+    @Test
+    void ackWithoutKeepingTheRecordStillRearmsTheDefinition() {
+        Instant parked = millis(now().plusSeconds(1).plus(Duration.ofDays(365 * 100L)));
+        store.putRecurring(fullDefinition("a"), parked);
+        TaskRecord running = leasedOccurrence("a");
+        Instant rearmed = millis(now().plusSeconds(90));
+        assertThat(store.ack(
+                        running.id(),
+                        running.revision(),
+                        false,
+                        false,
+                        ScheduleEffect.rearm("a", revisionOf("a"), rearmed)))
+                .isTrue();
+        assertThat(store.getTask(running.id())).isEmpty();
+        assertThat(nextFireOf("a")).isEqualTo(rearmed);
+    }
+
+    @Test
+    void ackWithAStaleScheduleRevisionAcksButLeavesTheDefinitionAlone() {
+        Instant fire = millis(now().plusSeconds(60));
+        store.putRecurring(fullDefinition("a"), fire);
+        long stale = revisionOf("a");
+        store.putRecurring(fullDefinition("a").withPaused(false), fire.plusSeconds(1));
+        TaskRecord running = leasedOccurrence("a");
+        Instant rearmed = millis(now().plusSeconds(5000));
+        assertThat(store.ack(running.id(), running.revision(), true, true, ScheduleEffect.rearm("a", stale, rearmed)))
+                .isTrue();
+        assertThat(get(running.id()).state()).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(nextFireOf("a")).isEqualTo(fire);
+    }
+
+    @Test
+    void ackDoesNotRearmAPausedDefinitionAndNothingChangesWhenTheLeaseIsLost() {
+        Instant fire = millis(now().plusSeconds(60));
+        store.putRecurring(fullDefinition("a"), fire);
+        long revision = revisionOf("a");
+        TaskRecord running = leasedOccurrence("a");
+        Instant rearmed = millis(now().plusSeconds(5000));
+        assertThat(store.ack(
+                        running.id(), running.revision() + 1, true, true, ScheduleEffect.rearm("a", revision, rearmed)))
+                .isFalse();
+        assertThat(nextFireOf("a")).isEqualTo(fire);
+
+        assertThat(store.pauseRecurring("a", true)).isTrue();
+        assertThat(store.ack(
+                        running.id(), running.revision(), true, true, ScheduleEffect.rearm("a", revision, rearmed)))
+                .isTrue();
+        assertThat(nextFireOf("a")).isEqualTo(fire);
+    }
+
+    @Test
+    void failThatKillsTheTaskPausesTheDefinitionAndAFailThatRetriesDoesNot() {
+        store.putRecurring(fullDefinition("a"), millis(now().plusSeconds(60)));
+        long revision = revisionOf("a");
+        TaskRecord first = leasedOccurrence("a");
+        assertThat(store.fail(
+                        first.id(),
+                        first.revision(),
+                        failure(1),
+                        now().plusSeconds(5),
+                        true,
+                        ScheduleEffect.pause("a", revision)))
+                .isEqualTo(FailOutcome.RETRY);
+        assertThat(store.recurringDefinitions().get(0).definition().paused()).isFalse();
+
+        TaskRecord second = leasedOccurrenceAfterRetry(first.id());
+        assertThat(store.fail(
+                        second.id(), second.revision(), failure(2), null, true, ScheduleEffect.pause("a", revision)))
+                .isEqualTo(FailOutcome.DEAD);
+        assertThat(store.recurringDefinitions().get(0).definition().paused()).isTrue();
+        assertThat(store.dueRecurring(now().plus(Duration.ofDays(1000)), 10)).isEmpty();
+    }
+
+    private TaskRecord leasedOccurrenceAfterRetry(long id) {
+        advance(Duration.ofSeconds(10));
+        store.promote(10);
+        TaskRecord again = claimOne();
+        assertThat(again.id()).isEqualTo(id);
+        return again;
+    }
+
+    @Test
+    void failThatKillsTheTaskLeavesADefinitionOfAnotherRevisionAlone() {
+        store.putRecurring(fullDefinition("a"), millis(now().plusSeconds(60)));
+        long stale = revisionOf("a");
+        store.putRecurring(fullDefinition("a"), millis(now().plusSeconds(60)));
+        TaskRecord running = leasedOccurrence("a");
+        assertThat(store.fail(
+                        running.id(), running.revision(), failure(1), null, true, ScheduleEffect.pause("a", stale)))
+                .isEqualTo(FailOutcome.DEAD);
+        assertThat(store.recurringDefinitions().get(0).definition().paused()).isFalse();
+    }
+
+    @Test
+    void finishCancelledPausesTheDefinitionOfTheEndedOccurrence() {
+        store.putRecurring(fullDefinition("a"), millis(now().plusSeconds(60)));
+        long revision = revisionOf("a");
+        TaskRecord running = leasedOccurrence("a");
+        assertThat(store.finishCancelled(
+                        running.id(), running.revision(), "stop", true, ScheduleEffect.pause("a", revision)))
+                .isTrue();
+        assertThat(get(running.id()).state()).isEqualTo(TaskState.CANCELLED);
+        assertThat(store.recurringDefinitions().get(0).definition().paused()).isTrue();
+    }
+
+    @Test
+    void putRecurringRecoversAParkedDefinitionAndKeepsAHealthyOne() {
+        Instant soon = millis(now().plusSeconds(30));
+        store.putRecurring(fullDefinition("a"), soon);
+        Instant next = millis(now().plusSeconds(90));
+        store.putRecurring(fullDefinition("a"), next, next);
+        assertThat(nextFireOf("a")).isEqualTo(soon);
+
+        Instant parked = millis(now().plus(Duration.ofDays(365 * 100L)));
+        assertThat(store.setNextFire("a", revisionOf("a"), parked)).isTrue();
+        store.putRecurring(fullDefinition("a"), next, next);
+        assertThat(nextFireOf("a")).isEqualTo(next);
+    }
+
+    @Test
+    void putRecurringResetsACronDefinitionPushedBeyondTheKeepBound() {
+        Instant first = millis(now().plusSeconds(60));
+        Instant second = first.plusSeconds(60);
+        store.putRecurring(definition("a", "* * * * *"), first, second);
+        store.putRecurring(definition("a", "* * * * *"), first.plusSeconds(10), second.plusSeconds(10));
+        assertThat(nextFireOf("a")).isEqualTo(first);
+
+        Instant pushed = millis(now().plus(Duration.ofDays(30)));
+        assertThat(store.setNextFire("a", revisionOf("a"), pushed)).isTrue();
+        store.putRecurring(definition("a", "* * * * *"), first, second);
+        assertThat(nextFireOf("a")).isEqualTo(first);
+        assertThat(store.dueRecurring(first, 10))
+                .extracting(DueSchedule::scheduleId)
+                .containsExactly("a");
     }
 
     @Test

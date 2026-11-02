@@ -780,6 +780,24 @@ public abstract class RunnerContract {
     }
 
     @Test
+    void reRegisteringAFixedDelayScheduleThatWasPushedFarAheadFiresItAgain() {
+        var runs = new AtomicInteger();
+        startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));
+        var tick = ScheduleDefinition.every("tick", VOID_TYPE, Duration.ofSeconds(1));
+        client.putSchedule(tick);
+        await("the first run", () -> runs.get() >= 1);
+
+        store.setNextFire("tick", Instant.now().plus(Duration.ofDays(36_500)));
+        pause(1_500);
+        var before = runs.get();
+        pause(1_500);
+        assertThat(runs.get()).isEqualTo(before);
+
+        client.putSchedule(tick);
+        await("a run after the re-registration", () -> runs.get() > before);
+    }
+
+    @Test
     void misfireFireOnceNowCreatesOneOccurrenceAndMovesOn() {
         var runs = new AtomicInteger();
         var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));

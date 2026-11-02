@@ -190,22 +190,28 @@ public final class TaskClient {
     }
 
     /**
-     * Creates or replaces a recurring definition. Re-registering with the same cron expression keeps the next
-     * fire time; a changed expression resets it. A fixed-delay definition first fires one delay from now.
+     * Creates or replaces a recurring definition. Re-registering with unchanged timing keeps the stored next
+     * fire time while it is no later than the second fire after now (the margin absorbs clock skew between
+     * this process and the runner that advanced it); a changed timing, or a stored time beyond that margin
+     * such as a parked fixed-delay definition, resets it. A fixed-delay definition first fires one delay from
+     * now.
      *
      * @return the next fire time
      */
     public <T> Instant putSchedule(ScheduleDefinition<T> definition) {
         var now = clock.instant();
         Instant next;
+        Instant keepUntil;
         if (definition.isFixedDelay()) {
             next = now.plus(definition.fixedDelay());
+            keepUntil = next;
         } else {
             Cron.validate(definition.cron());
             var zone = definition.zone();
             next = Cron.next(definition.cron(), now, zone)
                     .orElseThrow(
                             () -> new TaskValidationException("Cron expression never fires: " + definition.cron()));
+            keepUntil = Cron.next(definition.cron(), next, zone).orElse(next);
         }
         var type = definition.type();
         var misfire = switch (definition.misfire()) {
@@ -229,7 +235,7 @@ public final class TaskClient {
                 definition.maxAttempts() != null ? definition.maxAttempts() : defaultMaxAttempts,
                 false,
                 0);
-        store.putRecurring(stored, next);
+        store.putRecurring(stored, next, keepUntil);
         log.info(
                 "Registered schedule {} ({}) next at {}",
                 definition.id(),

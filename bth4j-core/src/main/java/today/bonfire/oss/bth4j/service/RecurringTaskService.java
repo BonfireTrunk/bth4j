@@ -15,6 +15,7 @@ import today.bonfire.oss.bth4j.executor.CustomThread;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.InspectionStore;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
+import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.ScheduleStore;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
@@ -38,6 +39,9 @@ public class RecurringTaskService extends CustomThread {
     /** Header of a fixed-delay occurrence holding the delay as an ISO-8601 duration. */
     public static final String FIXED_DELAY_HEADER = "bth4j.fixed-delay";
 
+    /** Header of a fixed-delay occurrence holding the revision of the definition it was created from. */
+    public static final String SCHEDULE_REVISION_HEADER = "bth4j.schedule-rev";
+
     public static final String OVERLAP_KEY_PREFIX = "sched:";
 
     /** True for an occurrence of a fixed-delay definition; its definition is parked until the occurrence ends. */
@@ -46,6 +50,24 @@ public class RecurringTaskService extends CustomThread {
                 && r.scheduleId() != null
                 && r.headers() != null
                 && r.headers().containsKey(FIXED_DELAY_HEADER);
+    }
+
+    /** The re-arm to apply when this fixed-delay occurrence succeeds; null for any other task. */
+    public static ScheduleEffect rearmEffect(TaskRecord r, Instant nextFire) {
+        var revision = revisionOf(r);
+        return revision == null ? null : ScheduleEffect.rearm(r.scheduleId(), revision, nextFire);
+    }
+
+    /** The pause to apply when this fixed-delay occurrence ends without succeeding; null for any other task. */
+    public static ScheduleEffect pauseEffect(TaskRecord r) {
+        var revision = revisionOf(r);
+        return revision == null ? null : ScheduleEffect.pause(r.scheduleId(), revision);
+    }
+
+    private static Long revisionOf(TaskRecord r) {
+        if (!isFixedDelayOccurrence(r)) return null;
+        var revision = r.headers().get(SCHEDULE_REVISION_HEADER);
+        return revision == null ? null : Long.parseLong(revision);
     }
 
     private final ScheduleStore store;
@@ -164,8 +186,9 @@ public class RecurringTaskService extends CustomThread {
         switch (misfire) {
             case RecurringDefinition.MISFIRE_SKIP -> {
                 var next = nextOrPark(def, now, zone, d.fireAt());
-                store.setNextFire(d.scheduleId(), next);
-                misfireIssue(d, late, "skipped, next at " + next);
+                if (store.setNextFire(d.scheduleId(), def.revision(), next)) {
+                    misfireIssue(d, late, "skipped, next at " + next);
+                }
                 return false;
             }
             case RecurringDefinition.MISFIRE_CATCH_UP -> {
@@ -177,8 +200,9 @@ public class RecurringTaskService extends CustomThread {
                 }
                 if (fires.size() > def.catchUpMax()) {
                     var resume = fires.get(fires.size() - def.catchUpMax());
-                    store.setNextFire(d.scheduleId(), resume);
-                    misfireIssue(d, late, "catching up the last " + def.catchUpMax() + " fires from " + resume);
+                    if (store.setNextFire(d.scheduleId(), def.revision(), resume)) {
+                        misfireIssue(d, late, "catching up the last " + def.catchUpMax() + " fires from " + resume);
+                    }
                     return false;
                 }
                 // each missed fire gets its own occurrence; the next round picks the following one up
@@ -224,7 +248,10 @@ public class RecurringTaskService extends CustomThread {
                 .scheduleId(d.scheduleId());
         if (def.isFixedDelay()) {
             builder.headers(Map.of(
-                    FIXED_DELAY_HEADER, Duration.ofMillis(def.fixedDelayMs()).toString()));
+                    FIXED_DELAY_HEADER,
+                    Duration.ofMillis(def.fixedDelayMs()).toString(),
+                    SCHEDULE_REVISION_HEADER,
+                    String.valueOf(def.revision())));
         }
         if (def.overlapSkip()) {
             builder.uniqueKey(OVERLAP_KEY_PREFIX + d.scheduleId());

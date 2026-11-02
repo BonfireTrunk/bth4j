@@ -130,6 +130,22 @@ final class RedisScripts {
               finishKey(tkey, id, uk, kk, at, kept)
             end
 
+            -- The schedule change that rides on a task transition, in the same script run so a crash cannot split
+            -- them. It does nothing when the definition's rev differs (an operator replaced it meanwhile); a
+            -- re-arm also does nothing while it is paused. An empty next pauses.
+            local function effect(sid, srev, nextMs)
+              if sid == '' then return end
+              local ckey = P .. 'cron:' .. sid
+              if redis.call('HGET', ckey, 'rev') ~= srev then return end
+              if nextMs == '' then
+                redis.call('HSET', ckey, 'paused', 1)
+                redis.call('ZREM', P .. 'cron', sid)
+              elseif redis.call('HGET', ckey, 'paused') ~= '1' then
+                redis.call('HSET', ckey, 'next', nextMs)
+                redis.call('ZADD', P .. 'cron', nextMs, sid)
+              end
+            end
+
             -- startby only tracks tasks that wait (QUEUED or SCHEDULED). Callers put a task back in with track
             -- whenever it returns to a waiting state, and take it out when it leaves one.
             local function track(id, sb)
@@ -276,7 +292,8 @@ final class RedisScripts {
             """;
 
     /**
-     * ARGV: id, revision, keep (1/0), keep payload (1/0). Returns 1, or 0 when the fence fails. A task with a
+     * ARGV: id, revision, keep (1/0), keep payload (1/0), then the schedule effect: schedule id or '', its
+     * revision, next fire ms or '' to pause. Returns 1, or 0 when the fence fails. A task with a
      * key window is kept as SUCCEEDED even when keep is 0 (its payload is dropped), so purge removes it after
      * the window; only a task without a window is removed here.
      */
@@ -293,13 +310,14 @@ final class RedisScripts {
             else
               finish(tkey, id, qid, 2, 3, at, rev, uk, kk, {}, false)
             end
+            effect(ARGV[6], ARGV[7], ARGV[8])
             flush()
             return 1
             """;
 
     /**
-     * ARGV: id, revision, retry at ms or '', keep dead (1/0), expired only (1/0), the new failure as JSON.
-     * Returns RETRY, DEAD or LOST. With expired only the stored lease must be at or before now. The failure
+     * ARGV: id, revision, retry at ms or '', keep dead (1/0), expired only (1/0), the new failure as JSON, then
+     * the schedule effect as for ACK, applied only when the task dies. Returns RETRY, DEAD or LOST. With expired only the stored lease must be at or before now. The failure
      * is appended to {@code f:<id>} (trimmed to the last MAX_FAILURES) when the task stays; a task with a key
      * window is kept as DEAD even when keep dead is 0.
      */
@@ -331,6 +349,7 @@ final class RedisScripts {
             else
               finish(tkey, id, qid, 2, 4, at, rev, uk, kk, {}, false)
             end
+            effect(ARGV[8], ARGV[9], ARGV[10])
             flush()
             return 'DEAD'
             """.replace("@MAX@", String.valueOf(MAX_FAILURES));
@@ -473,8 +492,9 @@ final class RedisScripts {
             """;
 
     /**
-     * ARGV: schedule id, next fire ms, then field/value pairs. The fire time is kept when the schedule shape
-     * (cron expression, zone and fixed delay) is unchanged. The revision comes from the counter, so no two
+     * ARGV: schedule id, next fire ms, keep-until ms, then field/value pairs. The fire time is kept when the
+     * schedule shape (cron expression, zone and fixed delay) is unchanged and the stored time is not later than
+     * keep-until. The revision comes from the counter, so no two
      * definitions under the same id share one. The fire time is also stored in the hash as {@code next}; a
      * paused definition is left out of the {@code cron} zset and keeps it there. Replacing an existing definition
      * keeps its paused flag and ignores the given one; a new definition stores the flag as given.
@@ -490,7 +510,7 @@ final class RedisScripts {
             local kept = redis.call('HGET', ckey, 'next')
             local wasPaused = redis.call('HGET', ckey, 'paused')
             local fields = {}
-            for i = 4, #ARGV do fields[#fields + 1] = ARGV[i] end
+            for i = 5, #ARGV do fields[#fields + 1] = ARGV[i] end
             -- counter first, so a counter failure leaves the old definition intact; read back as a string
             -- because the INCR reply would pass through a Lua double
             redis.call('INCR', P .. 'cronrev')
@@ -498,7 +518,7 @@ final class RedisScripts {
             redis.call('DEL', ckey)
             redis.call('HSET', ckey, unpack(fields))
             local nextFire = ARGV[3]
-            if kept and before == shape() then nextFire = kept end
+            if kept and before == shape() and tonumber(kept) <= tonumber(ARGV[4]) then nextFire = kept end
             redis.call('HSET', ckey, 'rev', rev, 'next', nextFire)
             if existed then
               if wasPaused then redis.call('HSET', ckey, 'paused', wasPaused) else redis.call('HDEL', ckey, 'paused') end
@@ -561,7 +581,7 @@ final class RedisScripts {
             """;
 
     /**
-     * ARGV: id, revision, reason or '', keep payload (1/0). LEASED to CANCELLED; the worker id stays, the
+     * ARGV: id, revision, reason or '', keep payload (1/0), then the schedule effect as for ACK. LEASED to CANCELLED; the worker id stays, the
      * cancel request time is kept when there is one. Returns 1, or 0 when the fence fails.
      */
     static final String FINISH_CANCELLED = PRELUDE + """
@@ -575,6 +595,7 @@ final class RedisScripts {
             if ARGV[4] ~= '' then extra[#extra + 1] = 'crs'; extra[#extra + 1] = ARGV[4] end
             finish(tkey, id, tonumber(v[3]), 2, 5, at, tonumber(v[1]), v[4], v[5], extra, true)
             if ARGV[5] ~= '1' then redis.call('UNLINK', P .. 'd:' .. id) end
+            effect(ARGV[6], ARGV[7], ARGV[8])
             flush()
             return 1
             """;
@@ -683,14 +704,31 @@ final class RedisScripts {
             return 1
             """;
 
-    /** ARGV: schedule id, next fire ms. Returns 1, or 0 when there is no such definition. */
+    /**
+     * ARGV: schedule id, next fire ms. Operator write: assigns a new revision, so that a runner write based on
+     * the old one does nothing. Returns 1, or 0 when there is no such definition.
+     */
     static final String CRON_SET_NEXT = PRELUDE + """
             local ckey = P .. 'cron:' .. ARGV[2]
             if redis.call('EXISTS', ckey) == 0 then return 0 end
-            redis.call('HSET', ckey, 'next', ARGV[3])
+            redis.call('INCR', P .. 'cronrev')
+            redis.call('HSET', ckey, 'next', ARGV[3], 'rev', redis.call('GET', P .. 'cronrev'))
             if redis.call('HGET', ckey, 'paused') ~= '1' then
               redis.call('ZADD', P .. 'cron', ARGV[3], ARGV[2])
             end
+            return 1
+            """;
+
+    /**
+     * ARGV: schedule id, definition revision, next fire ms. Runner write: keeps the revision and does nothing
+     * unless the definition still has the given one and is not paused. Returns 1 when written.
+     */
+    static final String CRON_ADVANCE = PRELUDE + """
+            local ckey = P .. 'cron:' .. ARGV[2]
+            if redis.call('HGET', ckey, 'rev') ~= ARGV[3] then return 0 end
+            if redis.call('HGET', ckey, 'paused') == '1' then return 0 end
+            redis.call('HSET', ckey, 'next', ARGV[4])
+            redis.call('ZADD', P .. 'cron', ARGV[4], ARGV[2])
             return 1
             """;
 }

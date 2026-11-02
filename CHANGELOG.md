@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Redis `heartbeat` no longer mistakes a second heartbeat in the same millisecond for a removed worker; a duplicate unique key reports the holder id as text, so ids above 2^53 are exact.
 - The integration tests run against Redis 8.8 and PostgreSQL 18 (images `redis:8.8-alpine` and `postgres:18-alpine`), and against Valkey 9.1.3 with the Maven profile `valkey`; the images are the properties `bth4j.redis.image` and `bth4j.postgres.image`.
 
+### Fixed
+
+- A fixed-delay schedule could stay parked forever: its next fire time is parked 100 years ahead when the occurrence is created and was set again after the ack in a second call, so a process death or store error between the two left the definition parked, neither paused nor reported. The re-arm after a succeeded occurrence, and the pause after one that ends DEAD, CANCELLED or with an expired lease, now happen in the same atomic step as the transition: `ExecutionStore.ack`, `fail`, `failExpired` and `finishCancelled` take an optional `ScheduleEffect`. The occurrence carries the definition revision in the header `bth4j.schedule-rev`. Occurrences created by 3.0.0 have no such header and are not re-armed; re-register their schedule with `putSchedule`.
+- Writes of a next fire time by the runner no longer overwrite a newer definition: the misfire advance (`SKIP` and `CATCH_UP`) and the fixed-delay re-arm carry the definition revision they read and do nothing when it changed or the definition is paused. This stops a stale advance from moving a freshly registered schedule far into the future, and stops the re-arm of a running occurrence from undoing an operator's `putSchedule` or `triggerSchedule`. `ScheduleStore.setNextFire(id, revision, next)` is the fenced write; `setNextFire(id, next)` (the operator's trigger and resume) now assigns a new revision.
+- `TaskClient.putSchedule` recovers a definition whose stored next fire time was parked or pushed out: the stored time is kept only while it is not later than the second fire after now (`now + delay` for a fixed delay), otherwise it is recomputed. `ScheduleStore.putRecurring` takes that bound as `keepUntil`.
+
 ## [3.0.0] - 2026-10-31
 
 3.0 is a redesign of 2.x: a new public API, a new coordination protocol and a storage interface with Redis,
