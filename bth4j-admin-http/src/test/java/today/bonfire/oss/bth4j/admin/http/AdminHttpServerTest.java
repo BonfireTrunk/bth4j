@@ -589,7 +589,8 @@ class AdminHttpServerTest {
         assertThat(index.headers().firstValue("Content-Type")).contains("text/html; charset=utf-8");
         assertThat(index.headers().firstValue("Cache-Control")).contains("no-cache");
         assertThat(index.headers().firstValue("Content-Security-Policy").orElseThrow())
-                .contains("script-src 'self' https://cdn.jsdelivr.net", "frame-ancestors 'none'");
+                .contains("script-src 'self' 'unsafe-eval';", "frame-ancestors 'none'")
+                .doesNotContain("jsdelivr");
         assertThat(index.headers().firstValue("X-Content-Type-Options")).contains("nosniff");
 
         var js = get("/app.js", null);

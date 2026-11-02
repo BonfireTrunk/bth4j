@@ -537,8 +537,8 @@ The server speaks plain HTTP unless `https(SSLContext)` is set, which also marks
 on the loopback interface or behind TLS. `corsOrigin("https://dashboard.example.com")` lets a browser app on
 another origin call the API with credentials.
 
-The dashboard is the static Vue 3 app in `dashboard/` (no build step; it loads Vue from jsDelivr at a pinned
-version, or from a local copy for air-gapped hosts). It shows overview, queues, tasks with filters and detail
+The dashboard is the static Vue 3 app in `dashboard/` (no build step; it ships its pinned Vue runtime in
+`dashboard/vendor/` and loads nothing from the network). It shows overview, queues, tasks with filters and detail
 (timeline, steps, failures, payload on request), dead tasks, schedules, workers and issues, and offers retry,
 cancel (with a reason), delete, pause and trigger to admins. The files come from the repository checkout:
 point `staticDir` at the `dashboard` directory, or copy it to your own static host and set
