@@ -26,6 +26,9 @@ package today.bonfire.oss.bth4j.redis;
  * by due ms; {@code leased} zset scored by lease expiry ms</li>
  * <li>{@code idx:<state>:<qid>} zset scored by stateChanged ms, for LEASED and the terminal states. Counts
  * are the cardinalities of these zsets, so they cannot drift</li>
+ * <li>{@code rm:<state>:<qid>} zset of terminal ids that purge may remove, scored by stateChanged ms;
+ * {@code hold:<state>:<qid>} zset of terminal ids whose key window is open, scored by {@code ku} ms. Purge drains
+ * {@code hold} when the window has passed, so tasks that are held never sit in front of purgeable ones</li>
  * <li>{@code k:<key>} string holding the id of the task that owns a unique key, with a PEXPIREAT when the key
  * is kept for a window after the task ended; the {@code uk}, {@code kk} and {@code ku} fields of such a task
  * carry the same expiry (HPEXPIREAT), so the store needs Redis 7.4 or Valkey 9 at least</li>

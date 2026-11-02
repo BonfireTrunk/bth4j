@@ -640,9 +640,10 @@ public class RedisTaskStore implements FullStore {
     /**
      * Lists from the structure that holds the state: {@code idx:<state>:<qid>} for LEASED and the terminal states,
      * {@code q:<qid>} for QUEUED and {@code sched:<qid>} for SCHEDULED. Order is by the zset score, then numeric
-     * id: stateChanged for the indexed states, due for QUEUED and SCHEDULED. The cursor is the score read from
-     * the {@code afterId} task, so each page costs a seek plus at most one chunk of 500 per zset; when that task
-     * no longer exists, ids after it are listed from the start.
+     * id: stateChanged for the indexed states, due for QUEUED and SCHEDULED. The cursor is the score the
+     * {@code afterId} task has in the zset being paged (not its {@code due} field, which a deferral leaves
+     * behind), so each page costs a seek plus at most one chunk of 500 per zset; when that task is no longer in
+     * that state, ids after it are listed from the start.
      */
     @Override
     public List<TaskRecord> tasks(TaskState state, Integer queueId, long afterId, int limit) {
@@ -654,12 +655,7 @@ public class RedisTaskStore implements FullStore {
             var entries = new ArrayList<Entry>();
             var qids = queueId == null ? sortedQueueIds() : List.of(queueId);
             for (var qid : qids) {
-                var zset = switch (state) {
-                    case QUEUED -> keys.queue(qid);
-                    case SCHEDULED -> keys.scheduled(qid);
-                    default -> keys.index(state.code(), qid);
-                };
-                entries.addAll(page(zset, cursor, afterId, limit));
+                entries.addAll(page(stateZset(state, qid), cursor, afterId, limit));
             }
             entries.sort(ORDER);
             return load(entries.subList(0, Math.min(limit, entries.size())).stream()
@@ -673,14 +669,20 @@ public class RedisTaskStore implements FullStore {
     private static final Comparator<Entry> ORDER =
             Comparator.comparingDouble(Entry::score).thenComparingLong(Entry::id);
 
+    private String stateZset(TaskState state, int qid) {
+        return switch (state) {
+            case QUEUED -> keys.queue(qid);
+            case SCHEDULED -> keys.scheduled(qid);
+            default -> keys.index(state.code(), qid);
+        };
+    }
+
     private Double cursorScore(TaskState state, long afterId) {
-        var v = jedis.hmget(
-                keys.task(afterId),
-                F_STATE,
-                state == TaskState.QUEUED || state == TaskState.SCHEDULED ? F_DUE : F_STATE_CHANGED);
-        return v.get(0) != null && v.get(1) != null && Integer.parseInt(v.get(0)) == state.code()
-                ? Double.valueOf(v.get(1))
-                : null;
+        var v = jedis.hmget(keys.task(afterId), F_STATE, F_QUEUE);
+        if (v.get(0) == null || v.get(1) == null || Integer.parseInt(v.get(0)) != state.code()) {
+            return null;
+        }
+        return jedis.zscore(stateZset(state, Integer.parseInt(v.get(1))), String.valueOf(afterId));
     }
 
     /**

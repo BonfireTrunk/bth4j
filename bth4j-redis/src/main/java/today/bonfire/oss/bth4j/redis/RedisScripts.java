@@ -60,7 +60,9 @@ final class RedisScripts {
               adds, rems = {}, {}
             end
 
-            local function enter(id, qid, state, score, at)
+            -- A terminal task is listed in idx and queued for purge in rm (scored by stateChanged), or in hold
+            -- (scored by ku) while its key window is open, so that PURGE never walks past held tasks.
+            local function enter(id, qid, state, score, at, ku)
               if state == 0 then
                 zadd(P .. 'q:' .. qid, score, id)
               elseif state == 1 then
@@ -68,6 +70,10 @@ final class RedisScripts {
               else
                 if state == 2 then zadd(P .. 'leased', score, id) end
                 zadd(P .. 'idx:' .. state .. ':' .. qid, at, id)
+                if state >= 3 then
+                  if ku then zadd(P .. 'hold:' .. state .. ':' .. qid, ku, id)
+                  else zadd(P .. 'rm:' .. state .. ':' .. qid, at, id) end
+                end
               end
             end
 
@@ -79,13 +85,17 @@ final class RedisScripts {
               else
                 if state == 2 then zrem(P .. 'leased', id) end
                 zrem(P .. 'idx:' .. state .. ':' .. qid, id)
+                if state >= 3 then
+                  zrem(P .. 'rm:' .. state .. ':' .. qid, id)
+                  zrem(P .. 'hold:' .. state .. ':' .. qid, id)
+                end
               end
             end
 
             -- The zset side of a state change; the caller writes state, sc and the new rev with its own HSET.
-            local function move(id, qid, from, to, at, score)
+            local function move(id, qid, from, to, at, score, ku)
               leave(id, qid, from)
-              enter(id, qid, to, score, at)
+              enter(id, qid, to, score, at, ku)
             end
 
             -- Reads rev, state, q and the given fields; nil unless the task is LEASED at that revision.
@@ -118,7 +128,7 @@ final class RedisScripts {
             -- key of the task is removed. Either way the unique key is settled.
             local function finish(tkey, id, qid, from, to, at, rev, uk, kk, extra, kept)
               if kept then
-                move(id, qid, from, to, at, at)
+                move(id, qid, from, to, at, at, kk and at + tonumber(kk))
                 local f = {'state', to, 'sc', at, 'rev', rev + 1}
                 if kk then f[#f + 1] = 'ku'; f[#f + 1] = at + tonumber(kk) end
                 for _, x in ipairs(extra) do f[#f + 1] = x end
@@ -422,9 +432,10 @@ final class RedisScripts {
             """;
 
     /**
-     * ARGV: state, retention ms, limit. Walks the idx zsets of every queue oldest first. A task whose key window
-     * is still open is skipped; zset writes are deferred, so the walk pages by offset. One call examines at most
-     * max(4*limit, 1000) entries, so held tasks cannot make a call unbounded.
+     * ARGV: state, retention ms, limit. Per queue: first the {@code hold} zset, whose window has passed, then the
+     * {@code rm} zset up to the cutoff. A held task whose retention has not elapsed yet moves to {@code rm}, so
+     * every entry read leaves the zset it was read from and the next read starts at offset 0; held tasks that are
+     * still open are never read. One call reads at most max(4*limit, 1000) hold entries.
      */
     static final String PURGE = PRELUDE + """
             local state = tonumber(ARGV[2])
@@ -433,28 +444,42 @@ final class RedisScripts {
             local remaining = tonumber(ARGV[4])
             local budget = math.max(remaining * 4, 1000)
             local removed = 0
+            local function purge(ikey, id)
+              zrem(ikey, id)
+              redis.call('UNLINK', P .. 't:' .. id, P .. 'd:' .. id, P .. 'st:' .. id, P .. 'f:' .. id)
+              removed = removed + 1
+              remaining = remaining - 1
+            end
             for _, qid in ipairs(redis.call('HVALS', P .. 'reg:queue')) do
               local ikey = P .. 'idx:' .. state .. ':' .. qid
-              local offset = 0
+              local hkey = P .. 'hold:' .. state .. ':' .. qid
+              local rkey = P .. 'rm:' .. state .. ':' .. qid
               while remaining > 0 and budget > 0 do
-                local ids = redis.call('ZRANGE', ikey, '-inf', cutoff, 'BYSCORE', 'LIMIT', offset, math.min(remaining, budget, 500))
+                local ids = redis.call('ZRANGE', hkey, '-inf', at, 'BYSCORE', 'LIMIT', 0, math.min(remaining, budget, 500))
                 if #ids == 0 then break end
+                budget = budget - #ids
                 for _, id in ipairs(ids) do
-                  local tkey = P .. 't:' .. id
-                  local ku = redis.call('HGET', tkey, 'ku')
-                  if not (ku and tonumber(ku) > at) then
+                  zrem(hkey, id)
+                  local v = redis.call('HMGET', P .. 't:' .. id, 'state', 'sc')
+                  if v[1] == ARGV[2] then
+                    if tonumber(v[2]) <= cutoff then purge(ikey, id) else zadd(rkey, tonumber(v[2]), id) end
+                  elseif not v[1] then
                     zrem(ikey, id)
-                    redis.call('UNLINK', tkey, P .. 'd:' .. id, P .. 'st:' .. id, P .. 'f:' .. id)
-                    removed = removed + 1
-                    remaining = remaining - 1
                   end
                 end
-                offset = offset + #ids
-                budget = budget - #ids
+                flush()
               end
-              if remaining <= 0 or budget <= 0 then break end
+              while remaining > 0 do
+                local ids = redis.call('ZRANGE', rkey, '-inf', cutoff, 'BYSCORE', 'LIMIT', 0, math.min(remaining, 500))
+                if #ids == 0 then break end
+                for _, id in ipairs(ids) do
+                  zrem(rkey, id)
+                  purge(ikey, id)
+                end
+                flush()
+              end
+              if remaining <= 0 then break end
             end
-            flush()
             return removed
             """;
 

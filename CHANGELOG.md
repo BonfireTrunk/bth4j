@@ -18,10 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The Redis scripts collect their zset writes per key and send one variadic command per key at the end of the call, read the task hash with one HMGET and write it with one HSET per task, and compute the revision and the attempt count in Lua: a claim of 32 tasks costs about a third of the commands it did. ENQUEUE receives the queue id, the start-by time and the payload as arguments instead of reading them back, and takes a free unique key with one `SET NX GET`. FAIL appends the new failure in the script instead of reading, extending and rewriting the list from the client. PURGE examines at most max(4 x limit, 1000) index entries per call, so tasks holding a key window cannot make one call unbounded.
+- The Redis scripts collect their zset writes per key and send one variadic command per key at the end of the call, read the task hash with one HMGET and write it with one HSET per task, and compute the revision and the attempt count in Lua: a claim of 32 tasks costs about a third of the commands it did. ENQUEUE receives the queue id, the start-by time and the payload as arguments instead of reading them back, and takes a free unique key with one `SET NX GET`. FAIL appends the new failure in the script instead of reading, extending and rewriting the list from the client. PURGE reads at most max(4 x limit, 1000) entries of tasks whose key window has passed per call, and none whose window is still open.
 - `TaskClient.enqueueAll` reserves the ids of a batch with one store call (`IdAllocator.nextIds`); the block end is overflow-checked.
 - Redis `heartbeat` no longer mistakes a second heartbeat in the same millisecond for a removed worker; a duplicate unique key reports the holder id as text, so ids above 2^53 are exact.
 - The integration tests run against Redis 8.8 and PostgreSQL 18 (images `redis:8.8-alpine` and `postgres:18-alpine`), and against Valkey 9.1.3 with the Maven profile `valkey`; the images are the properties `bth4j.redis.image` and `bth4j.postgres.image`.
+
+### Fixed
+
+- PostgreSQL `allocateIds(1)` took its id with a bare `nextval`, outside the lock that keeps a block allocation contiguous, so it could land inside the range of a concurrent block and two tasks got the same id (the second enqueue reported as accepted and the task was lost). Every count now takes the lock, so single-id allocation is serialised with block allocation and needs the UPDATE privilege on the `meta` table, as block allocation already did.
+- Redis `tasks` paging repeated pages without end when a task of an unknown event had been deferred: the cursor was the task's `due` field, but the deferral re-scores it in the queue zset. The cursor is now the score the task has in the zset being paged.
+- Redis `purge` could remove nothing for as long as tasks with an open key window sat in front of purgeable ones, because it paged past them on every call. Tasks with a key window are now kept in `hold:<state>:<qid>` (scored by `keyUntil`) instead of `rm:<state>:<qid>`, the zset purge reads, and purge drains `hold` when the window has passed. Layout 2 gains these two zsets; a layout 2 namespace written by an earlier 3.1.0-SNAPSHOT has no `rm` entries and must be recreated.
 
 ## [3.0.0] - 2026-10-31
 
