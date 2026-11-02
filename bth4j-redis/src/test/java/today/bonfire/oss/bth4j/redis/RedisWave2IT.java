@@ -578,7 +578,7 @@ class RedisWave2IT {
 
         store.putRecurring(zoned("s", "Asia/Kolkata"), later);
         assertThat(store.recurringSchedules()).containsEntry("s", later);
-        store.putRecurring(zoned("s", "Asia/Kolkata"), fire);
+        store.putRecurring(zoned("s", "Asia/Kolkata"), fire, later);
         assertThat(store.recurringSchedules()).containsEntry("s", later);
 
         store.putRecurring(zoned("s", "Europe/Berlin"), fire);

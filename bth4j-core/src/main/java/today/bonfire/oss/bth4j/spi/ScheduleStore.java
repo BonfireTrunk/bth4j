@@ -8,11 +8,19 @@ import java.util.Map;
 public interface ScheduleStore extends TaskStore {
 
     /**
-     * Creates or replaces a definition. The store assigns the revision. When a definition with that id exists
-     * and its cron expression is unchanged, the stored next fire time is kept; otherwise it becomes
-     * {@code nextFire}.
+     * Creates or replaces a definition. The store assigns the revision. When a definition with that id exists,
+     * its timing (cron expression, zone and fixed delay) is unchanged and either the occurrence it has in
+     * flight (see {@link #commitRecurring}) is not finished or its stored next fire time is not later than
+     * {@code keepUntil}, the stored next fire time is kept; otherwise it becomes {@code nextFire}. A stored
+     * time later than {@code keepUntil} with no occurrence in flight has skipped fires: a fixed-delay
+     * definition whose re-arm was lost, or a time pushed far out by a stale write. Changed timing forgets the
+     * occurrence in flight.
      */
-    void putRecurring(RecurringDefinition definition, Instant nextFire);
+    void putRecurring(RecurringDefinition definition, Instant nextFire, Instant keepUntil);
+
+    default void putRecurring(RecurringDefinition definition, Instant nextFire) {
+        putRecurring(definition, nextFire, nextFire);
+    }
 
     /** @return true when a definition with that id existed */
     boolean deleteRecurring(String scheduleId);
@@ -28,7 +36,9 @@ public interface ScheduleStore extends TaskStore {
      * {@code nextFire}, unless the definition's revision or next fire time changed meanwhile. When the
      * occurrence names a unique key that another task holds, the definition is still advanced and the
      * method still reports true, but the occurrence is not stored; this is how an overlapping occurrence is
-     * skipped.
+     * skipped. For a fixed-delay definition the store records the stored occurrence as the one in flight, which
+     * is what a {@link ScheduleEffect} of that occurrence is checked against; a skipped occurrence leaves the
+     * recorded one alone, so the running occurrence still re-arms the definition.
      *
      * @return true when committed
      */
@@ -46,9 +56,19 @@ public interface ScheduleStore extends TaskStore {
     boolean pauseRecurring(String scheduleId, boolean paused);
 
     /**
-     * Replaces the next fire time (trigger now, or re-arm a fixed-delay definition after an occurrence ended).
+     * Operator write: replaces the next fire time (trigger now) and assigns a new revision, so that a runner
+     * write based on the old revision, such as the re-arm of an occurrence that is still running, does nothing.
      *
      * @return false when no definition with that id exists
      */
     boolean setNextFire(String scheduleId, Instant nextFire);
+
+    /**
+     * Runner write for a misfire: replaces the next fire time and keeps the revision, but only while the
+     * definition still has {@code revision}, still has {@code expectedFire} as its next fire time, and is not
+     * paused.
+     *
+     * @return true when the next fire time was replaced
+     */
+    boolean setNextFire(String scheduleId, long revision, Instant expectedFire, Instant nextFire);
 }

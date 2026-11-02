@@ -780,12 +780,53 @@ public abstract class RunnerContract {
     }
 
     @Test
+    void reRegisteringAFixedDelayScheduleThatWasPushedFarAheadBringsItBack() {
+        var runs = new AtomicInteger();
+        startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));
+        var tick = ScheduleDefinition.every("tick", VOID_TYPE, Duration.ofHours(1));
+        client.putSchedule(tick);
+        store.setNextFire("tick", Instant.now());
+        await("the triggered run", () -> runs.get() >= 1);
+        await("the re-arm one delay ahead", () -> {
+            var next = client.schedules().get("tick");
+            return next.isAfter(Instant.now().plus(Duration.ofMinutes(30)))
+                    && next.isBefore(Instant.now().plus(Duration.ofHours(2)));
+        });
+
+        store.setNextFire("tick", Instant.now().plus(Duration.ofDays(36_500)));
+        client.putSchedule(tick);
+
+        assertThat(client.schedules().get("tick")).isBefore(Instant.now().plus(Duration.ofHours(2)));
+    }
+
+    @Test
+    void reRegisteringAFixedDelayScheduleDuringARunningOccurrenceStartsNoSecondOneAndFiresAfterItEnds()
+            throws Exception {
+        var started = new AtomicInteger();
+        var release = new java.util.concurrent.CountDownLatch(1);
+        startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {
+            started.incrementAndGet();
+            release.await();
+        }));
+        var tick = ScheduleDefinition.every("tick", VOID_TYPE, Duration.ofSeconds(1));
+        client.putSchedule(tick);
+        await("the first occurrence to run", () -> started.get() == 1);
+
+        client.putSchedule(tick);
+        pause(3_000);
+        assertThat(started.get()).isEqualTo(1);
+
+        release.countDown();
+        await("the next occurrence after the first ended", () -> started.get() >= 2);
+    }
+
+    @Test
     void misfireFireOnceNowCreatesOneOccurrenceAndMovesOn() {
         var runs = new AtomicInteger();
         var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));
         registerLate(
                 "late-once",
-                "* * * * *",
+                farCron(),
                 today.bonfire.oss.bth4j.spi.RecurringDefinition.MISFIRE_FIRE_ONCE_NOW,
                 0,
                 Duration.ofMinutes(10));
@@ -803,7 +844,7 @@ public abstract class RunnerContract {
         var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));
         registerLate(
                 "late-skip",
-                "* * * * *",
+                farCron(),
                 today.bonfire.oss.bth4j.spi.RecurringDefinition.MISFIRE_SKIP,
                 0,
                 Duration.ofMinutes(10));
@@ -897,6 +938,14 @@ public abstract class RunnerContract {
     }
 
     /** Stores a cron definition whose next fire is {@code late} in the past, as a runner that was down would find it. */
+    /**
+     * An hourly expression whose next fire is 30 minutes away, so that a test that pauses for a moment cannot
+     * run into a legitimate fire at the next minute boundary.
+     */
+    private static String farCron() {
+        return (java.time.ZonedDateTime.now(java.time.ZoneOffset.UTC).getMinute() + 30) % 60 + " * * * *";
+    }
+
     private void registerLate(String id, String cron, String misfire, int catchUpMax, Duration late) {
         var def = new today.bonfire.oss.bth4j.spi.RecurringDefinition(
                 id,

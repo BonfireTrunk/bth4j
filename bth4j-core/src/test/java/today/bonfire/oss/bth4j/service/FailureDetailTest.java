@@ -32,6 +32,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
+import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 
@@ -379,15 +380,14 @@ class FailureDetailTest {
                     return switch (method.getName()) {
                         case "queueNames" -> Map.of(1, "Q:DEF");
                         case "eventNames" -> Map.of(1, "boom");
-                        case "ack" -> true;
-                        case "setNextFire" -> {
+                        case "ack" -> {
                             if (scheduleError != null) throw scheduleError;
-                            nextFire.set((Instant) args[1]);
-                            yield null;
-                        }
-                        case "pauseRecurring" -> {
-                            paused.set((Boolean) args[1]);
-                            yield null;
+                            var effect = (ScheduleEffect) args[4];
+                            if (effect != null && !effect.pauses()) {
+                                nextFire.set(effect.nextFire());
+                                effect.markApplied();
+                            }
+                            yield true;
                         }
                         case "getTask" -> java.util.Optional.empty();
                         case "finishCancelled" -> {
@@ -397,7 +397,13 @@ class FailureDetailTest {
                         case "fail" -> {
                             if (storeFailError != null) throw storeFailError;
                             stored.set((FailureInfo) args[2]);
-                            yield args[3] == null ? FailOutcome.DEAD : FailOutcome.RETRY;
+                            var dead = args[3] == null;
+                            var effect = (ScheduleEffect) args[5];
+                            if (dead && effect != null && effect.pauses()) {
+                                paused.set(true);
+                                effect.markApplied();
+                            }
+                            yield dead ? FailOutcome.DEAD : FailOutcome.RETRY;
                         }
                         default -> throw new UnsupportedOperationException(method.getName());
                     };
@@ -405,7 +411,6 @@ class FailureDetailTest {
         var clock = Clock.fixed(NOW, ZoneOffset.UTC);
         status = new RunnerStatus(clock);
         var settings = new TaskExecution.Settings(
-                store,
                 store,
                 store,
                 new Names(store),

@@ -15,6 +15,7 @@ import today.bonfire.oss.bth4j.executor.CustomThread;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.InspectionStore;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
+import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.ScheduleStore;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
@@ -46,6 +47,16 @@ public class RecurringTaskService extends CustomThread {
                 && r.scheduleId() != null
                 && r.headers() != null
                 && r.headers().containsKey(FIXED_DELAY_HEADER);
+    }
+
+    /** The re-arm to apply when this fixed-delay occurrence succeeds; null for any other task. */
+    public static ScheduleEffect rearmEffect(TaskRecord r, Instant nextFire) {
+        return isFixedDelayOccurrence(r) ? ScheduleEffect.rearm(r.scheduleId(), r.id(), nextFire) : null;
+    }
+
+    /** The pause to apply when this fixed-delay occurrence ends without succeeding; null for any other task. */
+    public static ScheduleEffect pauseEffect(TaskRecord r) {
+        return isFixedDelayOccurrence(r) ? ScheduleEffect.pause(r.scheduleId(), r.id()) : null;
     }
 
     private final ScheduleStore store;
@@ -164,8 +175,9 @@ public class RecurringTaskService extends CustomThread {
         switch (misfire) {
             case RecurringDefinition.MISFIRE_SKIP -> {
                 var next = nextOrPark(def, now, zone, d.fireAt());
-                store.setNextFire(d.scheduleId(), next);
-                misfireIssue(d, late, "skipped, next at " + next);
+                if (store.setNextFire(d.scheduleId(), def.revision(), d.fireAt(), next)) {
+                    misfireIssue(d, late, "skipped, next at " + next);
+                }
                 return false;
             }
             case RecurringDefinition.MISFIRE_CATCH_UP -> {
@@ -177,8 +189,9 @@ public class RecurringTaskService extends CustomThread {
                 }
                 if (fires.size() > def.catchUpMax()) {
                     var resume = fires.get(fires.size() - def.catchUpMax());
-                    store.setNextFire(d.scheduleId(), resume);
-                    misfireIssue(d, late, "catching up the last " + def.catchUpMax() + " fires from " + resume);
+                    if (store.setNextFire(d.scheduleId(), def.revision(), d.fireAt(), resume)) {
+                        misfireIssue(d, late, "catching up the last " + def.catchUpMax() + " fires from " + resume);
+                    }
                     return false;
                 }
                 // each missed fire gets its own occurrence; the next round picks the following one up

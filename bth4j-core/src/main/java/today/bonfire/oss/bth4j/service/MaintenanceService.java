@@ -20,6 +20,7 @@ import today.bonfire.oss.bth4j.spi.ExpiredLease;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
+import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 
@@ -123,41 +124,37 @@ public class MaintenanceService extends CustomThread {
         }
         var failure = new FailureInfo(
                 e.attempts(), clock.instant(), "lease-expired", "lease expired after attempt " + e.attempts(), null);
-        var outcome = store.failExpired(e.id(), e.revision(), failure, retryAt, keepDead);
+        var pause = RecurringTaskService.pauseEffect(record);
+        var outcome = store.failExpired(e.id(), e.revision(), failure, retryAt, keepDead, pause);
         log.warn("Lease of task {} expired after attempt {}: {}", e.id(), e.attempts(), outcome);
         if (outcome != FailOutcome.LOST) {
             observer.emit(
                     new TaskEvent.LeaseExpired(e.id(), e.attempts(), e.maxAttempts(), outcome == FailOutcome.DEAD));
         }
-        if (outcome == FailOutcome.DEAD) pauseParkedSchedule(record, TaskState.DEAD);
+        if (outcome == FailOutcome.DEAD) pauseParkedSchedule(record, TaskState.DEAD, pause);
     }
 
     /**
-     * A fixed-delay definition is re-armed by its occurrence's own execution, so an occurrence that ends here
-     * would leave it parked forever; pausing makes that visible and lets an operator resume it.
+     * The store paused the definition of a fixed-delay occurrence that ended here, in the same step as the
+     * transition, because nothing would re-arm it; this makes that visible so an operator can resume it.
      */
-    private void pauseParkedSchedule(TaskRecord record, TaskState ended) {
-        if (!RecurringTaskService.isFixedDelayOccurrence(record)) return;
-        try {
-            store.pauseRecurring(record.scheduleId(), true);
-            var detail = "schedule " + record.scheduleId() + " paused: occurrence ended " + ended;
-            status.issue("schedule-paused", detail, record.id());
-            log.warn(detail);
-        } catch (RuntimeException e) {
-            status.storeError(e);
-            log.error("Could not pause schedule {} after task {}", record.scheduleId(), record.id(), e);
-        }
+    private void pauseParkedSchedule(TaskRecord record, TaskState ended, ScheduleEffect pause) {
+        if (pause == null || !pause.applied()) return;
+        var detail = "schedule " + record.scheduleId() + " paused: occurrence ended " + ended;
+        status.issue("schedule-paused", detail, record.id());
+        log.warn(detail);
     }
 
     /** A cancelled task whose worker died must not run again. */
     private void cancelExpired(ExpiredLease e) {
         var record = store.getTask(e.id()).orElse(null);
         var reason = record != null && record.cancelReason() != null ? record.cancelReason() : "cancel requested";
-        var applied = store.finishCancelledExpired(e.id(), e.revision(), reason, true);
+        var pause = RecurringTaskService.pauseEffect(record);
+        var applied = store.finishCancelledExpired(e.id(), e.revision(), reason, true, pause);
         log.warn("Lease of cancelled task {} expired, task ended as cancelled: {}", e.id(), applied);
         if (applied && record != null) {
             observer.emit(new TaskEvent.Cancelled(names.view(record), reason, Outcome.APPLIED));
-            pauseParkedSchedule(record, TaskState.CANCELLED);
+            pauseParkedSchedule(record, TaskState.CANCELLED, pause);
         }
     }
 
