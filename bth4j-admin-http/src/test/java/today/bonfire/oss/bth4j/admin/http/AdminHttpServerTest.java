@@ -416,7 +416,7 @@ class AdminHttpServerTest {
         start();
         var login = admin();
 
-        var first = json(get("/api/v1/tasks?state=DEAD&limit=2", login));
+        var first = json(get("/api/v1/tasks?state=DEAD&limit=2&cursor=", login));
         assertThat(items(first)).extracting(t -> t.get("id")).containsExactly("1", "2");
         assertThat(first).containsEntry("next", "2");
 
@@ -427,6 +427,7 @@ class AdminHttpServerTest {
         var blank = json(get("/api/v1/tasks?state=DEAD&limit=50&cursor=", login));
         assertThat(items(blank)).hasSize(3);
 
+        assertThat(jsonList(get("/api/v1/tasks?state=DEAD", login))).hasSize(3);
         assertThat(ops.calls).contains("tasks DEAD null cursor=null 2", "tasks DEAD null cursor=2 2");
         assertThat(get("/api/v1/tasks?state=DEAD&cursor=x", login).statusCode()).isEqualTo(400);
     }
