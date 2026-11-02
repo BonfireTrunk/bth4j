@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- An `Error` thrown by a processor is now recorded as a failure and goes through the retry policy, instead of leaving the task leased until its lease expires. `OutOfMemoryError` and other `VirtualMachineError`s (except `StackOverflowError`) are rethrown after being recorded, so the thread's uncaught exception handler still sees them (with their message and stack, which `failureDetail` does not cover). Errors thrown by a retry policy, the store or an observer no longer escape before the task is recorded either.
+- An `Error` thrown by a processor is now recorded as a failure and goes through the retry policy, instead of leaving the task leased until its lease expires. `OutOfMemoryError` and other `VirtualMachineError`s (except `StackOverflowError`) are rethrown after being recorded, so the thread's uncaught exception handler still sees them (with their message and stack, which `failureDetail` does not cover). Errors thrown by a retry policy, the store, an observer or the schedule update no longer escape before the task is recorded either. The rethrow of a fatal Error applies to task execution only; in maintenance and the scheduler an Error from an observer or a retry policy is logged and swallowed.
 
 ## [3.0.0] - 2026-10-31
 

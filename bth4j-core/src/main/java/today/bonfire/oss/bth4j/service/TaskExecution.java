@@ -130,6 +130,12 @@ public final class TaskExecution implements Runnable, TaskContext {
     public void run() {
         try {
             runAttempt();
+        } catch (Throwable t) {
+            if (fatal != null && fatal != t) {
+                fatal.addSuppressed(t);
+                throw fatal;
+            }
+            throw t;
         } finally {
             worker = null;
             onFinished.accept(this);
@@ -250,7 +256,8 @@ public final class TaskExecution implements Runnable, TaskContext {
                     .getTask(record.id())
                     .map(TaskRecord::cancelReason)
                     .orElse(fallback);
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
+            remember(e);
             return fallback;
         }
     }
@@ -337,7 +344,8 @@ public final class TaskExecution implements Runnable, TaskContext {
                 s.status().issue("schedule-paused", detail, record.id());
                 log.warn(detail);
             }
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
+            remember(e);
             s.status().storeError(e);
             log.error("Could not update schedule {} after task {}", record.scheduleId(), record.id(), e);
         }
@@ -378,7 +386,13 @@ public final class TaskExecution implements Runnable, TaskContext {
     }
 
     private FailureInfo failure(Throwable e) {
-        return Failures.info(detail(), record.attempts(), s.clock().instant(), e);
+        var at = s.clock().instant();
+        try {
+            return Failures.info(detail(), record.attempts(), at, e);
+        } catch (RuntimeException | Error t) {
+            remember(t);
+            return Failures.info(FailureDetail.CLASS_NAME_ONLY, record.attempts(), at, e);
+        }
     }
 
     private FailureDetail detail() {

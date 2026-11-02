@@ -184,7 +184,7 @@ happens next:
 | throws any other exception or `Error` | the attempt failed; the retry policy decides the delay, or dead when attempts are used up |
 
 A failed attempt is recorded with the task (the last 20), with the exception type, message and stack.
-An `Error` (`AssertionError`, `StackOverflowError`, `NoClassDefFoundError`, ...) is handled like an exception. After it has been recorded, a `VirtualMachineError` other than `StackOverflowError` (`OutOfMemoryError`, `InternalError`, `UnknownError`) is rethrown after it has been recorded, so the executor thread's uncaught exception handler still sees it. The same holds for such an error thrown by a retry policy, the store or an observer.
+An `Error` (`AssertionError`, `StackOverflowError`, `NoClassDefFoundError`, ...) is handled like an exception. After it has been recorded, a `VirtualMachineError` other than `StackOverflowError` (`OutOfMemoryError`, `InternalError`, `UnknownError`) is rethrown after it has been recorded, so the executor thread's uncaught exception handler still sees it. The same holds for such an error thrown by a retry policy, the store or an observer while a task runs: the task is recorded first, then the error is rethrown. This applies to task execution only; elsewhere (maintenance, the scheduler) an error from an observer or a retry policy is logged and swallowed.
 `TaskContext` also gives `id()`, `attempt()`, `headers()`, `task()` (a `TaskView`) and `progress(text)`.
 
 ### Steps
