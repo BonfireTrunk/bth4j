@@ -190,6 +190,11 @@ public class PostgresTaskStore implements FullStore {
         // the stored next fire time survives a re-put that keeps the timing (cron, zone, fixed delay) unchanged
         // and is not past the caller's keep-until bound;
         // paused is only taken from a new definition, so a runner re-putting at start cannot undo an operator's pause
+        var sameTiming = schedule + ".cron IS NOT DISTINCT FROM EXCLUDED.cron"
+                + " AND " + schedule + ".zone IS NOT DISTINCT FROM EXCLUDED.zone"
+                + " AND " + schedule + ".fixed_delay_ms IS NOT DISTINCT FROM EXCLUDED.fixed_delay_ms";
+        var occurrenceRunning =
+                "EXISTS (SELECT 1 FROM " + task + " o WHERE o.id = " + schedule + ".occurrence_id AND o.state < 3)";
         putScheduleSql = "INSERT INTO " + schedule
                 + " (id, event_id, payload_version, queue_id, account, cron, zone, misfire, catch_up_max,"
                 + " fixed_delay_ms, overlap_skip, data, max_attempts, paused, rev, next_fire)"
@@ -201,11 +206,10 @@ public class PostgresTaskStore implements FullStore {
                 + " fixed_delay_ms = EXCLUDED.fixed_delay_ms, overlap_skip = EXCLUDED.overlap_skip,"
                 + " data = EXCLUDED.data, max_attempts = EXCLUDED.max_attempts,"
                 + " rev = nextval('" + scheduleSeq + "'),"
-                + " next_fire = CASE WHEN " + schedule + ".cron IS NOT DISTINCT FROM EXCLUDED.cron"
-                + " AND " + schedule + ".zone IS NOT DISTINCT FROM EXCLUDED.zone"
-                + " AND " + schedule + ".fixed_delay_ms IS NOT DISTINCT FROM EXCLUDED.fixed_delay_ms"
-                + " AND " + schedule + ".next_fire <= ?"
-                + " THEN " + schedule + ".next_fire ELSE EXCLUDED.next_fire END";
+                + " occurrence_id = CASE WHEN " + sameTiming + " AND " + occurrenceRunning + " THEN " + schedule
+                + ".occurrence_id ELSE NULL END,"
+                + " next_fire = CASE WHEN " + sameTiming + " AND (" + occurrenceRunning + " OR " + schedule
+                + ".next_fire <= ?) THEN " + schedule + ".next_fire ELSE EXCLUDED.next_fire END";
         dueScheduleSql =
                 "SELECT * FROM " + schedule + " WHERE NOT paused AND next_fire <= ? ORDER BY next_fire LIMIT ?";
         // a definition paused between dueRecurring and the commit does not fire
@@ -321,7 +325,10 @@ public class PostgresTaskStore implements FullStore {
                         + " max_attempts smallint NOT NULL,"
                         + " paused boolean NOT NULL DEFAULT false,"
                         + " rev bigint NOT NULL,"
+                        + " occurrence_id bigint,"
                         + " next_fire timestamptz NOT NULL)",
+                "DO $$ BEGIN ALTER TABLE " + schedule + " ADD COLUMN occurrence_id bigint;"
+                        + " EXCEPTION WHEN duplicate_column THEN NULL; END $$",
                 "CREATE SEQUENCE IF NOT EXISTS " + scheduleSeq,
                 "CREATE INDEX IF NOT EXISTS " + schedule + "_due ON " + schedule + " (next_fire) WHERE NOT paused",
                 "INSERT INTO " + meta + " (key, value) VALUES ('schema_version', '" + StoreInfo.SCHEMA_VERSION + "')"
@@ -805,16 +812,19 @@ public class PostgresTaskStore implements FullStore {
         }
     }
 
-    /** Does nothing when the revision differs, and a re-arm does nothing while the definition is paused. */
+    /**
+     * Does nothing unless the definition's occurrence_id names the task that ends. A paused definition gets the
+     * new next fire time too and stays out of the due scan until it is resumed.
+     */
     private void applyEffect(Connection c, ScheduleEffect effect) throws SQLException {
         var sql = effect.pauses()
-                ? "UPDATE " + schedule + " SET paused = true WHERE id = ? AND rev = ?"
-                : "UPDATE " + schedule + " SET next_fire = ? WHERE id = ? AND rev = ? AND NOT paused";
+                ? "UPDATE " + schedule + " SET paused = true, occurrence_id = NULL WHERE id = ? AND occurrence_id = ?"
+                : "UPDATE " + schedule + " SET next_fire = ?, occurrence_id = NULL WHERE id = ? AND occurrence_id = ?";
         try (var ps = c.prepareStatement(sql)) {
             var i = 1;
             if (!effect.pauses()) setInstant(ps, i++, effect.nextFire());
             ps.setString(i++, effect.scheduleId());
-            ps.setLong(i, effect.revision());
+            ps.setLong(i, effect.occurrenceId());
             ps.executeUpdate();
         }
     }
@@ -1096,11 +1106,13 @@ public class PostgresTaskStore implements FullStore {
 
     /**
      * An occurrence whose unique key is held by another task is not stored, but the definition still advances
-     * and the commit counts: that is how overlap protection skips a fire time.
+     * and the commit counts: that is how overlap protection skips a fire time. A stored occurrence of a
+     * fixed-delay definition becomes its occurrence_id, in the same transaction.
      */
     @Override
     public boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord o) {
-        return withConnection(c -> {
+        var fixedDelay = due.definition().isFixedDelay();
+        SqlFunction<Boolean> commit = c -> {
             if (o.uniqueKey() != null) releaseExpiredKeys(c, List.of(o));
             try (var ps = c.prepareStatement(commitScheduleSql)) {
                 setInstant(ps, 1, nextFire);
@@ -1125,9 +1137,20 @@ public class PostgresTaskStore implements FullStore {
                 setInstant(ps, 19, o.startBy());
                 if (o.maxRun() == null) ps.setNull(20, Types.INTEGER);
                 else ps.setInt(20, Math.toIntExact(o.maxRun().toMillis()));
-                return single(ps) == 1;
+                if (single(ps) != 1) return false;
             }
-        });
+            if (fixedDelay) {
+                try (var ps = c.prepareStatement("UPDATE " + schedule + " SET occurrence_id = ? WHERE id = ?"
+                        + " AND EXISTS (SELECT 1 FROM " + task + " WHERE id = ?)")) {
+                    ps.setLong(1, o.id());
+                    ps.setString(2, due.scheduleId());
+                    ps.setLong(3, o.id());
+                    ps.executeUpdate();
+                }
+            }
+            return true;
+        };
+        return fixedDelay ? inTransaction(commit) : withConnection(commit);
     }
 
     // ---- inspection ----------------------------------------------------------------------------------
@@ -1537,12 +1560,15 @@ public class PostgresTaskStore implements FullStore {
     }
 
     @Override
-    public boolean setNextFire(String scheduleId, long revision, Instant nextFire) {
-        return update("UPDATE " + schedule + " SET next_fire = ? WHERE id = ? AND rev = ? AND NOT paused", ps -> {
-            setInstant(ps, 1, nextFire);
-            ps.setString(2, scheduleId);
-            ps.setLong(3, revision);
-        });
+    public boolean setNextFire(String scheduleId, long revision, Instant expectedFire, Instant nextFire) {
+        return update(
+                "UPDATE " + schedule + " SET next_fire = ? WHERE id = ? AND rev = ? AND next_fire = ? AND NOT paused",
+                ps -> {
+                    setInstant(ps, 1, nextFire);
+                    ps.setString(2, scheduleId);
+                    ps.setLong(3, revision);
+                    setInstant(ps, 4, expectedFire);
+                });
     }
 
     private static RecurringDefinition readDefinition(ResultSet rs) throws SQLException {

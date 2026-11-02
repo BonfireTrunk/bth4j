@@ -798,6 +798,27 @@ public abstract class RunnerContract {
     }
 
     @Test
+    void reRegisteringAFixedDelayScheduleDuringARunningOccurrenceStartsNoSecondOneAndFiresAfterItEnds()
+            throws Exception {
+        var started = new AtomicInteger();
+        var release = new java.util.concurrent.CountDownLatch(1);
+        startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {
+            started.incrementAndGet();
+            release.await();
+        }));
+        var tick = ScheduleDefinition.every("tick", VOID_TYPE, Duration.ofSeconds(1));
+        client.putSchedule(tick);
+        await("the first occurrence to run", () -> started.get() == 1);
+
+        client.putSchedule(tick);
+        pause(3_000);
+        assertThat(started.get()).isEqualTo(1);
+
+        release.countDown();
+        await("the next occurrence after the first ended", () -> started.get() >= 2);
+    }
+
+    @Test
     void misfireFireOnceNowCreatesOneOccurrenceAndMovesOn() {
         var runs = new AtomicInteger();
         var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));

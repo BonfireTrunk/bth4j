@@ -39,9 +39,6 @@ public class RecurringTaskService extends CustomThread {
     /** Header of a fixed-delay occurrence holding the delay as an ISO-8601 duration. */
     public static final String FIXED_DELAY_HEADER = "bth4j.fixed-delay";
 
-    /** Header of a fixed-delay occurrence holding the revision of the definition it was created from. */
-    public static final String SCHEDULE_REVISION_HEADER = "bth4j.schedule-rev";
-
     public static final String OVERLAP_KEY_PREFIX = "sched:";
 
     /** True for an occurrence of a fixed-delay definition; its definition is parked until the occurrence ends. */
@@ -54,20 +51,12 @@ public class RecurringTaskService extends CustomThread {
 
     /** The re-arm to apply when this fixed-delay occurrence succeeds; null for any other task. */
     public static ScheduleEffect rearmEffect(TaskRecord r, Instant nextFire) {
-        var revision = revisionOf(r);
-        return revision == null ? null : ScheduleEffect.rearm(r.scheduleId(), revision, nextFire);
+        return isFixedDelayOccurrence(r) ? ScheduleEffect.rearm(r.scheduleId(), r.id(), nextFire) : null;
     }
 
     /** The pause to apply when this fixed-delay occurrence ends without succeeding; null for any other task. */
     public static ScheduleEffect pauseEffect(TaskRecord r) {
-        var revision = revisionOf(r);
-        return revision == null ? null : ScheduleEffect.pause(r.scheduleId(), revision);
-    }
-
-    private static Long revisionOf(TaskRecord r) {
-        if (!isFixedDelayOccurrence(r)) return null;
-        var revision = r.headers().get(SCHEDULE_REVISION_HEADER);
-        return revision == null ? null : Long.parseLong(revision);
+        return isFixedDelayOccurrence(r) ? ScheduleEffect.pause(r.scheduleId(), r.id()) : null;
     }
 
     private final ScheduleStore store;
@@ -186,7 +175,7 @@ public class RecurringTaskService extends CustomThread {
         switch (misfire) {
             case RecurringDefinition.MISFIRE_SKIP -> {
                 var next = nextOrPark(def, now, zone, d.fireAt());
-                if (store.setNextFire(d.scheduleId(), def.revision(), next)) {
+                if (store.setNextFire(d.scheduleId(), def.revision(), d.fireAt(), next)) {
                     misfireIssue(d, late, "skipped, next at " + next);
                 }
                 return false;
@@ -200,7 +189,7 @@ public class RecurringTaskService extends CustomThread {
                 }
                 if (fires.size() > def.catchUpMax()) {
                     var resume = fires.get(fires.size() - def.catchUpMax());
-                    if (store.setNextFire(d.scheduleId(), def.revision(), resume)) {
+                    if (store.setNextFire(d.scheduleId(), def.revision(), d.fireAt(), resume)) {
                         misfireIssue(d, late, "catching up the last " + def.catchUpMax() + " fires from " + resume);
                     }
                     return false;
@@ -248,10 +237,7 @@ public class RecurringTaskService extends CustomThread {
                 .scheduleId(d.scheduleId());
         if (def.isFixedDelay()) {
             builder.headers(Map.of(
-                    FIXED_DELAY_HEADER,
-                    Duration.ofMillis(def.fixedDelayMs()).toString(),
-                    SCHEDULE_REVISION_HEADER,
-                    String.valueOf(def.revision())));
+                    FIXED_DELAY_HEADER, Duration.ofMillis(def.fixedDelayMs()).toString()));
         }
         if (def.overlapSkip()) {
             builder.uniqueKey(OVERLAP_KEY_PREFIX + d.scheduleId());

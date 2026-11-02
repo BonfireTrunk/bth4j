@@ -321,7 +321,9 @@ public class RedisTaskStore implements FullStore {
     private static List<String> effectArgs(ScheduleEffect effect) {
         if (effect == null) return List.of("", "", "");
         return List.of(
-                effect.scheduleId(), String.valueOf(effect.revision()), effect.pauses() ? "" : ms(effect.nextFire()));
+                effect.scheduleId(),
+                String.valueOf(effect.occurrenceId()),
+                effect.pauses() ? "" : ms(effect.nextFire()));
     }
 
     @Override
@@ -898,8 +900,8 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public boolean setNextFire(String scheduleId, long revision, Instant nextFire) {
-        var args = List.of(scheduleId, String.valueOf(revision), ms(nextFire));
+    public boolean setNextFire(String scheduleId, long revision, Instant expectedFire, Instant nextFire) {
+        var args = List.of(scheduleId, String.valueOf(revision), ms(expectedFire), ms(nextFire));
         return num(guard(() -> scripts.run(RedisScripts.CRON_ADVANCE, args))) == 1;
     }
 }

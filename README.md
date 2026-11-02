@@ -292,9 +292,9 @@ client.enqueue(TaskRequest.of(EXPORT, export)
 `client.putSchedule(ScheduleDefinition.of(id, type, payload, cron))` creates or replaces a definition and
 returns the next fire time; `.queue(...)`, `.account(...)` and `.maxAttempts(...)` refine it. The cron
 expression has 5 fields (Unix format). Each fire time creates one task, exactly once across all instances.
-Registering the same id with the same timing (expression, zone and delay) keeps the next fire time while it is
-not beyond the second fire after now; changed timing, or a next fire time beyond that (a parked or pushed-out
-definition), resets it. `client.deleteSchedule(id)` and `client.schedules()` remove and list definitions.
+Registering the same id with the same timing (expression, zone and delay) keeps the next fire time while a
+fixed-delay occurrence is still running, or while it is not beyond the second fire after now; changed timing, or a
+next fire time beyond that with no occurrence running (a parked or pushed-out definition), resets it. `client.deleteSchedule(id)` and `client.schedules()` remove and list definitions.
 
 More options on `ScheduleDefinition`:
 

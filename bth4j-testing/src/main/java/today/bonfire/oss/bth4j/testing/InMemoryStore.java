@@ -50,7 +50,16 @@ public final class InMemoryStore implements FullStore {
     private static final Comparator<TaskRecord> BY_DUE =
             Comparator.comparing(TaskRecord::due).thenComparingLong(TaskRecord::id);
 
-    private record Recurring(RecurringDefinition definition, Instant nextFire) {}
+    /** @param occurrence the id of the in-flight fixed-delay occurrence, or null */
+    private record Recurring(RecurringDefinition definition, Instant nextFire, Long occurrence) {
+        Recurring(RecurringDefinition definition, Instant nextFire) {
+            this(definition, nextFire, null);
+        }
+
+        Recurring withNext(Instant next) {
+            return new Recurring(definition, next, occurrence);
+        }
+    }
 
     private final Clock clock;
     private final int registryBound;
@@ -332,11 +341,11 @@ public final class InMemoryStore implements FullStore {
     private void applyEffect(ScheduleEffect effect) {
         if (effect == null) return;
         Recurring r = recurring.get(effect.scheduleId());
-        if (r == null || r.definition().revision() != effect.revision()) return;
+        if (r == null || r.occurrence() == null || r.occurrence() != effect.occurrenceId()) return;
         if (effect.pauses()) {
-            recurring.put(effect.scheduleId(), new Recurring(r.definition().withPaused(true), r.nextFire()));
-        } else if (!r.definition().paused()) {
-            recurring.put(effect.scheduleId(), new Recurring(r.definition(), effect.nextFire()));
+            recurring.put(effect.scheduleId(), new Recurring(r.definition().withPaused(true), r.nextFire(), null));
+        } else {
+            recurring.put(effect.scheduleId(), new Recurring(r.definition(), effect.nextFire(), null));
         }
     }
 
@@ -604,14 +613,16 @@ public final class InMemoryStore implements FullStore {
                     definition.maxAttempts(),
                     old != null ? old.definition().paused() : definition.paused(),
                     ++recurringRevision);
-            Instant fire = old != null
-                            && Objects.equals(old.definition().cron(), definition.cron())
-                            && Objects.equals(old.definition().zone(), definition.zone())
-                            && Objects.equals(old.definition().fixedDelayMs(), definition.fixedDelayMs())
-                            && !old.nextFire().isAfter(keepUntil)
-                    ? old.nextFire()
-                    : nextFire;
-            recurring.put(definition.scheduleId(), new Recurring(stored, fire));
+            boolean sameTiming = old != null
+                    && Objects.equals(old.definition().cron(), definition.cron())
+                    && Objects.equals(old.definition().zone(), definition.zone())
+                    && Objects.equals(old.definition().fixedDelayMs(), definition.fixedDelayMs());
+            TaskRecord running = sameTiming && old.occurrence() != null ? tasks.get(old.occurrence()) : null;
+            boolean occurrenceRunning = running != null && !running.state().isTerminal();
+            Instant fire =
+                    sameTiming && (occurrenceRunning || !old.nextFire().isAfter(keepUntil)) ? old.nextFire() : nextFire;
+            recurring.put(
+                    definition.scheduleId(), new Recurring(stored, fire, occurrenceRunning ? old.occurrence() : null));
         } finally {
             lock.unlock();
         }
@@ -673,7 +684,11 @@ public final class InMemoryStore implements FullStore {
             if (outcome == EnqueueOutcome.EXISTS) {
                 return false;
             }
-            recurring.put(due.scheduleId(), new Recurring(current.definition(), nextFire));
+            Long occurrenceId = outcome instanceof EnqueueOutcome.Stored
+                            && current.definition().isFixedDelay()
+                    ? Long.valueOf(occurrence.id())
+                    : current.occurrence();
+            recurring.put(due.scheduleId(), new Recurring(current.definition(), nextFire, occurrenceId));
             return true;
         } finally {
             lock.unlock();
@@ -958,7 +973,7 @@ public final class InMemoryStore implements FullStore {
             if (r == null) {
                 return false;
             }
-            recurring.put(scheduleId, new Recurring(r.definition().withPaused(paused), r.nextFire()));
+            recurring.put(scheduleId, new Recurring(r.definition().withPaused(paused), r.nextFire(), r.occurrence()));
             return true;
         } finally {
             lock.unlock();
@@ -973,7 +988,9 @@ public final class InMemoryStore implements FullStore {
             if (r == null) {
                 return false;
             }
-            recurring.put(scheduleId, new Recurring(r.definition().withRevision(++recurringRevision), nextFire));
+            recurring.put(
+                    scheduleId,
+                    new Recurring(r.definition().withRevision(++recurringRevision), nextFire, r.occurrence()));
             return true;
         } finally {
             lock.unlock();
@@ -981,16 +998,17 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public boolean setNextFire(String scheduleId, long revision, Instant nextFire) {
+    public boolean setNextFire(String scheduleId, long revision, Instant expectedFire, Instant nextFire) {
         lock.lock();
         try {
             Recurring r = recurring.get(scheduleId);
             if (r == null
                     || r.definition().revision() != revision
+                    || !r.nextFire().equals(expectedFire)
                     || r.definition().paused()) {
                 return false;
             }
-            recurring.put(scheduleId, new Recurring(r.definition(), nextFire));
+            recurring.put(scheduleId, r.withNext(nextFire));
             return true;
         } finally {
             lock.unlock();
