@@ -129,22 +129,22 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
           <select v-if="queues.length" v-model="queue"><option value="">any</option><option v-for="q in queues" :key="q" :value="q">{{ q }}</option></select>
           <input v-else v-model="queue" type="text" placeholder="any">
         </label>
-        <button type="submit" class="primary">Apply</button>
+        <button type="submit" class="primary">Show</button>
       </form>
-      <status-msg :loading="loading" :error="error" :empty="!rows.length" empty-text="No tasks match these filters."></status-msg>
+      <status-msg :loading="loading" :error="error" :empty="!rows.length" empty-text="No tasks match these filters." :empty-hint="fixedState ? 'Nothing is dead. Good.' : 'Pick another state, or clear the queue filter.'"></status-msg>
       <div class="table-wrap" v-if="!loading && rows.length">
         <table class="clickable">
           <thead><tr><th>Id</th><th>State</th><th>Queue</th><th>Event</th><th class="num">Attempts</th><th>Due</th><th>Changed</th><th>Last failure</th></tr></thead>
           <tbody>
             <tr v-for="t in rows" :key="t.id" @click="open(t.id)">
-              <td class="mono"><a :href="'#/task/' + encodeURIComponent(t.id)" @click.stop>{{ t.id }}</a></td>
+              <td class="mono"><a class="quiet" :href="'#/task/' + encodeURIComponent(t.id)" @click.stop>{{ t.id }}</a></td>
               <td><state-badge :state="t.state"></state-badge></td>
               <td>{{ t.queue }}</td>
               <td>{{ t.event }}</td>
-              <td class="num">{{ t.attempts }}/{{ t.maxAttempts }}</td>
-              <td><time-ago :at="t.due"></time-ago></td>
+              <td class="num">{{ t.attempts }} / {{ t.maxAttempts }}</td>
+              <td><time-ago :at="t.due" :late="t.state === 'QUEUED' || t.state === 'SCHEDULED'"></time-ago></td>
               <td><time-ago :at="t.stateChanged"></time-ago></td>
-              <td class="trunc">{{ t.lastFailure ? t.lastFailure.type + ': ' + (t.lastFailure.message || '') : '' }}</td>
+              <td class="trunc mono small" :title="t.lastFailure ? t.lastFailure.type + ': ' + (t.lastFailure.message || '') : ''">{{ t.lastFailure ? t.lastFailure.type.replace(/^.*\./, '') + ': ' + (t.lastFailure.message || '') : '' }}</td>
             </tr>
           </tbody>
         </table>

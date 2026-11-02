@@ -26,6 +26,7 @@ export default {
       try {
         task.value = await api.task(id);
         stale.value = false;
+        loadPayload();
       } catch (e) {
         error.value = e.status === 404 ? 'Task ' + id + ' does not exist (it may have been deleted or expired).' : e.message;
         task.value = null;
@@ -111,16 +112,21 @@ export default {
       }
     }
 
-    const timeline = computed(() => {
+    const FINISHED = { SUCCEEDED: 'Succeeded', DEAD: 'Dead', CANCELLED: 'Cancelled', EXPIRED: 'Expired' };
+    const route = computed(() => {
       const t = task.value;
       if (!t) return [];
-      return [
-        ['Created', t.created],
-        ['Due', t.due],
-        ['Claimed', t.claimedAt],
-        ['State changed (' + t.state + ')', t.stateChanged],
-      ].filter((e) => e[1]);
+      const stops = [
+        { label: 'Created', at: t.created, reached: true },
+        { label: 'Due', at: t.due, reached: Date.parse(t.due) <= Date.now() || t.state !== 'SCHEDULED' },
+        { label: 'Claimed', at: t.claimedAt, reached: !!t.claimedAt },
+      ];
+      if (FINISHED[t.state]) stops.push({ label: FINISHED[t.state], at: t.stateChanged, reached: true });
+      else if (t.state === 'LEASED') stops.push({ label: 'Running', at: t.stateChanged, reached: true });
+      else stops.push({ label: 'Finished', at: null, reached: false });
+      return stops;
     });
+    const cancelled = computed(() => task.value && (task.value.cancelRequestedAt || task.value.cancelReason));
 
     const steps = computed(() =>
       Object.entries((task.value && task.value.steps) || {}).map(([name, s]) => ({ name, at: s && s.at, result: s && s.result })),
@@ -137,69 +143,81 @@ export default {
     onMounted(load);
     return {
       id, task, loading, error, stale, busy, payload, prettyPayload, payloadLoading, admin,
-      load, loadPayload, retry, cancel, remove, timeline, steps, failures, headers,
+      load, loadPayload, retry, cancel, remove, route, cancelled, steps, failures, headers,
       canRetry, canCancel, canDelete, duration,
     };
   },
   template: `
   <section>
-    <p><a href="#/tasks">&larr; Tasks</a></p>
-    <div class="page-head"><h1>Task <span class="mono">{{ id }}</span></h1><button type="button" @click="load">Reload</button></div>
-    <p v-if="stale" class="banner" role="alert">This task changed meanwhile. <button type="button" @click="load">Reload</button> before trying again.</p>
+    <p class="crumbs"><a href="#/tasks">Tasks</a> / task {{ id }}</p>
+    <div class="page-head"><h1>Task <span class="id">{{ id }}</span></h1><button type="button" @click="load">Reload</button></div>
+    <p v-if="stale" class="banner" role="alert"><span>This task changed meanwhile.</span><button type="button" class="small" @click="load">Reload</button><span class="muted">before trying again.</span></p>
     <status-msg :loading="loading" :error="error" :empty="!task"></status-msg>
     <template v-if="task">
-      <div class="card">
-        <div class="row">
-          <state-badge :state="task.state"></state-badge>
-          <span class="muted">revision {{ task.revision }}</span>
-          <span class="spacer"></span>
-          <button type="button" :disabled="!admin() || busy || !canRetry" :title="admin() ? (canRetry ? '' : 'Only DEAD, CANCELLED or EXPIRED tasks can be retried') : 'Admin role required'" @click="retry">Retry</button>
-          <button type="button" class="danger" :disabled="!admin() || busy || !canCancel" :title="admin() ? (canCancel ? '' : 'Only QUEUED, SCHEDULED or LEASED tasks can be cancelled') : 'Admin role required'" @click="cancel">Cancel...</button>
-          <button type="button" class="danger" :disabled="!admin() || busy || !canDelete" :title="admin() ? (canDelete ? '' : 'Only finished tasks can be deleted') : 'Admin role required'" @click="remove">Delete</button>
-        </div>
-        <p v-if="!admin()" class="muted">Read-only: your role is viewer.</p>
+      <div class="panel head-panel">
+        <state-badge :state="task.state" lg></state-badge>
+        <span class="rev">revision {{ task.revision }}</span>
+        <span v-if="task.state === 'LEASED' && task.leaseUntil" class="muted">lease <time-ago :at="task.leaseUntil"></time-ago></span>
+        <span v-else-if="task.state === 'SCHEDULED' || task.state === 'QUEUED'" class="muted">due <time-ago :at="task.due" late></time-ago></span>
+        <span class="spacer"></span>
+        <button type="button" :disabled="!admin() || busy || !canRetry" :title="admin() ? (canRetry ? '' : 'Only DEAD, CANCELLED or EXPIRED tasks can be retried') : 'Admin role required'" @click="retry">Retry</button>
+        <button type="button" class="danger" :disabled="!admin() || busy || !canCancel" :title="admin() ? (canCancel ? '' : 'Only QUEUED, SCHEDULED or LEASED tasks can be cancelled') : 'Admin role required'" @click="cancel">Cancel...</button>
+        <button type="button" class="danger" :disabled="!admin() || busy || !canDelete" :title="admin() ? (canDelete ? '' : 'Only finished tasks can be deleted') : 'Admin role required'" @click="remove">Delete</button>
       </div>
+      <p v-if="!admin()" class="muted small">Read-only: your role is viewer.</p>
+
+      <ol class="route" aria-label="Route">
+        <li v-for="s in route" :key="s.label" class="stop" :class="{ reached: s.reached, pending: !s.reached }">
+          <span class="l">{{ s.label }}</span>
+          <time-ago v-if="s.at" :at="s.at"></time-ago><span v-else class="muted">not yet</span>
+        </li>
+      </ol>
 
       <div class="cols">
-        <div class="card">
-          <h2>Fields</h2>
+        <div class="panel">
+          <h2>Routing</h2>
           <dl class="kv">
-            <dt>Queue</dt><dd>{{ task.queue }}</dd>
+            <dt>Queue</dt><dd><a :href="'#/tasks?queue=' + encodeURIComponent(task.queue) + '&state=' + task.state">{{ task.queue }}</a></dd>
             <dt>Event</dt><dd>{{ task.event }}</dd>
-            <dt>Attempts</dt><dd>{{ task.attempts }} of {{ task.maxAttempts }}</dd>
             <dt>Payload version</dt><dd>{{ task.payloadVersion }}</dd>
             <dt>Account</dt><dd>{{ task.account || '-' }}</dd>
             <dt>Unique key</dt><dd class="mono">{{ task.uniqueKey || '-' }}</dd>
             <dt>Schedule</dt><dd><a v-if="task.scheduleId" href="#/schedules">{{ task.scheduleId }}</a><span v-else>-</span></dd>
             <dt>Retry of</dt><dd><a v-if="task.retryOf" class="mono" :href="'#/task/' + encodeURIComponent(task.retryOf)">{{ task.retryOf }}</a><span v-else>-</span></dd>
-            <dt>Worker</dt><dd>{{ task.workerId ?? '-' }}</dd>
-            <dt>Lease until</dt><dd><time-ago :at="task.leaseUntil"></time-ago></dd>
-            <dt>Start by</dt><dd><time-ago :at="task.startBy"></time-ago></dd>
-            <dt>Max run</dt><dd>{{ task.maxRun ? duration(task.maxRun) : '-' }}</dd>
-            <dt>Cancel requested</dt><dd><time-ago :at="task.cancelRequestedAt"></time-ago></dd>
-            <dt>Cancel reason</dt><dd>{{ task.cancelReason || '-' }}</dd>
-            <dt>Progress</dt><dd>{{ task.progress || '-' }}</dd>
           </dl>
           <template v-if="headers.length">
             <h3>Headers</h3>
             <dl class="kv"><template v-for="h in headers" :key="h[0]"><dt class="mono">{{ h[0] }}</dt><dd class="mono">{{ h[1] }}</dd></template></dl>
           </template>
+          <h3>Execution</h3>
+          <dl class="kv">
+            <dt>Attempts</dt><dd>{{ task.attempts }} of {{ task.maxAttempts }}</dd>
+            <dt>Worker</dt><dd>{{ task.workerId ?? '-' }}</dd>
+            <dt>Lease until</dt><dd><time-ago :at="task.leaseUntil"></time-ago></dd>
+            <dt>Start by</dt><dd><time-ago :at="task.startBy" late></time-ago></dd>
+            <dt>Max run</dt><dd>{{ task.maxRun ? duration(task.maxRun) : '-' }}</dd>
+            <dt>Progress</dt><dd>{{ task.progress || '-' }}</dd>
+          </dl>
+          <template v-if="cancelled">
+            <h3>Cancellation</h3>
+            <dl class="kv">
+              <dt>Requested</dt><dd><time-ago :at="task.cancelRequestedAt"></time-ago></dd>
+              <dt>Reason</dt><dd>{{ task.cancelReason || '-' }}</dd>
+            </dl>
+          </template>
         </div>
 
-        <div class="card">
-          <h2>Timeline</h2>
-          <ol class="timeline">
-            <li v-for="e in timeline" :key="e[0]"><span class="tl-label">{{ e[0] }}</span><time-ago :at="e[1]"></time-ago></li>
-          </ol>
+        <div class="panel">
           <h2>Payload</h2>
-          <button v-if="prettyPayload === null" type="button" :disabled="payloadLoading" @click="loadPayload">{{ payloadLoading ? 'Loading...' : 'Load payload' }}</button>
-          <pre v-else class="code">{{ prettyPayload }}</pre>
+          <div v-if="payloadLoading && prettyPayload === null" class="skeleton" aria-label="Loading payload"><i></i><i></i></div>
+          <pre v-else-if="prettyPayload !== null" class="code">{{ prettyPayload }}</pre>
+          <p v-else class="muted">Payload could not be loaded. <button type="button" class="small" @click="loadPayload">Try again</button></p>
         </div>
       </div>
 
-      <div class="card">
+      <div class="panel">
         <h2>Steps</h2>
-        <status-msg :empty="!steps.length" empty-text="No steps completed."></status-msg>
+        <status-msg :empty="!steps.length" empty-text="No steps completed." empty-hint="Steps appear when the processor records them with ctx.step(...)."></status-msg>
         <div class="table-wrap" v-if="steps.length">
           <table><thead><tr><th>Step</th><th>Finished</th><th>Result</th></tr></thead>
             <tbody><tr v-for="s in steps" :key="s.name"><td class="mono">{{ s.name }}</td><td><time-ago :at="s.at"></time-ago></td><td class="mono wrap">{{ s.result ?? '' }}</td></tr></tbody>
@@ -207,7 +225,7 @@ export default {
         </div>
       </div>
 
-      <div class="card">
+      <div class="panel">
         <h2>Failures <span class="muted" v-if="task.failures && task.failures.length > 20">(last 20 of {{ task.failures.length }})</span></h2>
         <status-msg :empty="!failures.length" empty-text="No failures recorded."></status-msg>
         <ul class="failures" v-if="failures.length">
