@@ -672,12 +672,12 @@ class RedisTaskStoreIT {
     @Test
     void renewedLeaseIsNotReclaimedAsExpired() {
         enqueued(1);
-        var t = store.claim(new ClaimRequest(List.of(queue), 1, Duration.ofMillis(300), 1, null))
+        var t = store.claim(new ClaimRequest(List.of(queue), 1, Duration.ofMillis(1000), 1, null))
                 .getFirst();
-        sleep(150);
+        sleep(300);
 
         store.renew(List.of(new LeaseRef(1, t.revision())), LEASE);
-        sleep(250);
+        sleep(800);
 
         assertThat(store.failExpired(1, t.revision(), failure(1), null, true)).isEqualTo(FailOutcome.LOST);
         assertThat(store.reclaim(10)).isEmpty();

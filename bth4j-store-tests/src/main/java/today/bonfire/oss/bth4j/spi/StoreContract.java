@@ -34,6 +34,8 @@ public abstract class StoreContract {
     private static final Duration LEASE = Duration.ofSeconds(30);
     private static final Duration SHORT = Duration.ofMillis(200);
     private static final Duration PAST_SHORT = Duration.ofMillis(300);
+    private static final Duration MID = Duration.ofMillis(600);
+    private static final Duration PAST_MID = Duration.ofMillis(700);
 
     protected FullStore store;
     private int worker;
@@ -560,11 +562,11 @@ public abstract class StoreContract {
     @Test
     void renewBeforeTheLeaseExpiresKeepsTheTaskAwayFromTheSweeper() {
         put(task());
-        TaskRecord t = claim(1, SHORT, null).get(0);
+        TaskRecord t = claim(1, MID, null).get(0);
         advance(Duration.ofMillis(100));
         List<LeaseStatus> status = store.renew(List.of(new LeaseRef(t.id(), t.revision())), LEASE);
         assertThat(status).containsExactly(new LeaseStatus(t.id(), true, false));
-        advance(PAST_SHORT);
+        advance(PAST_MID);
         assertThat(store.reclaim(10)).isEmpty();
         assertThat(get(t.id()).state()).isEqualTo(TaskState.LEASED);
     }
@@ -761,10 +763,10 @@ public abstract class StoreContract {
     @Test
     void failExpiredIsLostWhenTheLeaseWasRenewed() {
         put(task());
-        TaskRecord t = claim(1, SHORT, null).get(0);
+        TaskRecord t = claim(1, MID, null).get(0);
         advance(Duration.ofMillis(100));
         store.renew(List.of(new LeaseRef(t.id(), t.revision())), LEASE);
-        advance(PAST_SHORT);
+        advance(PAST_MID);
         assertThat(store.failExpired(t.id(), t.revision(), failure(1), null, true))
                 .isEqualTo(FailOutcome.LOST);
         assertThat(get(t.id()).state()).isEqualTo(TaskState.LEASED);
@@ -1304,7 +1306,7 @@ public abstract class StoreContract {
     @Test
     void finishCancelledExpiredIsANoOpAfterTheLeaseWasRenewed() {
         put(task().uniqueKey("k"));
-        TaskRecord t = claim(1, SHORT, null).get(0);
+        TaskRecord t = claim(1, MID, null).get(0);
         advance(Duration.ofMillis(100));
         assertThat(store.renew(List.of(new LeaseRef(t.id(), t.revision())), LEASE))
                 .extracting(LeaseStatus::owned)

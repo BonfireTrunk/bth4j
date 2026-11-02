@@ -283,7 +283,7 @@ public final class InMemoryStore implements FullStore {
                 if (t == null) {
                     result.add(new LeaseStatus(ref.id(), false, false));
                 } else if (!fenced(t, ref.revision()) || !t.leaseUntil().isAfter(clock.instant())) {
-                    result.add(new LeaseStatus(ref.id(), false, t.cancelRequestedAt() != null));
+                    result.add(new LeaseStatus(ref.id(), false, false));
                 } else {
                     tasks.put(t.id(), t.toBuilder().leaseUntil(until).build());
                     result.add(new LeaseStatus(ref.id(), true, t.cancelRequestedAt() != null));

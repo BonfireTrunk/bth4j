@@ -10,12 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed (breaking)
 
 - Redis layout 2. The Redis store needs Redis 7.4 or newer or Valkey 9 or newer, and refuses a namespace written by 3.0 (`init` checks the layout version in `meta`; there is no migration, start with a new namespace). The task hash keeps only short fields so that it stays a listpack: the payload moves to `d:<id>`, the steps to `st:<id>` and the failures to the list `f:<id>` (about half the memory per task with a 300-byte payload). SCHEDULED tasks are in one zset per queue (`sched:<qid>`), the counts are the cardinalities of the state zsets (the `c:<qid>` counters are gone and cannot drift), and the key fields of a finished task expire with the key itself through hash field expiry (the `keys` zset and the RELEASE_KEYS script are gone; `releaseKeys` returns 0 on Redis).
+- `ExecutionStore` has a new abstract method `finishCancelledExpired`; custom stores must implement it (see Fixed).
 - `StoreInfo.schemaVersion` is per store: the Redis store reports its layout version (2), the PostgreSQL and in-memory stores keep `StoreInfo.SCHEMA_VERSION` (1).
-
-### Fixed
-
-- `renew` no longer extends a lease that has already expired (Redis and PostgreSQL; the in-memory store follows): the task is reported as not owned and left for the maintenance sweeper. Before, a worker whose renewal came after the expiry but before the sweeper acted kept the lease with an unchanged revision, and the sweeper then ended a cancel-requested task as CANCELLED while the processor was still running, which freed its unique key for a second task.
-- The sweeper ends an expired lease of a cancel-requested task with the new `ExecutionStore.finishCancelledExpired`, which does nothing when the lease is no longer expired, like `failExpired`. The worker's own `finishCancelled` is unchanged. Custom `ExecutionStore` implementations must add the method.
 
 ### Changed
 
@@ -23,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TaskClient.enqueueAll` reserves the ids of a batch with one store call (`IdAllocator.nextIds`); the block end is overflow-checked.
 - Redis `heartbeat` no longer mistakes a second heartbeat in the same millisecond for a removed worker; a duplicate unique key reports the holder id as text, so ids above 2^53 are exact.
 - The integration tests run against Redis 8.8 and PostgreSQL 18 (images `redis:8.8-alpine` and `postgres:18-alpine`), and against Valkey 9.1.3 with the Maven profile `valkey`; the images are the properties `bth4j.redis.image` and `bth4j.postgres.image`.
+
+### Fixed
+
+- `renew` no longer extends a lease that has already expired (Redis and PostgreSQL; the in-memory store follows): the task is reported as not owned and left for the maintenance sweeper. Before, a worker whose renewal came after the expiry but before the sweeper acted kept the lease with an unchanged revision, and the sweeper then ended a cancel-requested task as CANCELLED while the processor was still running, which freed its unique key for a second task.
+- The sweeper ends an expired lease of a cancel-requested task with the new `ExecutionStore.finishCancelledExpired`, which does nothing when the lease is no longer expired, like `failExpired`. The worker's own `finishCancelled` is unchanged. Custom `ExecutionStore` implementations must add the method.
+- A lapsed lease can no longer be revived, so `leaseDuration` must sit well above the worst pause of a worker (GC, container freeze, slow store round trip); the minimum of 1 s makes leases of a few seconds fragile.
 
 ## [3.0.0] - 2026-10-31
 
