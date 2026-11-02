@@ -1025,7 +1025,7 @@ public abstract class StoreContract {
     @Test
     void heldTasksAheadOfPurgeableOnesDoNotStarveThePurge() {
         int held = 1100;
-        Duration window = Duration.ofSeconds(10);
+        Duration window = Duration.ofSeconds(20);
         for (int i = 0; i < held; i++) {
             put(task().uniqueKey("held" + i).keyKeep(window));
         }
@@ -1907,7 +1907,7 @@ public abstract class StoreContract {
     void tasksWalkTerminatesAndListsEachTaskOnceWhileATaskIsDeferred() {
         int other = store.eventId("other");
         List<Long> all = new ArrayList<>();
-        all.add(put(task(queue, other)));
+        all.add(put(task(queue, other).due(millis(now().minusSeconds(60)))));
         for (int i = 0; i < 9; i++) {
             all.add(putNew());
         }

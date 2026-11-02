@@ -463,6 +463,8 @@ final class RedisScripts {
                   local v = redis.call('HMGET', P .. 't:' .. id, 'state', 'sc')
                   if v[1] == ARGV[2] then
                     if tonumber(v[2]) <= cutoff then purge(ikey, id) else zadd(rkey, tonumber(v[2]), id) end
+                  elseif not v[1] then
+                    zrem(ikey, id)
                   end
                 end
                 flush()
