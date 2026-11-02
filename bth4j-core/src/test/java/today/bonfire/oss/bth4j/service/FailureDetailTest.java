@@ -47,7 +47,10 @@ class FailureDetailTest {
     private final List<Throwable> policyCalls = new ArrayList<>();
     private Logger executionLogger;
     private boolean cancelRequested;
-    private boolean finished;
+    private int finishedCalls;
+    private RetryPolicy policy;
+    private Error storeFailError;
+    private RunnerStatus status;
 
     @BeforeEach
     void attachAppender() {
@@ -191,7 +194,7 @@ class FailureDetailTest {
 
         assertThat(stored.get().type()).isEqualTo(StackOverflowError.class.getName());
         assertThat(events.get(1)).isInstanceOf(TaskEvent.Retrying.class);
-        assertThat(finished).isTrue();
+        assertThat(finishedCalls).isEqualTo(1);
     }
 
     @Test
@@ -202,7 +205,7 @@ class FailureDetailTest {
 
         assertThat(stored.get().type()).isEqualTo(OutOfMemoryError.class.getName());
         assertThat(events.get(1)).isInstanceOf(TaskEvent.Retrying.class);
-        assertThat(finished).isTrue();
+        assertThat(finishedCalls).isEqualTo(1);
     }
 
     @Test
@@ -214,6 +217,94 @@ class FailureDetailTest {
         assertThat(events.get(1)).isInstanceOf(TaskEvent.Cancelled.class);
         assertThat(stored.get()).isNull();
         assertThat(policyCalls).isEmpty();
+    }
+
+    @Test
+    void anOutOfMemoryErrorInClassNameOnlyModeIsRedactedAndRethrown() {
+        var error = new OutOfMemoryError("boom");
+
+        assertThatThrownBy(() -> run(FailureDetail.CLASS_NAME_ONLY, error)).isSameAs(error);
+
+        assertThat(stored.get().message()).isNull();
+        assertThat(stored.get().stack()).isNull();
+        assertThat(((TaskEvent.Retrying) events.get(1)).error()).isInstanceOf(RedactedFailure.class);
+        assertThat(logText()).doesNotContain("boom");
+    }
+
+    @Test
+    void anInternalErrorIsRethrown() {
+        var error = new InternalError("boom");
+
+        assertThatThrownBy(() -> run(FailureDetail.FULL, error)).isSameAs(error);
+
+        assertThat(stored.get().type()).isEqualTo(InternalError.class.getName());
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    @Test
+    void aNonFatalErrorFromTheRetryPolicyRetriesAtOnceAndIsAnIssue() {
+        policy = (task, error) -> {
+            throw new AssertionError("policy");
+        };
+
+        run(FailureDetail.FULL, new IllegalStateException("x"));
+
+        assertThat(events.get(1)).isInstanceOf(TaskEvent.Retrying.class);
+        assertThat(stored.get().type()).isEqualTo(IllegalStateException.class.getName());
+        assertThat(status.issues()).anyMatch(i -> i.kind().equals("retry-policy"));
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    @Test
+    void aFatalErrorFromTheRetryPolicyIsRecordedThenRethrown() {
+        var first = new IllegalStateException("x");
+        var fatal = new OutOfMemoryError("policy");
+        policy = (task, error) -> {
+            throw fatal;
+        };
+
+        assertThatThrownBy(() -> run(FailureDetail.FULL, first)).isSameAs(fatal);
+
+        assertThat(stored.get().type()).isEqualTo(IllegalStateException.class.getName());
+        assertThat(events.get(1)).isInstanceOf(TaskEvent.Retrying.class);
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    @Test
+    void aLaterFatalErrorCarriesTheProcessorErrorAsSuppressed() {
+        var first = new InternalError("first");
+        var later = new OutOfMemoryError("later");
+        policy = (task, error) -> {
+            throw later;
+        };
+
+        assertThatThrownBy(() -> run(FailureDetail.FULL, first)).isSameAs(later);
+
+        assertThat(later.getSuppressed()).containsExactly(first);
+    }
+
+    @Test
+    void anErrorFromTheStoreLeavesTheTaskLeasedAndDoesNotEscape() {
+        storeFailError = new AssertionError("driver");
+
+        run(FailureDetail.FULL, new IllegalStateException("x"));
+
+        assertThat(stored.get()).isNull();
+        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        assertThat(logText()).contains("Unable to update the state of task 9");
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    @Test
+    void anErrorTheRetryPolicyKillsTheTaskWithIsRecordedAsDied() {
+        policy = (task, error) -> RetryPolicy.Decision.dead("no more");
+
+        run(FailureDetail.CLASS_NAME_ONLY, new AssertionError("boom"));
+
+        var died = (TaskEvent.Died) events.get(1);
+        assertThat(died.error()).isInstanceOf(RedactedFailure.class);
+        assertThat(stored.get().type()).isEqualTo(AssertionError.class.getName());
+        assertThat(logText()).doesNotContain("boom");
     }
 
     private void run(FailureDetail detail, Throwable failure) {
@@ -234,6 +325,7 @@ class FailureDetailTest {
                             yield true;
                         }
                         case "fail" -> {
+                            if (storeFailError != null) throw storeFailError;
                             stored.set((FailureInfo) args[2]);
                             yield args[3] == null ? FailOutcome.DEAD : FailOutcome.RETRY;
                         }
@@ -241,6 +333,7 @@ class FailureDetailTest {
                     };
                 });
         var clock = Clock.fixed(NOW, ZoneOffset.UTC);
+        status = new RunnerStatus(clock);
         var settings = new TaskExecution.Settings(
                 store,
                 store,
@@ -250,11 +343,13 @@ class FailureDetailTest {
                 registry,
                 RetryPolicies.of((task, error) -> {
                     policyCalls.add(error);
-                    return RetryPolicy.Decision.retryAfter(Duration.ofSeconds(1));
+                    return policy == null
+                            ? RetryPolicy.Decision.retryAfter(Duration.ofSeconds(1))
+                            : policy.decide(task, error);
                 }),
                 new Observers(events::add),
                 clock,
-                new RunnerStatus(clock),
+                status,
                 true,
                 false,
                 true,
@@ -269,6 +364,6 @@ class FailureDetailTest {
                 .cancelRequestedAt(cancelRequested ? NOW : null)
                 .maxAttempts(3)
                 .build();
-        new TaskExecution(record, settings, execution -> finished = true).run();
+        new TaskExecution(record, settings, execution -> finishedCalls++).run();
     }
 }

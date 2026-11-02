@@ -16,10 +16,17 @@ public final class Observers {
     }
 
     public void emit(TaskEvent event) {
+        emitReporting(event);
+    }
+
+    /** Delivers the event like {@link #emit}; returns the fatal error the observer threw, if any, after logging it. */
+    Error emitReporting(TaskEvent event) {
         try {
             observer.onEvent(event);
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
             log.error("Task observer failed on {}", event.getClass().getSimpleName(), e);
+            if (e instanceof Error err && Failures.fatal(err)) return err;
         }
+        return null;
     }
 }

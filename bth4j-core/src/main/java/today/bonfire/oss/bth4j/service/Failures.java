@@ -29,6 +29,11 @@ public final class Failures {
                 StringUtils.abbreviate(w.toString(), MAX_STACK));
     }
 
+    /** An error the JVM cannot recover from: it is rethrown after it has been recorded. A stack overflow is not. */
+    static boolean fatal(Throwable t) {
+        return t instanceof VirtualMachineError && !(t instanceof StackOverflowError);
+    }
+
     /** The throwable that goes into a {@code TaskEvent}. */
     public static Throwable forEvent(FailureDetail detail, Throwable e) {
         return detail == FailureDetail.CLASS_NAME_ONLY

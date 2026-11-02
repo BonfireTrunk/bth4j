@@ -184,7 +184,7 @@ happens next:
 | throws any other exception or `Error` | the attempt failed; the retry policy decides the delay, or dead when attempts are used up |
 
 A failed attempt is recorded with the task (the last 20), with the exception type, message and stack.
-An `Error` (`AssertionError`, `StackOverflowError`, `NoClassDefFoundError`, ...) is handled like an exception. After it has been recorded, a `VirtualMachineError` other than `StackOverflowError` (`OutOfMemoryError`, `InternalError`, `UnknownError`) is rethrown, so JVM-level handling such as `-XX:+ExitOnOutOfMemoryError` and the executor thread's uncaught exception handler still see it.
+An `Error` (`AssertionError`, `StackOverflowError`, `NoClassDefFoundError`, ...) is handled like an exception. After it has been recorded, a `VirtualMachineError` other than `StackOverflowError` (`OutOfMemoryError`, `InternalError`, `UnknownError`) is rethrown after it has been recorded, so the executor thread's uncaught exception handler still sees it. The same holds for such an error thrown by a retry policy, the store or an observer.
 `TaskContext` also gives `id()`, `attempt()`, `headers()`, `task()` (a `TaskView`) and `progress(text)`.
 
 ### Steps
@@ -560,7 +560,7 @@ All settings are on `BackgroundRunner.builder()`.
 | `retryPolicy(name, policy)` | none | adds a named policy that requests choose with `TaskRequest.retryPolicy(name)`; name 1 to 64 characters; may be called several times |
 | `queue(name, QueuePolicy)` | `QueuePolicy.DEFAULT` (weight 1, no limit) | share of free slots and concurrency limit of a queue on this runner |
 | `observer` | none | receives every `TaskEvent` |
-| `failureDetail` | `FailureDetail.FULL` | `FULL` records the class name, message and stack of a failure; `CLASS_NAME_ONLY` keeps only the class name, the attempt and the time. The stored failure, the `TaskEvent` error (a `RedactedFailure` that has the class name as `toString()`), the runner issues and the runner's log lines then carry no message and no stack. The message of a `TaskCancelledException` is not stored as the cancel reason; the operator's reason or "cancel requested" is. Progress text and messages that your own retry policy returns are not touched |
+| `failureDetail` | `FailureDetail.FULL` | `FULL` records the class name, message and stack of a failure; `CLASS_NAME_ONLY` keeps only the class name, the attempt and the time. The stored failure, the `TaskEvent` error (a `RedactedFailure` that has the class name as `toString()`), the runner issues and the runner's log lines then carry no message and no stack. A rethrown `VirtualMachineError` reaches the thread's uncaught exception handler with its message and stack, so `CLASS_NAME_ONLY` does not cover that output. The message of a `TaskCancelledException` is not stored as the cancel reason; the operator's reason or "cancel requested" is. Progress text and messages that your own retry policy returns are not touched |
 | `workerLabel` | JVM name (`pid@host`) | identifies this process in the worker registry; 1 to 128 characters |
 | `threadGroupName` | `bgr` | name of the runner's thread group |
 | `succeededRetention` | 10 minutes | how long succeeded tasks are kept; zero removes them at once |
