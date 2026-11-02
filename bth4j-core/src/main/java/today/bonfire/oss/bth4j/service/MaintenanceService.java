@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.IntSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import today.bonfire.oss.bth4j.FailureDetail;
 import today.bonfire.oss.bth4j.RetryPolicy;
 import today.bonfire.oss.bth4j.TaskEvent;
 import today.bonfire.oss.bth4j.TaskEvent.Outcome;
@@ -43,6 +44,7 @@ public class MaintenanceService extends CustomThread {
     private final Duration purgeInterval;
     private final Map<TaskState, Duration> retention;
     private final boolean keepDead;
+    private final FailureDetail failureDetail;
     private final int batchSize;
     private final int purgeBatchSize;
     private final int workerId;
@@ -61,6 +63,7 @@ public class MaintenanceService extends CustomThread {
         this.purgeInterval = b.purgeInterval;
         this.retention = Map.copyOf(b.retention);
         this.keepDead = b.keepDead;
+        this.failureDetail = b.failureDetail;
         this.batchSize = b.batchSize;
         this.purgeBatchSize = b.purgeBatchSize;
         this.workerId = b.workerId;
@@ -165,8 +168,15 @@ public class MaintenanceService extends CustomThread {
             var d = policy.decide(names.view(record), null);
             return d != null ? d : RetryPolicy.Decision.retryAfter(Duration.ZERO);
         } catch (RuntimeException policyError) {
-            log.error("Retry policy failed for expired task {}, retrying at once", record.id(), policyError);
-            status.issue("retry-policy", policyError.toString(), record.id());
+            if (failureDetail == FailureDetail.FULL) {
+                log.error("Retry policy failed for expired task {}, retrying at once", record.id(), policyError);
+            } else {
+                log.error(
+                        "Retry policy failed for expired task {}, retrying at once: {}",
+                        record.id(),
+                        Failures.describe(failureDetail, policyError));
+            }
+            status.issue("retry-policy", Failures.describe(failureDetail, policyError), record.id());
             return RetryPolicy.Decision.retryAfter(Duration.ZERO);
         }
     }
@@ -264,6 +274,7 @@ public class MaintenanceService extends CustomThread {
         private Duration purgeInterval = Duration.ofMinutes(1);
         private Map<TaskState, Duration> retention = Map.of();
         private boolean keepDead = true;
+        private FailureDetail failureDetail = FailureDetail.FULL;
         private int batchSize = 100;
         private int purgeBatchSize = 500;
         private int workerId;
@@ -328,6 +339,11 @@ public class MaintenanceService extends CustomThread {
 
         public Builder keepDead(boolean keepDead) {
             this.keepDead = keepDead;
+            return this;
+        }
+
+        public Builder failureDetail(FailureDetail failureDetail) {
+            this.failureDetail = failureDetail;
             return this;
         }
 

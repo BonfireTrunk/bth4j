@@ -653,6 +653,21 @@ public abstract class StoreContract {
     }
 
     @Test
+    void failureWithoutMessageAndStackRoundTripsAsNulls() {
+        TaskRecord retried = leased(task());
+        FailureInfo info = new FailureInfo(1, millis(now()), "java.io.IOException", null, null);
+        assertThat(store.fail(retried.id(), retried.revision(), info, millis(now().plusSeconds(60)), true))
+                .isEqualTo(FailOutcome.RETRY);
+        assertThat(get(retried.id()).failures()).containsExactly(info);
+        assertThat(get(retried.id()).lastFailure().message()).isNull();
+        assertThat(get(retried.id()).lastFailure().stack()).isNull();
+
+        TaskRecord dead = leased(task());
+        assertThat(store.fail(dead.id(), dead.revision(), info, null, true)).isEqualTo(FailOutcome.DEAD);
+        assertThat(get(dead.id()).failures()).containsExactly(info);
+    }
+
+    @Test
     void failWithoutRetryKillsTheTask() {
         TaskRecord t = leased(task());
         assertThat(store.fail(t.id(), t.revision(), failure(1), null, true)).isEqualTo(FailOutcome.DEAD);

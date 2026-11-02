@@ -559,6 +559,7 @@ All settings are on `BackgroundRunner.builder()`.
 | `retryPolicy(name, policy)` | none | adds a named policy that requests choose with `TaskRequest.retryPolicy(name)`; name 1 to 64 characters; may be called several times |
 | `queue(name, QueuePolicy)` | `QueuePolicy.DEFAULT` (weight 1, no limit) | share of free slots and concurrency limit of a queue on this runner |
 | `observer` | none | receives every `TaskEvent` |
+| `failureDetail` | `FailureDetail.FULL` | `FULL` records the class name, message and stack of a failure; `CLASS_NAME_ONLY` keeps only the class name, the attempt and the time. The stored failure, the `TaskEvent` error (a `RedactedFailure` that has the class name as `toString()`), the runner issues and the runner's log lines then carry no message and no stack (an `Error` thrown by a processor is not caught by the runner and reaches the executor thread's uncaught exception handler as before). The message of a `TaskCancelledException` is not stored as the cancel reason; the operator's reason or "cancel requested" is. Progress text and messages that your own retry policy returns are not touched |
 | `workerLabel` | JVM name (`pid@host`) | identifies this process in the worker registry; 1 to 128 characters |
 | `threadGroupName` | `bgr` | name of the runner's thread group |
 | `succeededRetention` | 10 minutes | how long succeeded tasks are kept; zero removes them at once |
