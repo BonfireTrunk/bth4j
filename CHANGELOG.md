@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed (breaking)
 
 - Redis layout 2. The Redis store needs Redis 7.4 or newer or Valkey 9 or newer, and refuses a namespace written by 3.0 (`init` checks the layout version in `meta`; there is no migration, start with a new namespace). The task hash keeps only short fields so that it stays a listpack: the payload moves to `d:<id>`, the steps to `st:<id>` and the failures to the list `f:<id>` (about half the memory per task with a 300-byte payload). SCHEDULED tasks are in one zset per queue (`sched:<qid>`), the counts are the cardinalities of the state zsets (the `c:<qid>` counters are gone and cannot drift), and the key fields of a finished task expire with the key itself through hash field expiry (the `keys` zset and the RELEASE_KEYS script are gone; `releaseKeys` returns 0 on Redis).
+- `ExecutionStore` has a new abstract method `finishCancelledExpired`; custom stores must implement it (see Fixed).
 - `StoreInfo.schemaVersion` is per store: the Redis store reports its layout version (2), the PostgreSQL and in-memory stores keep `StoreInfo.SCHEMA_VERSION` (1).
 
 ### Added
@@ -28,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PostgreSQL `allocateIds(1)` took its id with a bare `nextval`, outside the lock that keeps a block allocation contiguous, so it could land inside the range of a concurrent block and two tasks got the same id (the second enqueue reported as accepted and the task was lost). Every count now takes the lock, so single-id allocation is serialised with block allocation and needs the UPDATE privilege on the `meta` table, as block allocation already did.
 - Redis `tasks` paging repeated pages without end when a task of an unknown event had been deferred: the cursor was the task's `due` field, but the deferral re-scores it in the queue zset. The cursor is now the score the task has in the zset being paged.
 - Redis `purge` could remove nothing for as long as tasks with an open key window sat in front of purgeable ones, because it paged past them on every call. Tasks with a key window are now kept in `hold:<state>:<qid>` (scored by `keyUntil`) instead of `rm:<state>:<qid>`, the zset purge reads, and purge drains `hold` when the window has passed. Layout 2 gains these two zsets; a layout 2 namespace written by an earlier 3.1.0-SNAPSHOT has no `rm` entries and must be recreated.
+- `renew` no longer extends a lease that has already expired (Redis and PostgreSQL; the in-memory store follows): the task is reported as not owned and left for the maintenance sweeper. Before, a worker whose renewal came after the expiry but before the sweeper acted kept the lease with an unchanged revision, and the sweeper then ended a cancel-requested task as CANCELLED while the processor was still running, which freed its unique key for a second task.
+- The sweeper ends an expired lease of a cancel-requested task with the new `ExecutionStore.finishCancelledExpired`, which does nothing when the lease is no longer expired, like `failExpired`. The worker's own `finishCancelled` is unchanged. Custom `ExecutionStore` implementations must add the method.
+- A lapsed lease can no longer be revived, so `leaseDuration` must sit well above the worst pause of a worker (GC, container freeze, slow store round trip); the minimum of 1 s makes leases of a few seconds fragile.
 
 ## [3.0.0] - 2026-10-31
 

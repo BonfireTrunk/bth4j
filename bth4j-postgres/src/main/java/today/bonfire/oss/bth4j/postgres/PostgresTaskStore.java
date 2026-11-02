@@ -93,6 +93,8 @@ public class PostgresTaskStore implements FullStore {
     private final String claimSql;
     private final String claimKnownEventsSql;
     private final String renewSql;
+    private final String finishCancelledSql;
+    private final String finishCancelledExpiredSql;
     private final String ackSql;
     private final String failLockSql;
     private final String rescheduleSql;
@@ -155,7 +157,12 @@ public class PostgresTaskStore implements FullStore {
         renewSql = "UPDATE " + task + " t SET lease_until = now() + ? * interval '1 millisecond'"
                 + " FROM unnest(?::bigint[], ?::int[]) AS u(id, revision)"
                 + " WHERE t.id = u.id AND t.revision = u.revision AND t.state = 2"
+                + " AND t.lease_until > now()"
                 + " RETURNING t.id, t.revision, t.cancel_requested_at IS NOT NULL";
+        finishCancelledSql = "UPDATE " + task + " SET state = 5, revision = revision + 1, state_changed = now(),"
+                + " cancel_reason = ?, cancel_requested_at = COALESCE(cancel_requested_at, now()),"
+                + " lease_until = NULL, data = CASE WHEN ? THEN data ELSE NULL END," + KEY_RELEASE + FENCE;
+        finishCancelledExpiredSql = finishCancelledSql + " AND lease_until <= now()";
         // keep = false removes the row, unless it still holds its key for a keep window; the two branches
         // exclude each other, so at most one touches the row
         ackSql = "WITH d AS (DELETE FROM " + task + FENCE
@@ -1293,16 +1300,21 @@ public class PostgresTaskStore implements FullStore {
 
     @Override
     public boolean finishCancelled(long id, int revision, String reason, boolean keepPayload) {
-        return update(
-                "UPDATE " + task + " SET state = 5, revision = revision + 1, state_changed = now(),"
-                        + " cancel_reason = ?, cancel_requested_at = COALESCE(cancel_requested_at, now()),"
-                        + " lease_until = NULL, data = CASE WHEN ? THEN data ELSE NULL END," + KEY_RELEASE + FENCE,
-                ps -> {
-                    ps.setString(1, reason);
-                    ps.setBoolean(2, keepPayload);
-                    ps.setLong(3, id);
-                    ps.setInt(4, revision);
-                });
+        return finishCancelled(finishCancelledSql, id, revision, reason, keepPayload);
+    }
+
+    @Override
+    public boolean finishCancelledExpired(long id, int revision, String reason, boolean keepPayload) {
+        return finishCancelled(finishCancelledExpiredSql, id, revision, reason, keepPayload);
+    }
+
+    private boolean finishCancelled(String sql, long id, int revision, String reason, boolean keepPayload) {
+        return update(sql, ps -> {
+            ps.setString(1, reason);
+            ps.setBoolean(2, keepPayload);
+            ps.setLong(3, id);
+            ps.setInt(4, revision);
+        });
     }
 
     /** Oldest deadline first, through the {@code _start_by} partial index. */

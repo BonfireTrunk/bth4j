@@ -568,7 +568,7 @@ All settings are on `BackgroundRunner.builder()`.
 | `keepSucceededPayload` | false | keep the payload of succeeded tasks (dropped on success by default) |
 | `purgeInterval` | 1 minute | time between purge runs |
 | `purgeBatchSize` | 500 | tasks removed per purge call; the purge loops until a call removes fewer |
-| `leaseDuration` | 60 s (at least 1 s) | how long a claimed task stays leased without renewal; renewed every third while running |
+| `leaseDuration` | 60 s (at least 1 s) | how long a claimed task stays leased without renewal; renewed every third while running. A lapsed lease cannot be renewed any more, so keep it well above the worst pause (GC, container freeze, slow store round trip); a few seconds is fragile |
 | `idlePollInterval` | 500 ms (at least 10 ms) | sleep after a claim that found nothing, and the wait for a free executor slot |
 | `claimBatchSize` | 32 | most tasks claimed in one call, bounded by free executor slots |
 | `shutdownTimeout` | 30 s | how long `stop()` waits for services and running tasks |
@@ -584,7 +584,7 @@ All settings are on `BackgroundRunner.builder()`.
 `start()` fails with `TaskConfigurationError` when no processor is registered. `quiet()` stops claiming while
 running tasks finish and `resume()` claims again. `stop()` stops the services, waits up to `shutdownTimeout`
 and keeps renewing leases of running tasks meanwhile; tasks still running afterwards are retried when their
-lease expires. A process that only produces tasks can use `TaskClient.builder().store(store).jsonMapper(mapper).build()`.
+lease expires. A lease that has lapsed is not revived by a later renewal, so `leaseDuration` must sit well above the worst pause of a worker (GC, container freeze, slow store round trip). A process that only produces tasks can use `TaskClient.builder().store(store).jsonMapper(mapper).build()`.
 
 ## Stores
 

@@ -34,6 +34,8 @@ public abstract class StoreContract {
     private static final Duration LEASE = Duration.ofSeconds(30);
     private static final Duration SHORT = Duration.ofMillis(200);
     private static final Duration PAST_SHORT = Duration.ofMillis(300);
+    private static final Duration MID = Duration.ofMillis(600);
+    private static final Duration PAST_MID = Duration.ofMillis(700);
 
     protected FullStore store;
     private int worker;
@@ -568,6 +570,33 @@ public abstract class StoreContract {
     }
 
     @Test
+    void renewOfAnExpiredLeaseIsNotOwnedAndDoesNotExtendIt() {
+        put(task());
+        TaskRecord t = claim(1, SHORT, null).get(0);
+        Instant until = get(t.id()).leaseUntil();
+        advance(PAST_SHORT);
+        List<LeaseStatus> status = store.renew(List.of(new LeaseRef(t.id(), t.revision())), LEASE);
+        assertThat(status).extracting(LeaseStatus::owned).containsExactly(false);
+        TaskRecord after = get(t.id());
+        assertThat(after.leaseUntil()).isEqualTo(until);
+        assertThat(after.revision()).isEqualTo(t.revision());
+        assertThat(after.state()).isEqualTo(TaskState.LEASED);
+        assertThat(store.reclaim(10)).extracting(ExpiredLease::id).containsExactly(t.id());
+    }
+
+    @Test
+    void renewBeforeTheLeaseExpiresKeepsTheTaskAwayFromTheSweeper() {
+        put(task());
+        TaskRecord t = claim(1, MID, null).get(0);
+        advance(Duration.ofMillis(100));
+        List<LeaseStatus> status = store.renew(List.of(new LeaseRef(t.id(), t.revision())), LEASE);
+        assertThat(status).containsExactly(new LeaseStatus(t.id(), true, false));
+        advance(PAST_MID);
+        assertThat(store.reclaim(10)).isEmpty();
+        assertThat(get(t.id()).state()).isEqualTo(TaskState.LEASED);
+    }
+
+    @Test
     void renewReportsACancelRequest() {
         TaskRecord t = leased(task().cancelRequestedAt(now()).cancelReason("stop"));
         List<LeaseStatus> status = store.renew(List.of(new LeaseRef(t.id(), t.revision())), LEASE);
@@ -774,10 +803,10 @@ public abstract class StoreContract {
     @Test
     void failExpiredIsLostWhenTheLeaseWasRenewed() {
         put(task());
-        TaskRecord t = claim(1, SHORT, null).get(0);
-        advance(PAST_SHORT);
-        assertThat(store.reclaim(10)).extracting(ExpiredLease::id).containsExactly(t.id());
+        TaskRecord t = claim(1, MID, null).get(0);
+        advance(Duration.ofMillis(100));
         store.renew(List.of(new LeaseRef(t.id(), t.revision())), LEASE);
+        advance(PAST_MID);
         assertThat(store.failExpired(t.id(), t.revision(), failure(1), null, true))
                 .isEqualTo(FailOutcome.LOST);
         assertThat(get(t.id()).state()).isEqualTo(TaskState.LEASED);
@@ -1335,6 +1364,59 @@ public abstract class StoreContract {
         assertThat(store.finishCancelled(queued, get(queued).revision(), "x", true))
                 .isFalse();
         assertThat(store.finishCancelled(store.allocateIds(1), 1, "x", true)).isFalse();
+    }
+
+    @Test
+    void finishCancelledExpiredEndsATaskWhoseLeaseExpired() {
+        put(task().uniqueKey("k"));
+        TaskRecord t = claim(1, SHORT, null).get(0);
+        advance(PAST_SHORT);
+        assertThat(store.reclaim(10)).extracting(ExpiredLease::id).containsExactly(t.id());
+        assertThat(store.finishCancelledExpired(t.id(), t.revision(), "stop", true))
+                .isTrue();
+        TaskRecord done = get(t.id());
+        assertThat(done.state()).isEqualTo(TaskState.CANCELLED);
+        assertThat(done.revision()).isEqualTo(t.revision() + 1);
+        assertThat(done.cancelReason()).isEqualTo("stop");
+        assertThat(done.uniqueKey()).isNull();
+    }
+
+    @Test
+    void finishCancelledExpiredIsANoOpAfterTheLeaseWasRenewed() {
+        put(task().uniqueKey("k"));
+        TaskRecord t = claim(1, MID, null).get(0);
+        advance(Duration.ofMillis(100));
+        assertThat(store.renew(List.of(new LeaseRef(t.id(), t.revision())), LEASE))
+                .extracting(LeaseStatus::owned)
+                .containsExactly(true);
+        assertThat(store.finishCancelledExpired(t.id(), t.revision(), "stop", true))
+                .isFalse();
+        TaskRecord after = get(t.id());
+        assertThat(after.state()).isEqualTo(TaskState.LEASED);
+        assertThat(after.revision()).isEqualTo(t.revision());
+        assertThat(after.uniqueKey()).isEqualTo("k");
+    }
+
+    @Test
+    void finishCancelledExpiredIsFencedByRevisionAndState() {
+        put(task());
+        TaskRecord t = claim(1, SHORT, null).get(0);
+        advance(PAST_SHORT);
+        assertThat(store.finishCancelledExpired(t.id(), t.revision() + 1, "x", true))
+                .isFalse();
+        assertThat(get(t.id()).state()).isEqualTo(TaskState.LEASED);
+        long queued = putNew();
+        assertThat(store.finishCancelledExpired(queued, get(queued).revision(), "x", true))
+                .isFalse();
+    }
+
+    @Test
+    void finishCancelledByTheWorkerIgnoresTheLeaseExpiry() {
+        put(task());
+        TaskRecord t = claim(1, SHORT, null).get(0);
+        advance(PAST_SHORT);
+        assertThat(store.finishCancelled(t.id(), t.revision(), "stop", true)).isTrue();
+        assertThat(get(t.id()).state()).isEqualTo(TaskState.CANCELLED);
     }
 
     @Test

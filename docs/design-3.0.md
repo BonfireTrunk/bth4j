@@ -121,7 +121,7 @@ when ownership or state changes.
 | 6 | EXPIRED | start-by deadline passed before it ran |
 
 States 3 to 6 are terminal. CANCELLED is entered by `AdminStore.cancel` (from QUEUED or SCHEDULED) and by
-`ExecutionStore.finishCancelled` (from LEASED); EXPIRED by `MaintenanceStore.expire` and, inline, by a claim
+`ExecutionStore.finishCancelled` (from LEASED) and `ExecutionStore.finishCancelledExpired` (the sweeper, from LEASED with an expired lease); EXPIRED by `MaintenanceStore.expire` and, inline, by a claim
 that meets a task past its `startBy`. `AdminStore.retry` leaves DEAD, CANCELLED and EXPIRED for QUEUED. See
 Cancel protocol and Expiry and maximum run time.
 
@@ -142,9 +142,12 @@ Each arrow is one store call, atomic with its checks:
   inside a queue; a later queue is read only when the earlier ones could not fill n. It adds one to
   `attempts` and `revision`, sets `claimedAt`, `workerId` and `leaseUntil`, keeps `due`, and returns the
   records with payload and steps, so there is no second read.
-- `renew`: extends the lease of every listed task whose revision still matches and that is LEASED, in one
-  call, and reports per task whether it is still owned and whether a cancel was requested.
+- `renew`: extends the lease of every listed task whose revision still matches, that is LEASED and whose
+  lease has not expired, in one call, and reports per task whether it is still owned and whether a cancel
+  was requested. An expired lease is reported as not owned and left to maintenance; it is never revived.
 - `finishCancelled`: fence check, then CANCELLED; see Cancel protocol.
+- `finishCancelledExpired`: the same for a cancel-requested task found by `reclaim`; additionally a no-op
+  when the lease is no longer expired, because the worker renewed it after the scan.
 - `ack`: fence check, then SUCCEEDED, or the record is removed when the caller passes `keep = false`.
 - `fail`: fence check, then SCHEDULED at the retry time, or DEAD when the retry time is null or the
   attempts are exhausted. The failure is appended to `failures` (last 20).

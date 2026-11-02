@@ -41,7 +41,9 @@ public interface ExecutionStore extends TaskStore {
     List<TaskRecord> claim(ClaimRequest request);
 
     /**
-     * Extends the lease of each task whose revision still matches and is LEASED.
+     * Extends the lease of each task whose revision still matches, is LEASED and whose lease has not expired.
+     * A lease that already ran out is reported as not owned and left alone: from then on the maintenance
+     * sweeper may take the task over, and an extension must not race with that.
      *
      * @return one status per lease, in the same order
      */
@@ -107,4 +109,10 @@ public interface ExecutionStore extends TaskStore {
      * @return false when the revision did not match
      */
     boolean finishCancelled(long id, int revision, String reason, boolean keepPayload);
+
+    /**
+     * Same as {@link #finishCancelled} for a task whose lease {@link MaintenanceStore#reclaim} found expired;
+     * also false when the lease is no longer expired, because its worker renewed it meanwhile.
+     */
+    boolean finishCancelledExpired(long id, int revision, String reason, boolean keepPayload);
 }
