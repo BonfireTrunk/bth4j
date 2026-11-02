@@ -511,6 +511,31 @@ public abstract class StoreContract {
         }
     }
 
+    @Test
+    void concurrentAllocateIdsOfMixedCountsNeverOverlap() throws Exception {
+        int[] sizes = {1, 64};
+        int calls = 200;
+        List<List<long[]>> perThread = runConcurrently(8, () -> {
+            List<long[]> ranges = new ArrayList<>();
+            int seed = (int) Thread.currentThread().threadId();
+            for (int i = 0; i < calls; i++) {
+                int count = sizes[(seed + i) % 2];
+                ranges.add(new long[] {store.allocateIds(count), count});
+            }
+            return ranges;
+        });
+        List<long[]> ranges =
+                new ArrayList<>(perThread.stream().flatMap(List::stream).toList());
+        ranges.sort((a, b) -> Long.compare(a[0], b[0]));
+        assertThat(ranges).hasSize(8 * calls);
+        for (int i = 1; i < ranges.size(); i++) {
+            long[] previous = ranges.get(i - 1);
+            assertThat(ranges.get(i)[0])
+                    .as("range at %d overlaps the one before", ranges.get(i)[0])
+                    .isGreaterThanOrEqualTo(previous[0] + previous[1]);
+        }
+    }
+
     // renew
 
     @Test
@@ -995,6 +1020,44 @@ public abstract class StoreContract {
         assertThat(store.getTask(t.id())).isPresent();
         advance(Duration.ofMillis(500));
         assertThat(store.purge(TaskState.SUCCEEDED, Duration.ofMillis(100), 10)).isEqualTo(1);
+    }
+
+    @Test
+    void heldTasksAheadOfPurgeableOnesDoNotStarveThePurge() {
+        int held = 1100;
+        Duration window = Duration.ofSeconds(10);
+        for (int i = 0; i < held; i++) {
+            put(task().uniqueKey("held" + i).keyKeep(window));
+        }
+        for (int done = 0; done < held; ) {
+            List<TaskRecord> batch = claim(100);
+            for (TaskRecord t : batch) {
+                assertThat(store.ack(t.id(), t.revision(), true, true)).isTrue();
+            }
+            done += batch.size();
+        }
+        List<Long> purgeable = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            TaskRecord t = leased(task());
+            assertThat(store.ack(t.id(), t.revision(), true, true)).isTrue();
+            purgeable.add(t.id());
+        }
+        advance(Duration.ofMillis(150));
+        long removed = 0;
+        for (int call = 0; call < 3 && removed < purgeable.size(); call++) {
+            removed += store.purge(TaskState.SUCCEEDED, Duration.ofMillis(100), 10);
+        }
+        assertThat(removed).isEqualTo(purgeable.size());
+        purgeable.forEach(id -> assertThat(store.getTask(id)).isEmpty());
+        assertThat(store.counts().get(queue).succeeded()).isEqualTo(held);
+        advance(window);
+        long rest = 0;
+        for (long n; (n = store.purge(TaskState.SUCCEEDED, Duration.ofMillis(100), 500)) > 0; ) {
+            rest += n;
+        }
+        assertThat(rest).isEqualTo(held);
+        assertThat(store.counts().getOrDefault(queue, StateCounts.ZERO).succeeded())
+                .isZero();
     }
 
     @Test
@@ -1838,6 +1901,33 @@ public abstract class StoreContract {
                 store.tasks(TaskState.SUCCEEDED, null, page1.get(2).id(), 3);
         assertThat(page2).extracting(TaskRecord::id).containsExactly(expected.get(3));
         assertThat(store.tasks(TaskState.SUCCEEDED, null, expected.get(3), 3)).isEmpty();
+    }
+
+    @Test
+    void tasksWalkTerminatesAndListsEachTaskOnceWhileATaskIsDeferred() {
+        int other = store.eventId("other");
+        List<Long> all = new ArrayList<>();
+        all.add(put(task(queue, other)));
+        for (int i = 0; i < 9; i++) {
+            all.add(putNew());
+        }
+        List<TaskRecord> claimed = claim(3, LEASE, Set.of(event));
+        assertThat(claimed).hasSize(3);
+        List<Long> queued = new ArrayList<>(all);
+        claimed.forEach(t -> queued.remove(t.id()));
+        for (int limit : new int[] {1, 3, 4, 20}) {
+            List<Long> seen = new ArrayList<>();
+            long after = 0;
+            for (int page = 0; page < 30; page++) {
+                List<TaskRecord> got = store.tasks(TaskState.QUEUED, null, after, limit);
+                if (got.isEmpty()) {
+                    break;
+                }
+                got.forEach(t -> seen.add(t.id()));
+                after = got.get(got.size() - 1).id();
+            }
+            assertThat(seen).as("limit %d", limit).containsExactlyInAnyOrderElementsOf(queued);
+        }
     }
 
     @Test

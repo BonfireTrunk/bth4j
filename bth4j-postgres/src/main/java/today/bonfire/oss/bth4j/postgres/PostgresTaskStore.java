@@ -373,18 +373,12 @@ public class PostgresTaskStore implements FullStore {
 
     /**
      * The ids come from one sequence; holding the meta row lock keeps a concurrent allocation from
-     * interleaving its values with this one, so the range is contiguous.
+     * interleaving its values with this one, so the range is contiguous. A single id takes the same lock: a bare
+     * nextval could land inside the range another call is still drawing.
      */
     @Override
     public long allocateIds(int count) {
         if (count < 1) throw new IllegalArgumentException("count must be positive: " + count);
-        if (count == 1) {
-            return withConnection(c -> {
-                try (var ps = c.prepareStatement("SELECT nextval('" + taskIdSeq + "')")) {
-                    return single(ps);
-                }
-            });
-        }
         return inTransaction(c -> {
             try (var ps = c.prepareStatement("SELECT 1 FROM " + meta + " WHERE key = 'schema_version' FOR UPDATE")) {
                 ps.executeQuery().close();

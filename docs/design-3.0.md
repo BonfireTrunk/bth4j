@@ -235,8 +235,8 @@ retention per state:
 `MaintenanceStore.purge(state, retention, limit)` removes tasks of that state whose `stateChanged` is older
 than `now - retention`, oldest first, using store time. The retention is not stored on the row: it is the
 current setting of whichever runner purges, so changing it applies to existing rows. A task whose
-`keyUntil` is still in the future is skipped, and the skipped rows do not starve the purge (Redis pages
-behind them; PostgreSQL filters them in the query).
+`keyUntil` is still in the future is skipped, and the skipped rows do not starve the purge (Redis keeps them in
+a separate zset until the window has passed; PostgreSQL filters them in the query).
 
 A retention of ZERO removes the record at the transition itself: the runner passes `keep = false` to `ack`
 and `keepDead = false` to `fail`, and the row is deleted in the same atomic call. The exception is a task
@@ -246,8 +246,8 @@ its `steps` are kept.
 
 Redis task hashes never get a TTL; the purge is the only remover, and it removes the hash together with
 the payload, steps and failures keys. The purge runs every `purgeInterval` (default 1 minute) in batches of
-`purgeBatchSize` (default 500) until a batch removes fewer; on Redis one call examines at most
-max(4 x batch, 1000) index entries, so tasks holding a key window cannot make a call unbounded.
+`purgeBatchSize` (default 500) until a batch removes fewer; on Redis one call reads at most
+max(4 x batch, 1000) entries of tasks whose key window has passed, and never reads those still holding one.
 
 ## Steps
 
@@ -386,6 +386,8 @@ key only routes the call.
 | `sched:<qid>` | zset | SCHEDULED ids, score `due` ms |
 | `leased` | zset | LEASED ids, score lease expiry ms |
 | `idx:<state>:<qid>` | zset | ids in LEASED and the terminal states, score `stateChanged` ms |
+| `rm:<state>:<qid>` | zset | terminal ids that purge may remove, score `stateChanged` ms |
+| `hold:<state>:<qid>` | zset | terminal ids whose key window is open, score `keyUntil` ms; purge moves them to `rm` or removes them once the window has passed |
 | `k:<key>` | string | id of the task that holds a unique key; `PEXPIREAT` while a keep window runs |
 | `cron`, `cron:<sid>`, `crondefs`, `cronrev` | zset, hash, set, string | next fire times of definitions that are not paused, definitions, ids of all definitions, revision counter |
 
