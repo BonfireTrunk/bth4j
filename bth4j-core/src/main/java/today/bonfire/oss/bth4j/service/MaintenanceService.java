@@ -18,6 +18,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.executor.CustomThread;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
+import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
@@ -120,12 +121,8 @@ public class MaintenanceService extends CustomThread {
                 && decide(record) instanceof RetryPolicy.Decision.RetryAfter r) {
             retryAt = clock.instant().plus(r.delay());
         }
-        var failure = Failures.category(
-                failureDetail,
-                e.attempts(),
-                clock.instant(),
-                "lease-expired",
-                "lease expired after attempt " + e.attempts());
+        var failure = new FailureInfo(
+                e.attempts(), clock.instant(), "lease-expired", "lease expired after attempt " + e.attempts(), null);
         var outcome = store.failExpired(e.id(), e.revision(), failure, retryAt, keepDead);
         log.warn("Lease of task {} expired after attempt {}: {}", e.id(), e.attempts(), outcome);
         if (outcome != FailOutcome.LOST) {

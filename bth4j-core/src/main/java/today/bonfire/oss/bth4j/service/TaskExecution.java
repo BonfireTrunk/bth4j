@@ -279,7 +279,12 @@ public final class TaskExecution implements Runnable, TaskContext {
         if (detail() == FailureDetail.FULL) {
             log.error("Task {} failed and will not be retried: {}", record.id(), reason, e);
         } else {
-            log.error("Task {} failed and will not be retried: {} ({})", record.id(), reason, text(e));
+            var name = text(e);
+            if (reason.contains(name)) {
+                log.error("Task {} failed and will not be retried: {}", record.id(), reason);
+            } else {
+                log.error("Task {} failed and will not be retried: {} ({})", record.id(), reason, name);
+            }
         }
         var outcome = failOutcome(failure(e), null);
         s.observer().emit(new TaskEvent.Died(view, event(e), reason, outcome));

@@ -29,11 +29,6 @@ public final class Failures {
                 StringUtils.abbreviate(w.toString(), MAX_STACK));
     }
 
-    /** A failure without a stack, for a category such as {@code lease-expired}. */
-    public static FailureInfo category(FailureDetail detail, int attempt, Instant at, String type, String message) {
-        return new FailureInfo(attempt, at, type, detail == FailureDetail.CLASS_NAME_ONLY ? null : message, null);
-    }
-
     /** The throwable that goes into a {@code TaskEvent}. */
     public static Throwable forEvent(FailureDetail detail, Throwable e) {
         return detail == FailureDetail.CLASS_NAME_ONLY
