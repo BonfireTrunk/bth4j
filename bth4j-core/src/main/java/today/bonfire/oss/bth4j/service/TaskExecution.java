@@ -136,11 +136,11 @@ public final class TaskExecution implements Runnable, TaskContext {
                 defer("no processor registered for " + view.event());
                 return;
             }
-            Exception failure = null;
+            Throwable failure = null;
             try {
                 process(registration);
-            } catch (Exception e) {
-                failure = e;
+            } catch (Throwable t) {
+                failure = t;
             } finally {
                 worker = null;
                 // an interrupt sent for the cancel request must not leak into the executor thread's next task
@@ -150,6 +150,9 @@ public final class TaskExecution implements Runnable, TaskContext {
                 succeed(started);
             } else {
                 fail(failure);
+                if (failure instanceof VirtualMachineError vme && !(failure instanceof StackOverflowError)) {
+                    throw vme;
+                }
             }
         } finally {
             worker = null;
@@ -184,7 +187,7 @@ public final class TaskExecution implements Runnable, TaskContext {
         afterTerminal(TaskState.SUCCEEDED, outcome);
     }
 
-    private void fail(Exception e) {
+    private void fail(Throwable e) {
         switch (e) {
             case TaskRescheduleException ex -> {
                 var due = s.clock().instant().plus(ex.delay());
@@ -196,7 +199,7 @@ public final class TaskExecution implements Runnable, TaskContext {
             case TaskCancelledException ex ->
                 cancelled(detail() == FailureDetail.FULL ? ex.getMessage() : cancelReason());
             // the processor most likely stopped because of the cancel request (interrupt, closed resource)
-            case Exception ex when cancelRequested -> cancelled(cancelReason());
+            case Throwable ex when cancelRequested -> cancelled(cancelReason());
             case TaskUnrecoverableException ex -> die(ex, "unrecoverable: " + text(ex));
             case TaskDataException ex -> die(ex, "payload: " + text(ex));
             default -> {
@@ -229,7 +232,7 @@ public final class TaskExecution implements Runnable, TaskContext {
         }
     }
 
-    private RetryPolicy.Decision decide(Exception e) {
+    private RetryPolicy.Decision decide(Throwable e) {
         var policy = s.retryPolicies().named(record.retryPolicy());
         if (policy == null) {
             s.status().issue("retry-policy", "unknown retry policy " + record.retryPolicy(), record.id());
@@ -253,7 +256,7 @@ public final class TaskExecution implements Runnable, TaskContext {
         }
     }
 
-    private void retry(Exception e, Duration delay) {
+    private void retry(Throwable e, Duration delay) {
         var retryAt = s.clock().instant().plus(delay);
         if (detail() == FailureDetail.FULL) {
             log.warn("Task {} failed on attempt {} of {}", record.id(), record.attempts(), record.maxAttempts(), e);
@@ -276,7 +279,7 @@ public final class TaskExecution implements Runnable, TaskContext {
         }
     }
 
-    private void die(Exception e, String reason) {
+    private void die(Throwable e, String reason) {
         if (detail() == FailureDetail.FULL) {
             log.error("Task {} failed and will not be retried: {}", record.id(), reason, e);
         } else {
@@ -348,7 +351,7 @@ public final class TaskExecution implements Runnable, TaskContext {
                 "Unable to update the state of task {}. Its lease expires and maintenance retries it", record.id(), e);
     }
 
-    private FailureInfo failure(Exception e) {
+    private FailureInfo failure(Throwable e) {
         return Failures.info(detail(), record.attempts(), s.clock().instant(), e);
     }
 
@@ -356,11 +359,11 @@ public final class TaskExecution implements Runnable, TaskContext {
         return s.failureDetail();
     }
 
-    private Throwable event(Exception e) {
+    private Throwable event(Throwable e) {
         return Failures.forEvent(detail(), e);
     }
 
-    private String text(Exception e) {
+    private String text(Throwable e) {
         return Failures.text(detail(), e);
     }
 

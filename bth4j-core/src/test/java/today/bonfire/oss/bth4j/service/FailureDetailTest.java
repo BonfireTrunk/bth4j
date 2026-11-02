@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
@@ -43,7 +44,10 @@ class FailureDetailTest {
     private final List<TaskEvent> events = new ArrayList<>();
     private final AtomicReference<FailureInfo> stored = new AtomicReference<>();
     private final AtomicReference<String> cancelledReason = new AtomicReference<>();
+    private final List<Throwable> policyCalls = new ArrayList<>();
     private Logger executionLogger;
+    private boolean cancelRequested;
+    private boolean finished;
 
     @BeforeEach
     void attachAppender() {
@@ -157,10 +161,66 @@ class FailureDetailTest {
         return text.toString();
     }
 
-    private void run(FailureDetail detail, RuntimeException failure) {
+    @Test
+    void anErrorGoesThroughTheRetryPolicyAndIsRecorded() {
+        run(FailureDetail.FULL, new AssertionError("boom"));
+
+        assertThat(policyCalls).hasSize(1);
+        assertThat(policyCalls.get(0)).isInstanceOf(AssertionError.class);
+        assertThat(stored.get().type()).isEqualTo(AssertionError.class.getName());
+        assertThat(stored.get().message()).isEqualTo("boom");
+        assertThat(events.get(1)).isInstanceOf(TaskEvent.Retrying.class);
+    }
+
+    @Test
+    void anErrorInClassNameOnlyModeKeepsItsMessageOutOfRecordEventAndLog() {
+        run(FailureDetail.CLASS_NAME_ONLY, new AssertionError("boom"));
+
+        assertThat(stored.get().type()).isEqualTo(AssertionError.class.getName());
+        assertThat(stored.get().message()).isNull();
+        assertThat(stored.get().stack()).isNull();
+        var retrying = (TaskEvent.Retrying) events.get(1);
+        assertThat(retrying.error()).isInstanceOf(RedactedFailure.class);
+        assertThat(retrying.error().toString()).doesNotContain("boom");
+        assertThat(logText()).doesNotContain("boom").contains(AssertionError.class.getName());
+    }
+
+    @Test
+    void aStackOverflowErrorIsRecordedAndNotRethrown() {
+        run(FailureDetail.FULL, new StackOverflowError());
+
+        assertThat(stored.get().type()).isEqualTo(StackOverflowError.class.getName());
+        assertThat(events.get(1)).isInstanceOf(TaskEvent.Retrying.class);
+        assertThat(finished).isTrue();
+    }
+
+    @Test
+    void anOutOfMemoryErrorIsRecordedThenRethrown() {
+        var error = new OutOfMemoryError("heap");
+
+        assertThatThrownBy(() -> run(FailureDetail.FULL, error)).isSameAs(error);
+
+        assertThat(stored.get().type()).isEqualTo(OutOfMemoryError.class.getName());
+        assertThat(events.get(1)).isInstanceOf(TaskEvent.Retrying.class);
+        assertThat(finished).isTrue();
+    }
+
+    @Test
+    void anErrorWhileACancelIsRequestedEndsCancelled() {
+        cancelRequested = true;
+
+        run(FailureDetail.FULL, new AssertionError("boom"));
+
+        assertThat(events.get(1)).isInstanceOf(TaskEvent.Cancelled.class);
+        assertThat(stored.get()).isNull();
+        assertThat(policyCalls).isEmpty();
+    }
+
+    private void run(FailureDetail detail, Throwable failure) {
         var type = TaskType.of("boom");
         TaskProcessor<Void> processor = (ctx, payload) -> {
-            throw failure;
+            if (failure instanceof Error error) throw error;
+            throw (RuntimeException) failure;
         };
         var registry = new TaskProcessorRegistry().register(type, processor);
         var store = (FullStore) Proxy.newProxyInstance(
@@ -188,7 +248,10 @@ class FailureDetailTest {
                 new Names(store),
                 new Codecs(null),
                 registry,
-                RetryPolicies.of(RetryPolicy.fixed(Duration.ofSeconds(1))),
+                RetryPolicies.of((task, error) -> {
+                    policyCalls.add(error);
+                    return RetryPolicy.Decision.retryAfter(Duration.ofSeconds(1));
+                }),
                 new Observers(events::add),
                 clock,
                 new RunnerStatus(clock),
@@ -203,8 +266,9 @@ class FailureDetailTest {
                 .eventId(1)
                 .state(TaskState.LEASED)
                 .attempts(1)
+                .cancelRequestedAt(cancelRequested ? NOW : null)
                 .maxAttempts(3)
                 .build();
-        new TaskExecution(record, settings, execution -> {}).run();
+        new TaskExecution(record, settings, execution -> finished = true).run();
     }
 }

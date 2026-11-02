@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Redis `heartbeat` no longer mistakes a second heartbeat in the same millisecond for a removed worker; a duplicate unique key reports the holder id as text, so ids above 2^53 are exact.
 - The integration tests run against Redis 8.8 and PostgreSQL 18 (images `redis:8.8-alpine` and `postgres:18-alpine`), and against Valkey 9.1.3 with the Maven profile `valkey`; the images are the properties `bth4j.redis.image` and `bth4j.postgres.image`.
 
+### Fixed
+
+- An `Error` thrown by a processor is now recorded as a failure and goes through the retry policy, instead of leaving the task leased until its lease expires. `OutOfMemoryError` and other `VirtualMachineError`s (except `StackOverflowError`) are rethrown after being recorded.
+
 ## [3.0.0] - 2026-10-31
 
 3.0 is a redesign of 2.x: a new public API, a new coordination protocol and a storage interface with Redis,
