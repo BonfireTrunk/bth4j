@@ -26,6 +26,7 @@ import today.bonfire.oss.bth4j.TaskProcessor;
 import today.bonfire.oss.bth4j.TaskProcessorRegistry;
 import today.bonfire.oss.bth4j.TaskType;
 import today.bonfire.oss.bth4j.exceptions.RedactedFailure;
+import today.bonfire.oss.bth4j.exceptions.TaskCancelledException;
 import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
@@ -41,6 +42,7 @@ class FailureDetailTest {
     private final ListAppender<ILoggingEvent> logs = new ListAppender<>();
     private final List<TaskEvent> events = new ArrayList<>();
     private final AtomicReference<FailureInfo> stored = new AtomicReference<>();
+    private final AtomicReference<String> cancelledReason = new AtomicReference<>();
     private Logger executionLogger;
 
     @BeforeEach
@@ -126,6 +128,23 @@ class FailureDetailTest {
         assertThat(logText()).contains(SENTINEL);
     }
 
+    @Test
+    void cancelledByTheProcessorInClassNameOnlyModeDropsItsMessage() {
+        run(FailureDetail.CLASS_NAME_ONLY, new TaskCancelledException(SENTINEL));
+
+        assertThat(cancelledReason.get()).isEqualTo("cancel requested");
+        assertThat(((TaskEvent.Cancelled) events.get(1)).reason()).doesNotContain(SENTINEL);
+        assertThat(logText()).doesNotContain(SENTINEL);
+    }
+
+    @Test
+    void cancelledByTheProcessorInFullModeKeepsItsMessage() {
+        run(FailureDetail.FULL, new TaskCancelledException(SENTINEL));
+
+        assertThat(cancelledReason.get()).isEqualTo(SENTINEL);
+        assertThat(logText()).contains(SENTINEL);
+    }
+
     private String logText() {
         var text = new StringBuilder();
         for (var event : logs.list) {
@@ -149,6 +168,11 @@ class FailureDetailTest {
                     return switch (method.getName()) {
                         case "queueNames" -> Map.of(1, "Q:DEF");
                         case "eventNames" -> Map.of(1, "boom");
+                        case "getTask" -> java.util.Optional.empty();
+                        case "finishCancelled" -> {
+                            cancelledReason.set((String) args[2]);
+                            yield true;
+                        }
                         case "fail" -> {
                             stored.set((FailureInfo) args[2]);
                             yield args[3] == null ? FailOutcome.DEAD : FailOutcome.RETRY;

@@ -193,7 +193,8 @@ public final class TaskExecution implements Runnable, TaskContext {
                 s.observer().emit(new TaskEvent.Rescheduled(view, due, outcome));
             }
             case TaskLeaseLostException ex -> log.warn("Task {} stopped: {}", record.id(), text(ex));
-            case TaskCancelledException ex -> cancelled(ex.getMessage());
+            case TaskCancelledException ex ->
+                cancelled(detail() == FailureDetail.FULL ? ex.getMessage() : cancelReason());
             // the processor most likely stopped because of the cancel request (interrupt, closed resource)
             case Exception ex when cancelRequested -> cancelled(cancelReason());
             case TaskUnrecoverableException ex -> die(ex, "unrecoverable: " + text(ex));
