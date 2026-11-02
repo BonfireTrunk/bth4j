@@ -1,7 +1,5 @@
 package today.bonfire.oss.bth4j.service;
 
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -10,9 +8,9 @@ import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
-import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import today.bonfire.oss.bth4j.FailureDetail;
 import today.bonfire.oss.bth4j.RetryPolicy;
 import today.bonfire.oss.bth4j.TaskContext;
 import today.bonfire.oss.bth4j.TaskEvent;
@@ -43,8 +41,6 @@ import today.bonfire.oss.bth4j.spi.TaskState;
  */
 public final class TaskExecution implements Runnable, TaskContext {
     private static final Logger log = LoggerFactory.getLogger(TaskExecution.class);
-    private static final int MAX_MESSAGE = 2 * 1024;
-    private static final int MAX_STACK = 16 * 1024;
     private static final int MAX_PROGRESS = 4 * 1024;
     private static final int MAX_STEP_NAME = 64;
     private static final int MAX_STEP_RESULT = 8 * 1024;
@@ -64,7 +60,8 @@ public final class TaskExecution implements Runnable, TaskContext {
             RunnerStatus status,
             boolean keepSucceeded,
             boolean keepPayload,
-            boolean keepDead) {}
+            boolean keepDead,
+            FailureDetail failureDetail) {}
 
     private final TaskRecord record;
     private final TaskView view;
@@ -195,12 +192,12 @@ public final class TaskExecution implements Runnable, TaskContext {
                 var outcome = apply(() -> s.store().reschedule(record.id(), record.revision(), due));
                 s.observer().emit(new TaskEvent.Rescheduled(view, due, outcome));
             }
-            case TaskLeaseLostException ex -> log.warn("Task {} stopped: {}", record.id(), ex.getMessage());
+            case TaskLeaseLostException ex -> log.warn("Task {} stopped: {}", record.id(), text(ex));
             case TaskCancelledException ex -> cancelled(ex.getMessage());
             // the processor most likely stopped because of the cancel request (interrupt, closed resource)
             case Exception ex when cancelRequested -> cancelled(cancelReason());
-            case TaskUnrecoverableException ex -> die(ex, "unrecoverable: " + ex.getMessage());
-            case TaskDataException ex -> die(ex, "payload: " + ex.getMessage());
+            case TaskUnrecoverableException ex -> die(ex, "unrecoverable: " + text(ex));
+            case TaskDataException ex -> die(ex, "payload: " + text(ex));
             default -> {
                 var decision = decide(e);
                 switch (decision) {
@@ -242,30 +239,50 @@ public final class TaskExecution implements Runnable, TaskContext {
             var d = policy.decide(view, e);
             return d != null ? d : RetryPolicy.Decision.retryAfter(Duration.ZERO);
         } catch (RuntimeException policyError) {
-            log.error("Retry policy failed for task {}, retrying at once", record.id(), policyError);
-            s.status().issue("retry-policy", policyError.toString(), record.id());
+            if (detail() == FailureDetail.FULL) {
+                log.error("Retry policy failed for task {}, retrying at once", record.id(), policyError);
+            } else {
+                log.error(
+                        "Retry policy failed for task {}, retrying at once: {}",
+                        record.id(),
+                        Failures.describe(detail(), policyError));
+            }
+            s.status().issue("retry-policy", Failures.describe(detail(), policyError), record.id());
             return RetryPolicy.Decision.retryAfter(Duration.ZERO);
         }
     }
 
     private void retry(Exception e, Duration delay) {
         var retryAt = s.clock().instant().plus(delay);
-        log.warn("Task {} failed on attempt {} of {}", record.id(), record.attempts(), record.maxAttempts(), e);
+        if (detail() == FailureDetail.FULL) {
+            log.warn("Task {} failed on attempt {} of {}", record.id(), record.attempts(), record.maxAttempts(), e);
+        } else {
+            log.warn(
+                    "Task {} failed on attempt {} of {}: {}",
+                    record.id(),
+                    record.attempts(),
+                    record.maxAttempts(),
+                    text(e));
+        }
         var result = applyFail(failure(e), retryAt);
         switch (result) {
-            case RETRY -> s.observer().emit(new TaskEvent.Retrying(view, e, retryAt, Outcome.APPLIED));
+            case RETRY -> s.observer().emit(new TaskEvent.Retrying(view, event(e), retryAt, Outcome.APPLIED));
             case DEAD -> {
-                s.observer().emit(new TaskEvent.Died(view, e, "attempts exhausted", Outcome.APPLIED));
+                s.observer().emit(new TaskEvent.Died(view, event(e), "attempts exhausted", Outcome.APPLIED));
                 afterTerminal(TaskState.DEAD, Outcome.APPLIED);
             }
-            case LOST -> s.observer().emit(new TaskEvent.Retrying(view, e, retryAt, Outcome.LOST));
+            case LOST -> s.observer().emit(new TaskEvent.Retrying(view, event(e), retryAt, Outcome.LOST));
         }
     }
 
     private void die(Exception e, String reason) {
-        log.error("Task {} failed and will not be retried: {}", record.id(), reason, e);
+        if (detail() == FailureDetail.FULL) {
+            log.error("Task {} failed and will not be retried: {}", record.id(), reason, e);
+        } else {
+            log.error("Task {} failed and will not be retried: {} ({})", record.id(), reason, text(e));
+        }
         var outcome = failOutcome(failure(e), null);
-        s.observer().emit(new TaskEvent.Died(view, e, reason, outcome));
+        s.observer().emit(new TaskEvent.Died(view, event(e), reason, outcome));
         afterTerminal(TaskState.DEAD, outcome);
     }
 
@@ -326,18 +343,19 @@ public final class TaskExecution implements Runnable, TaskContext {
     }
 
     private FailureInfo failure(Exception e) {
-        return new FailureInfo(
-                record.attempts(),
-                s.clock().instant(),
-                e.getClass().getName(),
-                StringUtils.abbreviate(StringUtils.defaultString(e.getMessage()), MAX_MESSAGE),
-                stack(e));
+        return Failures.info(detail(), record.attempts(), s.clock().instant(), e);
     }
 
-    private static String stack(Exception e) {
-        var w = new StringWriter();
-        e.printStackTrace(new PrintWriter(w));
-        return StringUtils.abbreviate(w.toString(), MAX_STACK);
+    private FailureDetail detail() {
+        return s.failureDetail();
+    }
+
+    private Throwable event(Exception e) {
+        return Failures.forEvent(detail(), e);
+    }
+
+    private String text(Exception e) {
+        return Failures.text(detail(), e);
     }
 
     // ---- TaskContext ----------------------------------------------------------------------------------

@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.IntSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import today.bonfire.oss.bth4j.FailureDetail;
 import today.bonfire.oss.bth4j.RetryPolicy;
 import today.bonfire.oss.bth4j.TaskEvent;
 import today.bonfire.oss.bth4j.TaskEvent.Outcome;
@@ -17,7 +18,6 @@ import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.executor.CustomThread;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
-import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
@@ -43,6 +43,7 @@ public class MaintenanceService extends CustomThread {
     private final Duration purgeInterval;
     private final Map<TaskState, Duration> retention;
     private final boolean keepDead;
+    private final FailureDetail failureDetail;
     private final int batchSize;
     private final int purgeBatchSize;
     private final int workerId;
@@ -61,6 +62,7 @@ public class MaintenanceService extends CustomThread {
         this.purgeInterval = b.purgeInterval;
         this.retention = Map.copyOf(b.retention);
         this.keepDead = b.keepDead;
+        this.failureDetail = b.failureDetail;
         this.batchSize = b.batchSize;
         this.purgeBatchSize = b.purgeBatchSize;
         this.workerId = b.workerId;
@@ -118,8 +120,12 @@ public class MaintenanceService extends CustomThread {
                 && decide(record) instanceof RetryPolicy.Decision.RetryAfter r) {
             retryAt = clock.instant().plus(r.delay());
         }
-        var failure = new FailureInfo(
-                e.attempts(), clock.instant(), "lease-expired", "lease expired after attempt " + e.attempts(), null);
+        var failure = Failures.category(
+                failureDetail,
+                e.attempts(),
+                clock.instant(),
+                "lease-expired",
+                "lease expired after attempt " + e.attempts());
         var outcome = store.failExpired(e.id(), e.revision(), failure, retryAt, keepDead);
         log.warn("Lease of task {} expired after attempt {}: {}", e.id(), e.attempts(), outcome);
         if (outcome != FailOutcome.LOST) {
@@ -165,8 +171,15 @@ public class MaintenanceService extends CustomThread {
             var d = policy.decide(names.view(record), null);
             return d != null ? d : RetryPolicy.Decision.retryAfter(Duration.ZERO);
         } catch (RuntimeException policyError) {
-            log.error("Retry policy failed for expired task {}, retrying at once", record.id(), policyError);
-            status.issue("retry-policy", policyError.toString(), record.id());
+            if (failureDetail == FailureDetail.FULL) {
+                log.error("Retry policy failed for expired task {}, retrying at once", record.id(), policyError);
+            } else {
+                log.error(
+                        "Retry policy failed for expired task {}, retrying at once: {}",
+                        record.id(),
+                        Failures.describe(failureDetail, policyError));
+            }
+            status.issue("retry-policy", Failures.describe(failureDetail, policyError), record.id());
             return RetryPolicy.Decision.retryAfter(Duration.ZERO);
         }
     }
@@ -264,6 +277,7 @@ public class MaintenanceService extends CustomThread {
         private Duration purgeInterval = Duration.ofMinutes(1);
         private Map<TaskState, Duration> retention = Map.of();
         private boolean keepDead = true;
+        private FailureDetail failureDetail = FailureDetail.FULL;
         private int batchSize = 100;
         private int purgeBatchSize = 500;
         private int workerId;
@@ -328,6 +342,11 @@ public class MaintenanceService extends CustomThread {
 
         public Builder keepDead(boolean keepDead) {
             this.keepDead = keepDead;
+            return this;
+        }
+
+        public Builder failureDetail(FailureDetail failureDetail) {
+            this.failureDetail = failureDetail;
             return this;
         }
 

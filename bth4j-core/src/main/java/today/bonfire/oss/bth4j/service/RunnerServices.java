@@ -4,6 +4,7 @@ import java.time.Clock;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import today.bonfire.oss.bth4j.FailureDetail;
 import today.bonfire.oss.bth4j.QueuePolicy;
 import today.bonfire.oss.bth4j.TaskProcessorRegistry;
 import today.bonfire.oss.bth4j.spi.FullStore;
@@ -30,6 +31,7 @@ public final class RunnerServices {
             boolean keepSucceeded,
             boolean keepPayload,
             boolean keepDead,
+            FailureDetail failureDetail,
             List<Integer> queueIds,
             Map<Integer, QueuePolicy> queuePolicies,
             Set<Integer> knownEventIds,
@@ -47,7 +49,8 @@ public final class RunnerServices {
                 status,
                 keepSucceeded,
                 keepPayload,
-                keepDead);
+                keepDead,
+                failureDetail);
         this.queueIds = queueIds;
         this.queuePolicies = Map.copyOf(queuePolicies);
         this.knownEventIds = knownEventIds;

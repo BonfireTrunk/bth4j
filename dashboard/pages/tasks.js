@@ -144,7 +144,7 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
               <td class="num">{{ t.attempts }}/{{ t.maxAttempts }}</td>
               <td><time-ago :at="t.due"></time-ago></td>
               <td><time-ago :at="t.stateChanged"></time-ago></td>
-              <td class="trunc">{{ t.lastFailure ? t.lastFailure.type + ': ' + (t.lastFailure.message || '') : '' }}</td>
+              <td class="trunc">{{ t.lastFailure ? t.lastFailure.type + (t.lastFailure.message ? ': ' + t.lastFailure.message : '') : '' }}</td>
             </tr>
           </tbody>
         </table>
