@@ -17,8 +17,8 @@ public interface TaskStore {
     StoreInfo info();
 
     /**
-     * Creates the schema when it is missing, or verifies that the existing one has
-     * {@link StoreInfo#SCHEMA_VERSION}.
+     * Creates the schema when it is missing, or verifies that the existing one has the version
+     * {@link #info()} reports.
      *
      * @throws TaskStoreException when the stored schema version differs
      */

@@ -14,6 +14,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 import today.bonfire.oss.bth4j.AdminOps;
 import today.bonfire.oss.bth4j.BackgroundRunner;
@@ -37,6 +38,7 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
     private final AtomicInteger up = new AtomicInteger();
     private final Map<StateKey, AtomicLong> stateValues = new ConcurrentHashMap<>();
     private final List<Meter> meters = new ArrayList<>();
+    private final ReentrantLock metersLock = new ReentrantLock();
     private final ScheduledExecutorService poller;
     private boolean closed;
 
@@ -106,7 +108,8 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
         }
         try {
             var counts = admin.counts();
-            synchronized (meters) {
+            metersLock.lock();
+            try {
                 if (closed) {
                     return;
                 }
@@ -116,6 +119,8 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
                         stateGauge(entry.getKey(), state).set(entry.getValue().of(state));
                     }
                 }
+            } finally {
+                metersLock.unlock();
             }
         } catch (RuntimeException e) {
             // keep the last known counts; the next tick retries
@@ -138,11 +143,14 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
     @Override
     public void close() {
         poller.shutdownNow();
-        synchronized (meters) {
+        metersLock.lock();
+        try {
             closed = true;
             meters.forEach(registry::remove);
             meters.clear();
             stateValues.clear();
+        } finally {
+            metersLock.unlock();
         }
     }
 }

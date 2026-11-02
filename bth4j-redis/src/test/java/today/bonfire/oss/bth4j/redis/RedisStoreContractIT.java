@@ -52,6 +52,11 @@ class RedisStoreContractIT extends StoreContract {
     }
 
     @Override
+    protected boolean releasesKeysOnItsOwn() {
+        return true;
+    }
+
+    @Override
     protected FullStore newStore(String namespace) {
         return new RedisTaskStore(jedis, namespace);
     }

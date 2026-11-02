@@ -190,7 +190,7 @@ class RedisWave2IT {
         assertThat(jedis.exists(keys.uniqueKey("a"))).isFalse();
         assertThat(store.getTask(1).orElseThrow().uniqueKey()).isNull();
         assertThat(jedis.pttl(keys.uniqueKey("b"))).isPositive();
-        assertThat(jedis.zscore(keys.keyWindows, "2")).isNotNull();
+        assertThat(jedis.hpttl(keys.task(2), "ku").getFirst()).isPositive();
         assertThat(store.getTask(2).orElseThrow().keyUntil()).isNotNull();
     }
 
@@ -215,7 +215,7 @@ class RedisWave2IT {
         assertThat(jedis.zrange(keys.startBy, 0, -1)).containsExactly("3");
         assertThat(jedis.zscore(keys.index(6, queue), "1")).isNotNull();
         assertThat(jedis.zscore(keys.queue(queue), "1")).isNull();
-        assertThat(jedis.zscore(keys.scheduled, "2")).isNull();
+        assertThat(jedis.zscore(keys.scheduled(queue), "2")).isNull();
         var c = counts();
         assertThat(c.queued()).isEqualTo(2);
         assertThat(c.scheduled()).isZero();
@@ -234,7 +234,7 @@ class RedisWave2IT {
 
         assertThat(jedis.exists(keys.uniqueKey("k"))).isFalse();
         assertThat(jedis.pttl(keys.uniqueKey("w"))).isPositive();
-        assertThat(jedis.zscore(keys.keyWindows, "2")).isNotNull();
+        assertThat(jedis.hpttl(keys.task(2), "ku").getFirst()).isPositive();
     }
 
     @Test
@@ -322,7 +322,7 @@ class RedisWave2IT {
         assertThat(b.cancelReason()).isNull();
         assertThat(jedis.exists(keys.uniqueKey("k"))).isFalse();
         assertThat(jedis.zcard(keys.startBy)).isZero();
-        assertThat(jedis.zcard(keys.scheduled)).isZero();
+        assertThat(jedis.zcard(keys.scheduled(queue))).isZero();
         var c = counts();
         assertThat(c.queued()).isZero();
         assertThat(c.scheduled()).isZero();
@@ -407,7 +407,7 @@ class RedisWave2IT {
         assertThat(after.uniqueKey()).isNull();
         assertThat(after.keyKeep()).isNull();
         assertThat(after.keyUntil()).isNull();
-        assertThat(jedis.zscore(keys.keyWindows, "1")).isNull();
+        assertThat(jedis.hpttl(keys.task(1), "ku")).containsExactly(-2L);
         assertThat(jedis.exists(keys.uniqueKey("k"))).isFalse();
     }
 
@@ -441,12 +441,12 @@ class RedisWave2IT {
         assertThat(store.delete(4, store.getTask(4).orElseThrow().revision())).isTrue();
 
         for (var id = 1; id <= 4; id++) {
-            assertThat(jedis.exists(keys.task(id))).isFalse();
+            assertThat(jedis.exists(keys.task(id), keys.data(id), keys.steps(id), keys.failures(id)))
+                    .isZero();
         }
         assertThat(jedis.exists(keys.uniqueKey("k"))).isFalse();
         assertThat(jedis.exists(keys.uniqueKey("w"))).isFalse();
         assertThat(jedis.zcard(keys.startBy)).isZero();
-        assertThat(jedis.zcard(keys.keyWindows)).isZero();
         assertThat(jedis.zcard(keys.index(3, queue))).isZero();
         assertThat(counts()).isEqualTo(StateCounts.ZERO);
     }
@@ -595,6 +595,14 @@ class RedisWave2IT {
         assertThat(store.recurringSchedules()).containsEntry("s", fire.plusSeconds(1));
     }
 
+    @Test
+    void definitionRevisionsStayExactBeyondTheLuaDoubleRange() {
+        jedis.set(keys.cronRevision, "9007199254740992");
+        store.putRecurring(cron("s"), Instant.now().plusSeconds(60));
+        assertThat(jedis.hget(keys.cronDefinition("s"), "rev")).isEqualTo("9007199254740993");
+        assertThat(store.recurringDefinitions().get(0).definition().revision()).isEqualTo(9007199254740993L);
+    }
+
     private RecurringDefinition zoned(String id, String zone) {
         return new RecurringDefinition(
                 id, event, 2, queue, "acme", "* * * * *", zone, null, 0, null, false, null, 5, false, 0);
@@ -709,7 +717,7 @@ class RedisWave2IT {
 
         assertThat(store.getTask(70)).isPresent();
         assertThat(store.getTask(71)).isEmpty();
-        assertThat(jedis.zscore(keys.scheduled, "71")).isNull();
+        assertThat(jedis.zscore(keys.scheduled(queue), "71")).isNull();
         assertThat(jedis.get(keys.uniqueKey("sched:s"))).isEqualTo("70");
         assertThat(counts().scheduled()).isEqualTo(1);
         assertThat(store.recurringSchedules()).containsEntry("s", next2);

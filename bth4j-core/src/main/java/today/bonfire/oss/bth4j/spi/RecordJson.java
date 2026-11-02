@@ -81,23 +81,32 @@ public final class RecordJson {
         }
         var list = new ArrayList<Object>(failures.size());
         for (var f : failures) {
-            var m = new LinkedHashMap<String, Object>();
-            m.put("attempt", f.attempt());
-            if (f.at() != null) {
-                m.put("at", f.at());
-            }
-            if (f.type() != null) {
-                m.put("type", f.type());
-            }
-            if (f.message() != null) {
-                m.put("message", f.message());
-            }
-            if (f.stack() != null) {
-                m.put("stack", f.stack());
-            }
-            list.add(m);
+            list.add(failureMap(f));
         }
         return Json.write(list);
+    }
+
+    /** @return one failure as a JSON object with null fields omitted, an element of {@link #encodeFailures} */
+    public static String encodeFailure(FailureInfo failure) {
+        return Json.write(failureMap(failure));
+    }
+
+    private static Map<String, Object> failureMap(FailureInfo f) {
+        var m = new LinkedHashMap<String, Object>();
+        m.put("attempt", f.attempt());
+        if (f.at() != null) {
+            m.put("at", f.at());
+        }
+        if (f.type() != null) {
+            m.put("type", f.type());
+        }
+        if (f.message() != null) {
+            m.put("message", f.message());
+        }
+        if (f.stack() != null) {
+            m.put("stack", f.stack());
+        }
+        return m;
     }
 
     /**
@@ -113,20 +122,31 @@ public final class RecordJson {
         }
         var out = new ArrayList<FailureInfo>(list.size());
         for (var i = 0; i < list.size(); i++) {
-            var where = "failures[" + i + "]";
-            var m = object(list.get(i), where);
-            if (!(m.get("attempt") instanceof Long attempt) || attempt < 0 || attempt > Integer.MAX_VALUE) {
-                throw new IllegalArgumentException(where + ".attempt must be an integer");
-            }
-            var at = m.get("at") == null ? null : instant(m.get("at"), where + ".at");
-            out.add(new FailureInfo(
-                    attempt.intValue(),
-                    at,
-                    string(m.get("type"), where + ".type", true),
-                    string(m.get("message"), where + ".message", true),
-                    string(m.get("stack"), where + ".stack", true)));
+            out.add(failure(list.get(i), "failures[" + i + "]"));
         }
         return out;
+    }
+
+    /**
+     * @return the failure in the text, the form {@link #encodeFailure} writes
+     * @throws IllegalArgumentException when the text is not a valid failure object
+     */
+    public static FailureInfo decodeFailure(String text) {
+        return failure(Json.parse(text), "failure");
+    }
+
+    private static FailureInfo failure(Object value, String where) {
+        var m = object(value, where);
+        if (!(m.get("attempt") instanceof Long attempt) || attempt < 0 || attempt > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(where + ".attempt must be an integer");
+        }
+        var at = m.get("at") == null ? null : instant(m.get("at"), where + ".at");
+        return new FailureInfo(
+                attempt.intValue(),
+                at,
+                string(m.get("type"), where + ".type", true),
+                string(m.get("message"), where + ".message", true),
+                string(m.get("stack"), where + ".stack", true));
     }
 
     @SuppressWarnings("unchecked")

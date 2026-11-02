@@ -24,6 +24,7 @@ import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.locks.ReentrantLock;
 import javax.net.ssl.SSLContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -78,6 +79,7 @@ public final class AdminHttpServer {
     private final LoginThrottle throttle;
     private final byte[] dummyDigest = sha256(randomBytes());
     private HttpServer server;
+    private final ReentrantLock lifecycle = new ReentrantLock();
 
     private AdminHttpServer(Builder b) {
         this.admin = b.admin;
@@ -100,51 +102,66 @@ public final class AdminHttpServer {
     }
 
     /** Binds the port and starts serving. */
-    public synchronized void start() {
-        if (server != null) {
-            throw new IllegalStateException("Admin HTTP server is already started");
-        }
+    public void start() {
+        lifecycle.lock();
         try {
-            var address = new InetSocketAddress(host, requestedPort);
-            if (ssl != null) {
-                var https = HttpsServer.create(address, 0);
-                https.setHttpsConfigurator(new HttpsConfigurator(ssl));
-                server = https;
-            } else {
-                server = HttpServer.create(address, 0);
+            if (server != null) {
+                throw new IllegalStateException("Admin HTTP server is already started");
             }
-        } catch (IOException e) {
-            throw new UncheckedIOException("Cannot bind the admin HTTP server to " + host + ':' + requestedPort, e);
+            try {
+                var address = new InetSocketAddress(host, requestedPort);
+                if (ssl != null) {
+                    var https = HttpsServer.create(address, 0);
+                    https.setHttpsConfigurator(new HttpsConfigurator(ssl));
+                    server = https;
+                } else {
+                    server = HttpServer.create(address, 0);
+                }
+            } catch (IOException e) {
+                throw new UncheckedIOException("Cannot bind the admin HTTP server to " + host + ':' + requestedPort, e);
+            }
+            server.createContext("/", this::handle);
+            server.setExecutor(executor);
+            server.start();
+            log.info(
+                    "Admin HTTP server listening on {}://{}:{}",
+                    ssl == null ? "http" : "https",
+                    host,
+                    server.getAddress().getPort());
+        } finally {
+            lifecycle.unlock();
         }
-        server.createContext("/", this::handle);
-        server.setExecutor(executor);
-        server.start();
-        log.info(
-                "Admin HTTP server listening on {}://{}:{}",
-                ssl == null ? "http" : "https",
-                host,
-                server.getAddress().getPort());
     }
 
     /** Stops accepting requests, waiting briefly for running ones. Safe to call when not started. */
-    public synchronized void stop() {
-        if (server == null) {
-            return;
+    public void stop() {
+        lifecycle.lock();
+        try {
+            if (server == null) {
+                return;
+            }
+            server.stop(1);
+            server = null;
+            if (ownExecutor) {
+                ((ExecutorService) executor).shutdown();
+            }
+            log.info("Admin HTTP server stopped");
+        } finally {
+            lifecycle.unlock();
         }
-        server.stop(1);
-        server = null;
-        if (ownExecutor) {
-            ((ExecutorService) executor).shutdown();
-        }
-        log.info("Admin HTTP server stopped");
     }
 
     /** @return the port actually bound, which differs from the requested one when that was 0 */
-    public synchronized int port() {
-        if (server == null) {
-            throw new IllegalStateException("Admin HTTP server is not started");
+    public int port() {
+        lifecycle.lock();
+        try {
+            if (server == null) {
+                throw new IllegalStateException("Admin HTTP server is not started");
+            }
+            return server.getAddress().getPort();
+        } finally {
+            lifecycle.unlock();
         }
-        return server.getAddress().getPort();
     }
 
     private void handle(HttpExchange ex) throws IOException {

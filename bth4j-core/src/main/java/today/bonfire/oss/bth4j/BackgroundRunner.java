@@ -16,6 +16,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -68,7 +69,7 @@ public final class BackgroundRunner {
 
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final AtomicBoolean stopped = new AtomicBoolean(false);
-    private final Object lifecycleLock = new Object();
+    private final ReentrantLock lifecycleLock = new ReentrantLock();
     private final Map<Long, TaskExecution> runningTasks = new ConcurrentHashMap<>();
 
     private volatile boolean stopRequested;
@@ -179,7 +180,8 @@ public final class BackgroundRunner {
         if (registry.isEmpty()) {
             throw new TaskConfigurationError("No task processor registered; register processors before start()");
         }
-        synchronized (lifecycleLock) {
+        lifecycleLock.lock();
+        try {
             if (stopRequested) {
                 log.warn("Background runner {} was stopped before it started", threadGroup.getName());
                 return;
@@ -219,6 +221,8 @@ public final class BackgroundRunner {
                     config.serviceCheckInterval.toMillis(),
                     config.serviceCheckInterval.toMillis(),
                     TimeUnit.MILLISECONDS);
+        } finally {
+            lifecycleLock.unlock();
         }
     }
 
@@ -265,7 +269,8 @@ public final class BackgroundRunner {
 
     private void checkServices() {
         try {
-            synchronized (lifecycleLock) {
+            lifecycleLock.lock();
+            try {
                 if (stopRequested) {
                     var task = monitoringTask;
                     if (task != null) task.cancel(false);
@@ -288,6 +293,8 @@ public final class BackgroundRunner {
                     log.error("MaintenanceService is not running, restarting it");
                     maintenanceService = startMaintenanceService();
                 }
+            } finally {
+                lifecycleLock.unlock();
             }
         } catch (Exception e) {
             log.error("Error in service monitoring", e);
@@ -310,7 +317,8 @@ public final class BackgroundRunner {
         final CustomThread recurring;
         final CustomThread maintenance;
         // under the lock so that the monitor cannot restart a service that is being stopped
-        synchronized (lifecycleLock) {
+        lifecycleLock.lock();
+        try {
             stopRequested = true;
             var task = monitoringTask;
             if (task != null) task.cancel(false);
@@ -321,6 +329,8 @@ public final class BackgroundRunner {
             for (var service : new CustomThread[] {processor, scheduled, recurring, maintenance}) {
                 if (service != null) service.stopThread();
             }
+        } finally {
+            lifecycleLock.unlock();
         }
         var timeout = config.shutdownTimeout;
         awaitStop(processor, "Task processor", timeout);

@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.QueuePolicy;
@@ -77,10 +78,17 @@ public class TaskProcessorService extends CustomThread {
         this.renewer.setDaemon(true);
     }
 
+    private final ReentrantLock startLock = new ReentrantLock();
+
     @Override
-    public synchronized void start() {
-        renewer.start();
-        super.start();
+    public void start() {
+        startLock.lock();
+        try {
+            renewer.start();
+            super.start();
+        } finally {
+            startLock.unlock();
+        }
     }
 
     @Override

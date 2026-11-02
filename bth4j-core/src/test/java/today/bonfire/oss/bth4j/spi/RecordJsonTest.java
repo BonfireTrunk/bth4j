@@ -126,6 +126,20 @@ class RecordJsonTest {
     }
 
     @Test
+    void oneFailureRoundTripsAsAnElementOfTheList() {
+        var failure = new FailureInfo(3, T1, "t", "m\"q", "s");
+
+        var text = RecordJson.encodeFailure(failure);
+
+        assertThat(RecordJson.decodeFailure(text)).isEqualTo(failure);
+        assertThat(RecordJson.encodeFailures(List.of(failure))).isEqualTo("[" + text + "]");
+        assertThat(RecordJson.decodeFailure(RecordJson.encodeFailure(new FailureInfo(1, null, null, null, null))))
+                .isEqualTo(new FailureInfo(1, null, null, null, null));
+        assertThatThrownBy(() -> RecordJson.decodeFailure("{\"attempt\":\"x\"}"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void failuresNullAndEmptyHandling() {
         assertThat(RecordJson.encodeFailures(null)).isNull();
         assertThat(RecordJson.encodeFailures(List.of())).isNull();

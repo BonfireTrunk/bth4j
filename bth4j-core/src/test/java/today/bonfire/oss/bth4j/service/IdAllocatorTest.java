@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -95,6 +96,32 @@ class IdAllocatorTest {
         assertThat(allocator.nextId()).isEqualTo(100L);
         assertThat(allocator.nextId()).isEqualTo(101L);
         assertThat(store.blockSizes).containsExactly(1, 1);
+    }
+
+    @Test
+    void nextIdsServesARangeFromTheCurrentBlockWhenItHasRoom() {
+        var store = new CountingStore();
+        var allocator = new IdAllocator(store, 10);
+        assertThat(allocator.nextId()).isEqualTo(100L);
+
+        assertThat(allocator.nextIds(4)).isEqualTo(101L);
+
+        assertThat(allocator.nextId()).isEqualTo(105L);
+        assertThat(store.blockSizes).containsExactly(10);
+    }
+
+    @Test
+    void nextIdsReservesOneBlockOfAtLeastTheCountAndAbandonsTheRest() {
+        var store = new CountingStore();
+        var allocator = new IdAllocator(store, 4);
+        assertThat(allocator.nextId()).isEqualTo(100L);
+
+        assertThat(allocator.nextIds(7)).isEqualTo(104L);
+        assertThat(allocator.nextIds(2)).isEqualTo(111L);
+
+        assertThat(allocator.nextId()).isEqualTo(113L);
+        assertThat(store.blockSizes).containsExactly(4, 7, 4);
+        assertThatThrownBy(() -> allocator.nextIds(0)).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
