@@ -1106,8 +1106,8 @@ public class PostgresTaskStore implements FullStore {
     /**
      * An occurrence whose unique key is held by another task is not stored, but the definition still advances
      * and the commit counts: that is how overlap protection skips a fire time. A stored occurrence of a
-     * fixed-delay definition becomes its occurrence_id, in the same transaction; when the key is held and
-     * occurrence_id is empty, the holder becomes it.
+     * fixed-delay definition becomes its occurrence_id, in the same transaction; when the key is held,
+     * occurrence_id is empty and the holder belongs to the schedule, the holder becomes it.
      */
     @Override
     public boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord o) {
@@ -1149,10 +1149,12 @@ public class PostgresTaskStore implements FullStore {
                 }
                 if (o.uniqueKey() != null) {
                     try (var ps = c.prepareStatement("UPDATE " + schedule + " SET occurrence_id ="
-                            + " (SELECT t.id FROM " + task + " t WHERE t.unique_key = ? AND t.state < 3 LIMIT 1)"
-                            + " WHERE id = ? AND occurrence_id IS NULL")) {
+                            + " (SELECT t.id FROM " + task
+                            + " t WHERE t.unique_key = ? AND t.schedule_id = ? AND t.state < 3"
+                            + " LIMIT 1) WHERE id = ? AND occurrence_id IS NULL")) {
                         ps.setString(1, o.uniqueKey());
                         ps.setString(2, due.scheduleId());
+                        ps.setString(3, due.scheduleId());
                         ps.executeUpdate();
                     }
                 }

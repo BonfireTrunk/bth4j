@@ -2092,6 +2092,25 @@ public abstract class StoreContract {
     }
 
     @Test
+    void aSkippedCommitDoesNotAdoptAKeyHolderThatIsNotAnOccurrenceOfTheSchedule() {
+        Instant fire = millis(now().plusSeconds(1));
+        store.putRecurring(fullDefinition("a"), fire);
+        TaskRecord foreign = leased(task().uniqueKey("sched:a"));
+        advance(Duration.ofSeconds(2));
+        TaskRecord second = fixedDelayOccurrence("a", fire);
+        Instant parked = parkedFire();
+        assertThat(store.commitRecurring(dueOf("a", fire), parked, second)).isTrue();
+        assertThat(store.getTask(second.id())).isEmpty();
+        assertThat(nextFireOf("a")).isEqualTo(parked);
+
+        ScheduleEffect effect = ScheduleEffect.rearm("a", foreign.id(), millis(now().plusSeconds(90)));
+        assertThat(store.ack(foreign.id(), foreign.revision(), true, true, effect))
+                .isTrue();
+        assertThat(effect.applied()).isFalse();
+        assertThat(nextFireOf("a")).isEqualTo(parked);
+    }
+
+    @Test
     void effectsReportWhetherTheyChangedTheDefinition() {
         TaskRecord running = runningFixedDelayOccurrence("a");
         ScheduleEffect lost = ScheduleEffect.rearm("a", running.id(), millis(now().plusSeconds(90)));

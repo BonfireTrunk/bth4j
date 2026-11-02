@@ -826,7 +826,7 @@ public abstract class RunnerContract {
         var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));
         registerLate(
                 "late-once",
-                "* * * * *",
+                farCron(),
                 today.bonfire.oss.bth4j.spi.RecurringDefinition.MISFIRE_FIRE_ONCE_NOW,
                 0,
                 Duration.ofMinutes(10));
@@ -844,7 +844,7 @@ public abstract class RunnerContract {
         var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));
         registerLate(
                 "late-skip",
-                "* * * * *",
+                farCron(),
                 today.bonfire.oss.bth4j.spi.RecurringDefinition.MISFIRE_SKIP,
                 0,
                 Duration.ofMinutes(10));
@@ -938,6 +938,14 @@ public abstract class RunnerContract {
     }
 
     /** Stores a cron definition whose next fire is {@code late} in the past, as a runner that was down would find it. */
+    /**
+     * An hourly expression whose next fire is 30 minutes away, so that a test that pauses for a moment cannot
+     * run into a legitimate fire at the next minute boundary.
+     */
+    private static String farCron() {
+        return (java.time.ZonedDateTime.now(java.time.ZoneOffset.UTC).getMinute() + 30) % 60 + " * * * *";
+    }
+
     private void registerLate(String id, String cron, String misfire, int catchUpMax, Duration late) {
         var def = new today.bonfire.oss.bth4j.spi.RecurringDefinition(
                 id,

@@ -690,7 +690,10 @@ public final class InMemoryStore implements FullStore {
                 if (outcome instanceof EnqueueOutcome.Stored) {
                     occurrenceId = occurrence.id();
                 } else if (outcome instanceof EnqueueOutcome.DuplicateKey held && occurrenceId == null) {
-                    occurrenceId = held.existingId();
+                    TaskRecord holder = tasks.get(held.existingId());
+                    if (holder != null && due.scheduleId().equals(holder.scheduleId())) {
+                        occurrenceId = held.existingId();
+                    }
                 }
             }
             recurring.put(due.scheduleId(), new Recurring(current.definition(), nextFire, occurrenceId));

@@ -692,7 +692,8 @@ the definition's policy decides:
 ISO-8601 duration. The store records the id of the stored occurrence as the in-flight occurrence of the
 definition (Redis hash field `occ` of `cron:<id>`, PostgreSQL column `occurrence_id` of `<prefix>_schedule`). A
 commit whose occurrence was not stored because its unique key is held (overlap `SKIP`) parks the definition too;
-it leaves the recorded occurrence alone, or records the key holder when none is recorded (for example after a
+it leaves the recorded occurrence alone, or records the key holder when none is recorded and the holder is a task
+of that schedule (for example after a
 re-registration with changed timing, or for an occurrence created by 3.0.0), so the running occurrence still
 re-arms the definition.
 

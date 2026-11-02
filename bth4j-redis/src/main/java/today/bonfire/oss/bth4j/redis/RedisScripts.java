@@ -561,7 +561,7 @@ final class RedisScripts {
      * SCHEDULED for the fire time and advances the definition, unless the revision or the stored fire time
      * changed or the definition is paused. An occurrence that exists already or whose unique key is held is not
      * stored again; the definition still advances. A stored occurrence of a fixed-delay definition becomes its
-     * occ field; when the unique key is held and occ is empty, the holder becomes it. Returns 1 when committed.
+     * occ field; when the unique key is held, occ is empty and the holder belongs to the schedule, the holder becomes it. Returns 1 when committed.
      */
     static final String CRON_COMMIT = PRELUDE + """
             local ckey = P .. 'cron:' .. ARGV[2]
@@ -576,7 +576,8 @@ final class RedisScripts {
             if redis.call('HEXISTS', ckey, 'fd') == 1 then
               if stored[1] == 1 then
                 redis.call('HSET', ckey, 'occ', ARGV[6])
-              elseif stored[1] == 2 and redis.call('HEXISTS', ckey, 'occ') == 0 then
+              elseif stored[1] == 2 and redis.call('HEXISTS', ckey, 'occ') == 0
+                  and redis.call('HGET', P .. 't:' .. stored[2], 'sid') == ARGV[2] then
                 redis.call('HSET', ckey, 'occ', stored[2])
               end
             end
