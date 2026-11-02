@@ -491,9 +491,12 @@ final class RedisScripts {
             local wasPaused = redis.call('HGET', ckey, 'paused')
             local fields = {}
             for i = 4, #ARGV do fields[#fields + 1] = ARGV[i] end
+            -- counter first, so a counter failure leaves the old definition intact; read back as a string
+            -- because the INCR reply would pass through a Lua double
+            redis.call('INCR', P .. 'cronrev')
+            local rev = redis.call('GET', P .. 'cronrev')
             redis.call('DEL', ckey)
             redis.call('HSET', ckey, unpack(fields))
-            local rev = redis.call('INCR', P .. 'cronrev')
             local nextFire = ARGV[3]
             if kept and before == shape() then nextFire = kept end
             redis.call('HSET', ckey, 'rev', rev, 'next', nextFire)

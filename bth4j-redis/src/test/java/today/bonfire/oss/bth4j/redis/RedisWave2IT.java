@@ -595,6 +595,14 @@ class RedisWave2IT {
         assertThat(store.recurringSchedules()).containsEntry("s", fire.plusSeconds(1));
     }
 
+    @Test
+    void definitionRevisionsStayExactBeyondTheLuaDoubleRange() {
+        jedis.set(keys.cronRevision, "9007199254740992");
+        store.putRecurring(cron("s"), Instant.now().plusSeconds(60));
+        assertThat(jedis.hget(keys.cronDefinition("s"), "rev")).isEqualTo("9007199254740993");
+        assertThat(store.recurringDefinitions().get(0).definition().revision()).isEqualTo(9007199254740993L);
+    }
+
     private RecurringDefinition zoned(String id, String zone) {
         return new RecurringDefinition(
                 id, event, 2, queue, "acme", "* * * * *", zone, null, 0, null, false, null, 5, false, 0);
