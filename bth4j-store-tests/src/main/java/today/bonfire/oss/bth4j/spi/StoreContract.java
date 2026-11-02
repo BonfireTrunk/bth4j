@@ -1797,16 +1797,41 @@ public abstract class StoreContract {
 
     /** Commits an occurrence of a fixed-delay definition with the unique key of an overlap-skipping one, and leases it. */
     private TaskRecord runningFixedDelayOccurrence(String scheduleId, Duration lease) {
-        Instant fire = millis(now().plusSeconds(1));
-        store.putRecurring(fullDefinition(scheduleId), fire);
-        DueSchedule due = dueOf(scheduleId, fire);
-        TaskRecord occurrence = fixedDelayOccurrence(scheduleId, fire);
-        assertThat(store.commitRecurring(due, parkedFire(), occurrence)).isTrue();
+        TaskRecord occurrence = committedFixedDelayOccurrence(scheduleId);
         advance(Duration.ofSeconds(2));
         store.promote(10);
         TaskRecord running = claim(1, lease, null).get(0);
         assertThat(running.id()).isEqualTo(occurrence.id());
         return running;
+    }
+
+    /** Commits an occurrence of a fresh fixed-delay definition; it waits, due in a second. */
+    private TaskRecord committedFixedDelayOccurrence(String scheduleId) {
+        Instant fire = millis(now().plusSeconds(1));
+        store.putRecurring(fullDefinition(scheduleId), fire);
+        DueSchedule due = dueOf(scheduleId, fire);
+        TaskRecord occurrence = fixedDelayOccurrence(scheduleId, fire);
+        assertThat(store.commitRecurring(due, parkedFire(), occurrence)).isTrue();
+        return occurrence;
+    }
+
+    private RecurringDefinition withFixedDelay(RecurringDefinition d, long delayMs) {
+        return new RecurringDefinition(
+                d.scheduleId(),
+                d.eventId(),
+                d.payloadVersion(),
+                d.queueId(),
+                d.account(),
+                d.cron(),
+                d.zone(),
+                d.misfire(),
+                d.catchUpMax(),
+                delayMs,
+                d.overlapSkip(),
+                d.data(),
+                d.maxAttempts(),
+                d.paused(),
+                d.revision());
     }
 
     private DueSchedule dueOf(String scheduleId, Instant upTo) {
@@ -2044,6 +2069,130 @@ public abstract class StoreContract {
                 .isTrue();
         assertThat(get(running.id()).state()).isEqualTo(TaskState.CANCELLED);
         assertThat(pausedOf("a")).isTrue();
+    }
+
+    @Test
+    void aSkippedCommitAdoptsTheKeyHolderWhenNoOccurrenceIsRecorded() {
+        TaskRecord running = runningFixedDelayOccurrence("a");
+        Instant next = millis(now().plusSeconds(1));
+        store.putRecurring(withFixedDelay(fullDefinition("a"), 120_000L), next, next);
+        advance(Duration.ofSeconds(2));
+        TaskRecord second = fixedDelayOccurrence("a", next);
+        Instant parked = parkedFire();
+        assertThat(store.commitRecurring(dueOf("a", next), parked, second)).isTrue();
+        assertThat(store.getTask(second.id())).isEmpty();
+        assertThat(nextFireOf("a")).isEqualTo(parked);
+
+        Instant rearmed = millis(now().plusSeconds(90));
+        ScheduleEffect effect = ScheduleEffect.rearm("a", running.id(), rearmed);
+        assertThat(store.ack(running.id(), running.revision(), true, true, effect))
+                .isTrue();
+        assertThat(effect.applied()).isTrue();
+        assertThat(nextFireOf("a")).isEqualTo(rearmed);
+    }
+
+    @Test
+    void effectsReportWhetherTheyChangedTheDefinition() {
+        TaskRecord running = runningFixedDelayOccurrence("a");
+        ScheduleEffect lost = ScheduleEffect.rearm("a", running.id(), millis(now().plusSeconds(90)));
+        assertThat(store.ack(running.id(), running.revision() + 1, true, true, lost))
+                .isFalse();
+        assertThat(lost.applied()).isFalse();
+
+        TaskRecord other = leased(task().scheduleId("a"));
+        ScheduleEffect stale = ScheduleEffect.rearm("a", other.id(), millis(now().plusSeconds(90)));
+        assertThat(store.ack(other.id(), other.revision(), true, true, stale)).isTrue();
+        assertThat(stale.applied()).isFalse();
+
+        ScheduleEffect current = ScheduleEffect.rearm("a", running.id(), millis(now().plusSeconds(90)));
+        assertThat(store.ack(running.id(), running.revision(), true, true, current))
+                .isTrue();
+        assertThat(current.applied()).isTrue();
+    }
+
+    @Test
+    void aFailThatRetriesDoesNotApplyTheEffectAndOneThatKillsDoes() {
+        TaskRecord running = runningFixedDelayOccurrence("a");
+        ScheduleEffect first = ScheduleEffect.pause("a", running.id());
+        assertThat(store.fail(running.id(), running.revision(), failure(1), now().plusSeconds(5), true, first))
+                .isEqualTo(FailOutcome.RETRY);
+        assertThat(first.applied()).isFalse();
+
+        advance(Duration.ofSeconds(10));
+        store.promote(10);
+        TaskRecord again = claimOne();
+        ScheduleEffect second = ScheduleEffect.pause("a", again.id());
+        assertThat(store.fail(again.id(), again.revision(), failure(2), null, true, second))
+                .isEqualTo(FailOutcome.DEAD);
+        assertThat(second.applied()).isTrue();
+    }
+
+    @Test
+    void finishCancelledAndFailExpiredReportTheEffect() {
+        TaskRecord running = runningFixedDelayOccurrence("a");
+        ScheduleEffect cancel = ScheduleEffect.pause("a", running.id());
+        assertThat(store.finishCancelled(running.id(), running.revision(), "stop", true, cancel))
+                .isTrue();
+        assertThat(cancel.applied()).isTrue();
+
+        TaskRecord expiring = runningFixedDelayOccurrence("b", SHORT);
+        advance(PAST_SHORT);
+        ScheduleEffect expired = ScheduleEffect.pause("b", expiring.id());
+        assertThat(store.failExpired(expiring.id(), expiring.revision(), failure(1), null, true, expired))
+                .isEqualTo(FailOutcome.DEAD);
+        assertThat(expired.applied()).isTrue();
+    }
+
+    @Test
+    void cancelOfAWaitingFixedDelayOccurrencePausesTheDefinitionInTheSameStep() {
+        TaskRecord waiting = committedFixedDelayOccurrence("a");
+        ScheduleEffect effect = ScheduleEffect.pause("a", waiting.id());
+        assertThat(store.cancel(waiting.id(), get(waiting.id()).revision(), "stop", effect))
+                .isEqualTo(CancelOutcome.CANCELLED);
+        assertThat(effect.applied()).isTrue();
+        assertThat(pausedOf("a")).isTrue();
+    }
+
+    @Test
+    void cancelOfALeasedOccurrenceOnlyRequestsTheCancelAndPausesNothing() {
+        TaskRecord running = runningFixedDelayOccurrence("a");
+        ScheduleEffect effect = ScheduleEffect.pause("a", running.id());
+        assertThat(store.cancel(running.id(), running.revision(), "stop", effect))
+                .isEqualTo(CancelOutcome.REQUESTED);
+        assertThat(effect.applied()).isFalse();
+        assertThat(pausedOf("a")).isFalse();
+    }
+
+    @Test
+    void cancelOfAnOccurrenceThatIsNoLongerTheRecordedOneLeavesTheDefinitionAlone() {
+        TaskRecord waiting = committedFixedDelayOccurrence("a");
+        Instant next = millis(now().plusSeconds(90));
+        store.putRecurring(withFixedDelay(fullDefinition("a"), 120_000L), next, next);
+        ScheduleEffect effect = ScheduleEffect.pause("a", waiting.id());
+        assertThat(store.cancel(waiting.id(), get(waiting.id()).revision(), "stop", effect))
+                .isEqualTo(CancelOutcome.CANCELLED);
+        assertThat(effect.applied()).isFalse();
+        assertThat(pausedOf("a")).isFalse();
+        assertThat(nextFireOf("a")).isEqualTo(next);
+    }
+
+    @Test
+    void deleteOfAWaitingFixedDelayOccurrencePausesTheDefinitionAndAStaleOneDoesNot() {
+        TaskRecord waiting = committedFixedDelayOccurrence("a");
+        ScheduleEffect effect = ScheduleEffect.pause("a", waiting.id());
+        assertThat(store.delete(waiting.id(), get(waiting.id()).revision(), effect))
+                .isTrue();
+        assertThat(effect.applied()).isTrue();
+        assertThat(pausedOf("a")).isTrue();
+
+        TaskRecord second = committedFixedDelayOccurrence("b");
+        Instant next = millis(now().plusSeconds(90));
+        store.putRecurring(withFixedDelay(fullDefinition("b"), 120_000L), next, next);
+        ScheduleEffect stale = ScheduleEffect.pause("b", second.id());
+        assertThat(store.delete(second.id(), get(second.id()).revision(), stale))
+                .isTrue();
+        assertThat(stale.applied()).isFalse();
+        assertThat(pausedOf("b")).isFalse();
     }
 
     @Test

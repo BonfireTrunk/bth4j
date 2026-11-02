@@ -222,12 +222,13 @@ class DefaultAdminOpsTest {
     void retryAndDeleteDelegateWithTheRevisionAndReturnTheStoreAnswer() {
         handlers.put("retry", a -> a[1].equals(3));
         handlers.put("delete", a -> a[1].equals(4));
+        handlers.put("getTask", a -> Optional.empty());
 
         assertThat(ops.retry(9, 3)).isTrue();
         assertThat(ops.retry(9, 2)).isFalse();
         assertThat(ops.delete(9, 4)).isTrue();
         assertThat(ops.delete(9, 5)).isFalse();
-        assertThat(calls).contains("retry[9, 3]", "delete[9, 4]");
+        assertThat(calls).contains("retry[9, 3]", "delete[9, 4, null]");
     }
 
     @Test
@@ -247,7 +248,7 @@ class DefaultAdminOpsTest {
 
         ops.cancel(1, 2, "duplicate");
 
-        assertThat(calls).contains("cancel[1, 2, duplicate]");
+        assertThat(calls).contains("cancel[1, 2, duplicate, null]");
     }
 
     @Test
@@ -258,15 +259,14 @@ class DefaultAdminOpsTest {
         ops.cancel(1, 2, null);
         ops.cancel(1, 2, "   ");
 
-        assertThat(calls).contains("cancel[1, 2, cancelled by operator]");
-        assertThat(calls.stream().filter(c -> c.equals("cancel[1, 2, cancelled by operator]")))
+        assertThat(calls).contains("cancel[1, 2, cancelled by operator, null]");
+        assertThat(calls.stream().filter(c -> c.equals("cancel[1, 2, cancelled by operator, null]")))
                 .hasSize(2);
     }
 
     @Test
-    void cancelOfAWaitingFixedDelayOccurrencePausesItsDefinition() {
+    void cancelOfAWaitingFixedDelayOccurrencePassesThePauseToTheStore() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
-        handlers.put("pauseRecurring", a -> true);
         handlers.put(
                 "getTask",
                 a -> Optional.of(TaskRecord.builder()
@@ -280,7 +280,27 @@ class DefaultAdminOpsTest {
 
         ops.cancel(7, 1, "stop");
 
-        assertThat(calls).containsExactly("cancel[7, 1, stop]", "getTask[7]", "pauseRecurring[poll, true]");
+        assertThat(calls)
+                .containsExactly("getTask[7]", "cancel[7, 1, stop, ScheduleEffect[poll, occurrence 7, pause]]");
+    }
+
+    @Test
+    void deleteOfAFixedDelayOccurrencePassesThePauseToTheStore() {
+        handlers.put("delete", a -> true);
+        handlers.put(
+                "getTask",
+                a -> Optional.of(TaskRecord.builder()
+                        .id((Long) a[0])
+                        .queueId(OTHER_QUEUE_ID)
+                        .eventId(EVENT_ID)
+                        .state(TaskState.QUEUED)
+                        .scheduleId("poll")
+                        .headers(Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT5S"))
+                        .build()));
+
+        assertThat(ops.delete(7, 1)).isTrue();
+
+        assertThat(calls).containsExactly("getTask[7]", "delete[7, 1, ScheduleEffect[poll, occurrence 7, pause]]");
     }
 
     @Test
@@ -290,15 +310,16 @@ class DefaultAdminOpsTest {
 
         ops.cancel(7, 1, "stop");
 
-        assertThat(calls).containsExactly("cancel[7, 1, stop]", "getTask[7]");
+        assertThat(calls).containsExactly("getTask[7]", "cancel[7, 1, stop, null]");
     }
 
     @Test
-    void cancelRequestedOnARunningTaskDoesNotLookTheTaskUp() {
+    void cancelRequestedOnARunningTaskPassesNoEffect() {
         handlers.put("cancel", a -> CancelOutcome.REQUESTED);
+        handlers.put("getTask", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
 
         assertThat(ops.cancel(7, 1, "stop")).isEqualTo(CancelOutcome.REQUESTED);
-        assertThat(calls).containsExactly("cancel[7, 1, stop]");
+        assertThat(calls).containsExactly("getTask[7]", "cancel[7, 1, stop, null]");
     }
 
     @Test
@@ -360,10 +381,11 @@ class DefaultAdminOpsTest {
     @Test
     void pausingAnUnknownScheduleReturnsFalseAndDoesNothingElse() {
         handlers.put("pauseRecurring", a -> false);
+        handlers.put("recurringDefinitions", a -> List.of());
 
         assertThat(ops.pauseSchedule("missing", false)).isFalse();
 
-        assertThat(calls).containsExactly("pauseRecurring[missing, false]");
+        assertThat(calls).containsExactly("recurringDefinitions[]", "pauseRecurring[missing, false]");
     }
 
     @Test
@@ -378,8 +400,11 @@ class DefaultAdminOpsTest {
 
         assertThat(ops.pauseSchedule("poll", false)).isTrue();
 
-        assertThat(calls).contains("setNextFire[poll, " + NOW.plusSeconds(90) + "]");
-        assertThat(calls).noneMatch(c -> c.startsWith("setNextFire[other"));
+        assertThat(calls)
+                .containsExactly(
+                        "recurringDefinitions[]",
+                        "setNextFire[poll, " + NOW.plusSeconds(90) + "]",
+                        "pauseRecurring[poll, false]");
     }
 
     @Test

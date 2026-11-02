@@ -327,8 +327,7 @@ public class PostgresTaskStore implements FullStore {
                         + " rev bigint NOT NULL,"
                         + " occurrence_id bigint,"
                         + " next_fire timestamptz NOT NULL)",
-                "DO $$ BEGIN ALTER TABLE " + schedule + " ADD COLUMN occurrence_id bigint;"
-                        + " EXCEPTION WHEN duplicate_column THEN NULL; END $$",
+                "ALTER TABLE " + schedule + " ADD COLUMN IF NOT EXISTS occurrence_id bigint",
                 "CREATE SEQUENCE IF NOT EXISTS " + scheduleSeq,
                 "CREATE INDEX IF NOT EXISTS " + schedule + "_due ON " + schedule + " (next_fire) WHERE NOT paused",
                 "INSERT INTO " + meta + " (key, value) VALUES ('schema_version', '" + StoreInfo.SCHEMA_VERSION + "')"
@@ -825,7 +824,7 @@ public class PostgresTaskStore implements FullStore {
             if (!effect.pauses()) setInstant(ps, i++, effect.nextFire());
             ps.setString(i++, effect.scheduleId());
             ps.setLong(i, effect.occurrenceId());
-            ps.executeUpdate();
+            if (ps.executeUpdate() == 1) effect.markApplied();
         }
     }
 
@@ -1107,7 +1106,8 @@ public class PostgresTaskStore implements FullStore {
     /**
      * An occurrence whose unique key is held by another task is not stored, but the definition still advances
      * and the commit counts: that is how overlap protection skips a fire time. A stored occurrence of a
-     * fixed-delay definition becomes its occurrence_id, in the same transaction.
+     * fixed-delay definition becomes its occurrence_id, in the same transaction; when the key is held and
+     * occurrence_id is empty, the holder becomes it.
      */
     @Override
     public boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord o) {
@@ -1145,7 +1145,16 @@ public class PostgresTaskStore implements FullStore {
                     ps.setLong(1, o.id());
                     ps.setString(2, due.scheduleId());
                     ps.setLong(3, o.id());
-                    ps.executeUpdate();
+                    if (ps.executeUpdate() == 1) return true;
+                }
+                if (o.uniqueKey() != null) {
+                    try (var ps = c.prepareStatement("UPDATE " + schedule + " SET occurrence_id ="
+                            + " (SELECT t.id FROM " + task + " t WHERE t.unique_key = ? AND t.state < 3 LIMIT 1)"
+                            + " WHERE id = ? AND occurrence_id IS NULL")) {
+                        ps.setString(1, o.uniqueKey());
+                        ps.setString(2, due.scheduleId());
+                        ps.executeUpdate();
+                    }
                 }
             }
             return true;
@@ -1436,28 +1445,36 @@ public class PostgresTaskStore implements FullStore {
      * exclude each other by state, so at most one touches the row.
      */
     @Override
-    public CancelOutcome cancel(long id, int revision, String reason) {
-        return withConnection(c -> {
-            try (var ps = c.prepareStatement("WITH c AS (UPDATE " + task
-                    + "   SET state = 5, revision = revision + 1, state_changed = now(), cancel_requested_at = now(),"
-                    + "   cancel_reason = ?," + KEY_RELEASE
-                    + "   WHERE id = ? AND revision = ? AND state IN (0, 1) RETURNING 1),"
-                    + " r AS (UPDATE " + task + " SET cancel_requested_at = now(), cancel_reason = ?" + FENCE
-                    + "   RETURNING 2)"
-                    + " SELECT COALESCE((SELECT 1 FROM c), (SELECT 2 FROM r), 0)")) {
-                ps.setString(1, reason);
-                ps.setLong(2, id);
-                ps.setInt(3, revision);
-                ps.setString(4, reason);
-                ps.setLong(5, id);
-                ps.setInt(6, revision);
-                return switch ((int) single(ps)) {
-                    case 1 -> CancelOutcome.CANCELLED;
-                    case 2 -> CancelOutcome.REQUESTED;
-                    default -> CancelOutcome.STALE;
-                };
-            }
+    public CancelOutcome cancel(long id, int revision, String reason, ScheduleEffect effect) {
+        if (effect == null) return withConnection(c -> cancelStatement(c, id, revision, reason));
+        return inTransaction(c -> {
+            lockSchedule(c, effect);
+            var outcome = cancelStatement(c, id, revision, reason);
+            if (outcome == CancelOutcome.CANCELLED) applyEffect(c, effect);
+            return outcome;
         });
+    }
+
+    private CancelOutcome cancelStatement(Connection c, long id, int revision, String reason) throws SQLException {
+        try (var ps = c.prepareStatement("WITH c AS (UPDATE " + task
+                + "   SET state = 5, revision = revision + 1, state_changed = now(), cancel_requested_at = now(),"
+                + "   cancel_reason = ?," + KEY_RELEASE
+                + "   WHERE id = ? AND revision = ? AND state IN (0, 1) RETURNING 1),"
+                + " r AS (UPDATE " + task + " SET cancel_requested_at = now(), cancel_reason = ?" + FENCE
+                + "   RETURNING 2)"
+                + " SELECT COALESCE((SELECT 1 FROM c), (SELECT 2 FROM r), 0)")) {
+            ps.setString(1, reason);
+            ps.setLong(2, id);
+            ps.setInt(3, revision);
+            ps.setString(4, reason);
+            ps.setLong(5, id);
+            ps.setInt(6, revision);
+            return switch ((int) single(ps)) {
+                case 1 -> CancelOutcome.CANCELLED;
+                case 2 -> CancelOutcome.REQUESTED;
+                default -> CancelOutcome.STALE;
+            };
+        }
     }
 
     /**
@@ -1478,11 +1495,18 @@ public class PostgresTaskStore implements FullStore {
     }
 
     @Override
-    public boolean delete(long id, int revision) {
-        return update("DELETE FROM " + task + " WHERE id = ? AND revision = ? AND state <> 2", ps -> {
-            ps.setLong(1, id);
-            ps.setInt(2, revision);
-        });
+    public boolean delete(long id, int revision, ScheduleEffect effect) {
+        SqlFunction<Boolean> delete = c -> {
+            if (effect != null) lockSchedule(c, effect);
+            try (var ps = c.prepareStatement("DELETE FROM " + task + " WHERE id = ? AND revision = ? AND state <> 2")) {
+                ps.setLong(1, id);
+                ps.setInt(2, revision);
+                if (ps.executeUpdate() != 1) return false;
+            }
+            if (effect != null) applyEffect(c, effect);
+            return true;
+        };
+        return effect == null ? withConnection(delete) : inTransaction(delete);
     }
 
     @Override

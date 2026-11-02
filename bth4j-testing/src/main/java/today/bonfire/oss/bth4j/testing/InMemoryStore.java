@@ -347,6 +347,7 @@ public final class InMemoryStore implements FullStore {
         } else {
             recurring.put(effect.scheduleId(), new Recurring(r.definition(), effect.nextFire(), null));
         }
+        effect.markApplied();
     }
 
     /** Applies the unique key rule of a task that just reached a terminal state, then stores it. */
@@ -684,10 +685,14 @@ public final class InMemoryStore implements FullStore {
             if (outcome == EnqueueOutcome.EXISTS) {
                 return false;
             }
-            Long occurrenceId = outcome instanceof EnqueueOutcome.Stored
-                            && current.definition().isFixedDelay()
-                    ? Long.valueOf(occurrence.id())
-                    : current.occurrence();
+            Long occurrenceId = current.occurrence();
+            if (current.definition().isFixedDelay()) {
+                if (outcome instanceof EnqueueOutcome.Stored) {
+                    occurrenceId = occurrence.id();
+                } else if (outcome instanceof EnqueueOutcome.DuplicateKey held && occurrenceId == null) {
+                    occurrenceId = held.existingId();
+                }
+            }
             recurring.put(due.scheduleId(), new Recurring(current.definition(), nextFire, occurrenceId));
             return true;
         } finally {
@@ -812,7 +817,7 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public CancelOutcome cancel(long id, int revision, String reason) {
+    public CancelOutcome cancel(long id, int revision, String reason, ScheduleEffect effect) {
         lock.lock();
         try {
             TaskRecord t = tasks.get(id);
@@ -830,6 +835,7 @@ public final class InMemoryStore implements FullStore {
                                 .cancelReason(reason)
                                 .cancelRequestedAt(now),
                         now);
+                applyEffect(effect);
                 return CancelOutcome.CANCELLED;
             }
             if (t.state() == TaskState.LEASED) {
@@ -887,7 +893,7 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public boolean delete(long id, int revision) {
+    public boolean delete(long id, int revision, ScheduleEffect effect) {
         lock.lock();
         try {
             TaskRecord t = tasks.get(id);
@@ -895,6 +901,7 @@ public final class InMemoryStore implements FullStore {
                 return false;
             }
             remove(t);
+            applyEffect(effect);
             return true;
         } finally {
             lock.unlock();

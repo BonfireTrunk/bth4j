@@ -690,23 +690,34 @@ the definition's policy decides:
 **Fixed delay.** The occurrence is committed with `due = fireAt` and the next fire time parked 100 years ahead
 (the same parking as a never-fires cron), and carries the header `bth4j.fixed-delay` holding the delay as an
 ISO-8601 duration. The store records the id of the stored occurrence as the in-flight occurrence of the
-definition (Redis hash field `occ` of `cron:<id>`, PostgreSQL column `occurrence_id` of `<prefix>_schedule`); a
-commit whose occurrence was skipped because its unique key is held (overlap `SKIP`) parks the definition and
-leaves the recorded one alone. The end of that occurrence changes the definition in the same atomic step as the
-task transition, through the `ScheduleEffect` argument of `ack`, `fail`, `failExpired` and `finishCancelled`: on
-SUCCEEDED the next fire time becomes `now + delay`; when the task ends DEAD or CANCELLED the definition is
-paused, and `TaskExecution` records the issue `schedule-paused`, so a failing job waits for an operator. The
-effect is fenced on the occurrence, not on the definition revision: it applies only while the recorded id is
-the finishing task, and then clears it. A replacement of the timing, a deleted definition or a newer
-occurrence (a trigger) therefore makes it a no-op, while a re-registration with unchanged timing, a trigger
-that finds the key held or a resume does not lose it. A re-arm of a paused definition stores the next fire
-time and leaves the definition paused; resuming makes it due. Maintenance passes the pause when an expired
-lease leaves the occurrence DEAD or finishes a cancel request. `AdminOps.cancel`, which cancels a waiting occurrence at once,
-pauses in a second call (it recognises the occurrence by its `scheduleId` and the `bth4j.fixed-delay`
-header). An occurrence deleted while waiting leaves the definition
-parked until an operator resumes or triggers it. `AdminOps.pauseSchedule(id, false)` resumes and re-arms a
-fixed-delay definition at `now + delay`. A new fixed-delay definition first fires one delay after
-`putSchedule`.
+definition (Redis hash field `occ` of `cron:<id>`, PostgreSQL column `occurrence_id` of `<prefix>_schedule`). A
+commit whose occurrence was not stored because its unique key is held (overlap `SKIP`) parks the definition too;
+it leaves the recorded occurrence alone, or records the key holder when none is recorded (for example after a
+re-registration with changed timing, or for an occurrence created by 3.0.0), so the running occurrence still
+re-arms the definition.
+
+The end of the occurrence changes the definition in the same atomic step as the task transition, through the
+`ScheduleEffect` argument of `ack`, `fail`, `failExpired`, `finishCancelled` and, for an operator, `cancel` and
+`delete`: on SUCCEEDED the next fire time becomes `now + delay`; when the task ends DEAD or CANCELLED, or an
+operator cancels or deletes it while it waits, the definition is paused. `ScheduleEffect.applied()` tells the
+caller whether the store changed the definition; `TaskExecution` and maintenance record the issue
+`schedule-paused` only then, so a failing job waits for an operator. The effect is fenced on the occurrence, not
+on the definition revision: it applies only while the recorded id is the finishing task, and then clears it. A
+replacement of the timing, a deleted definition or a newer occurrence therefore makes it a no-op. A
+re-registration with unchanged timing, or a resume, does not lose it. A trigger does not either under `SKIP`
+(the commit finds the key held and parks the definition, and the running occurrence re-arms it). Without
+overlap protection a trigger starts a second occurrence while the first runs; the newer occurrence then owns the
+fence, and a trigger issued while the first occurrence runs is overwritten if that occurrence re-arms before
+the trigger commits. A re-arm of a paused definition stores the next fire time and leaves the definition
+paused; resuming makes it due. `AdminOps.pauseSchedule(id, false)` re-arms a fixed-delay definition at
+`now + delay` first, while it is still paused, and then resumes it, so the runner cannot commit an occurrence in
+between. A new fixed-delay definition first fires one delay after `putSchedule`.
+
+Two ways to end an occurrence carry no effect: the start-by `expire()` (occurrences set no start-by) and an
+occurrence created by 3.0.0 that was running at the upgrade, which recorded nothing. The definition then stays
+parked until the next `putSchedule`; there is no sweep that raises an issue for it. A 3.0.0 occurrence still
+running at the upgrade is recovered under `SKIP` by the first commit that finds its key held. Without overlap
+protection the first `putSchedule` after the upgrade may start one extra occurrence while the old one runs.
 
 **Overlap.** An occurrence of a definition with `overlapSkip` carries the unique key `sched:<id>` with
 `UNTIL_DONE`. If the previous occurrence still holds the key, the store does not store the new one but the

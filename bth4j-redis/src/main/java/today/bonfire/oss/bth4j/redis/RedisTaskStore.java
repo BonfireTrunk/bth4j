@@ -315,7 +315,13 @@ public class RedisTaskStore implements FullStore {
         var args = new ArrayList<>(
                 List.of(String.valueOf(id), String.valueOf(revision), keep ? "1" : "0", keepPayload ? "1" : "0"));
         args.addAll(effectArgs(effect));
-        return num(guard(() -> scripts.run(RedisScripts.ACK, args))) == 1;
+        return applied(effect, num(guard(() -> scripts.run(RedisScripts.ACK, args))));
+    }
+
+    /** Scripts answer 1 for a done transition and 2 when the schedule effect changed the definition too. */
+    private static boolean applied(ScheduleEffect effect, long code) {
+        if (code == 2 && effect != null) effect.markApplied();
+        return code >= 1;
     }
 
     private static List<String> effectArgs(ScheduleEffect effect) {
@@ -354,7 +360,12 @@ public class RedisTaskStore implements FullStore {
                 expiredOnly ? "1" : "0",
                 RecordJson.encodeFailure(failure)));
         args.addAll(effectArgs(effect));
-        return FailOutcome.valueOf((String) guard(() -> scripts.run(RedisScripts.FAIL, args)));
+        var r = (String) guard(() -> scripts.run(RedisScripts.FAIL, args));
+        if (r.endsWith("+")) {
+            effect.markApplied();
+            r = r.substring(0, r.length() - 1);
+        }
+        return FailOutcome.valueOf(r);
     }
 
     @Override
@@ -761,7 +772,7 @@ public class RedisTaskStore implements FullStore {
         var args = new ArrayList<>(
                 List.of(String.valueOf(id), String.valueOf(revision), reason(reason), keepPayload ? "1" : "0"));
         args.addAll(effectArgs(effect));
-        return num(guard(() -> scripts.run(RedisScripts.FINISH_CANCELLED, args))) == 1;
+        return applied(effect, num(guard(() -> scripts.run(RedisScripts.FINISH_CANCELLED, args))));
     }
 
     @Override
@@ -778,9 +789,15 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public CancelOutcome cancel(long id, int revision, String reason) {
-        var args = List.of(String.valueOf(id), String.valueOf(revision), reason(reason));
-        return CancelOutcome.valueOf((String) guard(() -> scripts.run(RedisScripts.CANCEL, args)));
+    public CancelOutcome cancel(long id, int revision, String reason, ScheduleEffect effect) {
+        var args = new ArrayList<>(List.of(String.valueOf(id), String.valueOf(revision), reason(reason)));
+        args.addAll(effectArgs(effect));
+        var r = (String) guard(() -> scripts.run(RedisScripts.CANCEL, args));
+        if (r.endsWith("+")) {
+            effect.markApplied();
+            r = r.substring(0, r.length() - 1);
+        }
+        return CancelOutcome.valueOf(r);
     }
 
     @Override
@@ -790,9 +807,10 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public boolean delete(long id, int revision) {
-        var args = List.of(String.valueOf(id), String.valueOf(revision));
-        return num(guard(() -> scripts.run(RedisScripts.DELETE, args))) == 1;
+    public boolean delete(long id, int revision, ScheduleEffect effect) {
+        var args = new ArrayList<>(List.of(String.valueOf(id), String.valueOf(revision)));
+        args.addAll(effectArgs(effect));
+        return applied(effect, num(guard(() -> scripts.run(RedisScripts.DELETE, args))));
     }
 
     @Override

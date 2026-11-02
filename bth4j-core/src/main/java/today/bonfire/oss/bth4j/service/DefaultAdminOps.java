@@ -89,19 +89,15 @@ public final class DefaultAdminOps implements AdminOps {
         if (reason != null && reason.length() > MAX_REASON) {
             throw new TaskValidationException("reason longer than " + MAX_REASON + " characters");
         }
-        var outcome = store.cancel(id, revision, reason == null || reason.isBlank() ? "cancelled by operator" : reason);
-        if (outcome == CancelOutcome.CANCELLED) {
-            // a waiting fixed-delay occurrence re-arms nothing, so its definition would stay parked
-            store.getTask(id)
-                    .filter(RecurringTaskService::isFixedDelayOccurrence)
-                    .ifPresent(r -> store.pauseRecurring(r.scheduleId(), true));
-        }
-        return outcome;
+        // a waiting fixed-delay occurrence re-arms nothing, so the store pauses its definition with the cancel
+        var pause = RecurringTaskService.pauseEffect(store.getTask(id).orElse(null));
+        return store.cancel(id, revision, reason == null || reason.isBlank() ? "cancelled by operator" : reason, pause);
     }
 
     @Override
     public boolean delete(long id, int revision) {
-        return store.delete(id, revision);
+        var pause = RecurringTaskService.pauseEffect(store.getTask(id).orElse(null));
+        return store.delete(id, revision, pause);
     }
 
     @Override
@@ -140,9 +136,9 @@ public final class DefaultAdminOps implements AdminOps {
 
     @Override
     public boolean pauseSchedule(String id, boolean paused) {
-        if (!store.pauseRecurring(id, paused)) return false;
         if (!paused) {
-            // a fixed-delay definition parks its next fire while paused; resuming re-arms it from now
+            // a fixed-delay definition parks its next fire while paused; the re-arm goes first, while it is
+            // still paused, so the runner cannot commit an occurrence in between and fire again one delay later
             store.recurringDefinitions().stream()
                     .filter(s -> s.definition().scheduleId().equals(id)
                             && s.definition().isFixedDelay())
@@ -150,7 +146,7 @@ public final class DefaultAdminOps implements AdminOps {
                     .ifPresent(s -> store.setNextFire(
                             id, clock.instant().plusMillis(s.definition().fixedDelayMs())));
         }
-        return true;
+        return store.pauseRecurring(id, paused);
     }
 
     @Override

@@ -780,21 +780,23 @@ public abstract class RunnerContract {
     }
 
     @Test
-    void reRegisteringAFixedDelayScheduleThatWasPushedFarAheadFiresItAgain() {
+    void reRegisteringAFixedDelayScheduleThatWasPushedFarAheadBringsItBack() {
         var runs = new AtomicInteger();
         startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));
-        var tick = ScheduleDefinition.every("tick", VOID_TYPE, Duration.ofSeconds(1));
+        var tick = ScheduleDefinition.every("tick", VOID_TYPE, Duration.ofHours(1));
         client.putSchedule(tick);
-        await("the first run", () -> runs.get() >= 1);
+        store.setNextFire("tick", Instant.now());
+        await("the triggered run", () -> runs.get() >= 1);
+        await("the re-arm one delay ahead", () -> {
+            var next = client.schedules().get("tick");
+            return next.isAfter(Instant.now().plus(Duration.ofMinutes(30)))
+                    && next.isBefore(Instant.now().plus(Duration.ofHours(2)));
+        });
 
         store.setNextFire("tick", Instant.now().plus(Duration.ofDays(36_500)));
-        pause(1_500);
-        var before = runs.get();
-        pause(1_500);
-        assertThat(runs.get()).isEqualTo(before);
-
         client.putSchedule(tick);
-        await("a run after the re-registration", () -> runs.get() > before);
+
+        assertThat(client.schedules().get("tick")).isBefore(Instant.now().plus(Duration.ofHours(2)));
     }
 
     @Test
