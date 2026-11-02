@@ -2232,6 +2232,34 @@ public abstract class StoreContract {
     }
 
     @Test
+    void finishCancelledExpiredPausesTheDefinitionOfTheEndedOccurrence() {
+        TaskRecord running = runningFixedDelayOccurrence("a", SHORT);
+        assertThat(store.cancel(running.id(), running.revision(), "stop")).isEqualTo(CancelOutcome.REQUESTED);
+        advance(PAST_SHORT);
+        assertThat(store.reclaim(10)).extracting(ExpiredLease::id).containsExactly(running.id());
+        ScheduleEffect effect = ScheduleEffect.pause("a", running.id());
+        assertThat(store.finishCancelledExpired(running.id(), get(running.id()).revision(), "stop", true, effect))
+                .isTrue();
+        assertThat(get(running.id()).state()).isEqualTo(TaskState.CANCELLED);
+        assertThat(pausedOf("a")).isTrue();
+        assertThat(effect.applied()).isTrue();
+    }
+
+    @Test
+    void finishCancelledExpiredLeavesTheDefinitionAloneForAnotherOccurrence() {
+        TaskRecord running = runningFixedDelayOccurrence("a", SHORT);
+        assertThat(store.cancel(running.id(), running.revision(), "stop")).isEqualTo(CancelOutcome.REQUESTED);
+        advance(PAST_SHORT);
+        assertThat(store.reclaim(10)).extracting(ExpiredLease::id).containsExactly(running.id());
+        ScheduleEffect effect = ScheduleEffect.pause("a", store.allocateIds(1));
+        assertThat(store.finishCancelledExpired(running.id(), get(running.id()).revision(), "stop", true, effect))
+                .isTrue();
+        assertThat(get(running.id()).state()).isEqualTo(TaskState.CANCELLED);
+        assertThat(pausedOf("a")).isFalse();
+        assertThat(effect.applied()).isFalse();
+    }
+
+    @Test
     void aSkippedCommitAdoptsTheKeyHolderWhenNoOccurrenceIsRecorded() {
         TaskRecord running = runningFixedDelayOccurrence("a");
         Instant next = millis(now().plusSeconds(1));
