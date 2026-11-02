@@ -35,6 +35,7 @@ import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
+import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
@@ -750,6 +751,59 @@ public final class InMemoryStore implements FullStore {
         } finally {
             lock.unlock();
         }
+    }
+
+    /** The cursor is {@code <stateChanged in epoch nanoseconds>:<id>} of the last task of the page. */
+    @Override
+    public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
+        var position = cursor == null ? null : decodeCursor(cursor);
+        lock.lock();
+        try {
+            Comparator<TaskRecord> order =
+                    Comparator.comparing(TaskRecord::stateChanged).thenComparingLong(TaskRecord::id);
+            List<TaskRecord> items = limit <= 0
+                    ? List.of()
+                    : tasks.values().stream()
+                            .filter(t -> t.state() == state)
+                            .filter(t -> queueId == null || t.queueId() == queueId)
+                            .filter(t -> position == null || isAfter(t, position))
+                            .sorted(order)
+                            .limit(limit)
+                            .toList();
+            var next = limit <= 0 || items.size() < limit ? null : encodeCursor(items.getLast());
+            return new TaskPage(items, next);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private static String encodeCursor(TaskRecord last) {
+        var at = last.stateChanged();
+        return (at.getEpochSecond() * 1_000_000_000L + at.getNano()) + ":" + last.id();
+    }
+
+    private record Position(Instant changed, long id) {}
+
+    private static boolean isAfter(TaskRecord t, Position p) {
+        int c = t.stateChanged().compareTo(p.changed());
+        return c > 0 || (c == 0 && t.id() > p.id());
+    }
+
+    private static Position decodeCursor(String cursor) {
+        var colon = cursor.indexOf(':');
+        try {
+            if (colon > 0) {
+                var nanos = Long.parseLong(cursor.substring(0, colon));
+                var id = Long.parseLong(cursor.substring(colon + 1));
+                return new Position(
+                        Instant.ofEpochSecond(
+                                Math.floorDiv(nanos, 1_000_000_000L), Math.floorMod(nanos, 1_000_000_000L)),
+                        id);
+            }
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("malformed cursor");
+        }
+        throw new IllegalArgumentException("malformed cursor");
     }
 
     @Override

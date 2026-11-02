@@ -13,6 +13,7 @@ import today.bonfire.oss.bth4j.Issue;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.TaskView;
+import today.bonfire.oss.bth4j.TaskViewPage;
 import today.bonfire.oss.bth4j.common.QueuesHolder;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
@@ -77,6 +78,15 @@ public final class DefaultAdminOps implements AdminOps {
         var result = new ArrayList<TaskView>();
         for (var r : store.tasks(state, queueId, afterId, limit)) result.add(names.view(r));
         return result;
+    }
+
+    @Override
+    public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
+        var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.getValidQueue(queue)));
+        var page = store.tasks(state, queueId, cursor, limit);
+        var result = new ArrayList<TaskView>();
+        for (var r : page.items()) result.add(names.view(r));
+        return new TaskViewPage(result, page.next());
     }
 
     @Override

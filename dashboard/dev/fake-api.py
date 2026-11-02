@@ -226,10 +226,13 @@ class Handler(BaseHTTPRequestHandler):
     def tasks_api(self, method, segs, q):
         if len(segs) == 1:
             limit = min(int(q.get("limit", 50)), 200)
-            after = int(q["after"]) if q.get("after") else -1
+            after = int(q.get("after") or q.get("cursor") or -1)
             rows = [t for t in sorted(tasks.values(), key=lambda t: int(t["id"])) if int(t["id"]) > after
                     and (not q.get("state") or t["state"] == q["state"]) and (not q.get("queue") or t["queue"] == q["queue"])]
-            return self.send_json(200, rows[:limit])
+            if "after" in q:
+                return self.send_json(200, rows[:limit])
+            page = rows[:limit]
+            return self.send_json(200, {"items": page, "next": page[-1]["id"] if len(page) == limit else None})
         t = tasks[segs[1]]
         if len(segs) == 2 and method == "GET":
             return self.send_json(200, t)

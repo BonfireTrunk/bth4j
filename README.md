@@ -405,8 +405,15 @@ puts `bth4j.task`, `bth4j.event` and `bth4j.queue` in the MDC; pass your own `Lo
 ```java
 client.task(id);                                  // Optional<TaskView>, any state
 client.counts();                                  // per queue name: counts per state
-client.tasks(TaskState.DEAD, "mail", 0, 100);     // oldest state change first; afterId for paging
+client.tasks(TaskState.DEAD, "mail", 0, 100);     // oldest state change first; afterId for paging (best effort)
+TaskViewPage page = client.tasks(TaskState.DEAD, "mail", (String) null, 100);
+client.tasks(TaskState.DEAD, "mail", page.next(), 100);   // next is null after the last page
 ```
+
+Paging with `afterId` re-reads the last task of the previous page; if that task changed state in between, the listing
+can end early (PostgreSQL) or repeat (Redis). The cursor form returns a `TaskViewPage` whose `next` is an opaque
+position in the listing, so the walk does not depend on any one task; a malformed cursor throws
+`IllegalArgumentException`.
 
 A `TaskView` carries state, attempts, due time, the last failures, completed steps and progress.
 
@@ -440,7 +447,8 @@ AdminOps admin = runner.admin();
 
 admin.counts();                                    // Map<queue name, StateCounts>
 admin.queues();                                    // id, name, paused
-admin.tasks(TaskState.DEAD, "mail", 0, 100);       // oldest state change first, afterId for paging; queue null for all
+admin.tasks(TaskState.DEAD, "mail", 0, 100);       // oldest state change first, afterId for paging (best effort); queue null for all
+admin.tasks(TaskState.DEAD, "mail", cursor, 100);  // TaskViewPage(items, next); cursor null starts, next null ends
 admin.task(id);                                    // Optional<TaskView>
 admin.retry(id, revision);                         // DEAD, CANCELLED or EXPIRED back to QUEUED, attempts reset
 admin.cancel(id, revision, "reason");              // CANCELLED, REQUESTED or STALE
@@ -515,8 +523,13 @@ as `X-CSRF-Token` on every POST and DELETE. Sessions are kept in memory, last 12
 (`sessionTtl`) and end when the server stops. Five failed logins in a row block that remote address for 10
 seconds (HTTP 429). A stale revision is answered 409, an unknown id 404; task ids and revisions are JSON strings.
 The endpoints are `me`, `session`, `health`, `overview`, `queues` (with `pause` and `resume`), `tasks` (list
-with `state`, `queue`, `after` and `limit` up to 200, one task, its `payload`, `retry`, `cancel`, delete),
+with `state`, `queue`, `cursor` or `after`, and `limit` up to 200; one task, its `payload`, `retry`, `cancel`, delete),
 `schedules` (with `pause`, `resume`, `trigger`, delete), `workers` and `issues`.
+
+`GET /api/v1/tasks` pages in two forms. With `after=<id>` the reply is a JSON array of tasks, as before, and paging is
+best effort (see "Inspection"). Without `after`, or with `cursor=<value>`, the reply is
+`{"items": [...], "next": "<cursor>" | null}`: pass `next` as `cursor` for the following page; `next` is null after the
+last page. An empty or missing `cursor` starts at the beginning, and a malformed one is answered 400.
 
 The server speaks plain HTTP unless `https(SSLContext)` is set, which also marks the cookie `Secure`; keep it
 on the loopback interface or behind TLS. `corsOrigin("https://dashboard.example.com")` lets a browser app on

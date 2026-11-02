@@ -44,6 +44,7 @@ import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
+import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
@@ -1203,9 +1204,9 @@ public class PostgresTaskStore implements FullStore {
     }
 
     /**
-     * The cursor is the {@code (state_changed, id)} of the {@code afterId} task when it still exists, else
-     * {@code id > afterId}. A cursor task that moved to another state since continues from its new state
-     * change time.
+     * Best effort: the cursor is the {@code (state_changed, id)} of the {@code afterId} task when it still exists,
+     * else {@code id > afterId}. A cursor task that moved to another state since continues from its new state
+     * change time, which can end the listing early. The {@code String} cursor form has no such case.
      */
     @Override
     public List<TaskRecord> tasks(TaskState state, Integer queueId, long afterId, int limit) {
@@ -1234,6 +1235,56 @@ public class PostgresTaskStore implements FullStore {
                 return readAll(ps);
             }
         });
+    }
+
+    /** The cursor is {@code <state_changed in epoch microseconds>:<id>} of the last task of the page. */
+    @Override
+    public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
+        var position = cursor == null ? null : decodeCursor(cursor);
+        if (limit <= 0) return new TaskPage(List.of(), null);
+        var sql = new StringBuilder("SELECT * FROM " + task + " WHERE state = ?");
+        if (queueId != null) sql.append(" AND queue_id = ?");
+        if (position != null) sql.append(" AND (state_changed, id) > (?, ?)");
+        sql.append(" ORDER BY state_changed, id LIMIT ?");
+        var items = withConnection(c -> {
+            try (var ps = c.prepareStatement(sql.toString())) {
+                int i = 1;
+                ps.setInt(i++, state.code());
+                if (queueId != null) ps.setInt(i++, queueId);
+                if (position != null) {
+                    setInstant(ps, i++, position.changed());
+                    ps.setLong(i++, position.id());
+                }
+                ps.setInt(i, limit);
+                return readAll(ps);
+            }
+        });
+        var next = items.size() < limit ? null : encodeCursor(items.getLast());
+        return new TaskPage(items, next);
+    }
+
+    private record Position(Instant changed, long id) {}
+
+    private static String encodeCursor(TaskRecord last) {
+        var at = micros(last.stateChanged());
+        return (at.getEpochSecond() * 1_000_000L + at.getNano() / 1000) + ":" + last.id();
+    }
+
+    private static Position decodeCursor(String cursor) {
+        var colon = cursor.indexOf(':');
+        try {
+            if (colon > 0) {
+                var micros = Long.parseLong(cursor.substring(0, colon));
+                var id = Long.parseLong(cursor.substring(colon + 1));
+                return new Position(
+                        Instant.ofEpochSecond(
+                                Math.floorDiv(micros, 1_000_000L), Math.floorMod(micros, 1_000_000L) * 1000),
+                        id);
+            }
+        } catch (NumberFormatException | java.time.DateTimeException e) {
+            throw new IllegalArgumentException("malformed cursor");
+        }
+        throw new IllegalArgumentException("malformed cursor");
     }
 
     // ---- JDBC helpers --------------------------------------------------------------------------------

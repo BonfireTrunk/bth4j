@@ -41,6 +41,7 @@ import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
+import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
@@ -672,10 +673,11 @@ public class RedisTaskStore implements FullStore {
     /**
      * Lists from the structure that holds the state: {@code idx:<state>:<qid>} for LEASED and the terminal states,
      * {@code q:<qid>} for QUEUED and {@code sched:<qid>} for SCHEDULED. Order is by the zset score, then numeric
-     * id: stateChanged for the indexed states, due for QUEUED and SCHEDULED. The cursor is the score the
-     * {@code afterId} task has in the zset being paged (not its {@code due} field, which a deferral leaves
+     * id: stateChanged for the indexed states, due for QUEUED and SCHEDULED. Best effort for {@code afterId}: the
+     * cursor is the score the {@code afterId} task has in the zset being paged (not its {@code due} field, which a deferral leaves
      * behind), so each page costs a seek plus at most one chunk of 500 per zset; when that task is no longer in
-     * that state, ids after it are listed from the start.
+     * that state, ids after it are listed from the start, which can repeat tasks. The {@code String} cursor form
+     * carries the score itself and has no such case.
      */
     @Override
     public List<TaskRecord> tasks(TaskState state, Integer queueId, long afterId, int limit) {
@@ -684,16 +686,51 @@ public class RedisTaskStore implements FullStore {
         }
         return guard(() -> {
             var cursor = afterId > 0 ? cursorScore(state, afterId) : null;
-            var entries = new ArrayList<Entry>();
-            var qids = queueId == null ? sortedQueueIds() : List.of(queueId);
-            for (var qid : qids) {
-                entries.addAll(page(stateZset(state, qid), cursor, afterId, limit));
-            }
-            entries.sort(ORDER);
-            return load(entries.subList(0, Math.min(limit, entries.size())).stream()
+            return load(listing(state, queueId, cursor, afterId, limit).stream()
                     .map(Entry::id)
                     .toList());
         });
+    }
+
+    /** The cursor is {@code <score>:<id>} of the last entry of the page, the score it has in the zset being paged. */
+    @Override
+    public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
+        var position = cursor == null ? null : decodeCursor(cursor);
+        if (limit < 1) {
+            return new TaskPage(List.of(), null);
+        }
+        return guard(() -> {
+            var entries = position == null
+                    ? listing(state, queueId, null, 0, limit)
+                    : listing(state, queueId, position.score(), position.id(), limit);
+            var items = load(entries.stream().map(Entry::id).toList());
+            var last = entries.isEmpty() ? null : entries.getLast();
+            var next = entries.size() < limit ? null : (long) last.score() + ":" + last.id();
+            return new TaskPage(items, next);
+        });
+    }
+
+    private static Entry decodeCursor(String cursor) {
+        var colon = cursor.indexOf(':');
+        try {
+            if (colon > 0) {
+                return new Entry(
+                        Long.parseLong(cursor.substring(0, colon)), Long.parseLong(cursor.substring(colon + 1)));
+            }
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("malformed cursor");
+        }
+        throw new IllegalArgumentException("malformed cursor");
+    }
+
+    private List<Entry> listing(TaskState state, Integer queueId, Double cursor, long afterId, int limit) {
+        var entries = new ArrayList<Entry>();
+        var qids = queueId == null ? sortedQueueIds() : List.of(queueId);
+        for (var qid : qids) {
+            entries.addAll(page(stateZset(state, qid), cursor, afterId, limit));
+        }
+        entries.sort(ORDER);
+        return entries.subList(0, Math.min(limit, entries.size()));
     }
 
     private record Entry(double score, long id) {}

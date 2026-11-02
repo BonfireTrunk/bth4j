@@ -20,4 +20,15 @@ public interface InspectionStore extends TaskStore {
      * @param afterId only tasks after this id in the listing order; 0 starts at the beginning
      */
     List<TaskRecord> tasks(TaskState state, Integer queueId, long afterId, int limit);
+
+    /**
+     * Lists tasks in one state in the same order as {@link #tasks(TaskState, Integer, long, int)}, paging by an
+     * opaque position that the store encodes itself. The position does not depend on the task it was taken from, so
+     * a task that changes state between pages neither ends the listing early nor repeats it.
+     *
+     * @param queueId null for every queue
+     * @param cursor {@link TaskPage#next()} of the previous page; null starts at the beginning
+     * @throws IllegalArgumentException if the cursor was not produced by this store
+     */
+    TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit);
 }

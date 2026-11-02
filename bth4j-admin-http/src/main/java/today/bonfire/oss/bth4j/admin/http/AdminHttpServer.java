@@ -29,6 +29,7 @@ import javax.net.ssl.SSLContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.AdminOps;
+import today.bonfire.oss.bth4j.TaskViewPage;
 import today.bonfire.oss.bth4j.common.Json;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
@@ -379,7 +380,7 @@ public final class AdminHttpServer {
         sendJson(ex, 200, Views.obj("ok", true));
     }
 
-    private List<Object> tasks(HttpExchange ex) {
+    private Object tasks(HttpExchange ex) {
         var query = query(ex);
         var stateName = query.get("state");
         if (stateName == null) {
@@ -391,7 +392,6 @@ public final class AdminHttpServer {
         } catch (IllegalArgumentException e) {
             throw new HttpError(400, "unknown state");
         }
-        var after = query.containsKey("after") ? parseLong(query.get("after"), "after") : 0L;
         var limit = DEFAULT_LIMIT;
         if (query.containsKey("limit")) {
             limit = (int) Math.min(parseLong(query.get("limit"), "limit"), MAX_LIMIT);
@@ -400,8 +400,19 @@ public final class AdminHttpServer {
             }
         }
         var queue = query.get("queue");
-        return Views.list(
-                admin.tasks(state, queue == null || queue.isEmpty() ? null : queue, after, limit), Views::task);
+        var queueName = queue == null || queue.isEmpty() ? null : queue;
+        if (query.containsKey("after") && !query.containsKey("cursor")) {
+            var after = parseLong(query.get("after"), "after");
+            return Views.list(admin.tasks(state, queueName, after, limit), Views::task);
+        }
+        var cursor = query.get("cursor");
+        TaskViewPage page;
+        try {
+            page = admin.tasks(state, queueName, cursor == null || cursor.isEmpty() ? null : cursor, limit);
+        } catch (IllegalArgumentException e) {
+            throw new HttpError(400, "malformed cursor");
+        }
+        return Views.obj("items", Views.list(page.items(), Views::task), "next", page.next());
     }
 
     private Map<String, Object> payload(long id) {

@@ -14,6 +14,7 @@ import today.bonfire.oss.bth4j.Issue;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.TaskView;
+import today.bonfire.oss.bth4j.TaskViewPage;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.StateCounts;
@@ -82,6 +83,25 @@ final class FakeAdminOps implements AdminOps {
             }
         }
         return out;
+    }
+
+    @Override
+    public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
+        calls.add("tasks " + state + ' ' + queue + " cursor=" + cursor + ' ' + limit);
+        long afterId;
+        try {
+            afterId = cursor == null ? 0 : Long.parseLong(cursor);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("malformed cursor");
+        }
+        var out = new ArrayList<TaskView>();
+        for (var t : tasks.tailMap(afterId, false).values()) {
+            if (t.state() == state && (queue == null || queue.equals(t.queue())) && out.size() < limit) {
+                out.add(t);
+            }
+        }
+        return new TaskViewPage(
+                out, out.size() < limit ? null : String.valueOf(out.getLast().id()));
     }
 
     @Override

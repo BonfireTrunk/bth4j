@@ -20,8 +20,12 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
       const bulkBusy = ref(false);
       const admin = isAdmin;
 
-      async function fetchPage(after) {
-        return api.tasks({ state: state.value, queue: queue.value, after, limit: LIMIT });
+      let nextCursor = null;
+
+      async function fetchPage(cursor) {
+        const page = await api.tasks({ state: state.value, queue: queue.value, cursor, limit: LIMIT });
+        nextCursor = page.next;
+        return page.items;
       }
 
       async function load() {
@@ -30,7 +34,7 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
         try {
           const page = await fetchPage(undefined);
           rows.value = page;
-          hasMore.value = page.length >= LIMIT;
+          hasMore.value = nextCursor !== null;
         } catch (e) {
           error.value = e.message;
           toastError(e);
@@ -40,12 +44,12 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
       }
 
       async function more() {
-        if (!rows.value.length) return;
+        if (nextCursor === null) return;
         loadingMore.value = true;
         try {
-          const page = await fetchPage(rows.value[rows.value.length - 1].id);
+          const page = await fetchPage(nextCursor);
           rows.value = rows.value.concat(page);
-          hasMore.value = page.length >= LIMIT;
+          hasMore.value = nextCursor !== null;
         } catch (e) {
           toastError(e);
         } finally {
