@@ -59,10 +59,9 @@ public final class AdminHttpServer {
     private static final int MAX_SESSIONS = 1000;
     private static final int DEFAULT_LIMIT = 50;
     private static final int MAX_LIMIT = 200;
-    private static final String HTML_CSP =
-            "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net 'unsafe-eval'; "
-                    + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; "
-                    + "base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+    private static final String HTML_CSP = "default-src 'self'; script-src 'self' 'unsafe-eval'; "
+            + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; "
+            + "base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
 
     private record User(byte[] digest, Role role) {}
 

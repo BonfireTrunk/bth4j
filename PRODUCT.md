@@ -23,11 +23,11 @@ Served by the bth4j admin HTTP server (JDK httpserver) from a static directory, 
 ## Capabilities and Constraints
 
 Confirmed constraints that every design decision preserves:
-- No build step: Vue 3 global build from a pinned CDN URL, plain CSS, ES modules loaded directly; no npm, bundler or cache-busting.
+- No build step: Vue 3 global build vendored in dashboard/vendor, plain CSS, ES modules loaded directly; no npm, bundler or cache-busting.
 - System fonts only; no font CDN or font files.
 - Light and dark themes both supported, following the OS preference.
 
-Fixed by the server: CSP allows scripts from self and cdn.jsdelivr.net with 'unsafe-eval' (Vue template compiler), everything else from self. Inline SVG is the only icon mechanism available.
+Fixed by the server: CSP allows scripts from self with 'unsafe-eval' (Vue template compiler), everything else from self. Inline SVG is the only icon mechanism available.
 
 Capabilities (from the API): overview counts per queue and state, runner health, queues with pause and resume, task listing by state with a queue filter and cursor paging, task detail with payload, steps, failures, headers and timeline, retry, cancel with reason, delete, dead-task bulk retry, schedules with pause, resume, trigger and delete, workers with heartbeat age, issues.
 
