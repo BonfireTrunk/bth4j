@@ -327,3 +327,7 @@ google-services.json
 .windsurfrules
 
 .claude/worktrees/
+
+# impeccable screenshot and comp scratch
+.impeccable/review/
+.impeccable/mocks/

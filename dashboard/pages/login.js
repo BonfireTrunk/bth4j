@@ -27,8 +27,8 @@ export default {
   },
   template: `
   <div class="login">
-    <form class="card" @submit.prevent="submit">
-      <h1>bth4j dashboard</h1>
+    <form @submit.prevent="submit">
+      <div class="mark"><h1>bth4j</h1><small>DASHBOARD</small></div>
       <label>User <input v-model="user" type="text" autocomplete="username" autofocus required></label>
       <label>Password <input v-model="password" type="password" autocomplete="current-password" required></label>
       <p v-if="error" class="err" role="alert">{{ error }}</p>

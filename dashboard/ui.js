@@ -2,21 +2,41 @@ const { reactive, ref, onMounted, onUnmounted } = Vue;
 
 export const STATES = ['QUEUED', 'SCHEDULED', 'LEASED', 'SUCCEEDED', 'DEAD', 'CANCELLED', 'EXPIRED'];
 
-export function relative(iso, now = Date.now()) {
+// one clock for every countdown on the page; components read it so relative times tick without a request
+export const now = ref(Date.now());
+setInterval(() => {
+  now.value = Date.now();
+}, 1000);
+
+function pad(n) {
+  return n < 10 ? '0' + n : String(n);
+}
+
+export function relative(iso, at = now.value) {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return '';
-  const diff = Math.round((t - now) / 1000);
+  const diff = Math.round((t - at) / 1000);
   const abs = Math.abs(diff);
   let text;
-  if (abs < 5) return 'just now';
+  if (abs < 2) return 'now';
   if (abs < 60) text = abs + ' s';
-  else if (abs < 3600) text = Math.round(abs / 60) + ' min';
-  else if (abs < 86400) text = Math.round(abs / 3600) + ' h';
-  else text = Math.round(abs / 86400) + ' d';
+  else if (abs < 3600) text = Math.floor(abs / 60) + ':' + pad(abs % 60);
+  else if (abs < 86400) text = Math.floor(abs / 3600) + ' h ' + pad(Math.floor((abs % 3600) / 60)) + ' min';
+  else text = Math.floor(abs / 86400) + ' d ' + Math.floor((abs % 86400) / 3600) + ' h';
   return diff > 0 ? 'in ' + text : text + ' ago';
 }
 
 export function localTime(iso) {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return String(iso);
+  const d = new Date(t);
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  const time = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  return sameDay ? time : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) + ' ' + time;
+}
+
+export function fullTime(iso) {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return String(iso);
   return new Date(t).toLocaleString(undefined, { hour12: false });
@@ -120,35 +140,75 @@ export function usePoll(fetcher, intervalMs = 0) {
   return { data, loading, error, reload: load };
 }
 
+const HOLD_MS = 3000;
+
+// cells that changed between two polls keep a tint for a few seconds, so a change is seen rather than guessed
+export function useChanges() {
+  const marks = reactive(new Map());
+  let previous = null;
+  function diff(current) {
+    if (previous) {
+      for (const [k, v] of Object.entries(current)) {
+        if (previous[k] !== undefined && previous[k] !== v) marks.set(k, Date.now() + HOLD_MS);
+      }
+    }
+    previous = current;
+  }
+  function changed(key) {
+    const until = marks.get(key);
+    return until !== undefined && until > now.value;
+  }
+  return { diff, changed };
+}
+
 export const StateBadge = {
-  props: { state: String },
-  template: '<span class="badge" :class="\'st-\' + (state || \'none\').toLowerCase()">{{ state || "?" }}</span>',
+  props: { state: String, lg: Boolean },
+  template:
+    '<span class="badge" :class="[\'st-\' + (state || \'none\').toLowerCase(), { lg: lg }]">{{ state || "?" }}</span>',
+};
+
+export const Clock = {
+  template: '<span class="clock" aria-label="Current time">{{ text }}</span>',
+  computed: {
+    text() {
+      const d = new Date(now.value);
+      return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    },
+  },
 };
 
 export const TimeAgo = {
-  props: { at: String },
+  props: { at: String, late: Boolean },
   template:
-    '<span v-if="at" class="time" :title="at">{{ local }} <span class="rel">({{ rel }})</span></span><span v-else class="muted">-</span>',
+    '<span v-if="at" class="time" :class="{ wait: late && !overdue, late: late && overdue }" :title="full"><span class="rel">{{ rel }}</span><span class="abs">{{ local }}</span></span>' +
+    '<span v-else class="muted">-</span>',
   computed: {
     local() {
       return localTime(this.at);
     },
+    full() {
+      return fullTime(this.at);
+    },
     rel() {
-      return relative(this.at);
+      return relative(this.at, now.value);
+    },
+    overdue() {
+      return Date.parse(this.at) < now.value;
     },
   },
 };
 
 export const Loading = {
-  props: { loading: Boolean, empty: Boolean, error: String, emptyText: { type: String, default: 'Nothing to show.' } },
+  props: { loading: Boolean, empty: Boolean, error: String, emptyText: { type: String, default: 'Nothing to show.' }, emptyHint: String },
   template:
-    '<p v-if="loading" class="state-msg">Loading...</p>' +
+    '<div v-if="loading" class="skeleton" aria-label="Loading"><i></i><i></i><i></i></div>' +
     '<p v-else-if="error && empty" class="state-msg err">Could not load: {{ error }}</p>' +
-    '<p v-else-if="empty" class="state-msg">{{ emptyText }}</p>',
+    '<div v-else-if="empty" class="empty"><b>{{ emptyText }}</b><span v-if="emptyHint">{{ emptyHint }}</span></div>',
 };
 
 export function registerComponents(app) {
   app.component('state-badge', StateBadge);
   app.component('time-ago', TimeAgo);
+  app.component('station-clock', Clock);
   app.component('status-msg', Loading);
 }

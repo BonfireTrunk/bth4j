@@ -29,40 +29,45 @@ export default {
       }
     }
 
-    const pause = (s) => run(s, { label: 'Pause', done: 'paused', message: 'No new tasks are created until it is resumed.', call: api.pauseSchedule });
+    const pause = (s) => run(s, { label: 'Pause', done: 'paused', message: 'No new tasks are created until it is resumed. Tasks already created still run.', call: api.pauseSchedule });
     const resume = (s) => run(s, { label: 'Resume', done: 'resumed', message: 'The schedule fires again from its next fire time.', call: api.resumeSchedule });
     const trigger = (s) => run(s, { label: 'Trigger', done: 'triggered', message: 'Creates one task now, in addition to the regular schedule.', call: api.triggerSchedule });
-    const remove = (s) => run(s, { label: 'Delete', done: 'deleted', danger: true, message: 'The schedule definition is removed permanently.', call: api.deleteSchedule });
+    const remove = (s) => run(s, { label: 'Delete', done: 'deleted', danger: true, message: 'The schedule definition is removed permanently. Tasks already created are kept.', call: api.deleteSchedule });
 
-    return { data, loading, error, reload, busy, admin, pause, resume, trigger, remove, duration };
+    // The runner parks a fixed-delay definition a century ahead while its occurrence runs; the real
+    // next fire is only known once that occurrence ends.
+    const PARKED_AFTER_MS = 50 * 365 * 86400 * 1000;
+    const parked = (s) => !!s.fixedDelay && Date.parse(s.nextFire) - Date.now() > PARKED_AFTER_MS;
+
+    return { data, loading, error, reload, busy, admin, pause, resume, trigger, remove, duration, parked };
   },
   template: `
   <section>
     <div class="page-head"><h1>Schedules</h1><button type="button" @click="reload">Refresh</button></div>
-    <status-msg :loading="loading" :error="error" :empty="!data || data.length === 0" empty-text="No schedules defined."></status-msg>
+    <status-msg :loading="loading" :error="error" :empty="!data || data.length === 0" empty-text="No schedules defined." empty-hint="Schedules are registered by the application with client.putSchedule(...)."></status-msg>
     <div class="table-wrap" v-if="data && data.length">
       <table>
-        <thead><tr><th>Id</th><th>Event</th><th>Queue</th><th>Next fire</th><th>Trigger</th><th>Zone</th><th>Misfire</th><th>Overlap</th><th>Paused</th><th></th></tr></thead>
+        <thead><tr><th>Next fire</th><th>Id</th><th>Event</th><th>Queue</th><th>Trigger</th><th>Zone</th><th>Misfire</th><th>Overlap</th><th>Status</th><th></th></tr></thead>
         <tbody>
           <tr v-for="s in data" :key="s.id">
+            <td><span v-if="parked(s)" class="muted">held until the running occurrence ends</span><time-ago v-else :at="s.nextFire" :late="!s.paused"></time-ago></td>
             <td class="mono">{{ s.id }}</td>
             <td>{{ s.event }}</td>
             <td>{{ s.queue }}</td>
-            <td><time-ago :at="s.nextFire"></time-ago></td>
-            <td class="mono"><template v-if="s.cron">cron {{ s.cron }}</template><template v-else-if="s.fixedDelay">every {{ duration(s.fixedDelay) }}</template><template v-else>-</template></td>
-            <td>{{ s.zone || '-' }}</td>
+            <td class="mono"><template v-if="s.cron">{{ s.cron }}</template><template v-else-if="s.fixedDelay">every {{ duration(s.fixedDelay) }}</template><template v-else>-</template></td>
+            <td>{{ s.zone || 'UTC' }}</td>
             <td>{{ s.misfire || '-' }}</td>
             <td>{{ s.overlapSkip ? 'skip' : 'allow' }}</td>
-            <td><span v-if="s.paused" class="badge st-leased">paused</span><span v-else class="muted">no</span></td>
+            <td><span v-if="s.paused" class="tag paused">PAUSED</span><span v-else class="muted">armed</span></td>
             <td class="actions">
-              <button type="button" :disabled="!admin() || busy === s.id" @click="s.paused ? resume(s) : pause(s)">{{ s.paused ? 'Resume' : 'Pause' }}</button>
-              <button type="button" :disabled="!admin() || busy === s.id" @click="trigger(s)">Trigger</button>
-              <button type="button" class="danger" :disabled="!admin() || busy === s.id" @click="remove(s)">Delete</button>
+              <button type="button" class="small" :disabled="!admin() || busy === s.id" :title="admin() ? '' : 'Admin role required'" @click="s.paused ? resume(s) : pause(s)">{{ s.paused ? 'Resume' : 'Pause' }}</button>
+              <button type="button" class="small" :disabled="!admin() || busy === s.id" :title="admin() ? '' : 'Admin role required'" @click="trigger(s)">Trigger</button>
+              <button type="button" class="small danger" :disabled="!admin() || busy === s.id" :title="admin() ? '' : 'Admin role required'" @click="remove(s)">Delete</button>
             </td>
           </tr>
         </tbody>
       </table>
     </div>
-    <p v-if="!admin()" class="muted">Read-only: your role is viewer.</p>
+    <p v-if="data && data.length && !admin()" class="muted small">Read-only: your role is viewer.</p>
   </section>`,
 };
