@@ -9,7 +9,7 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
   return {
     props: { route: Object },
     setup(props) {
-      const state = ref(fixedState || props.route.query.state || '');
+      const state = ref(fixedState || props.route.query.state || 'QUEUED');
       const queue = ref(props.route.query.queue || '');
       const rows = ref([]);
       const queues = ref([]);
@@ -123,7 +123,7 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
       </div>
       <form class="filters" @submit.prevent="apply">
         <label v-if="!fixedState">State
-          <select v-model="state"><option value="">any</option><option v-for="s in STATES" :key="s" :value="s">{{ s }}</option></select>
+          <select v-model="state"><option v-for="s in STATES" :key="s" :value="s">{{ s }}</option></select>
         </label>
         <label>Queue
           <select v-if="queues.length" v-model="queue"><option value="">any</option><option v-for="q in queues" :key="q" :value="q">{{ q }}</option></select>
