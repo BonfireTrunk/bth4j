@@ -24,7 +24,9 @@ export default {
     // A fixed-delay definition is parked a century ahead while its occurrence runs (see schedules.js).
     const PARKED_AFTER_MS = 50 * 365 * 86400 * 1000;
     async function loadDepartures() {
-      const [waiting, schedules] = await Promise.all([api.tasks({ state: 'SCHEDULED', limit: 8 }), api.schedules()]);
+      // The listing is ordered by state change, not by due, so the soonest departures are picked client-side
+      // from the server's largest page; beyond 200 waiting tasks the board is approximate.
+      const [waiting, schedules] = await Promise.all([api.tasks({ state: 'SCHEDULED', limit: 200 }), api.schedules()]);
       const rows = [];
       for (const t of waiting) rows.push({ key: 't' + t.id, at: t.due, what: t.event, queue: t.queue, kind: 'task', href: '#/task/' + t.id, who: '#' + t.id });
       for (const s of schedules) {
@@ -87,13 +89,13 @@ export default {
           <status-msg :loading="board.loading.value && !board.data.value" :error="board.error.value" :empty="board.data.value && board.data.value.length === 0" empty-text="Nothing is waiting for a time." empty-hint="Delayed tasks and the next schedule fires line up here, soonest first."></status-msg>
           <div class="table-wrap departures" v-if="board.data.value && board.data.value.length">
             <table>
-              <thead><tr><th>Leaves</th><th>Event</th><th>Queue</th><th class="who">What</th></tr></thead>
+              <thead><tr><th>Leaves</th><th>Event</th><th>Queue</th><th class="kindcol">What</th></tr></thead>
               <tbody>
                 <tr v-for="r in board.data.value" :key="r.key">
                   <td class="when"><time-ago :at="r.at" late></time-ago></td>
                   <td class="what"><a class="quiet" :href="r.href">{{ r.what }}</a> <span class="kind sm" :class="r.kind">{{ r.kind === 'fire' ? 'schedule' : 'delayed' }}</span></td>
                   <td class="platform">{{ r.queue }}</td>
-                  <td class="who"><span class="kind" :class="r.kind">{{ r.kind === 'fire' ? 'schedule' : 'delayed' }}</span> <span class="muted mono">{{ r.who }}</span></td>
+                  <td class="kindcol"><span class="kind" :class="r.kind">{{ r.kind === 'fire' ? 'schedule' : 'delayed' }}</span> <span class="muted mono">{{ r.who }}</span></td>
                 </tr>
               </tbody>
             </table>

@@ -338,7 +338,7 @@ pre.code {
 
 .departures td.when { width: 150px; white-space: nowrap; }
 .departures td.what { font-weight: 600; white-space: nowrap; }
-.departures td.who { white-space: nowrap; }
+.departures td.kindcol { white-space: nowrap; }
 .departures .kind { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
 .departures .kind.fire { color: var(--live); }
 .departures .kind.sm { display: none; }
@@ -391,7 +391,7 @@ pre.code {
   .top button { white-space: nowrap; }
   .health .sub { display: none; }
   .clock { display: none; }
-  .departures .who { display: none; }
+  .departures .kindcol { display: none; }
   .departures .kind.sm { display: inline; margin-left: 6px; }
   .who { display: none; }
   .cols, .cols.board { grid-template-columns: 1fr; }

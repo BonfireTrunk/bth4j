@@ -10,7 +10,7 @@ import Schedules from './pages/schedules.js';
 import Workers from './pages/workers.js';
 import Issues from './pages/issues.js';
 
-const { createApp, ref, computed, watch, onMounted, onUnmounted } = Vue;
+const { createApp, ref, computed, watch, onMounted, onUnmounted, nextTick } = Vue;
 
 const PAGES = {
   overview: Overview,
@@ -36,7 +36,13 @@ const NAV = [
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, '');
   const [path, qs] = raw.split('?');
-  const segs = path.split('/').filter(Boolean).map(decodeURIComponent);
+  const segs = path.split('/').filter(Boolean).map((s) => {
+    try {
+      return decodeURIComponent(s);
+    } catch {
+      return s;
+    }
+  });
   const query = Object.fromEntries(new URLSearchParams(qs || ''));
   return { name: segs[0] || 'overview', param: segs[1] || null, query, key: raw };
 }
@@ -122,12 +128,26 @@ const App = {
     }
 
     function onDialogKey(e) {
-      if (e.key === 'Escape') closeDialog(false);
+      if (dialog.open && e.key === 'Escape') closeDialog(false);
     }
+    let dialogOpener = null;
+    watch(() => dialog.open, async (open) => {
+      if (open) {
+        dialogOpener = document.activeElement;
+        await nextTick();
+        const first = document.querySelector('.dialog input, .dialog button.primary, .dialog button.danger');
+        if (first) first.focus();
+      } else if (dialogOpener && dialogOpener.focus) {
+        dialogOpener.focus();
+        dialogOpener = null;
+      }
+    });
+    onMounted(() => document.addEventListener('keydown', onDialogKey));
+    onUnmounted(() => document.removeEventListener('keydown', onDialogKey));
 
     return {
       route, checking, authed, page, session, NAV, activeNav, navOpen, healthLabel, healthClass, health, navCount,
-      logout, toasts, dismissToast, dialog, closeDialog, onDialogKey, isAdmin,
+      logout, toasts, dismissToast, dialog, closeDialog, isAdmin,
     };
   },
   template: `
@@ -161,12 +181,12 @@ const App = {
       <button type="button" class="x" @click="dismissToast(t.id)" aria-label="Dismiss"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.6"/></svg></button>
     </div>
   </div>
-  <div v-if="dialog.open" class="overlay" @keydown="onDialogKey" @click.self="closeDialog(false)">
+  <div v-if="dialog.open" class="overlay" @click.self="closeDialog(false)">
     <div class="dialog" role="dialog" aria-modal="true">
       <h2>{{ dialog.title }}</h2>
       <p class="pre">{{ dialog.message }}</p>
       <label v-if="dialog.askReason">Reason
-        <input v-model="dialog.reason" type="text" autofocus placeholder="Why is this being cancelled?" @keydown.enter="dialog.reason.trim() && closeDialog(true)">
+        <input v-model="dialog.reason" type="text" placeholder="Why is this being cancelled?" @keydown.enter="dialog.reason.trim() && closeDialog(true)">
       </label>
       <div class="row end">
         <button type="button" @click="closeDialog(false)">Keep as is</button>

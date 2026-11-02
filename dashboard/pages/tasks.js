@@ -107,9 +107,15 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
       function open(id) {
         location.hash = '#/task/' + encodeURIComponent(id);
       }
+      function failureText(t, full) {
+        const f = t.failures && t.failures[t.failures.length - 1];
+        if (!f) return '';
+        const type = full ? f.type : f.type.replace(/^.*\./, '');
+        return f.message ? type + ': ' + f.message : type;
+      }
       return {
         state, queue, rows, queues, loading, loadingMore, error, hasMore, bulkBusy, admin,
-        load, more, apply, retryAll, open, STATES, fixedState, title, bulkRetry, LIMIT,
+        load, more, apply, retryAll, open, STATES, fixedState, title, bulkRetry, LIMIT, failureText,
       };
     },
     template: `
@@ -144,7 +150,7 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
               <td class="num">{{ t.attempts }} / {{ t.maxAttempts }}</td>
               <td><time-ago :at="t.due" :late="t.state === 'QUEUED' || t.state === 'SCHEDULED'"></time-ago></td>
               <td><time-ago :at="t.stateChanged"></time-ago></td>
-              <td class="trunc mono small" :title="t.lastFailure ? t.lastFailure.type + ': ' + (t.lastFailure.message || '') : ''">{{ t.lastFailure ? t.lastFailure.type.replace(/^.*\./, '') + ': ' + (t.lastFailure.message || '') : '' }}</td>
+              <td class="trunc mono small" :title="failureText(t, true)">{{ failureText(t, false) }}</td>
             </tr>
           </tbody>
         </table>
