@@ -401,8 +401,8 @@ public final class AdminHttpServer {
         }
         var queue = query.get("queue");
         var queueName = queue == null || queue.isEmpty() ? null : queue;
-        if (query.containsKey("after") && !query.containsKey("cursor")) {
-            var after = parseLong(query.get("after"), "after");
+        if (!query.containsKey("cursor")) {
+            var after = query.containsKey("after") ? parseLong(query.get("after"), "after") : 0L;
             return Views.list(admin.tasks(state, queueName, after, limit), Views::task);
         }
         var cursor = query.get("cursor");

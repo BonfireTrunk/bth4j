@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `BackgroundRunner.builder().failureDetail(FailureDetail.CLASS_NAME_ONLY)` for hosts whose exception messages may carry customer data: the stored failure, the `TaskEvent` error (a `RedactedFailure`), the issues and the runner's log lines then keep the exception class name, the attempt and the time, and no message or stack. `FailureDetail.FULL` is the default and unchanged.
 
 - Cursor listing of tasks: `InspectionStore.tasks(state, queueId, cursor, limit)` returns a `TaskPage(items, next)`, `TaskClient.tasks` and `AdminOps.tasks` have the same overload returning a `TaskViewPage`. The cursor is an opaque position in the listing that each store encodes itself (PostgreSQL `<state_changed in epoch microseconds>:<id>`, Redis `<zset score>:<id>`, in-memory `<state_changed in epoch nanoseconds>:<id>`), `next` is null after the last page and a malformed cursor throws `IllegalArgumentException`. Custom `InspectionStore` implementations must add the method.
-- Admin HTTP `GET /api/v1/tasks` accepts `cursor=` and answers `{"items": [...], "next": ...}` when `after` is absent or `cursor` is present; the reply to `after=` stays a JSON array. The dashboard's Tasks page pages with `next`.
+- Admin HTTP `GET /api/v1/tasks` answers `{"items": [...], "next": ...}` when the `cursor` parameter is present (empty for the first page); without `cursor` the reply is the JSON array, as before. The dashboard's Tasks page pages with `next`.
 
 ### Changed
 

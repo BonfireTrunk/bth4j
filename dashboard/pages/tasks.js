@@ -23,7 +23,7 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
       let nextCursor = null;
 
       async function fetchPage(cursor) {
-        const page = await api.tasks({ state: state.value, queue: queue.value, cursor, limit: LIMIT });
+        const page = await api.tasks({ state: state.value, queue: queue.value, cursor: cursor ?? '', limit: LIMIT });
         nextCursor = page.next;
         return page.items;
       }

@@ -56,7 +56,7 @@ function url(path, query) {
   const base = (window.BTH4J_API || '').replace(/\/+$/, '') + '/api/v1';
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(query || {})) {
-    if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+    if (v !== undefined && v !== null && (v !== '' || k === 'cursor')) q.set(k, String(v));
   }
   const qs = q.toString();
   return base + path + (qs ? '?' + qs : '');

@@ -160,7 +160,7 @@ class Handler(BaseHTTPRequestHandler):
     def route(self, method):
         url = urlparse(self.path)
         path = url.path
-        q = {k: v[0] for k, v in parse_qs(url.query).items()}
+        q = {k: v[0] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
         if not path.startswith("/api/"):
             return self.static(path) if method == "GET" else self.send_json(404, {"error": "not found"})
         p = path[len("/api/v1"):] if path.startswith("/api/v1") else path
@@ -229,7 +229,7 @@ class Handler(BaseHTTPRequestHandler):
             after = int(q.get("after") or q.get("cursor") or -1)
             rows = [t for t in sorted(tasks.values(), key=lambda t: int(t["id"])) if int(t["id"]) > after
                     and (not q.get("state") or t["state"] == q["state"]) and (not q.get("queue") or t["queue"] == q["queue"])]
-            if "after" in q:
+            if "cursor" not in q:
                 return self.send_json(200, rows[:limit])
             page = rows[:limit]
             return self.send_json(200, {"items": page, "next": page[-1]["id"] if len(page) == limit else None})

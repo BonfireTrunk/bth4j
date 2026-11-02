@@ -395,19 +395,19 @@ class AdminHttpServerTest {
         start();
         var login = admin();
 
-        var all = jsonList(get("/api/v1/tasks?state=DEAD&after=0", login));
+        var all = jsonList(get("/api/v1/tasks?state=DEAD", login));
         assertThat(all).extracting(t -> t.get("id")).containsExactly("1", "2", "4");
 
-        var page = jsonList(get("/api/v1/tasks?state=dead&limit=2&after=0", login));
+        var page = jsonList(get("/api/v1/tasks?state=dead&limit=2", login));
         assertThat(page).extracting(t -> t.get("id")).containsExactly("1", "2");
         var next = jsonList(get("/api/v1/tasks?state=DEAD&limit=2&after=2", login));
         assertThat(next).extracting(t -> t.get("id")).containsExactly("4");
 
-        var mail = jsonList(get("/api/v1/tasks?state=DEAD&queue=mail&after=0", login));
+        var mail = jsonList(get("/api/v1/tasks?state=DEAD&queue=mail", login));
         assertThat(mail).extracting(t -> t.get("id")).containsExactly("2");
 
-        get("/api/v1/tasks?state=DEAD&after=0", login);
-        get("/api/v1/tasks?state=DEAD&limit=100000&after=0", login);
+        get("/api/v1/tasks?state=DEAD", login);
+        get("/api/v1/tasks?state=DEAD&limit=100000", login);
         assertThat(ops.calls).contains("tasks DEAD null 0 50", "tasks DEAD null 0 200", "tasks DEAD null 2 2");
     }
 

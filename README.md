@@ -527,9 +527,9 @@ with `state`, `queue`, `cursor` or `after`, and `limit` up to 200; one task, its
 `schedules` (with `pause`, `resume`, `trigger`, delete), `workers` and `issues`.
 
 `GET /api/v1/tasks` pages in two forms. With `after=<id>` the reply is a JSON array of tasks, as before, and paging is
-best effort (see "Inspection"). Without `after`, or with `cursor=<value>`, the reply is
+best effort (see "Inspection"). With no `cursor` (with or without `after`) the reply is that array. With `cursor=<value>` the reply is
 `{"items": [...], "next": "<cursor>" | null}`: pass `next` as `cursor` for the following page; `next` is null after the
-last page. An empty or missing `cursor` starts at the beginning, and a malformed one is answered 400.
+last page. An empty `cursor=` starts at the beginning, and a malformed one is answered 400.
 
 The server speaks plain HTTP unless `https(SSLContext)` is set, which also marks the cookie `Secure`; keep it
 on the loopback interface or behind TLS. `corsOrigin("https://dashboard.example.com")` lets a browser app on
