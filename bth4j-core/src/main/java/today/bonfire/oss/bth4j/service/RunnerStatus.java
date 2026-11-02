@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.locks.ReentrantLock;
 import today.bonfire.oss.bth4j.Issue;
 
 /** What one runner knows about itself: last activity per service and the issues it noticed. */
@@ -13,6 +14,7 @@ public final class RunnerStatus {
 
     private final Clock clock;
     private final ArrayDeque<Issue> issues = new ArrayDeque<>();
+    private final ReentrantLock issuesLock = new ReentrantLock();
     private volatile Instant lastClaimAt;
     private volatile Instant lastMaintenanceAt;
     private volatile Instant lastStoreErrorAt;
@@ -38,21 +40,30 @@ public final class RunnerStatus {
 
     public void issue(String kind, String detail, Long taskId) {
         var issue = new Issue(clock.instant(), kind, detail, taskId);
-        synchronized (issues) {
+        issuesLock.lock();
+        try {
             if (issues.size() == MAX_ISSUES) issues.removeFirst();
             issues.addLast(issue);
+        } finally {
+            issuesLock.unlock();
         }
     }
 
     public List<Issue> issues() {
-        synchronized (issues) {
+        issuesLock.lock();
+        try {
             return new ArrayList<>(issues);
+        } finally {
+            issuesLock.unlock();
         }
     }
 
     public int issueCount() {
-        synchronized (issues) {
+        issuesLock.lock();
+        try {
             return issues.size();
+        } finally {
+            issuesLock.unlock();
         }
     }
 

@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -70,6 +71,7 @@ public final class TaskExecution implements Runnable, TaskContext {
     private final Settings s;
     private final Consumer<TaskExecution> onFinished;
     private final Map<String, StepResult> steps;
+    private final ReentrantLock stepsLock = new ReentrantLock();
     private final boolean interruptOnCancel;
     private volatile boolean cancelRequested;
     private volatile String cancelReason;
@@ -397,8 +399,11 @@ public final class TaskExecution implements Runnable, TaskContext {
             throw new TaskValidationException("step name must be 1 to " + MAX_STEP_NAME + " characters");
         }
         StepResult done;
-        synchronized (steps) {
+        stepsLock.lock();
+        try {
             done = steps.get(name);
+        } finally {
+            stepsLock.unlock();
         }
         if (done != null) {
             log.debug("Task {} skips step {} completed at {}", record.id(), name, done.at());
@@ -411,7 +416,8 @@ public final class TaskExecution implements Runnable, TaskContext {
             throw new TaskValidationException("result of step " + name + " exceeds " + MAX_STEP_RESULT + " characters");
         }
         // one section per step so that concurrent steps of one processor never overwrite each other's record
-        synchronized (steps) {
+        stepsLock.lock();
+        try {
             var updated = new LinkedHashMap<>(steps);
             updated.put(name, new StepResult(s.clock().instant(), encoded));
             long bytes = 0;
@@ -431,6 +437,8 @@ public final class TaskExecution implements Runnable, TaskContext {
                         "lease of task " + record.id() + " was lost before step " + name + " could be recorded");
             }
             steps.put(name, updated.get(name));
+        } finally {
+            stepsLock.unlock();
         }
         return result;
     }

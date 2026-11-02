@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.concurrent.locks.ReentrantLock;
 
 /** A clock that only moves when the test says so. */
 public final class MutableClock extends Clock {
@@ -23,8 +24,15 @@ public final class MutableClock extends Clock {
         this.now = instant;
     }
 
-    public synchronized void advance(Duration duration) {
-        this.now = now.plus(duration);
+    private final ReentrantLock lock = new ReentrantLock();
+
+    public void advance(Duration duration) {
+        lock.lock();
+        try {
+            this.now = now.plus(duration);
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override

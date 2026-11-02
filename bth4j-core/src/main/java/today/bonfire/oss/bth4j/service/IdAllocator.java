@@ -1,5 +1,6 @@
 package today.bonfire.oss.bth4j.service;
 
+import java.util.concurrent.locks.ReentrantLock;
 import today.bonfire.oss.bth4j.spi.TaskStore;
 
 /**
@@ -10,6 +11,7 @@ public final class IdAllocator {
 
     private final TaskStore store;
     private final int blockSize;
+    private final ReentrantLock lock = new ReentrantLock();
     private long next;
     private long end;
 
@@ -18,11 +20,16 @@ public final class IdAllocator {
         this.blockSize = Math.max(1, blockSize);
     }
 
-    public synchronized long nextId() {
-        if (next >= end) {
-            reserve(blockSize);
+    public long nextId() {
+        lock.lock();
+        try {
+            if (next >= end) {
+                reserve(blockSize);
+            }
+            return next++;
+        } finally {
+            lock.unlock();
         }
-        return next++;
     }
 
     /**
@@ -30,16 +37,21 @@ public final class IdAllocator {
      * has room, otherwise from one new block of at least {@code count} ids; the rest of the old block is
      * abandoned, which leaves a gap in the sequence and nothing else.
      */
-    public synchronized long nextIds(int count) {
-        if (count < 1) {
-            throw new IllegalArgumentException("count must be positive");
+    public long nextIds(int count) {
+        lock.lock();
+        try {
+            if (count < 1) {
+                throw new IllegalArgumentException("count must be positive");
+            }
+            if (end - next < count) {
+                reserve(Math.max(count, blockSize));
+            }
+            var first = next;
+            next += count;
+            return first;
+        } finally {
+            lock.unlock();
         }
-        if (end - next < count) {
-            reserve(Math.max(count, blockSize));
-        }
-        var first = next;
-        next += count;
-        return first;
     }
 
     private void reserve(int size) {
