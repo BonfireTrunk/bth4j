@@ -336,8 +336,8 @@ class AdminHttpServerTest {
     }
 
     @Test
-    void cancelByKeyReachesTheOperationsAndReportsNoHolderAs404() throws Exception {
-        ops.keyHolders.put("order-1", 1L);
+    void cancelByKeyReachesTheOperations() throws Exception {
+        ops.keyHolders.put("order-1", 3L);
         start();
         var login = admin();
 
@@ -346,14 +346,59 @@ class AdminHttpServerTest {
         assertThat(cancel.statusCode()).isEqualTo(200);
         assertThat(json(cancel)).containsEntry("outcome", "REQUESTED");
         assertThat(ops.calls).containsExactly("cancelByKey order-1 why");
-        assertThat(mutate("POST", "/api/v1/tasks/by-key/missing/cancel", login, "{}")
-                        .statusCode())
-                .isEqualTo(404);
         assertThat(mutate("POST", "/api/v1/tasks/by-key/order-1/cancel", login, "{\"reason\":5}")
                         .statusCode())
                 .isEqualTo(400);
         assertThat(get("/api/v1/tasks/by-key/order-1/cancel", login).statusCode())
                 .isEqualTo(404);
+    }
+
+    @Test
+    void cancelByKeyAnswersEachOutcomeWithItsOwnStatusAndText() throws Exception {
+        ops.keyHolders.put("done", 1L);
+        ops.keyHolders.put("racy", 3L);
+        start();
+        var login = admin();
+
+        var missing = mutate("POST", "/api/v1/tasks/by-key/missing/cancel", login, "{}");
+        var finished = mutate("POST", "/api/v1/tasks/by-key/done/cancel", login, "{}");
+        ops.staleKeys.add("racy");
+        var stale = mutate("POST", "/api/v1/tasks/by-key/racy/cancel", login, "{}");
+
+        assertThat(missing.statusCode()).isEqualTo(404);
+        assertThat(json(missing)).containsEntry("error", "no task holds this key");
+        assertThat(finished.statusCode()).isEqualTo(409);
+        assertThat(json(finished)).containsEntry("error", "the task holding this key is already finished");
+        assertThat(stale.statusCode()).isEqualTo(409);
+        assertThat(json(stale)).containsEntry("error", "the task changed meanwhile, retry");
+    }
+
+    @Test
+    void cancelByKeyNeedsTheCsrfTokenAndANumericKeyIsAKey() throws Exception {
+        ops.keyHolders.put("42", 3L);
+        start();
+        var login = admin();
+
+        var noToken = send("POST", "/api/v1/tasks/by-key/42/cancel", login, "{}");
+
+        assertThat(noToken.statusCode()).isEqualTo(403);
+        assertThat(get("/api/v1/tasks/by-key/42", login).statusCode()).isEqualTo(200);
+        assertThat(mutate("POST", "/api/v1/tasks/by-key/42/cancel", login, "{}").statusCode())
+                .isEqualTo(200);
+        assertThat(ops.calls).containsExactly("cancelByKey 42 null");
+    }
+
+    @Test
+    void byKeyRoutesRejectAnInvalidKey() throws Exception {
+        start();
+        var login = admin();
+        var tooLong = "k".repeat(257);
+
+        assertThat(get("/api/v1/tasks/by-key/" + tooLong, login).statusCode()).isEqualTo(400);
+        assertThat(get("/api/v1/tasks/by-key/%20", login).statusCode()).isEqualTo(400);
+        assertThat(mutate("POST", "/api/v1/tasks/by-key/" + tooLong + "/cancel", login, "{}")
+                        .statusCode())
+                .isEqualTo(400);
     }
 
     @Test

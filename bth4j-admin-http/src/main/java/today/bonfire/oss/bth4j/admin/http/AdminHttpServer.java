@@ -29,8 +29,10 @@ import javax.net.ssl.SSLContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.AdminOps;
+import today.bonfire.oss.bth4j.TaskRequest;
 import today.bonfire.oss.bth4j.TaskViewPage;
 import today.bonfire.oss.bth4j.common.Json;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskState;
@@ -290,25 +292,28 @@ public final class AdminHttpServer {
 
     private void byKey(HttpExchange ex, String method, List<String> segments) throws IOException {
         var key = segments.get(2);
+        try {
+            TaskRequest.requireUniqueKey(key);
+        } catch (TaskValidationException e) {
+            throw new HttpError(400, e.getMessage());
+        }
         if (segments.size() == 3 && method.equals("GET")) {
-            sendJson(
-                    ex,
-                    200,
-                    Views.task(admin.taskByKey(key).orElseThrow(() -> new HttpError(404, "no task holds this key"))));
+            var task = admin.taskByKey(key).orElseThrow(() -> new HttpError(404, "no task holds this key"));
+            sendJson(ex, 200, Views.task(task));
         } else if (segments.size() == 4
                 && method.equals("POST")
                 && segments.get(3).equals("cancel")) {
-            var body = readObject(ex);
-            var reason = body.get("reason");
+            var reason = readObject(ex).get("reason");
             if (reason != null && !(reason instanceof String)) {
                 throw new HttpError(400, "reason must be a string");
             }
             var outcome = admin.cancelByKey(key, (String) reason);
-            if (outcome == CancelOutcome.STALE) {
-                throw new HttpError(
-                        admin.taskByKey(key).isEmpty() ? 404 : 409, "no task holds this key, or it changed meanwhile");
+            switch (outcome) {
+                case NOT_FOUND -> throw new HttpError(404, "no task holds this key");
+                case FINISHED -> throw new HttpError(409, "the task holding this key is already finished");
+                case STALE -> throw new HttpError(409, "the task changed meanwhile, retry");
+                default -> sendJson(ex, 200, Views.obj("ok", true, "outcome", outcome.name()));
             }
-            sendJson(ex, 200, Views.obj("ok", true, "outcome", outcome.name()));
         } else {
             throw new HttpError(404, "not found");
         }

@@ -600,8 +600,21 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public Optional<TaskRecord> taskByKey(String key) {
-        var holder = guard(() -> jedis.get(keys.uniqueKey(key)));
-        return holder == null ? Optional.empty() : getTask(Long.parseLong(holder));
+        String named = null;
+        for (var attempt = 0; attempt < 2; attempt++) {
+            var holder = guard(() -> jedis.get(keys.uniqueKey(key)));
+            if (holder == null) return Optional.empty();
+            if (holder.equals(named)) return Optional.empty();
+            named = holder;
+            var record = getTask(Long.parseLong(holder));
+            if (record.isPresent() && holdsKey(record.get(), key)) return record;
+        }
+        return Optional.empty();
+    }
+
+    /** The two reads of {@link #taskByKey} are not atomic: the record may have lost the key to a newer task since. */
+    private static boolean holdsKey(TaskRecord record, String key) {
+        return key.equals(record.uniqueKey()) && (!record.state().isTerminal() || record.keyUntil() != null);
     }
 
     /** Reads the hash, payload, steps and failures of every id in one pipeline; ids without a hash are left out. */

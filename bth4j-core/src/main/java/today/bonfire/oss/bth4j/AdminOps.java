@@ -48,9 +48,12 @@ public interface AdminOps {
     CancelOutcome cancel(long id, int revision, String reason);
 
     /**
-     * Cancels the task that holds the unique key, with the revision read for it, as {@link #cancel(long, int, String)}.
+     * Cancels the task that holds the unique key, with the revision read for it, as {@link #cancel(long, int, String)}
+     * does by id; cancelling a waiting fixed-delay occurrence (key {@code sched:<schedule id>}) pauses its schedule.
      *
-     * @return {@link CancelOutcome#STALE} when no task holds the key or it changed meanwhile
+     * @return {@link CancelOutcome#NOT_FOUND} when no task holds the key, {@link CancelOutcome#FINISHED} when the
+     *         holder has already finished (it only keeps the key for its window), {@link CancelOutcome#STALE} when it
+     *         changed between the read and the cancel, otherwise the outcome of {@code cancel}
      */
     CancelOutcome cancelByKey(String key, String reason);
 

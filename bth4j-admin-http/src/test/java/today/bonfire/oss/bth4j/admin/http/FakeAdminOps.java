@@ -26,6 +26,7 @@ final class FakeAdminOps implements AdminOps {
 
     final TreeMap<Long, TaskView> tasks = new TreeMap<>();
     final Map<String, Long> keyHolders = new ConcurrentHashMap<>();
+    final java.util.Set<String> staleKeys = ConcurrentHashMap.newKeySet();
     final Map<String, StateCounts> counts = new ConcurrentHashMap<>();
     final List<QueueInfo> queues = new CopyOnWriteArrayList<>();
     final List<ScheduleView> schedules = new CopyOnWriteArrayList<>();
@@ -86,7 +87,9 @@ final class FakeAdminOps implements AdminOps {
     public CancelOutcome cancelByKey(String key, String reason) {
         calls.add("cancelByKey " + key + ' ' + reason);
         var holder = taskByKey(key);
-        return holder.isPresent() ? CancelOutcome.REQUESTED : CancelOutcome.STALE;
+        if (holder.isEmpty()) return CancelOutcome.NOT_FOUND;
+        if (holder.get().state().isTerminal()) return CancelOutcome.FINISHED;
+        return staleKeys.contains(key) ? CancelOutcome.STALE : CancelOutcome.REQUESTED;
     }
 
     @Override

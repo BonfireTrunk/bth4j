@@ -111,10 +111,10 @@ public final class DefaultAdminOps implements AdminOps {
 
     @Override
     public CancelOutcome cancelByKey(String key, String reason) {
-        var holder = store.taskByKey(key);
-        return holder.isEmpty()
-                ? CancelOutcome.STALE
-                : cancel(holder.get().id(), holder.get().revision(), reason);
+        var holder = store.taskByKey(key).orElse(null);
+        if (holder == null) return CancelOutcome.NOT_FOUND;
+        if (holder.state().isTerminal()) return CancelOutcome.FINISHED;
+        return cancel(holder.id(), holder.revision(), reason);
     }
 
     @Override

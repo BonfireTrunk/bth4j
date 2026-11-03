@@ -2528,6 +2528,49 @@ public abstract class StoreContract {
     }
 
     @Test
+    void taskByKeyReturnsTheNewHolderOnceTheOldWindowPassedAndTheKeyWasReused() {
+        TaskRecord old = leased(task().uniqueKey("k").keyKeep(SHORT));
+        assertThat(store.ack(old.id(), old.revision(), true, true)).isTrue();
+        advance(PAST_SHORT);
+        long fresh = put(task().uniqueKey("k"));
+
+        assertThat(store.taskByKey("k")).map(TaskRecord::id).contains(fresh);
+    }
+
+    @Test
+    void taskByKeyIsEmptyAfterAnOperatorRetryClearedTheKey() {
+        TaskRecord t = leased(task().uniqueKey("k").keyKeep(Duration.ofHours(1)));
+        assertThat(store.fail(t.id(), t.revision(), failure(1), null, true)).isEqualTo(FailOutcome.DEAD);
+        assertThat(store.taskByKey("k")).isPresent();
+        assertThat(store.retry(t.id(), get(t.id()).revision())).isTrue();
+
+        assertThat(store.taskByKey("k")).isEmpty();
+    }
+
+    @Test
+    void taskByKeyFindsADeadOrCancelledHolderInsideKeyKeep() {
+        TaskRecord dead = leased(task().uniqueKey("dead").keyKeep(Duration.ofHours(1)));
+        assertThat(store.fail(dead.id(), dead.revision(), failure(1), null, true))
+                .isEqualTo(FailOutcome.DEAD);
+        long queued = put(task().uniqueKey("cancelled").keyKeep(Duration.ofHours(1)));
+        assertThat(store.cancel(queued, get(queued).revision(), "stop")).isEqualTo(CancelOutcome.CANCELLED);
+
+        assertThat(store.taskByKey("dead")).map(TaskRecord::state).contains(TaskState.DEAD);
+        assertThat(store.taskByKey("cancelled")).map(TaskRecord::state).contains(TaskState.CANCELLED);
+    }
+
+    @Test
+    void taskByKeyIsEmptyAfterReleaseKeysRanPastTheWindow() {
+        TaskRecord t = leased(task().uniqueKey("k").keyKeep(SHORT));
+        assertThat(store.ack(t.id(), t.revision(), true, true)).isTrue();
+        advance(PAST_SHORT);
+        store.releaseKeys(10);
+
+        assertThat(store.taskByKey("k")).isEmpty();
+        assertThat(get(t.id()).uniqueKey()).isNull();
+    }
+
+    @Test
     void getTaskIsEmptyForAnUnknownId() {
         assertThat(store.getTask(store.allocateIds(1))).isEmpty();
     }
