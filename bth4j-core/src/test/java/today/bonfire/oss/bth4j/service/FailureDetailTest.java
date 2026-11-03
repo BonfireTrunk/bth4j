@@ -316,6 +316,31 @@ class FailureDetailTest {
     }
 
     @Test
+    void aPolicyDecisionWithoutAReasonStillRecordsTheFailureInClassNameOnlyMode() {
+        policy = (task, error) -> RetryPolicy.Decision.dead(null);
+
+        run(FailureDetail.CLASS_NAME_ONLY, new IllegalStateException());
+
+        var died = (TaskEvent.Died) events.get(1);
+        assertThat(died.reason()).isEqualTo("no reason given");
+        assertThat(stored.get().type()).isEqualTo(IllegalStateException.class.getName());
+        assertThat(logText()).contains("no reason given").contains(IllegalStateException.class.getName());
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    @Test
+    void aPolicyDecisionWithoutAReasonStillRecordsTheFailureInFullMode() {
+        policy = (task, error) -> RetryPolicy.Decision.dead(null);
+
+        run(FailureDetail.FULL, new IllegalStateException());
+
+        var died = (TaskEvent.Died) events.get(1);
+        assertThat(died.reason()).isEqualTo("no reason given");
+        assertThat(stored.get().type()).isEqualTo(IllegalStateException.class.getName());
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    @Test
     void aFatalErrorFromTheStoreFailStillEmitsRetryingLostOnceAndIsRethrown() {
         var error = new OutOfMemoryError("store");
         storeFailError = error;

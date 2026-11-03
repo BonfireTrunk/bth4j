@@ -315,7 +315,8 @@ public final class TaskExecution implements Runnable, TaskContext {
         }
     }
 
-    private void die(Throwable e, String reason) {
+    private void die(Throwable e, String given) {
+        var reason = given == null ? "no reason given" : given;
         if (detail() == FailureDetail.FULL) {
             log.error("Task {} failed and will not be retried: {}", record.id(), reason, e);
         } else {
