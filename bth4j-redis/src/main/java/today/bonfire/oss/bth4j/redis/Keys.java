@@ -43,6 +43,7 @@ public final class Keys {
 
     public static final String F_REVISION = "rev";
     public static final String F_QUEUE = "q";
+    public static final String F_WRITE_TOKEN = "wt";
     public static final String F_EVENT = "ev";
     public static final String F_PAYLOAD_VERSION = "pv";
     public static final String F_STATE = "state";

@@ -24,7 +24,11 @@ public sealed interface TaskEvent {
     /** The processor returned normally. */
     record Succeeded(TaskView task, Duration runTime, Outcome outcome) implements TaskEvent {}
 
-    /** The processor failed and the task will run again at {@code retryAt}. */
+    /**
+     * The processor failed and the task will run again at {@code retryAt}. With {@link Outcome#LOST} this
+     * worker's lease was gone and nothing was written: the store's maintenance decides whether and when the
+     * task runs again, and {@code retryAt} is only the time the loss was noticed.
+     */
     record Retrying(TaskView task, Throwable error, Instant retryAt, Outcome outcome) implements TaskEvent {}
 
     /** The task ended as dead: attempts exhausted, unrecoverable error, or the retry policy said so. */

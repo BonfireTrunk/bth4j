@@ -86,10 +86,8 @@ public final class TaskClient {
      *                                 was never allocated
      * @throws TaskIdReusedException   when the request sets an id that belongs to a task with other content
      * @throws EnqueueFailedException  when the store could not be reached or all three generated ids were taken;
-     *                                 carries the caller id or a generated id safe to retry, reserving an unwritten
-     *                                 id after collision exhaustion. With an id the task may already be stored
-     *                                 (retry with that id);
-     *                                 with no ids nothing was written by this call (resend the same request)
+     *                                 with an id the task may already be stored (retry with that id); with no
+     *                                 ids nothing was written by this call (resend the same request)
      */
     public EnqueueResult enqueue(TaskRequest<?> request) {
         List<Long> known = request.id() == null ? List.of() : List.of(request.id());
@@ -109,7 +107,6 @@ public final class TaskClient {
                 ids.abandonBlock();
                 log.warn("Generated task id {} is already in use, reserving another", id);
             }
-            known = List.of(ids.nextId());
         } catch (TaskStoreException e) {
             throw new EnqueueFailedException(known, 0, e);
         }
@@ -127,8 +124,9 @@ public final class TaskClient {
      * the same requests unchanged, keeping any ids the caller set. After reservation, a store failure carries
      * every request's id in request order. A generated id found taken abandons the current id block and is
      * replaced from a fresh block. After three collisions, occupied ids and generated ids in unattempted
-     * chunks are replaced with newly reserved, unwritten ids before throwing. If that reservation fails,
-     * occupied ids remain in the exception and must be resolved before retrying.
+     * chunks are replaced with newly reserved ids this call did not write (not checked to be free) before
+     * throwing. If that reservation fails or the replacements overlap a caller id, occupied ids remain in the
+     * exception and must be resolved before retrying.
      *
      * @return one result per request, in order
      * @throws TaskValidationException when a request sets an id that was never allocated, or two requests set

@@ -231,8 +231,9 @@ public class RedisTaskStore implements FullStore {
         args.add(t.due() == null ? "" : ms(t.due()));
         args.add(t.uniqueKey() == null ? "" : t.uniqueKey());
         args.addAll(storeArgs(t));
-        args.add("wt");
-        args.add(Long.toHexString(ThreadLocalRandom.current().nextLong()));
+        args.add(Keys.F_WRITE_TOKEN);
+        // decimal, so the hash listpack stores it as an integer
+        args.add(Long.toString(ThreadLocalRandom.current().nextLong()));
         return args;
     }
 
