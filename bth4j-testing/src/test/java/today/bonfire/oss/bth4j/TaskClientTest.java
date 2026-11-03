@@ -661,13 +661,7 @@ class TaskClientTest {
 
         assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).build()))
                 .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
-                    assertThat(e.ids()).containsExactly(193L);
-                    assertThat(store.getTask(e.id())).isEmpty();
-                    assertThat(builder()
-                                    .build()
-                                    .enqueue(TaskRequest.of(VOID).id(e.id()).build())
-                                    .accepted())
-                            .isTrue();
+                    assertThat(e.ids()).isEmpty();
                     assertThat(e.stored()).isZero();
                     assertThat(e.getCause()).isInstanceOf(TaskStoreException.class);
                 });

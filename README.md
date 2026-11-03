@@ -296,8 +296,9 @@ after purge, the same allocated id stores a new task.
 
 Generated ids answered "exists" abandon the client's current id block and are retried from a newly allocated
 block, at most three writes per request. After exhaustion, occupied positions and generated positions in
-unattempted chunks receive newly reserved, unwritten ids before the exception is thrown. If a batch cannot
-reserve replacements, it retains occupied ids; those collisions must be resolved before retrying, since an
+unattempted chunks receive newly reserved ids that this call did not write (not checked to be free) before the
+exception is thrown. If a batch cannot reserve replacements, or the replacements overlap a caller id of the
+batch, it retains occupied ids; those collisions must be resolved before retrying, since an
 occupied id may belong to another task even with identical content. A caller id taken by another writer after
 preflight also fails with `EnqueueFailedException`, carrying the batch ids and a `TaskIdReusedException` cause.
 
@@ -712,7 +713,9 @@ slot. The store does not close the Jedis client. Redis 7.4 or newer, or Valkey 9
 store expires the key fields of finished tasks with hash field expiry). A namespace written by bth4j 3.0 has
 another layout and is refused by `init`; start 3.1 with a new namespace. Enqueue writes a random per-record
 token in task hash field `wt` with the other fields. A transport resend with that token returns stored again;
-a different token under the same id returns exists, before checking the unique key.
+a different token under the same id returns exists, before checking the unique key. The token only helps while
+the task exists: with a zero succeeded retention a task that already ran and was removed is stored again by a
+resend.
 
 ### PostgreSQL
 
