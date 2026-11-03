@@ -84,10 +84,10 @@ public final class TaskClient {
      * @throws TaskValidationException when the request is invalid or exceeds a size limit, or sets an id that
      *                                 was never allocated
      * @throws TaskIdReusedException   when the request sets an id that belongs to a task with other content
-     * @throws EnqueueFailedException  when the store could not be reached or kept answering that the generated
-     *                                 ids were taken; if the request set an id, or one was reserved, the
-     *                                 exception carries it and the task may already be stored (retry with that
-     *                                 id); with no ids nothing was written (retry without one)
+     * @throws EnqueueFailedException  when the store could not be reached or all three generated ids were taken;
+     *                                 carries the caller id or the last generated id unless it was confirmed
+     *                                 occupied. With an id the task may already be stored (retry with that id);
+     *                                 with no ids nothing was written by this call (resend the same request)
      */
     public EnqueueResult enqueue(TaskRequest<?> request) {
         List<Long> known = request.id() == null ? List.of() : List.of(request.id());
@@ -103,9 +103,9 @@ public final class TaskClient {
                 var record = toRecord(request, id);
                 var outcome = store.enqueue(record);
                 if (!(outcome instanceof EnqueueOutcome.Exists)) return result(record, outcome, false);
+                known = List.of();
                 log.warn("Generated task id {} is already in use, reserving another", id);
             }
-            known = List.of();
         } catch (TaskStoreException e) {
             throw new EnqueueFailedException(known, 0, e);
         }
@@ -117,14 +117,20 @@ public final class TaskClient {
      * checked against its stored task before it; when a chunk fails the exception carries the id of every
      * request, so the caller can retry the same list with {@link TaskRequest.Builder#id(long)} set from
      * {@link EnqueueFailedException#ids()}: tasks already stored answer accepted again instead of being stored
-     * twice. When the store fails while the ids are being reserved, the exception carries no ids and nothing was
-     * written. A generated id found taken is replaced like in {@link #enqueue}.
+     * twice. Caller ids are validated against the high-water mark before fresh ids are reserved. When that
+     * read or the reservation fails, the exception carries no ids: nothing was written by this call, so resend
+     * the same requests unchanged, keeping any ids the caller set. After reservation, a store failure carries
+     * every request's id in request order. A generated id found taken is replaced like in {@link #enqueue};
+     * if replacement fails, the exception retains the last attempted ids and those collisions must be
+     * resolved before retrying.
      *
      * @return one result per request, in order
      * @throws TaskValidationException when a request sets an id that was never allocated, or two requests set
-     *                                 the same id
+     *                                 the same id, or a caller id overlaps this batch's fresh id range
      * @throws TaskIdReusedException   when a request sets an id that belongs to a task with other content;
      *                                 checked before the first write, so nothing is stored
+     * @throws EnqueueFailedException when the store fails, generated ids cannot be replaced, or caller-id
+     *                                 reuse is discovered after preflight; carries the ids as described above
      */
     public List<EnqueueResult> enqueueAll(List<? extends TaskRequest<?>> requests) {
         var callerIds = new HashSet<Long>();
@@ -134,17 +140,23 @@ public final class TaskClient {
             }
         }
         long nextId = 0;
+        int freshCount = requests.size() - callerIds.size();
         try {
-            if (requests.size() > callerIds.size()) nextId = this.ids.nextIds(requests.size() - callerIds.size());
+            callerIds.stream().mapToLong(Long::longValue).max().ifPresent(this::requireAllocated);
+            if (freshCount > 0) nextId = this.ids.nextIds(freshCount);
         } catch (TaskStoreException e) {
             throw new EnqueueFailedException(List.of(), 0, e);
+        }
+        for (long id : callerIds) {
+            if (id >= nextId && id < nextId + freshCount) {
+                throw new TaskValidationException("id " + id + " overlaps the batch's freshly allocated ids");
+            }
         }
         var ids = new ArrayList<Long>(requests.size());
         for (var r : requests) ids.add(r.id() != null ? r.id() : nextId++);
         var records = new ArrayList<TaskRecord>(requests.size());
         var verified = new HashSet<Long>();
         try {
-            callerIds.stream().mapToLong(Long::longValue).max().ifPresent(this::requireAllocated);
             for (int i = 0; i < requests.size(); i++) records.add(toRecord(requests.get(i), ids.get(i)));
             for (int i = 0; i < requests.size(); i++) {
                 if (requests.get(i).id() != null && requireSameContent(records.get(i))) {
@@ -158,8 +170,8 @@ public final class TaskClient {
         for (int from = 0; from < records.size(); from += ENQUEUE_CHUNK) {
             var to = Math.min(records.size(), from + ENQUEUE_CHUNK);
             try {
-                results.addAll(writeChunk(requests, records, ids, verified, from, to));
-            } catch (TaskStoreException e) {
+                results.addAll(writeChunk(requests, records, ids, callerIds, verified, from, to));
+            } catch (TaskStoreException | TaskIdReusedException e) {
                 throw new EnqueueFailedException(ids, results.size(), e);
             }
         }
@@ -170,6 +182,7 @@ public final class TaskClient {
             List<? extends TaskRequest<?>> requests,
             List<TaskRecord> records,
             List<Long> ids,
+            Set<Long> callerIds,
             Set<Long> verified,
             int from,
             int to) {
@@ -193,10 +206,20 @@ public final class TaskClient {
             }
             if (taken.isEmpty()) return Arrays.asList(out);
             if (tries == MAX_ID_TRIES) throw new TaskStoreException(ID_TAKEN);
-            long first = this.ids.nextIds(taken.size());
+            long first;
+            try {
+                first = this.ids.nextIds(taken.size());
+            } catch (TaskStoreException e) {
+                throw new TaskStoreException("could not replace occupied generated task ids", e);
+            }
+            for (long id : callerIds) {
+                if (id >= first && id < first + taken.size()) {
+                    throw new TaskStoreException("replacement task ids overlap a caller id");
+                }
+            }
             for (int k = 0; k < taken.size(); k++) {
                 int at = from + taken.get(k);
-                records.set(at, toRecord(requests.get(at), first + k));
+                records.set(at, records.get(at).toBuilder().id(first + k).build());
                 ids.set(at, first + k);
             }
             todo = taken;

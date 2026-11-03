@@ -251,11 +251,22 @@ that was never allocated is rejected with a `TaskValidationException`. An id tha
 accepted again only for the same request, encoded identically: the stored task is compared on type, queue, the
 payload as stored text (when the task still has it; a finished task may have dropped it) and the unique key
 (unless a finished task released it). Headers, account, attempts, retry policy, `startBy`, `maxRun`, delay and
-the payload version are not compared. Any other difference throws `TaskIdReusedException`; `enqueueAll` checks
-every id it was given before it writes anything and rejects one id on two requests. When
-`EnqueueFailedException.ids()` holds ids the tasks may already be stored and the retry must use them; only an
-empty `ids()` (the client could not reserve ids) means nothing was written and the retry takes no ids. A
-Redis failover that rolls the id counter back can make an allocated id look unallocated.
+the payload version are not compared. Any other difference throws `TaskIdReusedException`. Before writing,
+`enqueueAll` rejects duplicate caller ids, checks the high-water mark before reserving fresh ids, rejects caller
+ids inside that fresh range, and compares every caller id with its stored task. These checks add no store reads
+for requests without caller ids. A Redis failover that rolls the id counter back can make an allocated id look
+unallocated.
+
+An empty `EnqueueFailedException.ids()` means nothing was written by this call: resend the **same requests
+unchanged**, keeping any ids you set yourself. For a batch, failure during the high-water read or initial
+reservation returns empty ids; after reservation, failures carry every request's id in request order. A single
+`enqueue` retains its caller id even if the high-water read fails. Non-empty ids mean tasks may already be
+stored, so set those ids on the retry. This prevents duplicates only while the original tasks are retained.
+
+Generated ids answered "exists" are retried with fresh ids, at most three writes per request. If a batch fails
+to replace occupied ids, it retains the last attempted ids; resolve the collisions before retrying, since an
+occupied id may belong to another task even with identical content. A caller id taken by another writer after
+preflight also fails with `EnqueueFailedException`, carrying the batch ids and a `TaskIdReusedException` cause.
 
 On PostgreSQL the id check reads the id sequence with `pg_sequence_last_value` (PostgreSQL 10 or newer), which
 needs only the USAGE privilege on `<prefix>_task_id` that `allocateIds` already uses.
