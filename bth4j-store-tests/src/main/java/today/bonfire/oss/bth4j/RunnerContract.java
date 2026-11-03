@@ -237,6 +237,44 @@ public abstract class RunnerContract {
     }
 
     @Test
+    void resendAfterOperatorRetryAcceptsAReleasedKey() {
+        long id = client.nextId();
+        var request = TaskRequest.of(VOID_TYPE).uniqueKey("released-key").id(id).build();
+        client.enqueue(request);
+        var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {
+            throw new TaskUnrecoverableException("done");
+        }));
+        var dead = awaitState(id, TaskState.DEAD);
+        runner.admin().pauseQueue("Q:DEF", true);
+        assertThat(dead.uniqueKey()).isNull();
+        assertThat(client.admin().retry(id, dead.revision())).isEqualTo(RetryOutcome.RETRIED);
+        assertThat(client.task(id).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
+        assertThat(client.task(id).orElseThrow().uniqueKey()).isNull();
+
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueueAll(List.of(request))).containsExactly(new EnqueueResult.Accepted(id));
+        assertThat(client.counts().get("Q:DEF").queued()).isEqualTo(1);
+    }
+
+    @Test
+    void generatedIdCollisionsAbandonTheClientsCurrentBlock() {
+        for (boolean batch : List.of(false, true)) {
+            var producer = TaskClient.builder().store(store).idBlockSize(4).build();
+            long first = producer.nextId();
+            long occupied = first + 1;
+            client.enqueue(TaskRequest.of(VOID_TYPE).id(occupied).build());
+            var request = TaskRequest.of(VOID_TYPE).build();
+
+            var result = batch ? producer.enqueueAll(List.of(request)).getFirst() : producer.enqueue(request);
+
+            assertThat(result).isEqualTo(new EnqueueResult.Accepted(first + 4));
+            assertThat(store.getTask(occupied)).isPresent();
+            assertThat(store.getTask(result.id())).isPresent();
+        }
+        assertThat(client.counts().get("Q:DEF").queued()).isEqualTo(4);
+    }
+
+    @Test
     void callerIdThatWasNeverAllocatedIsRejected() {
         long unallocated = store.idHighWaterMark();
         assertThatThrownBy(() ->
@@ -742,7 +780,15 @@ public abstract class RunnerContract {
             assertThat(task.state()).isEqualTo(TaskState.QUEUED);
             assertThat(task.revision()).isEqualTo(running.revision() + 1);
             assertThat(task.failures()).isEmpty();
-            assertThat(eventNames(events, id)).containsExactly("Started");
+            assertThat(eventNames(events, id)).containsExactly("Started", "Retrying");
+            assertThat(events.stream()
+                            .filter(e -> e instanceof TaskEvent.Retrying)
+                            .toList())
+                    .singleElement()
+                    .isInstanceOfSatisfying(TaskEvent.Retrying.class, e -> {
+                        assertThat(e.outcome()).isEqualTo(TaskEvent.Outcome.LOST);
+                        assertThat(e.error()).isInstanceOf(TaskLeaseLostException.class);
+                    });
             await(
                     "the lease-lost issue",
                     () -> runner.issues().stream().anyMatch(i -> i.kind().equals("lease-lost")));

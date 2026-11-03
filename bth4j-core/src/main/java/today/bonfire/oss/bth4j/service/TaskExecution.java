@@ -259,7 +259,10 @@ public final class TaskExecution implements Runnable, TaskContext {
                 var outcome = apply(() -> s.store().reschedule(record.id(), record.revision(), due));
                 emit(new TaskEvent.Rescheduled(view, due, outcome));
             }
-            case TaskLeaseLostException ex -> log.warn("Task {} stopped: {}", record.id(), text(ex));
+            case TaskLeaseLostException ex -> {
+                log.warn("Task {} stopped: {}", record.id(), text(ex));
+                emit(new TaskEvent.Retrying(view, event(ex), s.clock().instant(), Outcome.LOST));
+            }
             case TaskCancelledException ex ->
                 cancelled(detail() == FailureDetail.FULL ? ex.getMessage() : cancelReason());
             // the processor most likely stopped because of the cancel request (interrupt, closed resource)

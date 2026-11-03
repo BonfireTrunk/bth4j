@@ -31,6 +31,7 @@ import today.bonfire.oss.bth4j.TaskProcessorRegistry;
 import today.bonfire.oss.bth4j.TaskRequest;
 import today.bonfire.oss.bth4j.TaskType;
 import today.bonfire.oss.bth4j.exceptions.TaskCancelledException;
+import today.bonfire.oss.bth4j.exceptions.TaskLeaseLostException;
 import today.bonfire.oss.bth4j.exceptions.TaskRescheduleException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
@@ -130,10 +131,15 @@ class TaskExecutionTest {
             assertThat(task.state()).isEqualTo(TaskState.LEASED);
             assertThat(task.revision()).isEqualTo(execution.revision());
             assertThat(task.failures()).isNull();
-            assertThat(events).hasSize(3);
+            assertThat(events).hasSize(4);
             assertThat(events.get(0)).isInstanceOf(TaskEvent.Started.class);
-            assertThat(events.get(1)).isInstanceOf(TaskEvent.Started.class);
-            assertThat(events.get(2)).isInstanceOf(TaskEvent.Succeeded.class);
+            assertThat(events.get(1)).isInstanceOfSatisfying(TaskEvent.Retrying.class, event -> {
+                assertThat(event.outcome()).isEqualTo(TaskEvent.Outcome.LOST);
+                assertThat(event.error()).isInstanceOf(TaskLeaseLostException.class);
+                assertThat(event.retryAt()).isEqualTo(clock.instant());
+            });
+            assertThat(events.get(2)).isInstanceOf(TaskEvent.Started.class);
+            assertThat(events.get(3)).isInstanceOf(TaskEvent.Succeeded.class);
             assertThat(logs.list)
                     .anySatisfy(event -> assertThat(event.getFormattedMessage())
                             .contains("Task " + execution.taskId() + " stopped: lease")
@@ -231,7 +237,12 @@ class TaskExecutionTest {
         assertThat(Thread.currentThread().isInterrupted()).isFalse();
         assertThat(interruptedAtFinish).isFalse();
         assertThat(store.getTask(execution.taskId()).orElseThrow().state()).isEqualTo(TaskState.LEASED);
-        assertThat(events).singleElement().isInstanceOf(TaskEvent.Started.class);
+        assertThat(events).hasSize(2);
+        assertThat(events.getFirst()).isInstanceOf(TaskEvent.Started.class);
+        assertThat(events.getLast())
+                .isInstanceOfSatisfying(
+                        TaskEvent.Retrying.class,
+                        event -> assertThat(event.outcome()).isEqualTo(TaskEvent.Outcome.LOST));
     }
 
     @Test

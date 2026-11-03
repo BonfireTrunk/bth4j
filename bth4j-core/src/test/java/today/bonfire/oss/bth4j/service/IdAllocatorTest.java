@@ -125,6 +125,23 @@ class IdAllocatorTest {
     }
 
     @Test
+    void abandoningABlockPreservesTheKnownEndAndReservesAFreshBlock() {
+        var store = new CountingStore();
+        var allocator = new IdAllocator(store, 10);
+        assertThat(allocator.knownEnd()).isZero();
+        assertThat(allocator.nextId()).isEqualTo(100);
+        assertThat(allocator.knownEnd()).isEqualTo(110);
+
+        allocator.abandonBlock();
+
+        assertThat(allocator.knownEnd()).isEqualTo(110);
+        assertThat(allocator.nextIds(2)).isEqualTo(110);
+        assertThat(allocator.nextId()).isEqualTo(112);
+        assertThat(allocator.knownEnd()).isEqualTo(120);
+        assertThat(store.blockSizes).containsExactly(10, 10);
+    }
+
+    @Test
     void idsAreUniqueAcrossThreads() throws Exception {
         var store = new CountingStore();
         var allocator = new IdAllocator(store, 8);

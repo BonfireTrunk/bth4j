@@ -410,13 +410,19 @@ class AdminHttpServerTest {
         var res = mutate("POST", "/api/v1/tasks/1/retry", login, "{\"revision\":\"7\"}");
 
         assertThat(res.statusCode()).isEqualTo(409);
-        assertThat(json(res)).containsEntry("error", "the unique key is held by another task");
+        assertThat(json(res))
+                .containsExactlyInAnyOrderEntriesOf(
+                        Map.of("error", "the unique key is held by another task", "code", "KEY_HELD"));
         var stale = mutate("POST", "/api/v1/tasks/1/retry", login, "{\"revision\":\"6\"}");
         assertThat(stale.statusCode()).isEqualTo(409);
-        assertThat(json(stale)).containsEntry("error", "the task changed since you loaded it");
+        assertThat(json(stale))
+                .containsEntry("error", "the task changed since you loaded it")
+                .doesNotContainKey("code");
         var queued = mutate("POST", "/api/v1/tasks/3/retry", login, "{\"revision\":\"1\"}");
         assertThat(queued.statusCode()).isEqualTo(409);
-        assertThat(json(queued)).containsEntry("error", "the task changed since you loaded it");
+        assertThat(json(queued))
+                .containsEntry("error", "the task changed since you loaded it")
+                .doesNotContainKey("code");
     }
 
     @Test

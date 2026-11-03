@@ -86,8 +86,9 @@ public final class TaskClient {
      *                                 was never allocated
      * @throws TaskIdReusedException   when the request sets an id that belongs to a task with other content
      * @throws EnqueueFailedException  when the store could not be reached or all three generated ids were taken;
-     *                                 carries the caller id or the last generated id unless it was confirmed
-     *                                 occupied. With an id the task may already be stored (retry with that id);
+     *                                 carries the caller id or a generated id safe to retry, reserving an unwritten
+     *                                 id after collision exhaustion. With an id the task may already be stored
+     *                                 (retry with that id);
      *                                 with no ids nothing was written by this call (resend the same request)
      */
     public EnqueueResult enqueue(TaskRequest<?> request) {
@@ -105,8 +106,10 @@ public final class TaskClient {
                 var outcome = store.enqueue(record);
                 if (!(outcome instanceof EnqueueOutcome.Exists)) return result(record, outcome, false);
                 known = List.of();
+                ids.abandonBlock();
                 log.warn("Generated task id {} is already in use, reserving another", id);
             }
+            known = List.of(ids.nextId());
         } catch (TaskStoreException e) {
             throw new EnqueueFailedException(known, 0, e);
         }
@@ -114,16 +117,18 @@ public final class TaskClient {
     }
 
     /**
-     * Stores several tasks in chunks. Every id is fixed before the first write, and every id the caller set is
-     * checked against its stored task before it; when a chunk fails the exception carries the id of every
-     * request, so the caller can retry the same list with {@link TaskRequest.Builder#id(long)} set from
+     * Stores several tasks in chunks. Initial ids are allocated before the first write; occupied generated ids
+     * are replaced during writing. Every caller id is checked against its stored task before the first write.
+     * When a chunk fails the exception carries every request's id, so the caller can retry the same list
+     * with {@link TaskRequest.Builder#id(long)} set from
      * {@link EnqueueFailedException#ids()}: tasks already stored answer accepted again instead of being stored
      * twice. Caller ids are validated against the high-water mark before fresh ids are reserved. When that
      * read or the reservation fails, the exception carries no ids: nothing was written by this call, so resend
      * the same requests unchanged, keeping any ids the caller set. After reservation, a store failure carries
-     * every request's id in request order. A generated id found taken is replaced like in {@link #enqueue};
-     * if replacement fails, the exception retains the last attempted ids and those collisions must be
-     * resolved before retrying.
+     * every request's id in request order. A generated id found taken abandons the current id block and is
+     * replaced from a fresh block. After three collisions, occupied ids and generated ids in unattempted
+     * chunks are replaced with newly reserved, unwritten ids before throwing. If that reservation fails,
+     * occupied ids remain in the exception and must be resolved before retrying.
      *
      * @return one result per request, in order
      * @throws TaskValidationException when a request sets an id that was never allocated, or two requests set
@@ -206,23 +211,31 @@ public final class TaskClient {
                 }
             }
             if (taken.isEmpty()) return Arrays.asList(out);
-            if (tries == MAX_ID_TRIES) throw new TaskStoreException(ID_TAKEN);
+            this.ids.abandonBlock();
+            var replacements = new ArrayList<Integer>();
+            for (int i : taken) replacements.add(from + i);
+            if (tries == MAX_ID_TRIES) {
+                for (int i = to; i < requests.size(); i++) {
+                    if (requests.get(i).id() == null) replacements.add(i);
+                }
+            }
             long first;
             try {
-                first = this.ids.nextIds(taken.size());
+                first = this.ids.nextIds(replacements.size());
             } catch (TaskStoreException e) {
                 throw new TaskStoreException("could not replace occupied generated task ids", e);
             }
             for (long id : callerIds) {
-                if (id >= first && id < first + taken.size()) {
+                if (id >= first && id < first + replacements.size()) {
                     throw new TaskStoreException("replacement task ids overlap a caller id");
                 }
             }
-            for (int k = 0; k < taken.size(); k++) {
-                int at = from + taken.get(k);
+            for (int k = 0; k < replacements.size(); k++) {
+                int at = replacements.get(k);
                 records.set(at, records.get(at).toBuilder().id(first + k).build());
                 ids.set(at, first + k);
             }
+            if (tries == MAX_ID_TRIES) throw new TaskStoreException(ID_TAKEN);
             todo = taken;
         }
     }
@@ -230,7 +243,9 @@ public final class TaskClient {
     /**
      * Validates and encodes a request into the record the store would receive, with its id allocated, for
      * callers that write the record themselves, for example inside their own database transaction with
-     * {@code PostgresTaskStore.enqueue(Connection, TaskRecord)}.
+     * {@code PostgresTaskStore.enqueue(Connection, TaskRecord)}. This path skips the caller-id allocation
+     * and stored-content checks performed by {@link #enqueue} and {@link #enqueueAll}; callers handle the
+     * store's raw {@link EnqueueOutcome}, including {@link EnqueueOutcome.Exists}.
      */
     public TaskRecord prepare(TaskRequest<?> request) {
         return toRecord(request);
@@ -242,7 +257,7 @@ public final class TaskClient {
     }
 
     private void requireAllocated(long id) {
-        if (id >= store.idHighWaterMark()) {
+        if (id >= ids.knownEnd() && id >= store.idHighWaterMark()) {
             throw new TaskValidationException("id " + id + " was never allocated; take ids from nextId()");
         }
     }
@@ -261,7 +276,7 @@ public final class TaskClient {
     /**
      * An id the caller set that the store already has is a retry only when the stored task is the one being
      * sent. Compared: task type, queue, the payload when the store still has it (a finished task may have
-     * dropped it) and the unique key unless the task finished and released it.
+     * dropped it) and the unique key when the stored task still holds one.
      *
      * @return true when the stored task matched, false when the store has no such task
      * @throws TaskIdReusedException when it differs
@@ -275,9 +290,7 @@ public final class TaskClient {
             throw new TaskIdReusedException(sent.id(), "another payload");
         }
         var heldKey = stored.uniqueKey();
-        if (heldKey != null
-                ? !heldKey.equals(sent.uniqueKey())
-                : sent.uniqueKey() != null && !stored.state().isTerminal()) {
+        if (heldKey != null && !heldKey.equals(sent.uniqueKey())) {
             throw new TaskIdReusedException(sent.id(), "another unique key");
         }
         return true;

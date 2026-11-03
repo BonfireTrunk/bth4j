@@ -241,7 +241,9 @@ or an idempotent target; use steps to checkpoint completed work, but keep each s
 
 `client.prepare(request)` validates and encodes a request into a `TaskRecord` with its id allocated, without
 writing it. With PostgreSQL, `PostgresTaskStore.enqueue(Connection, TaskRecord)` stores that record on your
-own connection and does not commit, so the task exists only if your transaction commits:
+own connection and does not commit, so the task exists only if your transaction commits. This path skips
+`TaskClient.enqueue`/`enqueueAll` checks of caller-id allocation and stored content; handle the store's raw
+`EnqueueOutcome`, including `Exists`, yourself:
 
 ```java
 TaskRecord record = client.prepare(TaskRequest.of(SEND_MAIL, mail).build());
@@ -273,11 +275,13 @@ Ids must be allocated by a client of this namespace: `client.nextId()` or `Enque
 that was never allocated is rejected with a `TaskValidationException`. An id that already belongs to a task is
 accepted again only for the same request, encoded identically: the stored task is compared on type, queue, the
 payload as stored text (when the task still has it; a finished task may have dropped it) and the unique key
-(unless a finished task released it). Headers, account, attempts, retry policy, `startBy`, `maxRun`, delay and
-the payload version are not compared. Any other difference throws `TaskIdReusedException`. Before writing,
+(only while the stored task holds one, even after an operator retry). Headers, account, attempts, retry policy,
+`startBy`, `maxRun`, delay, `at(...)`, the `keepFor` duration and payload version are not compared. Any other
+difference throws `TaskIdReusedException`. Before writing,
 `enqueueAll` rejects duplicate caller ids, checks the high-water mark before reserving fresh ids, rejects caller
 ids inside that fresh range, and compares every caller id with its stored task. These checks add no store reads
-for requests without caller ids. A Redis failover that rolls the id counter back can make an allocated id look
+for requests without caller ids. Caller ids below the end of this client's own allocated block also skip
+the high-water read. A Redis failover that rolls the id counter back can make an allocated id look
 unallocated.
 
 With an existing id and matching content, `Accepted` only confirms that the record exists; it never starts
@@ -290,8 +294,10 @@ reservation returns empty ids; after reservation, failures carry every request's
 stored, so set those ids on the retry. This prevents duplicates only while the original tasks are retained;
 after purge, the same allocated id stores a new task.
 
-Generated ids answered "exists" are retried with fresh ids, at most three writes per request. If a batch fails
-to replace occupied ids, it retains the last attempted ids; resolve the collisions before retrying, since an
+Generated ids answered "exists" abandon the client's current id block and are retried from a newly allocated
+block, at most three writes per request. After exhaustion, occupied positions and generated positions in
+unattempted chunks receive newly reserved, unwritten ids before the exception is thrown. If a batch cannot
+reserve replacements, it retains occupied ids; those collisions must be resolved before retrying, since an
 occupied id may belong to another task even with identical content. A caller id taken by another writer after
 preflight also fails with `EnqueueFailedException`, carrying the batch ids and a `TaskIdReusedException` cause.
 
@@ -333,7 +339,9 @@ runner.registry().register(EXPORT, (ctx, export) -> {
 actually interrupted for lease loss has its outcome discarded, even if it swallows the interrupt and returns.
 Without that interrupt, a returned result or failure still goes through the store's revision fence and can
 be applied before maintenance takes over. `checkCancelled()` throws `TaskLeaseLostException` on known lease
-loss. Interruption is opt-in because it can close NIO channels.
+loss. A discarded attempt emits `Retrying` with outcome `LOST`, without changing the stored task.
+Interruption is opt-in because it can close sockets and NIO channels used by the body, including pooled
+database or Redis connections. Processors may run on virtual threads, where blocking socket I/O is interruptible.
 
 Starting a new `ctx.step` also checks. If the revision fence still accepts it, a processor that ignores cancellation
 and returns normally ends the task SUCCEEDED; the request is not applied after a normal return. If the worker dies while a cancel is pending, maintenance
@@ -541,8 +549,8 @@ steps, resets its attempts to zero, and loses its `startBy`, so a retried expire
 Inside a `keepFor` window it retains its unique key without expiry while open; `taskByKey` and `cancelByKey`
 still reach it, and a same-key enqueue answers `Duplicate` with its id. The `keepFor` setting is kept, so a
 fresh keep window starts when the retried task finishes. If another task holds the retained key, retry returns
-`RetryOutcome.DUPLICATE` and changes nothing (the admin HTTP route answers 409, "the unique key is held by
-another task", which the dashboard displays).
+`RetryOutcome.DUPLICATE` and changes nothing. The admin HTTP route answers 409 with
+`{"code":"KEY_HELD","error":"the unique key is held by another task"}`; the dashboard matches the code.
 
 A default until-done key is released when the task finishes; a `keepFor` key is released when its window
 passes. Retrying after either release runs the task **without a key**. If the key is free, an enqueue with that
@@ -702,7 +710,9 @@ var store = new RedisTaskStore(jedis, "my-app");   // UnifiedJedis (for example 
 The namespace prefixes every key and carries the Redis Cluster hash tag, so all keys of a store share one
 slot. The store does not close the Jedis client. Redis 7.4 or newer, or Valkey 9 or newer, is required (the
 store expires the key fields of finished tasks with hash field expiry). A namespace written by bth4j 3.0 has
-another layout and is refused by `init`; start 3.1 with a new namespace.
+another layout and is refused by `init`; start 3.1 with a new namespace. Enqueue writes a random per-record
+token in task hash field `wt` with the other fields. A transport resend with that token returns stored again;
+a different token under the same id returns exists, before checking the unique key.
 
 ### PostgreSQL
 

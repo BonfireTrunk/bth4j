@@ -184,11 +184,44 @@ class RedisTaskStoreIT {
         var hash = jedis.hgetAll(keys.task(1));
 
         assertThat(hash.keySet())
-                .containsExactlyInAnyOrder("rev", "q", "ev", "pv", "state", "att", "max", "created", "due", "sc");
+                .containsExactlyInAnyOrder("rev", "q", "ev", "pv", "state", "att", "max", "created", "due", "sc", "wt");
         assertThat(hash).containsEntry("state", "0");
         assertThat(jedis.ttl(keys.task(1))).isEqualTo(-1);
         assertThat(jedis.zscore(keys.queue(queue), "1")).isEqualTo(Double.valueOf(hash.get("due")));
         assertThat(counts().queued()).isEqualTo(1);
+    }
+
+    @Test
+    void enqueueResendWithTheSameTokenIsStoredAndAnotherTokenExists() {
+        var scripts = new ScriptRunner(jedis, keys.meta, keys.prefix);
+        for (long id : List.of(11L, 12L)) {
+            var record = task(id).uniqueKey(id == 11 ? null : "resend-key").build();
+            var args = RedisTaskStore.enqueueArgs(record);
+
+            assertThat(scripts.run(RedisScripts.ENQUEUE, args)).isEqualTo(List.of(1L, ""));
+            var before = jedis.hgetAll(keys.task(id));
+            assertThat(scripts.run(RedisScripts.ENQUEUE, args)).isEqualTo(List.of(1L, ""));
+            assertThat(scripts.run(RedisScripts.ENQUEUE, RedisTaskStore.enqueueArgs(record)))
+                    .isEqualTo(List.of(0L, ""));
+            assertThat(jedis.hgetAll(keys.task(id))).isEqualTo(before);
+            assertThat(jedis.zrange(keys.queue(queue), 0, -1)).contains(String.valueOf(id));
+        }
+        assertThat(counts().queued()).isEqualTo(2);
+    }
+
+    @Test
+    void enqueueCallsAndBatchRecordsHaveDistinctWriteTokens() {
+        var first = task(21).build();
+        var second = task(22).build();
+        assertThat(store.enqueue(first)).isEqualTo(EnqueueOutcome.STORED);
+        assertThat(store.enqueueAll(List.of(first, second, task(23).build())))
+                .containsExactly(EnqueueOutcome.EXISTS, EnqueueOutcome.STORED, EnqueueOutcome.STORED);
+        assertThat(List.of(21L, 22L, 23L).stream()
+                        .map(id -> jedis.hget(keys.task(id), "wt"))
+                        .toList())
+                .doesNotContainNull()
+                .doesNotHaveDuplicates();
+        assertThat(counts().queued()).isEqualTo(3);
     }
 
     @Test
