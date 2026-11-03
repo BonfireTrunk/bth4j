@@ -40,6 +40,7 @@ import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecordJson;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
+import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
@@ -1555,19 +1556,26 @@ public class PostgresTaskStore implements FullStore {
 
     /**
      * Also clears {@code start_by}: an expired task keeps a deadline in the past, which would expire the retry
-     * at once.
+     * at once. A row that still has its {@code unique_key} already owns that key in the partial unique index, so
+     * keeping the column cannot collide; only {@code key_until} is cleared, which makes the task the open holder
+     * again. A key whose window has passed is dropped, as enqueue would drop it, so the outcome does not depend on
+     * whether the sweep has run.
      */
     @Override
-    public boolean retry(long id, int revision) {
-        return update(
-                "UPDATE " + task + " SET state = 0, due = now(), attempts = 0, revision = revision + 1,"
-                        + " state_changed = now(), worker_id = NULL, lease_until = NULL, cancel_requested_at = NULL,"
-                        + " cancel_reason = NULL, unique_key = NULL, key_keep_ms = NULL, key_until = NULL,"
-                        + " start_by = NULL WHERE id = ? AND revision = ? AND state IN (4, 5, 6)",
-                ps -> {
-                    ps.setLong(1, id);
-                    ps.setInt(2, revision);
-                });
+    public RetryOutcome retry(long id, int revision) {
+        return inTransaction(c -> {
+            try (var ps = c.prepareStatement("UPDATE " + task
+                    + " SET state = 0, due = now(), attempts = 0, revision = revision + 1,"
+                    + " state_changed = now(), worker_id = NULL, lease_until = NULL, cancel_requested_at = NULL,"
+                    + " cancel_reason = NULL,"
+                    + " key_keep_ms = CASE WHEN unique_key IS NULL OR key_until <= now() THEN NULL ELSE key_keep_ms END,"
+                    + " unique_key = CASE WHEN key_until <= now() THEN NULL ELSE unique_key END, key_until = NULL,"
+                    + " start_by = NULL WHERE id = ? AND revision = ? AND state IN (4, 5, 6)")) {
+                ps.setLong(1, id);
+                ps.setInt(2, revision);
+                return ps.executeUpdate() == 1 ? RetryOutcome.RETRIED : RetryOutcome.STALE;
+            }
+        });
     }
 
     @Override

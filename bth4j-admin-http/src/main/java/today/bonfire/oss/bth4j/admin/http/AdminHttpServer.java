@@ -34,6 +34,7 @@ import today.bonfire.oss.bth4j.TaskViewPage;
 import today.bonfire.oss.bth4j.common.Json;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
+import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskState;
 
@@ -458,7 +459,11 @@ public final class AdminHttpServer {
 
     private void retry(HttpExchange ex, long id) throws IOException {
         var revision = revision(readObject(ex).get("revision"));
-        changeTask(ex, id, admin.retry(id, revision));
+        var outcome = admin.retry(id, revision);
+        if (outcome == RetryOutcome.DUPLICATE) {
+            throw new HttpError(409, "the unique key is held by another task");
+        }
+        changeTask(ex, id, outcome == RetryOutcome.RETRIED);
     }
 
     private void cancel(HttpExchange ex, long id) throws IOException {

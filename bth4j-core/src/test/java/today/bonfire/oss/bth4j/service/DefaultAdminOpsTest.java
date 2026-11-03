@@ -28,6 +28,7 @@ import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
+import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
@@ -237,13 +238,20 @@ class DefaultAdminOpsTest {
     }
 
     @Test
+    void retryPassesADuplicateKeyRefusalThrough() {
+        handlers.put("retry", a -> RetryOutcome.DUPLICATE);
+
+        assertThat(ops.retry(9, 3)).isEqualTo(RetryOutcome.DUPLICATE);
+    }
+
+    @Test
     void retryAndDeleteDelegateWithTheRevisionAndReturnTheStoreAnswer() {
-        handlers.put("retry", a -> a[1].equals(3));
+        handlers.put("retry", a -> a[1].equals(3) ? RetryOutcome.RETRIED : RetryOutcome.STALE);
         handlers.put("delete", a -> a[1].equals(4));
         handlers.put("getTask", a -> Optional.empty());
 
-        assertThat(ops.retry(9, 3)).isTrue();
-        assertThat(ops.retry(9, 2)).isFalse();
+        assertThat(ops.retry(9, 3)).isEqualTo(RetryOutcome.RETRIED);
+        assertThat(ops.retry(9, 2)).isEqualTo(RetryOutcome.STALE);
         assertThat(ops.delete(9, 4)).isTrue();
         assertThat(ops.delete(9, 5)).isFalse();
         assertThat(calls).contains("retry[9, 3]", "delete[9, 4, null]");

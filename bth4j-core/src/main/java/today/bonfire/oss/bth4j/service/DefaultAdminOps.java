@@ -20,6 +20,7 @@ import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
+import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
@@ -95,7 +96,7 @@ public final class DefaultAdminOps implements AdminOps {
     }
 
     @Override
-    public boolean retry(long id, int revision) {
+    public RetryOutcome retry(long id, int revision) {
         return store.retry(id, revision);
     }
 

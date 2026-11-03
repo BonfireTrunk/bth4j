@@ -25,12 +25,16 @@ public interface AdminStore extends TaskStore {
 
     /**
      * Returns a DEAD, CANCELLED or EXPIRED task to its queue: QUEUED, due now, attempts 0, revision +1;
-     * cancel fields, worker, lease, {@code keyKeep}, {@code keyUntil} and {@code uniqueKey} cleared (the key
-     * was released at the terminal transition and may belong to another task now); failures and steps kept.
+     * cancel fields, worker, lease and {@code startBy} cleared; failures and steps kept. A task that still
+     * holds its unique key holds it again as an open task: {@code keyUntil} is cleared and {@code keyKeep}
+     * is kept, so the keep window applies again when it finishes. If another task holds that key, nothing changes.
+     * A key released at the terminal transition or after its keep window is not taken again: the task retries
+     * without a key, and an enqueue with that key is accepted as a second task when no other task holds it.
      *
-     * @return false when the revision or state did not match
+     * @return {@link RetryOutcome#STALE} when the task is missing or the revision or state did not match, {@link RetryOutcome#DUPLICATE}
+     *     when the unique key is held by another task, else {@link RetryOutcome#RETRIED}
      */
-    boolean retry(long id, int revision);
+    RetryOutcome retry(long id, int revision);
 
     /**
      * Removes a task in any state but LEASED and releases its unique key.

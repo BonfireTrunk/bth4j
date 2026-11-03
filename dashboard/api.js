@@ -43,12 +43,13 @@ export function clearSession() {
 }
 
 export class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, duplicate = false) {
     super(message);
     this.status = status;
+    this.duplicate = duplicate;
   }
   get conflict() {
-    return this.status === 409;
+    return this.status === 409 && !this.duplicate;
   }
 }
 
@@ -94,6 +95,9 @@ async function request(method, path, { query, body, noRedirect } = {}) {
   }
   if (!res.ok) {
     if (res.status === 409) {
+      if (data && data.error === 'the unique key is held by another task') {
+        throw new ApiError(409, data.error, true);
+      }
       throw new ApiError(409, 'This item changed meanwhile. Reload it and try again.');
     }
     const detail = data && (data.error || data.message);
