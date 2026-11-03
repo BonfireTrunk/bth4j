@@ -28,6 +28,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.exceptions.TaskRescheduleException;
 import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;
 import today.bonfire.oss.bth4j.spi.FullStore;
+import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.TaskState;
 
 /**
@@ -620,7 +621,7 @@ public abstract class RunnerContract {
         assertThat(runner.admin().cancel(id, queued.revision(), null))
                 .isEqualTo(today.bonfire.oss.bth4j.spi.CancelOutcome.STALE);
 
-        assertThat(runner.admin().retry(id, cancelled.revision())).isTrue();
+        assertThat(runner.admin().retry(id, cancelled.revision())).isEqualTo(RetryOutcome.RETRIED);
         runner.resume();
         awaitState(id, TaskState.SUCCEEDED);
         assertThat(ran.await(20, TimeUnit.SECONDS)).isTrue();

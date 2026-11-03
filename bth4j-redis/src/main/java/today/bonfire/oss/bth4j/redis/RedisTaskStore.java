@@ -37,6 +37,7 @@ import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecordJson;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
+import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
@@ -876,9 +877,13 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public boolean retry(long id, int revision) {
+    public RetryOutcome retry(long id, int revision) {
         var args = List.of(String.valueOf(id), String.valueOf(revision));
-        return num(guard(() -> scripts.run(RedisScripts.RETRY, args))) == 1;
+        return switch ((int) num(guard(() -> scripts.run(RedisScripts.RETRY, args)))) {
+            case 1 -> RetryOutcome.RETRIED;
+            case 2 -> RetryOutcome.DUPLICATE;
+            default -> RetryOutcome.STALE;
+        };
     }
 
     @Override

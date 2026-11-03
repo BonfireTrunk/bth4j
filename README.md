@@ -204,7 +204,7 @@ a task at most 64 KiB.
 |---|---|
 | `queue(name)` | target queue; the default queue when absent |
 | `delay(duration)` / `at(instant)` | run later; the last one set wins |
-| `uniqueKey(key)` / `uniqueKey(key, Uniqueness.keepFor(d))` | at most one task holds the key; released when the task finishes, or `d` after |
+| `uniqueKey(key)` / `uniqueKey(key, Uniqueness.keepFor(d))` | at most one task holds the key; released when the task finishes, or `d` after; an operator retry within `d` takes it again |
 | `maxAttempts(n)` | attempts before the task is dead; the runner default when absent |
 | `startBy(instant)` | the task expires if it has not started by then, see "Cancelling tasks"; must not be before the run time |
 | `maxRun(duration)` | an attempt running longer is asked to stop, see "Cancelling tasks" |
@@ -470,9 +470,18 @@ admin.purgeStaleWorkers(Duration.ofMinutes(10));
 ```
 
 Every change to a task takes the revision the operator saw. If the task changed meanwhile, nothing is done and
-the call returns `false` or `STALE`. A retried task keeps its failures and steps, but loses its unique key (the
-key was released when the task ended and may belong to another task now) and its `startBy`, so a retried
-expired task does not expire again.
+the call returns `false` or `STALE`. `AdminOps.retry` returns `RetryOutcome.RETRIED` on success and
+`RetryOutcome.STALE` for a missing task or a revision or state mismatch. A retried task keeps its failures and
+steps, resets its attempts to zero, and loses its `startBy`, so a retried expired task does not expire again.
+Inside a `keepFor` window it retains its unique key without expiry while open; `taskByKey` and `cancelByKey`
+still reach it, and a same-key enqueue answers `Duplicate` with its id. The `keepFor` setting is kept, so a
+fresh keep window starts when the retried task finishes. If another task holds the retained key, retry returns
+`RetryOutcome.DUPLICATE` and changes nothing (the admin HTTP route answers 409, "the unique key is held by
+another task", which the dashboard displays).
+
+A default until-done key is released when the task finishes; a `keepFor` key is released when its window
+passes. Retrying after either release runs the task **without a key**. If the key is free, an enqueue with that
+key is accepted and starts a second task. If another task has taken it, that task remains the holder.
 
 ### Metrics
 

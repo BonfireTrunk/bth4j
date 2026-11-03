@@ -79,7 +79,9 @@ export default {
       const t = task.value;
       const res = await confirmDialog({
         title: 'Retry task ' + t.id,
-        message: 'Re-queue this ' + t.state + ' task at revision ' + t.revision + '.',
+        message: 'Re-queue this ' + t.state + ' task at revision ' + t.revision +
+          '. A key still inside its keep window is retained, with a fresh window when the task finishes. ' +
+          'A released key is not restored; an enqueue with that key can start a second task.',
         confirmLabel: 'Retry',
       });
       if (res) await act(() => api.retryTask(t.id, t.revision), 'Task ' + t.id + ' retried');
