@@ -408,14 +408,19 @@ public class PostgresTaskStore implements FullStore {
         });
     }
 
+    /**
+     * Read with {@code pg_sequence_last_value}, which answers with USAGE on the sequence (the privilege
+     * {@code nextval} needs) where a plain SELECT from the sequence would need SELECT; it is null until the
+     * first id was drawn.
+     */
     @Override
     public long idHighWaterMark() {
         return withConnection(c -> {
-            try (var ps = c.prepareStatement(
-                            "SELECT CASE WHEN is_called THEN last_value + 1 ELSE last_value END FROM " + taskIdSeq);
+            try (var ps = c.prepareStatement("SELECT pg_sequence_last_value('" + taskIdSeq + "'::regclass)");
                     var rs = ps.executeQuery()) {
                 rs.next();
-                return rs.getLong(1);
+                long last = rs.getLong(1);
+                return rs.wasNull() ? 1 : last + 1;
             }
         });
     }

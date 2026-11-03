@@ -242,12 +242,19 @@ try {
 }
 ```
 
-Ids must come from the client: `client.nextId()` or `EnqueueFailedException.ids()`. An id that was never
-allocated is rejected with a `TaskValidationException`, and an id that already belongs to a task with another
-type, queue, payload or unique key throws `TaskIdReusedException` (a finished task may have dropped its payload,
-then only type, queue and a held unique key are compared). When the store fails before an id was fixed (the
-client could not reserve a block of ids), `EnqueueFailedException.ids()` is empty: nothing was written, retry
-the request without an id.
+Ids must be allocated by a client of this namespace: `client.nextId()` or `EnqueueFailedException.ids()`. An id
+that was never allocated is rejected with a `TaskValidationException`. An id that already belongs to a task is
+accepted again only for the same request, encoded identically: the stored task is compared on type, queue, the
+payload as stored text (when the task still has it; a finished task may have dropped it) and the unique key
+(unless a finished task released it). Headers, account, attempts, retry policy, `startBy`, `maxRun`, delay and
+the payload version are not compared. Any other difference throws `TaskIdReusedException`; `enqueueAll` checks
+every id it was given before it writes anything and rejects one id on two requests. When
+`EnqueueFailedException.ids()` holds ids the tasks may already be stored and the retry must use them; only an
+empty `ids()` (the client could not reserve ids) means nothing was written and the retry takes no ids. A
+Redis failover that rolls the id counter back can make an allocated id look unallocated.
+
+On PostgreSQL the id check reads the id sequence with `pg_sequence_last_value` (PostgreSQL 10 or newer), which
+needs only the USAGE privilege on `<prefix>_task_id` that `allocateIds` already uses.
 
 ### Cancelling tasks
 

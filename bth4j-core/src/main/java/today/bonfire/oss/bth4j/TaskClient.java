@@ -4,6 +4,8 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -39,6 +41,8 @@ import today.bonfire.oss.bth4j.spi.TaskStoreException;
 public final class TaskClient {
     private static final Logger log = LoggerFactory.getLogger(TaskClient.class);
     private static final int ENQUEUE_CHUNK = 500;
+    private static final int MAX_ID_TRIES = 3;
+    private static final String ID_TAKEN = "generated task ids were already in use after " + MAX_ID_TRIES + " tries";
 
     private final FullStore store;
     private final Names names;
@@ -73,71 +77,130 @@ public final class TaskClient {
     }
 
     /**
-     * Stores the task.
+     * Stores the task. A task without a caller-set id gets a fresh id; should the store already hold a task under
+     * it (another client's reserved id was set by hand), a new id is reserved and the task stored again, up to
+     * three tries in all.
      *
      * @throws TaskValidationException when the request is invalid or exceeds a size limit, or sets an id that
      *                                 was never allocated
      * @throws TaskIdReusedException   when the request sets an id that belongs to a task with other content
-     * @throws EnqueueFailedException  when the store could not be reached; it carries the id to retry with, or
-     *                                 none when the failure came before an id was fixed (retry without one)
+     * @throws EnqueueFailedException  when the store could not be reached or kept answering that the generated
+     *                                 ids were taken; if the request set an id, or one was reserved, the
+     *                                 exception carries it and the task may already be stored (retry with that
+     *                                 id); with no ids nothing was written (retry without one)
      */
     public EnqueueResult enqueue(TaskRequest<?> request) {
         List<Long> known = request.id() == null ? List.of() : List.of(request.id());
         try {
-            if (request.id() != null) requireAllocated(request.id());
-            var record = toRecord(request);
-            known = List.of(record.id());
-            return result(record, store.enqueue(record));
+            if (request.id() != null) {
+                requireAllocated(request.id());
+                var record = toRecord(request, request.id());
+                return result(record, store.enqueue(record), false);
+            }
+            for (int tries = 1; tries <= MAX_ID_TRIES; tries++) {
+                long id = ids.nextId();
+                known = List.of(id);
+                var record = toRecord(request, id);
+                var outcome = store.enqueue(record);
+                if (!(outcome instanceof EnqueueOutcome.Exists)) return result(record, outcome, false);
+                log.warn("Generated task id {} is already in use, reserving another", id);
+            }
+            known = List.of();
         } catch (TaskStoreException e) {
             throw new EnqueueFailedException(known, 0, e);
         }
+        throw new EnqueueFailedException(known, 0, new TaskStoreException(ID_TAKEN));
     }
 
     /**
-     * Stores several tasks in chunks. Every id is reserved before the first write; when a chunk fails the
-     * exception carries the id of every request, so the caller can retry the same list with
-     * {@link TaskRequest.Builder#id(long)} set from {@link EnqueueFailedException#ids()}: tasks already
-     * stored answer accepted again instead of being stored twice. When the store fails before the ids are
-     * reserved, the exception carries no ids and nothing was written.
+     * Stores several tasks in chunks. Every id is fixed before the first write, and every id the caller set is
+     * checked against its stored task before it; when a chunk fails the exception carries the id of every
+     * request, so the caller can retry the same list with {@link TaskRequest.Builder#id(long)} set from
+     * {@link EnqueueFailedException#ids()}: tasks already stored answer accepted again instead of being stored
+     * twice. When the store fails while the ids are being reserved, the exception carries no ids and nothing was
+     * written. A generated id found taken is replaced like in {@link #enqueue}.
      *
      * @return one result per request, in order
-     * @throws TaskValidationException when a request sets an id that was never allocated
+     * @throws TaskValidationException when a request sets an id that was never allocated, or two requests set
+     *                                 the same id
      * @throws TaskIdReusedException   when a request sets an id that belongs to a task with other content;
-     *                                 earlier chunks may already be stored
+     *                                 checked before the first write, so nothing is stored
      */
     public List<EnqueueResult> enqueueAll(List<? extends TaskRequest<?>> requests) {
-        var records = new ArrayList<TaskRecord>(requests.size());
-        var ids = new ArrayList<Long>(requests.size());
-        var fresh = (int) requests.stream().filter(r -> r.id() == null).count();
-        long nextId;
+        var callerIds = new HashSet<Long>();
+        for (var r : requests) {
+            if (r.id() != null && !callerIds.add(r.id())) {
+                throw new TaskValidationException("id " + r.id() + " is set on more than one request");
+            }
+        }
+        long nextId = 0;
         try {
-            requests.stream()
-                    .filter(r -> r.id() != null)
-                    .mapToLong(TaskRequest::id)
-                    .max()
-                    .ifPresent(this::requireAllocated);
-            nextId = fresh == 0 ? 0 : this.ids.nextIds(fresh);
+            if (requests.size() > callerIds.size()) nextId = this.ids.nextIds(requests.size() - callerIds.size());
         } catch (TaskStoreException e) {
             throw new EnqueueFailedException(List.of(), 0, e);
         }
-        for (var r : requests) {
-            var record = toRecord(r, r.id() != null ? r.id() : nextId++);
-            records.add(record);
-            ids.add(record.id());
+        var ids = new ArrayList<Long>(requests.size());
+        for (var r : requests) ids.add(r.id() != null ? r.id() : nextId++);
+        var records = new ArrayList<TaskRecord>(requests.size());
+        var verified = new HashSet<Long>();
+        try {
+            callerIds.stream().mapToLong(Long::longValue).max().ifPresent(this::requireAllocated);
+            for (int i = 0; i < requests.size(); i++) records.add(toRecord(requests.get(i), ids.get(i)));
+            for (int i = 0; i < requests.size(); i++) {
+                if (requests.get(i).id() != null && requireSameContent(records.get(i))) {
+                    verified.add(ids.get(i));
+                }
+            }
+        } catch (TaskStoreException e) {
+            throw new EnqueueFailedException(ids, 0, e);
         }
         var results = new ArrayList<EnqueueResult>(records.size());
         for (int from = 0; from < records.size(); from += ENQUEUE_CHUNK) {
-            var chunk = records.subList(from, Math.min(records.size(), from + ENQUEUE_CHUNK));
+            var to = Math.min(records.size(), from + ENQUEUE_CHUNK);
             try {
-                var outcomes = store.enqueueAll(chunk);
-                for (int i = 0; i < chunk.size(); i++) {
-                    results.add(result(chunk.get(i), outcomes.get(i)));
-                }
+                results.addAll(writeChunk(requests, records, ids, verified, from, to));
             } catch (TaskStoreException e) {
                 throw new EnqueueFailedException(ids, results.size(), e);
             }
         }
         return results;
+    }
+
+    private List<EnqueueResult> writeChunk(
+            List<? extends TaskRequest<?>> requests,
+            List<TaskRecord> records,
+            List<Long> ids,
+            Set<Long> verified,
+            int from,
+            int to) {
+        var out = new EnqueueResult[to - from];
+        List<Integer> todo = new ArrayList<>();
+        for (int i = 0; i < out.length; i++) todo.add(i);
+        for (int tries = 1; ; tries++) {
+            var sent = new ArrayList<TaskRecord>(todo.size());
+            for (int i : todo) sent.add(records.get(from + i));
+            var outcomes = store.enqueueAll(sent);
+            var taken = new ArrayList<Integer>();
+            for (int k = 0; k < todo.size(); k++) {
+                int i = todo.get(k);
+                if (outcomes.get(k) instanceof EnqueueOutcome.Exists
+                        && requests.get(from + i).id() == null) {
+                    taken.add(i);
+                } else {
+                    var record = sent.get(k);
+                    out[i] = result(record, outcomes.get(k), verified.contains(record.id()));
+                }
+            }
+            if (taken.isEmpty()) return Arrays.asList(out);
+            if (tries == MAX_ID_TRIES) throw new TaskStoreException(ID_TAKEN);
+            long first = this.ids.nextIds(taken.size());
+            for (int k = 0; k < taken.size(); k++) {
+                int at = from + taken.get(k);
+                records.set(at, toRecord(requests.get(at), first + k));
+                ids.set(at, first + k);
+            }
+            todo = taken;
+        }
     }
 
     /**
@@ -160,11 +223,11 @@ public final class TaskClient {
         }
     }
 
-    private EnqueueResult result(TaskRecord sent, EnqueueOutcome outcome) {
+    private EnqueueResult result(TaskRecord sent, EnqueueOutcome outcome, boolean verified) {
         return switch (outcome) {
             case EnqueueOutcome.Stored s -> new EnqueueResult.Accepted(sent.id());
             case EnqueueOutcome.Exists e -> {
-                requireSameContent(sent);
+                if (!verified) requireSameContent(sent);
                 yield new EnqueueResult.Accepted(sent.id());
             }
             case EnqueueOutcome.DuplicateKey d -> new EnqueueResult.Duplicate(d.existingId());
@@ -172,13 +235,16 @@ public final class TaskClient {
     }
 
     /**
-     * An id the store already has is a retry only when the stored task is the one being sent. The payload is
-     * compared when the store still has it (a finished task may have dropped it), and the unique key unless
-     * the task finished and released it.
+     * An id the caller set that the store already has is a retry only when the stored task is the one being
+     * sent. Compared: task type, queue, the payload when the store still has it (a finished task may have
+     * dropped it) and the unique key unless the task finished and released it.
+     *
+     * @return true when the stored task matched, false when the store has no such task
+     * @throws TaskIdReusedException when it differs
      */
-    private void requireSameContent(TaskRecord sent) {
+    private boolean requireSameContent(TaskRecord sent) {
         var stored = store.getTask(sent.id()).orElse(null);
-        if (stored == null) return;
+        if (stored == null) return false;
         if (stored.eventId() != sent.eventId()) throw new TaskIdReusedException(sent.id(), "another task type");
         if (stored.queueId() != sent.queueId()) throw new TaskIdReusedException(sent.id(), "another queue");
         if (stored.data() != null && !stored.data().equals(sent.data())) {
@@ -190,6 +256,7 @@ public final class TaskClient {
                 : sent.uniqueKey() != null && !stored.state().isTerminal()) {
             throw new TaskIdReusedException(sent.id(), "another unique key");
         }
+        return true;
     }
 
     <T> TaskRecord toRecord(TaskRequest<T> request) {

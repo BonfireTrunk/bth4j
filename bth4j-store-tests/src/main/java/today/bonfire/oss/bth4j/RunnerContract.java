@@ -226,6 +226,10 @@ public abstract class RunnerContract {
         var done = awaitState(id, TaskState.SUCCEEDED);
         assertThat(done.data()).isNull();
         assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("two", 1))
+                        .id(id)
+                        .build()))
+                .isEqualTo(new EnqueueResult.Accepted(id));
         assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID_TYPE).id(id).build()))
                 .isInstanceOf(TaskIdReusedException.class);
     }

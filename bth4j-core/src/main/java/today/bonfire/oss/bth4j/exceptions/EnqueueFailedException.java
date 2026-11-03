@@ -7,9 +7,9 @@ import java.util.List;
  * stored. {@link #ids()} holds the id every request of the call was given, in request order; enqueueing the
  * same requests again with those ids set is safe, the store answers accepted for a task it already has.
  * The guarantee holds while the task is retained: a task that ran and was removed by a zero retention is
- * stored again. When the store failed before the ids were fixed (reserving a block of ids, checking a caller's
- * id), {@link #ids()} is empty or holds only the ids the caller set itself: nothing was written, and the
- * caller retries as before, without ids.
+ * stored again. When {@link #ids()} holds an id, including one the caller set itself, the task may already be
+ * stored and the retry must use that id. Only an empty {@link #ids()} means the store failed before any id was
+ * fixed (reserving a block of ids), nothing was written, and the caller retries without ids.
  */
 public class EnqueueFailedException extends RuntimeException {
     private final List<Long> ids;
