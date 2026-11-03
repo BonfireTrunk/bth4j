@@ -79,7 +79,8 @@ public final class TaskClient {
     /**
      * Stores the task. A task without a caller-set id gets a fresh id; should the store already hold a task under
      * it (another client's reserved id was set by hand), a new id is reserved and the task stored again, up to
-     * three tries in all.
+     * three tries in all. An existing caller id with matching content answers {@code Accepted} without
+     * starting another run, even when DEAD; use {@link AdminOps#retry(long, int)} to run a dead task again.
      *
      * @throws TaskValidationException when the request is invalid or exceeds a size limit, or sets an id that
      *                                 was never allocated

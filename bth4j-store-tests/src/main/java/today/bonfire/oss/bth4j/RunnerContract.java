@@ -991,10 +991,10 @@ public abstract class RunnerContract {
         startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));
         registerLate(
                 "late-catch",
-                "* * * * *",
+                farCron(),
                 today.bonfire.oss.bth4j.spi.RecurringDefinition.MISFIRE_CATCH_UP,
                 2,
-                Duration.ofMinutes(10));
+                Duration.ofHours(10));
 
         await("two catch-up runs", () -> runs.get() == 2);
         await("a future fire time", () -> client.schedules().get("late-catch").isAfter(Instant.now()));
