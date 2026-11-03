@@ -2504,6 +2504,87 @@ public abstract class StoreContract {
     // inspection
 
     @Test
+    void taskByKeyFindsTheOpenHolder() {
+        TaskRecord leased = leased(task().uniqueKey("l"));
+        long queued = put(task().uniqueKey("q"));
+        long scheduled = put(task().uniqueKey("s").due(millis(now().plus(Duration.ofDays(1)))));
+
+        assertThat(store.taskByKey("q")).map(TaskRecord::id).contains(queued);
+        assertThat(store.taskByKey("s")).map(TaskRecord::id).contains(scheduled);
+        assertThat(store.taskByKey("l")).map(TaskRecord::id).contains(leased.id());
+        assertThat(store.taskByKey("q").orElseThrow().uniqueKey()).isEqualTo("q");
+    }
+
+    @Test
+    void taskByKeyFindsTheFinishedHolderInsideKeyKeepAndNotAfter() {
+        TaskRecord t = leased(task().uniqueKey("k").keyKeep(SHORT));
+        assertThat(store.ack(t.id(), t.revision(), true, true)).isTrue();
+
+        assertThat(store.taskByKey("k")).map(TaskRecord::id).contains(t.id());
+        assertThat(store.taskByKey("k").orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        advance(PAST_SHORT);
+        assertThat(store.taskByKey("k")).isEmpty();
+    }
+
+    @Test
+    void taskByKeyIsEmptyForAnUnknownKey() {
+        put(task().uniqueKey("known"));
+
+        assertThat(store.taskByKey("unknown")).isEmpty();
+    }
+
+    @Test
+    void taskByKeyIsEmptyOnceAckReleasedTheKeyWithoutKeyKeep() {
+        TaskRecord t = leased(task().uniqueKey("k"));
+        assertThat(store.ack(t.id(), t.revision(), true, true)).isTrue();
+
+        assertThat(store.taskByKey("k")).isEmpty();
+    }
+
+    @Test
+    void taskByKeyReturnsTheNewHolderOnceTheOldWindowPassedAndTheKeyWasReused() {
+        TaskRecord old = leased(task().uniqueKey("k").keyKeep(SHORT));
+        assertThat(store.ack(old.id(), old.revision(), true, true)).isTrue();
+        advance(PAST_SHORT);
+        long fresh = put(task().uniqueKey("k"));
+
+        assertThat(store.taskByKey("k")).map(TaskRecord::id).contains(fresh);
+    }
+
+    @Test
+    void taskByKeyIsEmptyAfterAnOperatorRetryClearedTheKey() {
+        TaskRecord t = leased(task().uniqueKey("k").keyKeep(Duration.ofHours(1)));
+        assertThat(store.fail(t.id(), t.revision(), failure(1), null, true)).isEqualTo(FailOutcome.DEAD);
+        assertThat(store.taskByKey("k")).isPresent();
+        assertThat(store.retry(t.id(), get(t.id()).revision())).isTrue();
+
+        assertThat(store.taskByKey("k")).isEmpty();
+    }
+
+    @Test
+    void taskByKeyFindsADeadOrCancelledHolderInsideKeyKeep() {
+        TaskRecord dead = leased(task().uniqueKey("dead").keyKeep(Duration.ofHours(1)));
+        assertThat(store.fail(dead.id(), dead.revision(), failure(1), null, true))
+                .isEqualTo(FailOutcome.DEAD);
+        long queued = put(task().uniqueKey("cancelled").keyKeep(Duration.ofHours(1)));
+        assertThat(store.cancel(queued, get(queued).revision(), "stop")).isEqualTo(CancelOutcome.CANCELLED);
+
+        assertThat(store.taskByKey("dead")).map(TaskRecord::state).contains(TaskState.DEAD);
+        assertThat(store.taskByKey("cancelled")).map(TaskRecord::state).contains(TaskState.CANCELLED);
+    }
+
+    @Test
+    void taskByKeyIsEmptyAfterReleaseKeysRanPastTheWindow() {
+        TaskRecord t = leased(task().uniqueKey("k").keyKeep(SHORT));
+        assertThat(store.ack(t.id(), t.revision(), true, true)).isTrue();
+        advance(PAST_SHORT);
+        store.releaseKeys(10);
+
+        assertThat(store.taskByKey("k")).isEmpty();
+        assertThat(get(t.id()).uniqueKey()).isNull();
+    }
+
+    @Test
     void getTaskIsEmptyForAnUnknownId() {
         assertThat(store.getTask(store.allocateIds(1))).isEmpty();
     }
@@ -2705,6 +2786,45 @@ public abstract class StoreContract {
                     .as("cursor '%s'", bad)
                     .isInstanceOf(IllegalArgumentException.class);
         }
+    }
+
+    @Test
+    void cursorPageHasNoNextWhenTheFirstPageHoldsExactlyTheLimitAndHasOneWhenOneMoreExists() {
+        long a = putNew();
+        long b = putNew();
+        long c = putNew();
+
+        TaskPage exact = store.tasks(TaskState.QUEUED, null, (String) null, 3);
+        assertThat(exact.items()).extracting(TaskRecord::id).containsExactlyInAnyOrder(a, b, c);
+        assertThat(exact.next()).isNull();
+
+        long d = putNew();
+        TaskPage first = store.tasks(TaskState.QUEUED, null, (String) null, 3);
+        assertThat(first.items()).hasSize(3);
+        assertThat(first.next()).isNotNull();
+        TaskPage second = store.tasks(TaskState.QUEUED, null, first.next(), 3);
+        assertThat(second.items()).hasSize(1);
+        assertThat(second.next()).isNull();
+        assertThat(Stream.concat(first.items().stream(), second.items().stream())
+                        .map(TaskRecord::id))
+                .containsExactlyInAnyOrder(a, b, c, d);
+    }
+
+    @Test
+    void cursorPageHasNoNextWhenALeasedGroupWithTheSameSortValueFillsThePageExactly() {
+        for (int i = 0; i < 4; i++) {
+            put(task());
+        }
+        List<Long> byId = claim(4).stream().map(TaskRecord::id).sorted().toList();
+
+        TaskPage exact = store.tasks(TaskState.LEASED, null, (String) null, 4);
+        assertThat(exact.items()).extracting(TaskRecord::id).containsExactlyElementsOf(byId);
+        assertThat(exact.next()).isNull();
+        TaskPage first = store.tasks(TaskState.LEASED, null, (String) null, 3);
+        assertThat(first.items()).extracting(TaskRecord::id).containsExactlyElementsOf(byId.subList(0, 3));
+        TaskPage second = store.tasks(TaskState.LEASED, null, first.next(), 3);
+        assertThat(second.items()).extracting(TaskRecord::id).containsExactly(byId.get(3));
+        assertThat(second.next()).isNull();
     }
 
     @Test

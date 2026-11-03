@@ -604,6 +604,25 @@ public class RedisTaskStore implements FullStore {
         return found.isEmpty() ? Optional.empty() : Optional.of(found.getFirst());
     }
 
+    @Override
+    public Optional<TaskRecord> taskByKey(String key) {
+        String named = null;
+        for (var attempt = 0; attempt < 2; attempt++) {
+            var holder = guard(() -> jedis.get(keys.uniqueKey(key)));
+            if (holder == null) return Optional.empty();
+            if (holder.equals(named)) return Optional.empty();
+            named = holder;
+            var record = getTask(Long.parseLong(holder));
+            if (record.isPresent() && holdsKey(record.get(), key)) return record;
+        }
+        return Optional.empty();
+    }
+
+    /** The two reads of {@link #taskByKey} are not atomic: the record may have lost the key to a newer task since. */
+    private static boolean holdsKey(TaskRecord record, String key) {
+        return key.equals(record.uniqueKey()) && (!record.state().isTerminal() || record.keyUntil() != null);
+    }
+
     /** Reads the hash, payload, steps and failures of every id in one pipeline; ids without a hash are left out. */
     private List<TaskRecord> load(List<Long> ids) {
         return guard(() -> {
@@ -706,12 +725,14 @@ public class RedisTaskStore implements FullStore {
             return new TaskPage(List.of(), null);
         }
         return guard(() -> {
-            var entries = position == null
-                    ? listing(state, queueId, null, 0, limit)
-                    : listing(state, queueId, position.score(), position.id(), limit);
+            var probe = (int) Math.min((long) limit + 1, Integer.MAX_VALUE);
+            var found = position == null
+                    ? listing(state, queueId, null, 0, probe)
+                    : listing(state, queueId, position.score(), position.id(), probe);
+            var entries = found.subList(0, Math.min(limit, found.size()));
             var items = load(entries.stream().map(Entry::id).toList());
             var last = entries.isEmpty() ? null : entries.getLast();
-            var next = entries.size() < limit ? null : (long) last.score() + ":" + last.id();
+            var next = found.size() > limit ? (long) last.score() + ":" + last.id() : null;
             return new TaskPage(items, next);
         });
     }

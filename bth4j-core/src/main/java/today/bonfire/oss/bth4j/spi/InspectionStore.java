@@ -16,6 +16,12 @@ public interface InspectionStore extends TaskStore {
      */
     long idHighWaterMark();
 
+    /**
+     * @return the task that holds the unique key now: an open task (QUEUED, SCHEDULED, LEASED) or a finished one
+     *         whose keep window has not passed; empty when no task holds the key
+     */
+    Optional<TaskRecord> taskByKey(String key);
+
     /** @return counts per state for every queue that has or had tasks, by queue id */
     Map<Integer, StateCounts> counts();
 

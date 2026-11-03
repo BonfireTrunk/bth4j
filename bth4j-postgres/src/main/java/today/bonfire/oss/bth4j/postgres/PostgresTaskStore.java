@@ -1197,6 +1197,20 @@ public class PostgresTaskStore implements FullStore {
         });
     }
 
+    /** The unique index covers the key column; a key whose window has passed is free even before the release job ran. */
+    @Override
+    public Optional<TaskRecord> taskByKey(String key) {
+        return withConnection(c -> {
+            try (var ps = c.prepareStatement(
+                    "SELECT * FROM " + task + " WHERE unique_key = ? AND (key_until IS NULL OR key_until > now())")) {
+                ps.setString(1, key);
+                try (var rs = ps.executeQuery()) {
+                    return rs.next() ? Optional.of(read(rs)) : Optional.empty();
+                }
+            }
+        });
+    }
+
     /** Every registered queue appears, with zeros when it has no tasks. Counts by a scan of the task table. */
     @Override
     public Map<Integer, StateCounts> counts() {
@@ -1272,12 +1286,13 @@ public class PostgresTaskStore implements FullStore {
                     setInstant(ps, i++, position.changed());
                     ps.setLong(i++, position.id());
                 }
-                ps.setInt(i, limit);
+                ps.setLong(i, (long) limit + 1);
                 return readAll(ps);
             }
         });
-        var next = items.size() < limit ? null : encodeCursor(items.getLast());
-        return new TaskPage(items, next);
+        if (items.size() <= limit) return new TaskPage(items, null);
+        var page = items.subList(0, limit);
+        return new TaskPage(page, encodeCursor(page.getLast()));
     }
 
     private record Position(Instant changed, long id) {}

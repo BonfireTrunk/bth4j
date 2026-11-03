@@ -200,16 +200,28 @@ public final class TaskExecution implements Runnable, TaskContext {
     }
 
     private void succeed(Instant started) {
-        var delay = view.headers().get(RecurringTaskService.FIXED_DELAY_HEADER);
-        var rearm = delay == null
-                ? null
-                : RecurringTaskService.rearmEffect(record, s.clock().instant().plus(Duration.parse(delay)));
+        var rearm = rearmEffect();
         var outcome =
                 apply(() -> s.store().ack(record.id(), record.revision(), s.keepSucceeded(), s.keepPayload(), rearm));
         if (outcome == Outcome.LOST) {
             log.warn("Task {} completed but its lease was lost, it may run again", record.id());
         }
         emit(new TaskEvent.Succeeded(view, Duration.between(started, s.clock().instant()), outcome));
+    }
+
+    /** The re-arm of a fixed-delay occurrence; a header that cannot be read must not stop the acknowledgement. */
+    private ScheduleEffect rearmEffect() {
+        if (!RecurringTaskService.isFixedDelayOccurrence(record)) return null;
+        var delay = record.headers().get(RecurringTaskService.FIXED_DELAY_HEADER);
+        try {
+            return RecurringTaskService.rearmEffect(record, s.clock().instant().plus(Duration.parse(delay)));
+        } catch (RuntimeException e) {
+            var detail = "schedule " + record.scheduleId() + " not re-armed: unreadable "
+                    + RecurringTaskService.FIXED_DELAY_HEADER + " header";
+            s.status().issue("schedule-rearm", detail, record.id());
+            log.error("Task {}: {}", record.id(), detail);
+            return null;
+        }
     }
 
     private void fail(Throwable e) {
@@ -315,7 +327,8 @@ public final class TaskExecution implements Runnable, TaskContext {
         }
     }
 
-    private void die(Throwable e, String reason) {
+    private void die(Throwable e, String given) {
+        var reason = given == null ? "no reason given" : given;
         if (detail() == FailureDetail.FULL) {
             log.error("Task {} failed and will not be retried: {}", record.id(), reason, e);
         } else {

@@ -29,8 +29,10 @@ import javax.net.ssl.SSLContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.AdminOps;
+import today.bonfire.oss.bth4j.TaskRequest;
 import today.bonfire.oss.bth4j.TaskViewPage;
 import today.bonfire.oss.bth4j.common.Json;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskState;
@@ -242,6 +244,13 @@ public final class AdminHttpServer {
                 throw new HttpError(403, "this action needs the ADMIN role");
             }
         }
+        var byKey = segments.size() >= 3
+                && segments.get(0).equals("tasks")
+                && segments.get(1).equals("by-key");
+        if (byKey) {
+            byKey(ex, method, segments);
+            return;
+        }
         if (segments.isEmpty() || segments.size() > 3) {
             throw new HttpError(404, "not found");
         }
@@ -278,6 +287,35 @@ public final class AdminHttpServer {
             case "GET workers" -> sendJson(ex, 200, Views.list(admin.workers(), Views::worker));
             case "GET issues" -> sendJson(ex, 200, Views.list(admin.issues(), Views::issue));
             default -> throw new HttpError(404, "not found");
+        }
+    }
+
+    private void byKey(HttpExchange ex, String method, List<String> segments) throws IOException {
+        var key = segments.get(2);
+        try {
+            TaskRequest.requireUniqueKey(key);
+        } catch (TaskValidationException e) {
+            throw new HttpError(400, e.getMessage());
+        }
+        if (segments.size() == 3 && method.equals("GET")) {
+            var task = admin.taskByKey(key).orElseThrow(() -> new HttpError(404, "no task holds this key"));
+            sendJson(ex, 200, Views.task(task));
+        } else if (segments.size() == 4
+                && method.equals("POST")
+                && segments.get(3).equals("cancel")) {
+            var reason = readObject(ex).get("reason");
+            if (reason != null && !(reason instanceof String)) {
+                throw new HttpError(400, "reason must be a string");
+            }
+            var outcome = admin.cancelByKey(key, (String) reason);
+            switch (outcome) {
+                case NOT_FOUND -> throw new HttpError(404, "no task holds this key");
+                case FINISHED -> throw new HttpError(409, "the task holding this key is already finished");
+                case STALE -> throw new HttpError(409, "the task changed meanwhile, retry");
+                default -> sendJson(ex, 200, Views.obj("ok", true, "outcome", outcome.name()));
+            }
+        } else {
+            throw new HttpError(404, "not found");
         }
     }
 

@@ -248,6 +248,7 @@ class AdminHttpServerTest {
                 mutate("POST", "/api/v1/queues/default/resume", login, null),
                 mutate("POST", "/api/v1/tasks/1/retry", login, revisionBody),
                 mutate("POST", "/api/v1/tasks/1/cancel", login, revisionBody),
+                mutate("POST", "/api/v1/tasks/by-key/order-1/cancel", login, "{}"),
                 mutate("DELETE", "/api/v1/tasks/1?revision=7", login, null),
                 mutate("POST", "/api/v1/schedules/nightly/pause", login, null),
                 mutate("POST", "/api/v1/schedules/nightly/resume", login, null),
@@ -319,6 +320,85 @@ class AdminHttpServerTest {
         assertThat(mutate("DELETE", "/api/v1/tasks/99?revision=1", login, null).statusCode())
                 .isEqualTo(404);
         assertThat(get("/api/v1/tasks/99", login).statusCode()).isEqualTo(404);
+    }
+
+    @Test
+    void taskByKeyIsReadableByViewersAndDecodesTheKey() throws Exception {
+        ops.keyHolders.put("order 1/a+b", 1L);
+        start();
+        var login = viewer();
+
+        var found = get("/api/v1/tasks/by-key/order%201%2Fa%2Bb", login);
+
+        assertThat(found.statusCode()).isEqualTo(200);
+        assertThat(json(found)).containsEntry("id", "1");
+        assertThat(get("/api/v1/tasks/by-key/missing", login).statusCode()).isEqualTo(404);
+    }
+
+    @Test
+    void cancelByKeyReachesTheOperations() throws Exception {
+        ops.keyHolders.put("order-1", 3L);
+        start();
+        var login = admin();
+
+        var cancel = mutate("POST", "/api/v1/tasks/by-key/order-1/cancel", login, "{\"reason\":\"why\"}");
+
+        assertThat(cancel.statusCode()).isEqualTo(200);
+        assertThat(json(cancel)).containsEntry("outcome", "REQUESTED");
+        assertThat(ops.calls).containsExactly("cancelByKey order-1 why");
+        assertThat(mutate("POST", "/api/v1/tasks/by-key/order-1/cancel", login, "{\"reason\":5}")
+                        .statusCode())
+                .isEqualTo(400);
+        assertThat(get("/api/v1/tasks/by-key/order-1/cancel", login).statusCode())
+                .isEqualTo(404);
+    }
+
+    @Test
+    void cancelByKeyAnswersEachOutcomeWithItsOwnStatusAndText() throws Exception {
+        ops.keyHolders.put("done", 1L);
+        ops.keyHolders.put("racy", 3L);
+        start();
+        var login = admin();
+
+        var missing = mutate("POST", "/api/v1/tasks/by-key/missing/cancel", login, "{}");
+        var finished = mutate("POST", "/api/v1/tasks/by-key/done/cancel", login, "{}");
+        ops.staleKeys.add("racy");
+        var stale = mutate("POST", "/api/v1/tasks/by-key/racy/cancel", login, "{}");
+
+        assertThat(missing.statusCode()).isEqualTo(404);
+        assertThat(json(missing)).containsEntry("error", "no task holds this key");
+        assertThat(finished.statusCode()).isEqualTo(409);
+        assertThat(json(finished)).containsEntry("error", "the task holding this key is already finished");
+        assertThat(stale.statusCode()).isEqualTo(409);
+        assertThat(json(stale)).containsEntry("error", "the task changed meanwhile, retry");
+    }
+
+    @Test
+    void cancelByKeyNeedsTheCsrfTokenAndANumericKeyIsAKey() throws Exception {
+        ops.keyHolders.put("42", 3L);
+        start();
+        var login = admin();
+
+        var noToken = send("POST", "/api/v1/tasks/by-key/42/cancel", login, "{}");
+
+        assertThat(noToken.statusCode()).isEqualTo(403);
+        assertThat(get("/api/v1/tasks/by-key/42", login).statusCode()).isEqualTo(200);
+        assertThat(mutate("POST", "/api/v1/tasks/by-key/42/cancel", login, "{}").statusCode())
+                .isEqualTo(200);
+        assertThat(ops.calls).containsExactly("cancelByKey 42 null");
+    }
+
+    @Test
+    void byKeyRoutesRejectAnInvalidKey() throws Exception {
+        start();
+        var login = admin();
+        var tooLong = "k".repeat(257);
+
+        assertThat(get("/api/v1/tasks/by-key/" + tooLong, login).statusCode()).isEqualTo(400);
+        assertThat(get("/api/v1/tasks/by-key/%20", login).statusCode()).isEqualTo(400);
+        assertThat(mutate("POST", "/api/v1/tasks/by-key/" + tooLong + "/cancel", login, "{}")
+                        .statusCode())
+                .isEqualTo(400);
     }
 
     @Test

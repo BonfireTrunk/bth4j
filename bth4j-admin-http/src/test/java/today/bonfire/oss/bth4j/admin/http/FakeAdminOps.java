@@ -25,6 +25,8 @@ import today.bonfire.oss.bth4j.spi.WorkerInfo;
 final class FakeAdminOps implements AdminOps {
 
     final TreeMap<Long, TaskView> tasks = new TreeMap<>();
+    final Map<String, Long> keyHolders = new ConcurrentHashMap<>();
+    final java.util.Set<String> staleKeys = ConcurrentHashMap.newKeySet();
     final Map<String, StateCounts> counts = new ConcurrentHashMap<>();
     final List<QueueInfo> queues = new CopyOnWriteArrayList<>();
     final List<ScheduleView> schedules = new CopyOnWriteArrayList<>();
@@ -71,6 +73,23 @@ final class FakeAdminOps implements AdminOps {
             throw failure;
         }
         return Optional.ofNullable(tasks.get(id));
+    }
+
+    @Override
+    public Optional<TaskView> taskByKey(String key) {
+        if (failure != null) {
+            throw failure;
+        }
+        return Optional.ofNullable(keyHolders.get(key)).map(tasks::get);
+    }
+
+    @Override
+    public CancelOutcome cancelByKey(String key, String reason) {
+        calls.add("cancelByKey " + key + ' ' + reason);
+        var holder = taskByKey(key);
+        if (holder.isEmpty()) return CancelOutcome.NOT_FOUND;
+        if (holder.get().state().isTerminal()) return CancelOutcome.FINISHED;
+        return staleKeys.contains(key) ? CancelOutcome.STALE : CancelOutcome.REQUESTED;
     }
 
     @Override
