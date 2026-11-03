@@ -73,6 +73,11 @@ public final class DefaultAdminOps implements AdminOps {
     }
 
     @Override
+    public Optional<TaskView> taskByKey(String key) {
+        return store.taskByKey(key).map(names::view);
+    }
+
+    @Override
     public List<TaskView> tasks(TaskState state, String queue, long afterId, int limit) {
         var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.getValidQueue(queue)));
         var result = new ArrayList<TaskView>();
@@ -102,6 +107,14 @@ public final class DefaultAdminOps implements AdminOps {
         // a waiting fixed-delay occurrence re-arms nothing, so the store pauses its definition with the cancel
         var pause = RecurringTaskService.pauseEffect(store.getTask(id).orElse(null));
         return store.cancel(id, revision, reason == null || reason.isBlank() ? "cancelled by operator" : reason, pause);
+    }
+
+    @Override
+    public CancelOutcome cancelByKey(String key, String reason) {
+        var holder = store.taskByKey(key).orElse(null);
+        if (holder == null) return CancelOutcome.NOT_FOUND;
+        if (holder.state().isTerminal()) return CancelOutcome.FINISHED;
+        return cancel(holder.id(), holder.revision(), reason);
     }
 
     @Override

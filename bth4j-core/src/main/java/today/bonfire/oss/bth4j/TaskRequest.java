@@ -19,6 +19,13 @@ public final class TaskRequest<T> {
     public static final int MAX_HEADERS_BYTES = 8 * 1024;
     public static final int MAX_PAYLOAD_BYTES = 256 * 1024;
 
+    /** The rule for a unique key, for enqueueing and for looking one up. */
+    public static void requireUniqueKey(String key) {
+        if (key.isBlank() || key.length() > MAX_UNIQUE_KEY_LENGTH) {
+            throw new TaskValidationException("uniqueKey must be 1 to " + MAX_UNIQUE_KEY_LENGTH + " characters");
+        }
+    }
+
     private final TaskType<T> type;
     private final T payload;
     private final String queue;
@@ -179,9 +186,7 @@ public final class TaskRequest<T> {
          * {@link EnqueueResult.Duplicate} instead of being stored.
          */
         public Builder<T> uniqueKey(String key) {
-            if (key != null && (key.isBlank() || key.length() > MAX_UNIQUE_KEY_LENGTH)) {
-                throw new TaskValidationException("uniqueKey must be 1 to " + MAX_UNIQUE_KEY_LENGTH + " characters");
-            }
+            if (key != null) requireUniqueKey(key);
             this.uniqueKey = key;
             return this;
         }

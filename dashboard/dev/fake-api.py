@@ -236,6 +236,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200, rows[:limit])
             page = rows[:limit]
             return self.send_json(200, {"items": page, "next": page[-1]["id"] if len(page) == limit else None})
+        if segs[1] == "by-key" and len(segs) in (3, 4):
+            holder = next((x for x in tasks.values() if x["uniqueKey"] == segs[2]), None)
+            if holder is None:
+                return self.send_json(404, {"error": "no task holds this key"})
+            if len(segs) == 3 and method == "GET":
+                return self.send_json(200, holder)
+            if len(segs) == 4 and segs[3] == "cancel" and method == "POST":
+                if holder["state"] in ("SUCCEEDED", "DEAD", "CANCELLED", "EXPIRED"):
+                    return self.send_json(409, {"error": "the task holding this key is already finished"})
+                holder.update(state="CANCELLED", cancelReason=self.body().get("reason"), cancelRequestedAt=iso(0),
+                              revision=str(int(holder["revision"]) + 1), stateChanged=iso(0))
+                return self.send_json(200, {"ok": True, "outcome": "CANCELLED"})
+            return self.send_json(404, {"error": "not found"})
         t = tasks[segs[1]]
         if len(segs) == 2 and method == "GET":
             return self.send_json(200, t)

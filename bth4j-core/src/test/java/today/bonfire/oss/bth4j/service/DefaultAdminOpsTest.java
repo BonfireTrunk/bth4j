@@ -260,6 +260,88 @@ class DefaultAdminOpsTest {
     }
 
     @Test
+    void taskByKeyIsReturnedWithQueueAndEventNames() {
+        handlers.put("taskByKey", a -> Optional.of(record(42, OTHER_QUEUE_ID)));
+
+        var view = ops.taskByKey("invoice-9").orElseThrow();
+
+        assertThat(view.id()).isEqualTo(42);
+        assertThat(view.queue()).isEqualTo("Q:OTHER");
+        assertThat(calls).contains("taskByKey[invoice-9]");
+    }
+
+    @Test
+    void taskByKeyIsEmptyWhenNoTaskHoldsTheKey() {
+        handlers.put("taskByKey", a -> Optional.empty());
+
+        assertThat(ops.taskByKey("invoice-9")).isEmpty();
+    }
+
+    @Test
+    void cancelByKeyCancelsTheHolderWithTheRevisionItRead() {
+        handlers.put(
+                "taskByKey",
+                a -> Optional.of(
+                        record(42, OTHER_QUEUE_ID).toBuilder().revision(5).build()));
+        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("cancel", a -> CancelOutcome.REQUESTED);
+
+        assertThat(ops.cancelByKey("invoice-9", "duplicate")).isEqualTo(CancelOutcome.REQUESTED);
+        assertThat(calls).contains("cancel[42, 5, duplicate, null]");
+    }
+
+    @Test
+    void cancelByKeyReportsAChangeBetweenTheReadAndTheCancelAsStale() {
+        handlers.put("taskByKey", a -> Optional.of(record(42, OTHER_QUEUE_ID)));
+        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("cancel", a -> CancelOutcome.STALE);
+
+        assertThat(ops.cancelByKey("invoice-9", "duplicate")).isEqualTo(CancelOutcome.STALE);
+    }
+
+    @Test
+    void cancelByKeyIsNotFoundAndCancelsNothingWhenNoTaskHoldsTheKey() {
+        handlers.put("taskByKey", a -> Optional.empty());
+
+        assertThat(ops.cancelByKey("invoice-9", "duplicate")).isEqualTo(CancelOutcome.NOT_FOUND);
+        assertThat(calls).noneMatch(c -> c.startsWith("cancel["));
+    }
+
+    @Test
+    void cancelByKeyIsFinishedAndCancelsNothingWhenTheHolderHasEnded() {
+        for (var state : TaskState.values()) {
+            if (!state.isTerminal()) continue;
+            handlers.put(
+                    "taskByKey",
+                    a -> Optional.of(
+                            record(42, OTHER_QUEUE_ID).toBuilder().state(state).build()));
+
+            assertThat(ops.cancelByKey("invoice-9", "duplicate")).isEqualTo(CancelOutcome.FINISHED);
+        }
+        assertThat(calls).noneMatch(c -> c.startsWith("cancel["));
+    }
+
+    @Test
+    void cancelByKeyOfAWaitingFixedDelayOccurrencePassesThePauseToTheStore() {
+        var occurrence = TaskRecord.builder()
+                .id(7)
+                .queueId(OTHER_QUEUE_ID)
+                .eventId(EVENT_ID)
+                .state(TaskState.SCHEDULED)
+                .uniqueKey("sched:poll")
+                .scheduleId("poll")
+                .headers(Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT5S"))
+                .build();
+        handlers.put("taskByKey", a -> Optional.of(occurrence));
+        handlers.put("getTask", a -> Optional.of(occurrence));
+        handlers.put("cancel", a -> CancelOutcome.CANCELLED);
+
+        ops.cancelByKey("sched:poll", "stop");
+
+        assertThat(calls).contains("cancel[7, 0, stop, ScheduleEffect[poll, occurrence 7, pause]]");
+    }
+
+    @Test
     void cancelPassesTheReasonToTheStore() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
         handlers.put("getTask", a -> Optional.empty());

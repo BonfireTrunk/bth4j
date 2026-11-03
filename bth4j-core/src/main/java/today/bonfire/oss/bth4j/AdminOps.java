@@ -26,6 +26,9 @@ public interface AdminOps {
 
     Optional<TaskView> task(long id);
 
+    /** @return the task that holds the unique key now, open or finished inside its keep window; empty when none does */
+    Optional<TaskView> taskByKey(String key);
+
     /**
      * @param queue null for all queues; results are ordered by state change time then id and start after {@code afterId}.
      *              Paging by {@code afterId} is best effort: a task that changes state between pages can end the
@@ -43,6 +46,16 @@ public interface AdminOps {
     boolean retry(long id, int revision);
 
     CancelOutcome cancel(long id, int revision, String reason);
+
+    /**
+     * Cancels the task that holds the unique key, with the revision read for it, as {@link #cancel(long, int, String)}
+     * does by id; cancelling a waiting fixed-delay occurrence (key {@code sched:<schedule id>}) pauses its schedule.
+     *
+     * @return {@link CancelOutcome#NOT_FOUND} when no task holds the key, {@link CancelOutcome#FINISHED} when the
+     *         holder has already finished (it only keeps the key for its window), {@link CancelOutcome#STALE} when it
+     *         changed between the read and the cancel, otherwise the outcome of {@code cancel}
+     */
+    CancelOutcome cancelByKey(String key, String reason);
 
     boolean delete(long id, int revision);
 
