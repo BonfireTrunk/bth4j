@@ -11,6 +11,12 @@ public interface InspectionStore extends TaskStore {
     Optional<TaskRecord> getTask(long id);
 
     /**
+     * @return the first task id that {@link #allocateIds} has not handed out yet; every id below it was
+     *         allocated by some client (it may never have been stored)
+     */
+    long idHighWaterMark();
+
+    /**
      * @return the task that holds the unique key now: an open task (QUEUED, SCHEDULED, LEASED) or a finished one
      *         whose keep window has not passed; empty when no task holds the key
      */

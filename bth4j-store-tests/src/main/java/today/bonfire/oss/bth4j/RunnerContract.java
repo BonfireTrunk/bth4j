@@ -25,8 +25,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
 import today.bonfire.oss.bth4j.exceptions.TaskRescheduleException;
 import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.TaskState;
@@ -197,6 +199,52 @@ public abstract class RunnerContract {
         var done = awaitState(id, TaskState.SUCCEEDED);
         assertThat(done.data()).isNull();
         assertThat(done.leaseUntil()).isNull();
+    }
+
+    @Test
+    void callerIdIsComparedWithTheStoredTask() {
+        long id = client.nextId();
+        var request = TaskRequest.of(PAYLOAD_TYPE, new Payload("one", 1)).id(id).build();
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("two", 1))
+                        .id(id)
+                        .build()))
+                .isInstanceOf(TaskIdReusedException.class);
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID_TYPE).id(id).build()))
+                .isInstanceOf(TaskIdReusedException.class);
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("one", 1))
+                        .queue("Q:LOW")
+                        .id(id)
+                        .build()))
+                .isInstanceOf(TaskIdReusedException.class);
+        assertThatThrownBy(() -> client.enqueueAll(
+                        List.of(TaskRequest.of(VOID_TYPE).id(id).build())))
+                .isInstanceOf(TaskIdReusedException.class);
+
+        startRunner(r -> r.register(PAYLOAD_TYPE, (ctx, payload) -> {}));
+        var done = awaitState(id, TaskState.SUCCEEDED);
+        assertThat(done.data()).isNull();
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("two", 1))
+                        .id(id)
+                        .build()))
+                .isEqualTo(new EnqueueResult.Accepted(id));
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID_TYPE).id(id).build()))
+                .isInstanceOf(TaskIdReusedException.class);
+    }
+
+    @Test
+    void callerIdThatWasNeverAllocatedIsRejected() {
+        long unallocated = store.idHighWaterMark();
+        assertThatThrownBy(() ->
+                        client.enqueue(TaskRequest.of(VOID_TYPE).id(unallocated).build()))
+                .isInstanceOf(TaskValidationException.class);
+
+        long id = client.nextId();
+        assertThat(client.enqueue(TaskRequest.of(VOID_TYPE).id(id).build()).accepted())
+                .isTrue();
     }
 
     @Test

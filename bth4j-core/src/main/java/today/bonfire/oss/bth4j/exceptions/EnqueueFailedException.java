@@ -3,40 +3,46 @@ package today.bonfire.oss.bth4j.exceptions;
 import java.util.List;
 
 /**
- * The store could not be reached while storing tasks, so the caller does not know whether they were
- * stored. {@link #ids()} holds the id every request of the call was given, in request order; enqueueing the
- * same requests again with those ids set is safe, the store answers accepted for a task it already has.
- * The guarantee holds while the task is retained: a task that ran and was removed by a zero retention is
- * stored again.
+ * An enqueue could not complete. An empty {@link #ids()} means nothing was written by this call: resend
+ * the same requests unchanged, keeping any ids the caller set. Otherwise {@link #ids()} holds every request's
+ * last assigned id in request order; tasks may already be stored, so a retry must set those ids.
+ * <p>
+ * Retrying the same requests, encoded identically, is idempotent while the tasks are retained. A task that
+ * ran and was removed can be stored again. If the cause reports occupied generated ids, failed id replacement
+ * or concurrent caller-id reuse, resolve the collisions before retrying: the retained ids can belong to other
+ * tasks, even with identical content.
  */
 public class EnqueueFailedException extends RuntimeException {
     private final List<Long> ids;
     private final int stored;
 
     /**
-     * @param ids    the id of every request in the failed call, in order
-     * @param stored how many of them were confirmed stored before the failure
+     * @param ids    the last assigned id of every request, in order; empty to indicate that the call wrote nothing
+     * @param stored the number of requests in completed chunks before the failure; zero for a single enqueue
      */
     public EnqueueFailedException(List<Long> ids, int stored, Throwable cause) {
         super(
-                "Enqueue of " + ids.size() + " task(s) starting at " + ids.getFirst() + " failed: "
-                        + cause.getMessage(),
+                "Enqueue of " + ids.size() + " task(s)" + (ids.isEmpty() ? "" : " starting at " + ids.getFirst())
+                        + " failed: " + cause.getMessage(),
                 cause);
         this.ids = List.copyOf(ids);
         this.stored = stored;
     }
 
-    /** @return the id of the first (or only) task of the call */
+    /**
+     * @return the id of the first (or only) task of the call
+     * @throws java.util.NoSuchElementException when {@link #ids()} is empty
+     */
     public long id() {
         return ids.getFirst();
     }
 
-    /** @return the id of every task of the call, in request order */
+    /** @return every request's last assigned id, in order; empty means resend the same requests unchanged */
     public List<Long> ids() {
         return ids;
     }
 
-    /** @return how many tasks, counted from the start, were confirmed stored before the failure */
+    /** @return the number of requests in completed chunks, including duplicate-key results; the failing chunk may also have stored tasks */
     public int stored() {
         return stored;
     }

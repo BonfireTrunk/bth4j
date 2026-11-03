@@ -142,6 +142,12 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
+    public long idHighWaterMark() {
+        var last = guard(() -> jedis.get(keys.seqId));
+        return last == null ? 1 : Long.parseLong(last) + 1;
+    }
+
+    @Override
     public long allocateIds(int count) {
         if (count < 1) {
             throw new IllegalArgumentException("count must be positive");

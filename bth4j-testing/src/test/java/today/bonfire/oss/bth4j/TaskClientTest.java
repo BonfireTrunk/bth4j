@@ -3,16 +3,27 @@ package today.bonfire.oss.bth4j;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiConsumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import today.bonfire.oss.bth4j.exceptions.EnqueueFailedException;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
+import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.spi.ClaimRequest;
+import today.bonfire.oss.bth4j.spi.FullStore;
+import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
+import today.bonfire.oss.bth4j.spi.TaskStoreException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
 import today.bonfire.oss.bth4j.testing.MutableClock;
 
@@ -95,6 +106,816 @@ class TaskClientTest {
         assertThat(client.tasks(TaskState.QUEUED, null, 0, 100))
                 .extracting(TaskView::id)
                 .containsExactly(id);
+    }
+
+    @Test
+    void reusedIdWithTheSameContentIsAcceptedAgain() {
+        var client = builder().build();
+        long id = client.nextId();
+        var request = TaskRequest.of(TYPED, new Payload("same"))
+                .queue("Q:LOW")
+                .uniqueKey("k")
+                .id(id)
+                .build();
+
+        client.enqueue(request);
+
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+    }
+
+    @Test
+    void reusedIdWithAnotherPayloadTypeQueueOrKeyThrows() {
+        var client = builder().build();
+        long id = client.nextId();
+        client.enqueue(TaskRequest.of(TYPED, new Payload("a")).id(id).build());
+
+        assertThatThrownBy(() -> client.enqueue(
+                        TaskRequest.of(TYPED, new Payload("b")).id(id).build()))
+                .isInstanceOfSatisfying(
+                        TaskIdReusedException.class, e -> assertThat(e.id()).isEqualTo(id));
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).id(id).build()))
+                .isInstanceOf(TaskIdReusedException.class);
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(TYPED, new Payload("a"))
+                        .queue("Q:LOW")
+                        .id(id)
+                        .build()))
+                .isInstanceOf(TaskIdReusedException.class);
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(TYPED, new Payload("a"))
+                        .uniqueKey("k")
+                        .id(id)
+                        .build()))
+                .isInstanceOf(TaskIdReusedException.class);
+        assertThat(client.tasks(TaskState.QUEUED, null, 0, 100)).hasSize(1);
+    }
+
+    @Test
+    void anIdAllocatedLaterToAnotherTaskIsNotAnsweredAccepted() {
+        var client = builder().idBlockSize(1).build();
+        long id = client.nextId();
+        client.enqueue(TaskRequest.of(TYPED, new Payload("first")).id(id).build());
+
+        assertThatThrownBy(() -> client.enqueue(
+                        TaskRequest.of(TYPED, new Payload("second")).id(id).build()))
+                .isInstanceOf(TaskIdReusedException.class);
+    }
+
+    @Test
+    void enqueueAllChecksReusedIds() {
+        var client = builder().build();
+        long id = client.nextId();
+        client.enqueue(TaskRequest.of(TYPED, new Payload("a")).id(id).build());
+
+        var same = client.enqueueAll(List.of(
+                TaskRequest.of(TYPED, new Payload("a")).id(id).build(),
+                TaskRequest.of(VOID).build()));
+        assertThat(same.getFirst()).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThatThrownBy(() ->
+                        client.enqueueAll(List.of(TaskRequest.of(VOID).id(id).build())))
+                .isInstanceOf(TaskIdReusedException.class);
+    }
+
+    @Test
+    void anIdThatWasNeverAllocatedIsRejectedAndNothingIsStored() {
+        var client = builder().build();
+        long next = client.nextId();
+        long unallocated = store.idHighWaterMark();
+
+        assertThatThrownBy(() ->
+                        client.enqueue(TaskRequest.of(VOID).id(unallocated).build()))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessageContaining("never allocated");
+        assertThatThrownBy(() -> client.enqueueAll(List.of(
+                        TaskRequest.of(VOID).build(),
+                        TaskRequest.of(VOID).id(unallocated + 5).build())))
+                .isInstanceOf(TaskValidationException.class);
+        assertThat(client.enqueue(TaskRequest.of(VOID).id(next).build()).accepted())
+                .isTrue();
+        assertThat(client.tasks(TaskState.QUEUED, null, 0, 100)).hasSize(1);
+    }
+
+    private FullStore failingStore(AtomicBoolean down) {
+        return interceptStore((method, args) -> {
+            if (down.get() && !method.equals("init")) throw new TaskStoreException("store down");
+        });
+    }
+
+    private FullStore storeFailingOn(String... methods) {
+        var names = java.util.Set.of(methods);
+        return interceptStore((method, args) -> {
+            if (names.contains(method)) throw new TaskStoreException("store down");
+        });
+    }
+
+    private FullStore interceptStore(BiConsumer<String, Object[]> before) {
+        return (FullStore) Proxy.newProxyInstance(
+                FullStore.class.getClassLoader(), new Class<?>[] {FullStore.class}, (proxy, method, args) -> {
+                    before.accept(method.getName(), args);
+                    try {
+                        return method.invoke(store, args);
+                    } catch (InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                });
+    }
+
+    private TaskClient clientOn(FullStore s) {
+        return TaskClient.builder()
+                .store(s)
+                .jsonMapper(new JsonMapperTest())
+                .clock(clock)
+                .build();
+    }
+
+    @Test
+    void aGeneratedIdThatIsTakenIsNeverAnsweredAcceptedAndTheTaskIsStoredUnderANewId() {
+        var b = builder().idBlockSize(10).build();
+        var a = builder().build();
+        assertThat(b.nextId()).isEqualTo(1);
+        a.enqueue(TaskRequest.of(VOID).id(2).build());
+
+        var result = b.enqueue(TaskRequest.of(VOID).build());
+
+        assertThat(result.accepted()).isTrue();
+        assertThat(result.id()).isEqualTo(3);
+        assertThat(b.tasks(TaskState.QUEUED, null, 0, 100))
+                .extracting(TaskView::id)
+                .containsExactly(2L, 3L);
+    }
+
+    @Test
+    void aTakenGeneratedIdWithOtherContentDoesNotThrowAtTheInnocentClient() {
+        var b = builder().idBlockSize(10).build();
+        var a = builder().build();
+        b.nextId();
+        a.enqueue(TaskRequest.of(TYPED, new Payload("a")).id(2).build());
+
+        assertThat(b.enqueue(TaskRequest.of(VOID).build()).id()).isEqualTo(3);
+    }
+
+    @Test
+    void enqueueAllReplacesTakenGeneratedIdsAndKeepsTheOrder() {
+        var b = builder().idBlockSize(10).build();
+        var a = builder().build();
+        b.nextId();
+        a.enqueue(TaskRequest.of(VOID).id(3).build());
+
+        var results = b.enqueueAll(List.of(
+                TaskRequest.of(VOID).build(),
+                TaskRequest.of(VOID).build(),
+                TaskRequest.of(VOID).build()));
+
+        assertThat(results)
+                .extracting(EnqueueResult::id)
+                .hasSize(3)
+                .doesNotHaveDuplicates()
+                .doesNotContain(1L);
+        assertThat(results.get(0).id()).isEqualTo(2);
+        assertThat(results.get(2).id()).isEqualTo(4);
+        assertThat(results.get(1).id()).isGreaterThan(4);
+        assertThat(b.tasks(TaskState.QUEUED, null, 0, 100)).hasSize(4);
+    }
+
+    @Test
+    void enqueueAllChecksEveryCallerIdBeforeWritingAnything() {
+        var client = builder().build();
+        long stored = client.nextId();
+        long other = client.nextId();
+        client.enqueue(TaskRequest.of(VOID).id(other).build());
+
+        var requests = new ArrayList<TaskRequest<?>>();
+        for (int i = 0; i < 501; i++) requests.add(TaskRequest.of(VOID).build());
+        requests.add(TaskRequest.of(TYPED, new Payload("x")).id(other).build());
+        requests.add(TaskRequest.of(VOID).id(stored).build());
+
+        assertThatThrownBy(() -> client.enqueueAll(requests)).isInstanceOf(TaskIdReusedException.class);
+
+        assertThat(client.tasks(TaskState.QUEUED, null, 0, 100))
+                .extracting(TaskView::id)
+                .containsExactly(other);
+    }
+
+    @Test
+    void enqueueAllRejectsOneCallerIdOnTwoRequests() {
+        var client = builder().build();
+        long id = client.nextId();
+
+        assertThatThrownBy(() -> client.enqueueAll(List.of(
+                        TaskRequest.of(VOID).id(id).build(),
+                        TaskRequest.of(VOID).id(id).build())))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessageContaining("more than one");
+        assertThat(client.tasks(TaskState.QUEUED, null, 0, 100)).isEmpty();
+    }
+
+    @Test
+    void failedMarkReadInEnqueueAllHasNoIds() {
+        var client = clientOn(storeFailingOn("idHighWaterMark"));
+        long first = client.nextId();
+        long second = client.nextId();
+
+        assertThatThrownBy(() -> client.enqueueAll(List.of(
+                        TaskRequest.of(VOID).id(first).build(),
+                        TaskRequest.of(VOID).id(second).build())))
+                .isInstanceOfSatisfying(
+                        EnqueueFailedException.class, e -> assertThat(e.ids()).isEmpty());
+    }
+
+    @Test
+    void failedMarkReadInAMixedBatchDoesNotReserveIds() {
+        var allocations = new AtomicInteger();
+        var client = clientOn(interceptStore((method, args) -> {
+            if (method.equals("allocateIds")) allocations.incrementAndGet();
+            if (method.equals("idHighWaterMark")) throw new TaskStoreException("store down");
+        }));
+        long mine = client.nextId();
+
+        assertThatThrownBy(() -> client.enqueueAll(List.of(
+                        TaskRequest.of(VOID).build(),
+                        TaskRequest.of(VOID).id(mine).build())))
+                .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                    assertThat(e.ids()).isEmpty();
+                    assertThat(e.stored()).isZero();
+                });
+        assertThat(allocations.get()).isEqualTo(1);
+        assertThat(client.nextId()).isEqualTo(mine + 1);
+    }
+
+    @Test
+    void coldNamesWithTheStoreDownCarryTheCallerIdInBothCalls() {
+        var client = clientOn(storeFailingOn("queueId", "eventId"));
+        long id = client.nextId();
+
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).id(id).build()))
+                .isInstanceOfSatisfying(
+                        EnqueueFailedException.class, e -> assertThat(e.ids()).containsExactly(id));
+        assertThatThrownBy(() ->
+                        client.enqueueAll(List.of(TaskRequest.of(VOID).id(id).build())))
+                .isInstanceOfSatisfying(
+                        EnqueueFailedException.class, e -> assertThat(e.ids()).containsExactly(id));
+    }
+
+    @Test
+    void aFinishedTaskThatReleasedItsKeyAcceptsARetryWithAKey() {
+        var client = builder().build();
+        long id = client.nextId();
+        client.enqueue(TaskRequest.of(VOID).uniqueKey("k").id(id).build());
+        var task = client.task(id).orElseThrow();
+        client.admin().cancel(id, task.revision(), "done");
+        assertThat(client.task(id).orElseThrow().state().isTerminal()).isTrue();
+        assertThat(client.task(id).orElseThrow().uniqueKey()).isNull();
+
+        assertThat(client.enqueue(TaskRequest.of(VOID).uniqueKey("k").id(id).build()))
+                .isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueueAll(
+                        List.of(TaskRequest.of(VOID).uniqueKey("k").id(id).build())))
+                .containsExactly(new EnqueueResult.Accepted(id));
+    }
+
+    @Test
+    void aQueuedTaskWithoutAKeyRejectsARetryWithAKey() {
+        var client = builder().build();
+        long id = client.nextId();
+        client.enqueue(TaskRequest.of(VOID).id(id).build());
+
+        assertThatThrownBy(() -> client.enqueue(
+                        TaskRequest.of(VOID).uniqueKey("k").id(id).build()))
+                .isInstanceOf(TaskIdReusedException.class);
+        assertThatThrownBy(() -> client.enqueueAll(
+                        List.of(TaskRequest.of(VOID).uniqueKey("k").id(id).build())))
+                .isInstanceOf(TaskIdReusedException.class);
+    }
+
+    @Test
+    void aHeldKeyRejectsARetryWithoutIt() {
+        var client = builder().build();
+        long id = client.nextId();
+        client.enqueue(TaskRequest.of(VOID).uniqueKey("k").id(id).build());
+
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).id(id).build()))
+                .isInstanceOf(TaskIdReusedException.class);
+        assertThatThrownBy(() ->
+                        client.enqueueAll(List.of(TaskRequest.of(VOID).id(id).build())))
+                .isInstanceOf(TaskIdReusedException.class);
+    }
+
+    @Test
+    void storeDownOnAColdClientThrowsEnqueueFailedWithoutIds() {
+        var down = new AtomicBoolean();
+        var client = TaskClient.builder()
+                .store(failingStore(down))
+                .jsonMapper(new JsonMapperTest())
+                .clock(clock)
+                .build();
+        down.set(true);
+
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).build()))
+                .isInstanceOfSatisfying(
+                        EnqueueFailedException.class, e -> assertThat(e.ids()).isEmpty());
+        assertThatThrownBy(() -> client.enqueueAll(List.of(
+                        TaskRequest.of(VOID).build(), TaskRequest.of(VOID).build())))
+                .isInstanceOfSatisfying(
+                        EnqueueFailedException.class, e -> assertThat(e.ids()).isEmpty());
+    }
+
+    @Test
+    void storeDownWhileCheckingACallerIdCarriesThatId() {
+        var down = new AtomicBoolean();
+        var client = TaskClient.builder()
+                .store(failingStore(down))
+                .jsonMapper(new JsonMapperTest())
+                .clock(clock)
+                .build();
+        long id = client.nextId();
+        down.set(true);
+
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).id(id).build()))
+                .isInstanceOfSatisfying(
+                        EnqueueFailedException.class, e -> assertThat(e.ids()).containsExactly(id));
+        assertThatThrownBy(() ->
+                        client.enqueueAll(List.of(TaskRequest.of(VOID).id(id).build())))
+                .isInstanceOfSatisfying(
+                        EnqueueFailedException.class, e -> assertThat(e.ids()).isEmpty());
+    }
+
+    @Test
+    void aSucceededTaskWithoutPayloadAcceptsDifferentPayloadInBothCalls() {
+        var client = builder().build();
+        long id = client.nextId();
+        client.enqueue(TaskRequest.of(TYPED, new Payload("original")).id(id).build());
+        var leased = store.claim(new ClaimRequest(
+                        List.of(store.queueId("Q:DEF")),
+                        1,
+                        Duration.ofSeconds(30),
+                        store.allocateWorkerId("test"),
+                        null))
+                .getFirst();
+        assertThat(store.ack(id, leased.revision(), true, false)).isTrue();
+        assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(store.getTask(id).orElseThrow().data()).isNull();
+        var retry = TaskRequest.of(TYPED, new Payload("different")).id(id).build();
+
+        assertThat(client.enqueue(retry)).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueueAll(List.of(retry))).containsExactly(new EnqueueResult.Accepted(id));
+        assertThat(client.counts().get("Q:DEF").succeeded()).isEqualTo(1);
+        assertThat(client.counts().get("Q:DEF").queued()).isZero();
+    }
+
+    @Test
+    void callerContentReadFailureCarriesIdsBeforeAnyBatchWrite() {
+        var client = builder().build();
+        long id = client.nextId();
+        client.enqueue(TaskRequest.of(VOID).id(id).build());
+        var failing = clientOn(storeFailingOn("getTask"));
+
+        assertThatThrownBy(() -> failing.enqueue(TaskRequest.of(VOID).id(id).build()))
+                .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                    assertThat(e.ids()).containsExactly(id);
+                    assertThat(e.stored()).isZero();
+                });
+        assertThatThrownBy(() -> failing.enqueueAll(List.of(
+                        TaskRequest.of(VOID).build(),
+                        TaskRequest.of(VOID).id(id).build())))
+                .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                    assertThat(e.ids()).hasSize(2);
+                    assertThat(e.ids().get(1)).isEqualTo(id);
+                    assertThat(e.stored()).isZero();
+                });
+        assertThat(client.counts().get("Q:DEF").queued()).isEqualTo(1);
+    }
+
+    @Test
+    void generatedRequestsDoNotReadTheMarkOrStoredContent() {
+        var client = clientOn(storeFailingOn("idHighWaterMark", "getTask"));
+
+        assertThat(client.enqueue(TaskRequest.of(VOID).build()).accepted()).isTrue();
+        assertThat(client.enqueueAll(List.of(
+                        TaskRequest.of(VOID).build(), TaskRequest.of(VOID).build())))
+                .hasSize(2)
+                .allMatch(EnqueueResult::accepted);
+    }
+
+    @Test
+    void batchReadsEachExistingCallerIdOnceBeforeWriting() {
+        var client = builder().build();
+        long first = client.nextId();
+        long second = client.nextId();
+        var requests = List.of(
+                TaskRequest.of(VOID).id(first).build(),
+                TaskRequest.of(VOID).id(second).build());
+        client.enqueueAll(requests);
+        var reads = new ArrayList<Long>();
+        var marks = new AtomicInteger();
+        var observed = clientOn(interceptStore((method, args) -> {
+            if (method.equals("idHighWaterMark")) marks.incrementAndGet();
+            if (method.equals("getTask")) reads.add((Long) args[0]);
+            if (method.equals("enqueueAll")) assertThat(reads).containsExactly(first, second);
+        }));
+
+        assertThat(observed.enqueueAll(requests)).hasSize(2).allMatch(EnqueueResult::accepted);
+        assertThat(reads).containsExactly(first, second);
+        assertThat(marks.get()).isEqualTo(1);
+    }
+
+    @Test
+    void coldEventLookupFailureCarriesGeneratedIds() {
+        var client = clientOn(storeFailingOn("eventId"));
+
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).build()))
+                .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                    assertThat(e.ids()).containsExactly(1L);
+                    assertThat(e.stored()).isZero();
+                });
+        assertThatThrownBy(() -> client.enqueueAll(List.of(
+                        TaskRequest.of(VOID).build(), TaskRequest.of(VOID).build())))
+                .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                    assertThat(e.ids()).containsExactly(2L, 3L);
+                    assertThat(e.stored()).isZero();
+                });
+        assertThat(store.getTask(1)).isEmpty();
+        assertThat(store.getTask(2)).isEmpty();
+    }
+
+    @Test
+    void exhaustedIdBlockFailureHasNoIdsInBothCalls() {
+        var down = new AtomicBoolean();
+        var client = builder().store(failingStore(down)).idBlockSize(1).build();
+        client.nextId();
+        down.set(true);
+
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).build()))
+                .isInstanceOfSatisfying(
+                        EnqueueFailedException.class, e -> assertThat(e.ids()).isEmpty());
+        assertThatThrownBy(() -> client.enqueueAll(List.of(TaskRequest.of(VOID).build())))
+                .isInstanceOfSatisfying(
+                        EnqueueFailedException.class, e -> assertThat(e.ids()).isEmpty());
+    }
+
+    @Test
+    void laterChunkFailureCarriesAllIdsAndRetriesWithoutDuplicatingStoredChunks() {
+        var calls = new AtomicInteger();
+        var failing = clientOn(interceptStore((method, args) -> {
+            if (method.equals("enqueueAll") && calls.incrementAndGet() == 2) {
+                @SuppressWarnings("unchecked")
+                var records = (List<TaskRecord>) args[0];
+                store.enqueue(records.getFirst());
+                throw new TaskStoreException("second chunk failed");
+            }
+        }));
+        long callerId = failing.nextId();
+        var requests = new ArrayList<TaskRequest<Void>>();
+        for (int i = 0; i < 1001; i++) requests.add(TaskRequest.of(VOID).build());
+        requests.set(500, TaskRequest.of(VOID).id(callerId).build());
+
+        assertThatThrownBy(() -> failing.enqueueAll(requests))
+                .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                    assertThat(e.ids()).hasSize(requests.size()).doesNotHaveDuplicates();
+                    assertThat(e.ids().get(500)).isEqualTo(callerId);
+                    assertThat(e.stored()).isEqualTo(500);
+                    assertThat(store.counts().get(store.queueId("Q:DEF")).queued())
+                            .isEqualTo(501);
+                    var retry = e.ids().stream()
+                            .map(id -> TaskRequest.of(VOID).id(id).build())
+                            .toList();
+                    assertThat(failing.enqueueAll(retry))
+                            .hasSize(requests.size())
+                            .allMatch(EnqueueResult::accepted);
+                });
+        assertThat(store.counts().get(store.queueId("Q:DEF")).queued()).isEqualTo(requests.size());
+    }
+
+    @Test
+    void lostBatchReplyPreservesTheIdsOfTasksAlreadyStored() {
+        var failing = clientOn(interceptStore((method, args) -> {
+            if (method.equals("enqueueAll")) {
+                @SuppressWarnings("unchecked")
+                var records = (List<TaskRecord>) args[0];
+                store.enqueueAll(records);
+                throw new TaskStoreException("reply lost");
+            }
+        }));
+        var healthy = builder().build();
+
+        assertThatThrownBy(() -> failing.enqueueAll(List.of(
+                        TaskRequest.of(VOID).build(), TaskRequest.of(VOID).build())))
+                .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                    assertThat(e.ids()).containsExactly(1L, 2L);
+                    assertThat(e.stored()).isZero();
+                    assertThat(healthy.enqueueAll(e.ids().stream()
+                                    .map(id -> TaskRequest.of(VOID).id(id).build())
+                                    .toList()))
+                            .extracting(EnqueueResult::id)
+                            .containsExactly(1L, 2L);
+                });
+        assertThat(healthy.counts().get("Q:DEF").queued()).isEqualTo(2);
+    }
+
+    @Test
+    void generatedIdsCannotOverlapACallerIdFromTheSameBatch() {
+        var client = builder().idBlockSize(10).build();
+        client.nextId();
+
+        assertThatThrownBy(() -> client.enqueueAll(List.of(
+                        TaskRequest.of(VOID).build(),
+                        TaskRequest.of(TYPED, new Payload("caller")).id(2).build())))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessageContaining("overlaps");
+        assertThat(store.getTask(2)).isEmpty();
+        assertThat(store.counts()).isEmpty();
+    }
+
+    @Test
+    void batchReservationCannotMakeAnUnallocatedCallerIdValid() {
+        var client = builder().idBlockSize(1).build();
+        long unallocated = store.idHighWaterMark();
+
+        assertThatThrownBy(() -> client.enqueueAll(List.of(
+                        TaskRequest.of(VOID).build(),
+                        TaskRequest.of(VOID).id(unallocated).build())))
+                .isInstanceOf(TaskValidationException.class);
+        assertThat(store.getTask(unallocated)).isEmpty();
+    }
+
+    @Test
+    void aSingleGeneratedTaskStopsAfterThreeCollisionsWithoutReturningAnOccupiedId() {
+        var writes = new AtomicInteger();
+        var client = clientOn(interceptStore((method, args) -> {
+            if (method.equals("enqueue")) {
+                writes.incrementAndGet();
+                store.enqueue((TaskRecord) args[0]);
+            }
+        }));
+
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).build()))
+                .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                    assertThat(e.ids()).isEmpty();
+                    assertThat(e.stored()).isZero();
+                    assertThat(e.getCause()).isInstanceOf(TaskStoreException.class);
+                });
+        assertThat(writes.get()).isEqualTo(3);
+    }
+
+    @Test
+    void reservationFailureAfterASingleCollisionDoesNotReturnTheOccupiedId() {
+        var collided = new AtomicBoolean();
+        var client = builder()
+                .idBlockSize(1)
+                .store(interceptStore((method, args) -> {
+                    if (method.equals("allocateIds") && collided.get()) throw new TaskStoreException("store down");
+                    if (method.equals("enqueue")) {
+                        store.enqueue((TaskRecord) args[0]);
+                        collided.set(true);
+                    }
+                }))
+                .build();
+
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).build()))
+                .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                    assertThat(e.ids()).isEmpty();
+                    assertThat(e.stored()).isZero();
+                });
+        assertThat(collided.get()).isTrue();
+    }
+
+    @Test
+    void lostSingleReplyCarriesTheIdThatWasWritten() {
+        var failing = clientOn(interceptStore((method, args) -> {
+            if (method.equals("enqueue")) {
+                store.enqueue((TaskRecord) args[0]);
+                throw new TaskStoreException("reply lost");
+            }
+        }));
+        var healthy = builder().build();
+
+        assertThatThrownBy(() -> failing.enqueue(TaskRequest.of(VOID).build()))
+                .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                    assertThat(e.ids()).containsExactly(1L);
+                    assertThat(e.stored()).isZero();
+                    assertThat(healthy.enqueue(TaskRequest.of(VOID).id(e.id()).build()))
+                            .isEqualTo(new EnqueueResult.Accepted(1));
+                });
+        assertThat(healthy.counts().get("Q:DEF").queued()).isEqualTo(1);
+    }
+
+    @Test
+    void duplicateCallerIdsAreRejectedBeforeAnyStoreCall() {
+        var client = clientOn(storeFailingOn("idHighWaterMark", "allocateIds", "getTask", "enqueueAll"));
+
+        assertThatThrownBy(() -> client.enqueueAll(List.of(
+                        TaskRequest.of(VOID).id(1).build(),
+                        TaskRequest.of(VOID).id(1).build())))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessageContaining("more than one");
+    }
+
+    @Test
+    void reservationFailureInAMixedBatchRetriesTheSameRequestsKeepingCallerIds() {
+        var healthy = builder().idBlockSize(1).build();
+        long callerId = healthy.nextId();
+        var existing = TaskRequest.of(VOID).id(callerId).build();
+        healthy.enqueue(existing);
+        var calls = new ArrayList<String>();
+        var failing = clientOn(interceptStore((method, args) -> {
+            if (method.equals("idHighWaterMark") || method.equals("allocateIds")) calls.add(method);
+            if (method.equals("allocateIds")) throw new TaskStoreException("store down");
+        }));
+        var requests = List.of(TaskRequest.of(VOID).build(), existing);
+
+        assertThatThrownBy(() -> failing.enqueueAll(requests))
+                .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                    assertThat(e.ids()).isEmpty();
+                    assertThat(e.stored()).isZero();
+                    assertThat(healthy.counts().get("Q:DEF").queued()).isEqualTo(1);
+                });
+        assertThat(calls).containsExactly("idHighWaterMark", "allocateIds");
+        var results = healthy.enqueueAll(requests);
+        assertThat(results).hasSize(2).allMatch(EnqueueResult::accepted);
+        assertThat(results.get(1).id()).isEqualTo(callerId);
+        assertThat(healthy.counts().get("Q:DEF").queued()).isEqualTo(2);
+    }
+
+    @Test
+    void coldNameFailuresAfterReservationCarryEveryIdInAMixedBatch() {
+        long callerId = store.allocateIds(1);
+        for (String name : List.of("queueId", "eventId")) {
+            long firstGenerated = store.idHighWaterMark();
+            var client = clientOn(storeFailingOn(name));
+
+            assertThatThrownBy(() -> client.enqueueAll(List.of(
+                            TaskRequest.of(VOID).build(),
+                            TaskRequest.of(VOID).id(callerId).build())))
+                    .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                        assertThat(e.ids()).containsExactly(firstGenerated, callerId);
+                        assertThat(e.stored()).isZero();
+                    });
+            assertThat(store.getTask(firstGenerated)).isEmpty();
+        }
+        assertThat(store.getTask(callerId)).isEmpty();
+    }
+
+    @Test
+    void batchCollisionRetriesStopAfterThreeWritesAndRetainAllLastAttemptedIds() {
+        var writes = new AtomicInteger();
+        var sentIds = new ArrayList<List<Long>>();
+        var client = clientOn(interceptStore((method, args) -> {
+            if (method.equals("enqueueAll")) {
+                @SuppressWarnings("unchecked")
+                var records = (List<TaskRecord>) args[0];
+                writes.incrementAndGet();
+                sentIds.add(records.stream().map(TaskRecord::id).toList());
+                records.stream().filter(r -> "collision".equals(r.account())).forEach(store::enqueue);
+            }
+        }));
+
+        assertThatThrownBy(() -> client.enqueueAll(List.of(
+                        TaskRequest.of(VOID).build(),
+                        TaskRequest.of(VOID).account("collision").build(),
+                        TaskRequest.of(VOID).build())))
+                .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                    assertThat(e.ids()).containsExactly(1L, 5L, 3L);
+                    assertThat(e.stored()).isZero();
+                    assertThat(e.getCause())
+                            .isInstanceOf(TaskStoreException.class)
+                            .hasMessageContaining("3 tries");
+                });
+        assertThat(writes.get()).isEqualTo(3);
+        assertThat(sentIds).containsExactly(List.of(1L, 2L, 3L), List.of(4L), List.of(5L));
+        assertThat(store.getTask(1)).isPresent();
+        assertThat(store.getTask(3)).isPresent();
+    }
+
+    @Test
+    void replacementReservationFailureRetainsAllIdsAndReportsTheCollision() {
+        var collided = new AtomicBoolean();
+        var client = builder()
+                .idBlockSize(1)
+                .store(interceptStore((method, args) -> {
+                    if (method.equals("allocateIds") && collided.get()) throw new TaskStoreException("store down");
+                    if (method.equals("enqueueAll")) {
+                        @SuppressWarnings("unchecked")
+                        var records = (List<TaskRecord>) args[0];
+                        store.enqueue(records.get(1));
+                        collided.set(true);
+                    }
+                }))
+                .build();
+
+        assertThatThrownBy(() -> client.enqueueAll(List.of(
+                        TaskRequest.of(VOID).build(), TaskRequest.of(VOID).build())))
+                .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                    assertThat(e.ids()).containsExactly(1L, 2L);
+                    assertThat(e.stored()).isZero();
+                    assertThat(e.getCause()).hasMessageContaining("occupied generated task ids");
+                    assertThat(e.getCause().getCause()).hasMessage("store down");
+                });
+        assertThat(store.getTask(1)).isPresent();
+    }
+
+    @Test
+    void failureWritingAReplacementCarriesTheReplacementId() {
+        var writes = new AtomicInteger();
+        var client = clientOn(interceptStore((method, args) -> {
+            if (method.equals("enqueueAll")) {
+                @SuppressWarnings("unchecked")
+                var records = (List<TaskRecord>) args[0];
+                if (writes.incrementAndGet() == 1) store.enqueue(records.get(1));
+                else throw new TaskStoreException("store down");
+            }
+        }));
+
+        assertThatThrownBy(() -> client.enqueueAll(List.of(
+                        TaskRequest.of(VOID).build(), TaskRequest.of(VOID).build())))
+                .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                    assertThat(e.ids()).containsExactly(1L, 3L);
+                    var healthy = builder().build();
+                    assertThat(healthy.enqueueAll(e.ids().stream()
+                                    .map(id -> TaskRequest.of(VOID).id(id).build())
+                                    .toList()))
+                            .extracting(EnqueueResult::id)
+                            .containsExactly(1L, 3L);
+                });
+        assertThat(writes.get()).isEqualTo(2);
+    }
+
+    @Test
+    void batchRetriesPreserveEncodedPayloadAndRunTime() {
+        var encodes = new AtomicInteger();
+        var type = TaskType.of("encode-once", new PayloadCodec<String>() {
+            @Override
+            public String encode(String payload) {
+                return payload + encodes.incrementAndGet();
+            }
+
+            @Override
+            public String decode(String text) {
+                return text;
+            }
+        });
+        var writes = new AtomicInteger();
+        var client = clientOn(interceptStore((method, args) -> {
+            if (method.equals("enqueueAll") && writes.incrementAndGet() == 1) {
+                @SuppressWarnings("unchecked")
+                var records = (List<TaskRecord>) args[0];
+                store.enqueue(records.getFirst());
+                clock.advance(Duration.ofMinutes(1));
+            }
+        }));
+        var due = clock.instant().plus(Duration.ofHours(1));
+
+        var result = client.enqueueAll(List.of(
+                TaskRequest.of(type, "payload").delay(Duration.ofHours(1)).build()));
+
+        assertThat(result).containsExactly(new EnqueueResult.Accepted(2));
+        var task = store.getTask(result.getFirst().id()).orElseThrow();
+        assertThat(task.data()).isEqualTo("payload1");
+        assertThat(task.due()).isEqualTo(due);
+        assertThat(encodes.get()).isEqualTo(1);
+        assertThat(writes.get()).isEqualTo(2);
+    }
+
+    @Test
+    void callerIdTakenAfterPreflightKeepsTheIdsOfEarlierChunks() {
+        var writes = new AtomicInteger();
+        var client = clientOn(interceptStore((method, args) -> {
+            if (method.equals("enqueueAll") && writes.incrementAndGet() == 2) {
+                @SuppressWarnings("unchecked")
+                var records = (List<TaskRecord>) args[0];
+                store.enqueue(
+                        records.getFirst().toBuilder().data("other payload").build());
+            }
+        }));
+        long callerId = client.nextId();
+        var requests = new ArrayList<TaskRequest<Void>>();
+        for (int i = 0; i < 500; i++) requests.add(TaskRequest.of(VOID).build());
+        requests.add(TaskRequest.of(VOID).id(callerId).build());
+
+        assertThatThrownBy(() -> client.enqueueAll(requests))
+                .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                    assertThat(e.ids()).hasSize(501).doesNotHaveDuplicates();
+                    assertThat(e.ids().getLast()).isEqualTo(callerId);
+                    assertThat(e.stored()).isEqualTo(500);
+                    assertThat(e.getCause()).isInstanceOf(TaskIdReusedException.class);
+                    assertThat(store.getTask(e.ids().getFirst())).isPresent();
+                });
+    }
+
+    @Test
+    void replacementIdsCannotTakeACallerIdFromALaterChunk() {
+        var client = builder().idBlockSize(1000).build();
+        client.nextId();
+        long callerId = 502;
+        var other = builder().build();
+        other.enqueue(TaskRequest.of(VOID).id(2).build());
+        var requests = new ArrayList<TaskRequest<Void>>();
+        for (int i = 0; i < 500; i++) requests.add(TaskRequest.of(VOID).build());
+        requests.add(TaskRequest.of(VOID).id(callerId).build());
+
+        assertThatThrownBy(() -> client.enqueueAll(requests))
+                .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                    assertThat(e.ids()).hasSize(501).doesNotHaveDuplicates();
+                    assertThat(e.ids().getLast()).isEqualTo(callerId);
+                    assertThat(e.getCause()).hasMessageContaining("overlap a caller id");
+                });
+        assertThat(store.getTask(callerId)).isEmpty();
     }
 
     @Test

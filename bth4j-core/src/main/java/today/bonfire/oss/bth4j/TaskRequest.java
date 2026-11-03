@@ -243,8 +243,15 @@ public final class TaskRequest<T> {
         }
 
         /**
-         * Uses an id obtained from {@link TaskClient#nextId()}. Enqueueing the same id twice stores the task once,
-         * which makes a retry after a lost reply safe.
+         * Uses an id allocated by a client of this namespace: {@link TaskClient#nextId()}, or an id an
+         * {@link today.bonfire.oss.bth4j.exceptions.EnqueueFailedException} carries. Enqueueing the same request,
+         * encoded identically, with the same id twice stores the task once, which makes a retry after a lost
+         * reply safe. An id that was never allocated is rejected with a {@link TaskValidationException} when
+         * the request is enqueued. An id that already belongs to a task is accepted again only when the stored
+         * task has the same type, queue, payload (compared as stored text, when the task still has it) and
+         * unique key (unless a finished task released it); anything else throws a
+         * {@link today.bonfire.oss.bth4j.exceptions.TaskIdReusedException}. Headers, account, attempts, retry
+         * policy, start-by, max run, delay and payload version are not compared. Never invent an id.
          */
         public Builder<T> id(long id) {
             if (id <= 0) throw new TaskValidationException("id must be positive");
