@@ -700,12 +700,14 @@ public class RedisTaskStore implements FullStore {
             return new TaskPage(List.of(), null);
         }
         return guard(() -> {
-            var entries = position == null
-                    ? listing(state, queueId, null, 0, limit)
-                    : listing(state, queueId, position.score(), position.id(), limit);
+            var probe = (int) Math.min((long) limit + 1, Integer.MAX_VALUE);
+            var found = position == null
+                    ? listing(state, queueId, null, 0, probe)
+                    : listing(state, queueId, position.score(), position.id(), probe);
+            var entries = found.subList(0, Math.min(limit, found.size()));
             var items = load(entries.stream().map(Entry::id).toList());
             var last = entries.isEmpty() ? null : entries.getLast();
-            var next = entries.size() < limit ? null : (long) last.score() + ":" + last.id();
+            var next = found.size() > limit ? (long) last.score() + ":" + last.id() : null;
             return new TaskPage(items, next);
         });
     }

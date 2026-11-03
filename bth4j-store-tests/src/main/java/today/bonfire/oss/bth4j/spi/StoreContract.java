@@ -2694,6 +2694,45 @@ public abstract class StoreContract {
     }
 
     @Test
+    void cursorPageHasNoNextWhenTheFirstPageHoldsExactlyTheLimitAndHasOneWhenOneMoreExists() {
+        long a = putNew();
+        long b = putNew();
+        long c = putNew();
+
+        TaskPage exact = store.tasks(TaskState.QUEUED, null, (String) null, 3);
+        assertThat(exact.items()).extracting(TaskRecord::id).containsExactlyInAnyOrder(a, b, c);
+        assertThat(exact.next()).isNull();
+
+        long d = putNew();
+        TaskPage first = store.tasks(TaskState.QUEUED, null, (String) null, 3);
+        assertThat(first.items()).hasSize(3);
+        assertThat(first.next()).isNotNull();
+        TaskPage second = store.tasks(TaskState.QUEUED, null, first.next(), 3);
+        assertThat(second.items()).hasSize(1);
+        assertThat(second.next()).isNull();
+        assertThat(Stream.concat(first.items().stream(), second.items().stream())
+                        .map(TaskRecord::id))
+                .containsExactlyInAnyOrder(a, b, c, d);
+    }
+
+    @Test
+    void cursorPageHasNoNextWhenALeasedGroupWithTheSameSortValueFillsThePageExactly() {
+        for (int i = 0; i < 4; i++) {
+            put(task());
+        }
+        List<Long> byId = claim(4).stream().map(TaskRecord::id).sorted().toList();
+
+        TaskPage exact = store.tasks(TaskState.LEASED, null, (String) null, 4);
+        assertThat(exact.items()).extracting(TaskRecord::id).containsExactlyElementsOf(byId);
+        assertThat(exact.next()).isNull();
+        TaskPage first = store.tasks(TaskState.LEASED, null, (String) null, 3);
+        assertThat(first.items()).extracting(TaskRecord::id).containsExactlyElementsOf(byId.subList(0, 3));
+        TaskPage second = store.tasks(TaskState.LEASED, null, first.next(), 3);
+        assertThat(second.items()).extracting(TaskRecord::id).containsExactly(byId.get(3));
+        assertThat(second.next()).isNull();
+    }
+
+    @Test
     void tasksFiltersByStateAndQueue() {
         int second = store.queueId("second");
         long inMain = putNew();

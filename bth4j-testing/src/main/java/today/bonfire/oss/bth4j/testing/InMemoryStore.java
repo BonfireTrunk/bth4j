@@ -761,17 +761,18 @@ public final class InMemoryStore implements FullStore {
         try {
             Comparator<TaskRecord> order =
                     Comparator.comparing(TaskRecord::stateChanged).thenComparingLong(TaskRecord::id);
-            List<TaskRecord> items = limit <= 0
+            List<TaskRecord> found = limit <= 0
                     ? List.of()
                     : tasks.values().stream()
                             .filter(t -> t.state() == state)
                             .filter(t -> queueId == null || t.queueId() == queueId)
                             .filter(t -> position == null || isAfter(t, position))
                             .sorted(order)
-                            .limit(limit)
+                            .limit((long) limit + 1)
                             .toList();
-            var next = limit <= 0 || items.size() < limit ? null : encodeCursor(items.getLast());
-            return new TaskPage(items, next);
+            if (found.size() <= limit) return new TaskPage(found, null);
+            var items = found.subList(0, limit);
+            return new TaskPage(items, encodeCursor(items.getLast()));
         } finally {
             lock.unlock();
         }

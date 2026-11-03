@@ -1255,12 +1255,13 @@ public class PostgresTaskStore implements FullStore {
                     setInstant(ps, i++, position.changed());
                     ps.setLong(i++, position.id());
                 }
-                ps.setInt(i, limit);
+                ps.setLong(i, (long) limit + 1);
                 return readAll(ps);
             }
         });
-        var next = items.size() < limit ? null : encodeCursor(items.getLast());
-        return new TaskPage(items, next);
+        if (items.size() <= limit) return new TaskPage(items, null);
+        var page = items.subList(0, limit);
+        return new TaskPage(page, encodeCursor(page.getLast()));
     }
 
     private record Position(Instant changed, long id) {}
