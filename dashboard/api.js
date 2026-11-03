@@ -117,6 +117,7 @@ export const api = {
   resumeQueue: (name) => request('POST', '/queues/' + enc(name) + '/resume', { body: {} }),
   tasks: (query) => request('GET', '/tasks', { query }),
   task: (id) => request('GET', '/tasks/' + enc(id)),
+  taskByKey: (key) => request('GET', '/tasks/by-key/' + enc(key)),
   payload: (id) => request('GET', '/tasks/' + enc(id) + '/payload'),
   retryTask: (id, revision) => request('POST', '/tasks/' + enc(id) + '/retry', { body: { revision } }),
   cancelTask: (id, revision, reason) => request('POST', '/tasks/' + enc(id) + '/cancel', { body: { revision, reason } }),

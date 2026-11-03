@@ -2490,6 +2490,44 @@ public abstract class StoreContract {
     // inspection
 
     @Test
+    void taskByKeyFindsTheOpenHolder() {
+        TaskRecord leased = leased(task().uniqueKey("l"));
+        long queued = put(task().uniqueKey("q"));
+        long scheduled = put(task().uniqueKey("s").due(millis(now().plus(Duration.ofDays(1)))));
+
+        assertThat(store.taskByKey("q")).map(TaskRecord::id).contains(queued);
+        assertThat(store.taskByKey("s")).map(TaskRecord::id).contains(scheduled);
+        assertThat(store.taskByKey("l")).map(TaskRecord::id).contains(leased.id());
+        assertThat(store.taskByKey("q").orElseThrow().uniqueKey()).isEqualTo("q");
+    }
+
+    @Test
+    void taskByKeyFindsTheFinishedHolderInsideKeyKeepAndNotAfter() {
+        TaskRecord t = leased(task().uniqueKey("k").keyKeep(SHORT));
+        assertThat(store.ack(t.id(), t.revision(), true, true)).isTrue();
+
+        assertThat(store.taskByKey("k")).map(TaskRecord::id).contains(t.id());
+        assertThat(store.taskByKey("k").orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        advance(PAST_SHORT);
+        assertThat(store.taskByKey("k")).isEmpty();
+    }
+
+    @Test
+    void taskByKeyIsEmptyForAnUnknownKey() {
+        put(task().uniqueKey("known"));
+
+        assertThat(store.taskByKey("unknown")).isEmpty();
+    }
+
+    @Test
+    void taskByKeyIsEmptyOnceAckReleasedTheKeyWithoutKeyKeep() {
+        TaskRecord t = leased(task().uniqueKey("k"));
+        assertThat(store.ack(t.id(), t.revision(), true, true)).isTrue();
+
+        assertThat(store.taskByKey("k")).isEmpty();
+    }
+
+    @Test
     void getTaskIsEmptyForAnUnknownId() {
         assertThat(store.getTask(store.allocateIds(1))).isEmpty();
     }

@@ -248,6 +248,7 @@ class AdminHttpServerTest {
                 mutate("POST", "/api/v1/queues/default/resume", login, null),
                 mutate("POST", "/api/v1/tasks/1/retry", login, revisionBody),
                 mutate("POST", "/api/v1/tasks/1/cancel", login, revisionBody),
+                mutate("POST", "/api/v1/tasks/by-key/order-1/cancel", login, "{}"),
                 mutate("DELETE", "/api/v1/tasks/1?revision=7", login, null),
                 mutate("POST", "/api/v1/schedules/nightly/pause", login, null),
                 mutate("POST", "/api/v1/schedules/nightly/resume", login, null),
@@ -319,6 +320,40 @@ class AdminHttpServerTest {
         assertThat(mutate("DELETE", "/api/v1/tasks/99?revision=1", login, null).statusCode())
                 .isEqualTo(404);
         assertThat(get("/api/v1/tasks/99", login).statusCode()).isEqualTo(404);
+    }
+
+    @Test
+    void taskByKeyIsReadableByViewersAndDecodesTheKey() throws Exception {
+        ops.keyHolders.put("order 1/a+b", 1L);
+        start();
+        var login = viewer();
+
+        var found = get("/api/v1/tasks/by-key/order%201%2Fa%2Bb", login);
+
+        assertThat(found.statusCode()).isEqualTo(200);
+        assertThat(json(found)).containsEntry("id", "1");
+        assertThat(get("/api/v1/tasks/by-key/missing", login).statusCode()).isEqualTo(404);
+    }
+
+    @Test
+    void cancelByKeyReachesTheOperationsAndReportsNoHolderAs404() throws Exception {
+        ops.keyHolders.put("order-1", 1L);
+        start();
+        var login = admin();
+
+        var cancel = mutate("POST", "/api/v1/tasks/by-key/order-1/cancel", login, "{\"reason\":\"why\"}");
+
+        assertThat(cancel.statusCode()).isEqualTo(200);
+        assertThat(json(cancel)).containsEntry("outcome", "REQUESTED");
+        assertThat(ops.calls).containsExactly("cancelByKey order-1 why");
+        assertThat(mutate("POST", "/api/v1/tasks/by-key/missing/cancel", login, "{}")
+                        .statusCode())
+                .isEqualTo(404);
+        assertThat(mutate("POST", "/api/v1/tasks/by-key/order-1/cancel", login, "{\"reason\":5}")
+                        .statusCode())
+                .isEqualTo(400);
+        assertThat(get("/api/v1/tasks/by-key/order-1/cancel", login).statusCode())
+                .isEqualTo(404);
     }
 
     @Test

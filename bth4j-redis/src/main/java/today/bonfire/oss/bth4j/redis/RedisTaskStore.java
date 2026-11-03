@@ -598,6 +598,12 @@ public class RedisTaskStore implements FullStore {
         return found.isEmpty() ? Optional.empty() : Optional.of(found.getFirst());
     }
 
+    @Override
+    public Optional<TaskRecord> taskByKey(String key) {
+        var holder = guard(() -> jedis.get(keys.uniqueKey(key)));
+        return holder == null ? Optional.empty() : getTask(Long.parseLong(holder));
+    }
+
     /** Reads the hash, payload, steps and failures of every id in one pipeline; ids without a hash are left out. */
     private List<TaskRecord> load(List<Long> ids) {
         return guard(() -> {

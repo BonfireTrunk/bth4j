@@ -18,6 +18,8 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
       const error = ref('');
       const hasMore = ref(false);
       const bulkBusy = ref(false);
+      const keyText = ref('');
+      const keyMissing = ref(false);
       const admin = isAdmin;
 
       let nextCursor = null;
@@ -117,6 +119,19 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
         }
       });
 
+      async function findByKey() {
+        const key = keyText.value;
+        keyMissing.value = false;
+        if (!key) return;
+        try {
+          const task = await api.taskByKey(key);
+          open(task.id);
+        } catch (e) {
+          if (e.status === 404) keyMissing.value = true;
+          else toastError(e);
+        }
+      }
+
       function open(id) {
         location.hash = '#/task/' + encodeURIComponent(id);
       }
@@ -127,7 +142,7 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
         return f.message ? type + ': ' + f.message : type;
       }
       return {
-        state, queue, rows, queues, loading, loadingMore, error, hasMore, bulkBusy, admin,
+        state, queue, rows, queues, loading, loadingMore, error, hasMore, bulkBusy, admin, keyText, keyMissing, findByKey,
         load, more, apply, retryAll, open, STATES, fixedState, title, bulkRetry, LIMIT, failureText,
       };
     },
@@ -149,6 +164,11 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
           <input v-else v-model="queue" type="text" placeholder="any">
         </label>
         <button type="submit" class="primary">Show</button>
+        <label>Find by key
+          <input v-model="keyText" type="text" placeholder="unique key" @input="keyMissing = false" @keydown.enter.prevent="findByKey">
+        </label>
+        <button type="button" @click="findByKey">Find</button>
+        <span v-if="keyMissing" class="muted" role="status">No task holds this key</span>
       </form>
       <status-msg :loading="loading" :error="error" :empty="!rows.length" empty-text="No tasks match these filters." :empty-hint="fixedState ? 'Nothing is dead. Good.' : 'Pick another state, or clear the queue filter.'"></status-msg>
       <div class="table-wrap" v-if="!loading && rows.length">

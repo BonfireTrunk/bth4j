@@ -242,6 +242,13 @@ public final class AdminHttpServer {
                 throw new HttpError(403, "this action needs the ADMIN role");
             }
         }
+        var byKey = segments.size() >= 3
+                && segments.get(0).equals("tasks")
+                && segments.get(1).equals("by-key");
+        if (byKey) {
+            byKey(ex, method, segments);
+            return;
+        }
         if (segments.isEmpty() || segments.size() > 3) {
             throw new HttpError(404, "not found");
         }
@@ -278,6 +285,32 @@ public final class AdminHttpServer {
             case "GET workers" -> sendJson(ex, 200, Views.list(admin.workers(), Views::worker));
             case "GET issues" -> sendJson(ex, 200, Views.list(admin.issues(), Views::issue));
             default -> throw new HttpError(404, "not found");
+        }
+    }
+
+    private void byKey(HttpExchange ex, String method, List<String> segments) throws IOException {
+        var key = segments.get(2);
+        if (segments.size() == 3 && method.equals("GET")) {
+            sendJson(
+                    ex,
+                    200,
+                    Views.task(admin.taskByKey(key).orElseThrow(() -> new HttpError(404, "no task holds this key"))));
+        } else if (segments.size() == 4
+                && method.equals("POST")
+                && segments.get(3).equals("cancel")) {
+            var body = readObject(ex);
+            var reason = body.get("reason");
+            if (reason != null && !(reason instanceof String)) {
+                throw new HttpError(400, "reason must be a string");
+            }
+            var outcome = admin.cancelByKey(key, (String) reason);
+            if (outcome == CancelOutcome.STALE) {
+                throw new HttpError(
+                        admin.taskByKey(key).isEmpty() ? 404 : 409, "no task holds this key, or it changed meanwhile");
+            }
+            sendJson(ex, 200, Views.obj("ok", true, "outcome", outcome.name()));
+        } else {
+            throw new HttpError(404, "not found");
         }
     }
 

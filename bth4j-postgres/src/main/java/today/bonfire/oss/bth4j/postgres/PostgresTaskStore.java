@@ -1180,6 +1180,20 @@ public class PostgresTaskStore implements FullStore {
         });
     }
 
+    /** The unique index covers the key column; a key whose window has passed is free even before the release job ran. */
+    @Override
+    public Optional<TaskRecord> taskByKey(String key) {
+        return withConnection(c -> {
+            try (var ps = c.prepareStatement(
+                    "SELECT * FROM " + task + " WHERE unique_key = ? AND (key_until IS NULL OR key_until > now())")) {
+                ps.setString(1, key);
+                try (var rs = ps.executeQuery()) {
+                    return rs.next() ? Optional.of(read(rs)) : Optional.empty();
+                }
+            }
+        });
+    }
+
     /** Every registered queue appears, with zeros when it has no tasks. Counts by a scan of the task table. */
     @Override
     public Map<Integer, StateCounts> counts() {

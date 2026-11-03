@@ -260,6 +260,45 @@ class DefaultAdminOpsTest {
     }
 
     @Test
+    void taskByKeyIsReturnedWithQueueAndEventNames() {
+        handlers.put("taskByKey", a -> Optional.of(record(42, OTHER_QUEUE_ID)));
+
+        var view = ops.taskByKey("invoice-9").orElseThrow();
+
+        assertThat(view.id()).isEqualTo(42);
+        assertThat(view.queue()).isEqualTo("Q:OTHER");
+        assertThat(calls).contains("taskByKey[invoice-9]");
+    }
+
+    @Test
+    void taskByKeyIsEmptyWhenNoTaskHoldsTheKey() {
+        handlers.put("taskByKey", a -> Optional.empty());
+
+        assertThat(ops.taskByKey("invoice-9")).isEmpty();
+    }
+
+    @Test
+    void cancelByKeyCancelsTheHolderWithTheRevisionItRead() {
+        handlers.put(
+                "taskByKey",
+                a -> Optional.of(
+                        record(42, OTHER_QUEUE_ID).toBuilder().revision(5).build()));
+        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("cancel", a -> CancelOutcome.REQUESTED);
+
+        assertThat(ops.cancelByKey("invoice-9", "duplicate")).isEqualTo(CancelOutcome.REQUESTED);
+        assertThat(calls).contains("cancel[42, 5, duplicate, null]");
+    }
+
+    @Test
+    void cancelByKeyIsStaleAndCancelsNothingWhenNoTaskHoldsTheKey() {
+        handlers.put("taskByKey", a -> Optional.empty());
+
+        assertThat(ops.cancelByKey("invoice-9", "duplicate")).isEqualTo(CancelOutcome.STALE);
+        assertThat(calls).noneMatch(c -> c.startsWith("cancel["));
+    }
+
+    @Test
     void cancelPassesTheReasonToTheStore() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
         handlers.put("getTask", a -> Optional.empty());

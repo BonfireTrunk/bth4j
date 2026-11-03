@@ -259,6 +259,14 @@ public final class TaskClient {
         return store.getTask(id).map(names::view);
     }
 
+    /**
+     * @return the task that holds the unique key now, open or finished inside its keep window; empty when no task
+     *         holds the key
+     */
+    public Optional<TaskView> taskByKey(String key) {
+        return store.taskByKey(key).map(names::view);
+    }
+
     /** @return counts per state for every queue that has or had tasks, by queue name */
     public Map<String, StateCounts> counts() {
         var result = new java.util.LinkedHashMap<String, StateCounts>();

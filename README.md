@@ -213,6 +213,8 @@ a task at most 64 KiB.
 | `id(id)` | an id from `client.nextId()`, see below |
 
 `enqueue` returns `Accepted(id)` or `Duplicate(existingId)`; `enqueueAll` stores many requests in chunks.
+`client.taskByKey(key)` (and `admin.taskByKey(key)`) returns the task that holds a unique key now, open or finished
+inside its `keepFor` window, and is empty when no task holds it; `admin.cancelByKey(key, reason)` cancels that task.
 Payloads are limited to 256 KiB.
 
 `client.prepare(request)` validates and encodes a request into a `TaskRecord` with its id allocated, without
@@ -451,8 +453,10 @@ admin.queues();                                    // id, name, paused
 admin.tasks(TaskState.DEAD, "mail", 0, 100);       // oldest state change first, afterId for paging (best effort); queue null for all
 admin.tasks(TaskState.DEAD, "mail", cursor, 100);  // TaskViewPage(items, next); cursor null starts, next null ends
 admin.task(id);                                    // Optional<TaskView>
+admin.taskByKey("welcome-42");                     // the task holding that unique key, Optional<TaskView>
 admin.retry(id, revision);                         // DEAD, CANCELLED or EXPIRED back to QUEUED, attempts reset
 admin.cancel(id, revision, "reason");              // CANCELLED, REQUESTED or STALE
+admin.cancelByKey("welcome-42", "reason");         // the same for the holder of the key; STALE when none holds it
 admin.delete(id, revision);                        // any state but LEASED
 admin.pauseQueue("mail", true);
 admin.schedules();                                 // ScheduleView: cron, zone, misfire, fixed delay, paused, next fire
@@ -524,7 +528,9 @@ as `X-CSRF-Token` on every POST and DELETE. Sessions are kept in memory, last 12
 (`sessionTtl`) and end when the server stops. Five failed logins in a row block that remote address for 10
 seconds (HTTP 429). A stale revision is answered 409, an unknown id 404; task ids and revisions are JSON strings.
 The endpoints are `me`, `session`, `health`, `overview`, `queues` (with `pause` and `resume`), `tasks` (list
-with `state`, `queue`, `cursor` or `after`, and `limit` up to 200; one task, its `payload`, `retry`, `cancel`, delete),
+with `state`, `queue`, `cursor` or `after`, and `limit` up to 200; one task, its `payload`, `retry`, `cancel`, delete;
+`tasks/by-key/{key}` reads the task that holds a unique key, 404 when none does, and `tasks/by-key/{key}/cancel` cancels it
+with a body of `{"reason"}` and no revision: viewers may read, admins may cancel),
 `schedules` (with `pause`, `resume`, `trigger`, delete), `workers` and `issues`.
 
 `GET /api/v1/tasks` pages in two forms. With no `cursor` (with or without `after=<id>`) the reply is a JSON array of tasks, as
