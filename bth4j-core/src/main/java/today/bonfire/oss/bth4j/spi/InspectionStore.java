@@ -10,6 +10,12 @@ public interface InspectionStore extends TaskStore {
     /** @return the task with that id, in whatever state it is */
     Optional<TaskRecord> getTask(long id);
 
+    /**
+     * @return the first task id that {@link #allocateIds} has not handed out yet; every id below it was
+     *         allocated by some client (it may never have been stored)
+     */
+    long idHighWaterMark();
+
     /** @return counts per state for every queue that has or had tasks, by queue id */
     Map<Integer, StateCounts> counts();
 

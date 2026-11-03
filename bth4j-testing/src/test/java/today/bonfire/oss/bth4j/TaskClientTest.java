@@ -3,16 +3,23 @@ package today.bonfire.oss.bth4j;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import today.bonfire.oss.bth4j.exceptions.EnqueueFailedException;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
+import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.TaskState;
+import today.bonfire.oss.bth4j.spi.TaskStoreException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
 import today.bonfire.oss.bth4j.testing.MutableClock;
 
@@ -95,6 +102,140 @@ class TaskClientTest {
         assertThat(client.tasks(TaskState.QUEUED, null, 0, 100))
                 .extracting(TaskView::id)
                 .containsExactly(id);
+    }
+
+    @Test
+    void reusedIdWithTheSameContentIsAcceptedAgain() {
+        var client = builder().build();
+        long id = client.nextId();
+        var request = TaskRequest.of(TYPED, new Payload("same"))
+                .queue("Q:LOW")
+                .uniqueKey("k")
+                .id(id)
+                .build();
+
+        client.enqueue(request);
+
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+    }
+
+    @Test
+    void reusedIdWithAnotherPayloadTypeQueueOrKeyThrows() {
+        var client = builder().build();
+        long id = client.nextId();
+        client.enqueue(TaskRequest.of(TYPED, new Payload("a")).id(id).build());
+
+        assertThatThrownBy(() -> client.enqueue(
+                        TaskRequest.of(TYPED, new Payload("b")).id(id).build()))
+                .isInstanceOfSatisfying(
+                        TaskIdReusedException.class, e -> assertThat(e.id()).isEqualTo(id));
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).id(id).build()))
+                .isInstanceOf(TaskIdReusedException.class);
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(TYPED, new Payload("a"))
+                        .queue("Q:LOW")
+                        .id(id)
+                        .build()))
+                .isInstanceOf(TaskIdReusedException.class);
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(TYPED, new Payload("a"))
+                        .uniqueKey("k")
+                        .id(id)
+                        .build()))
+                .isInstanceOf(TaskIdReusedException.class);
+        assertThat(client.tasks(TaskState.QUEUED, null, 0, 100)).hasSize(1);
+    }
+
+    @Test
+    void anIdAllocatedLaterToAnotherTaskIsNotAnsweredAccepted() {
+        var client = builder().idBlockSize(1).build();
+        long id = client.nextId();
+        client.enqueue(TaskRequest.of(TYPED, new Payload("first")).id(id).build());
+
+        assertThatThrownBy(() -> client.enqueue(
+                        TaskRequest.of(TYPED, new Payload("second")).id(id).build()))
+                .isInstanceOf(TaskIdReusedException.class);
+    }
+
+    @Test
+    void enqueueAllChecksReusedIds() {
+        var client = builder().build();
+        long id = client.nextId();
+        client.enqueue(TaskRequest.of(TYPED, new Payload("a")).id(id).build());
+
+        var same = client.enqueueAll(List.of(
+                TaskRequest.of(TYPED, new Payload("a")).id(id).build(),
+                TaskRequest.of(VOID).build()));
+        assertThat(same.getFirst()).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThatThrownBy(() ->
+                        client.enqueueAll(List.of(TaskRequest.of(VOID).id(id).build())))
+                .isInstanceOf(TaskIdReusedException.class);
+    }
+
+    @Test
+    void anIdThatWasNeverAllocatedIsRejectedAndNothingIsStored() {
+        var client = builder().build();
+        long next = client.nextId();
+        long unallocated = store.idHighWaterMark();
+
+        assertThatThrownBy(() ->
+                        client.enqueue(TaskRequest.of(VOID).id(unallocated).build()))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessageContaining("never allocated");
+        assertThatThrownBy(() -> client.enqueueAll(List.of(
+                        TaskRequest.of(VOID).build(),
+                        TaskRequest.of(VOID).id(unallocated + 5).build())))
+                .isInstanceOf(TaskValidationException.class);
+        assertThat(client.enqueue(TaskRequest.of(VOID).id(next).build()).accepted())
+                .isTrue();
+        assertThat(client.tasks(TaskState.QUEUED, null, 0, 100)).hasSize(1);
+    }
+
+    private FullStore failingStore(AtomicBoolean down) {
+        return (FullStore) Proxy.newProxyInstance(
+                FullStore.class.getClassLoader(), new Class<?>[] {FullStore.class}, (proxy, method, args) -> {
+                    if (down.get() && !method.getName().equals("init")) {
+                        throw new TaskStoreException("store down");
+                    }
+                    try {
+                        return method.invoke(store, args);
+                    } catch (InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                });
+    }
+
+    @Test
+    void storeDownOnAColdClientThrowsEnqueueFailedWithoutIds() {
+        var down = new AtomicBoolean();
+        var client = TaskClient.builder()
+                .store(failingStore(down))
+                .jsonMapper(new JsonMapperTest())
+                .clock(clock)
+                .build();
+        down.set(true);
+
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).build()))
+                .isInstanceOfSatisfying(
+                        EnqueueFailedException.class, e -> assertThat(e.ids()).isEmpty());
+        assertThatThrownBy(() -> client.enqueueAll(List.of(
+                        TaskRequest.of(VOID).build(), TaskRequest.of(VOID).build())))
+                .isInstanceOfSatisfying(
+                        EnqueueFailedException.class, e -> assertThat(e.ids()).isEmpty());
+    }
+
+    @Test
+    void storeDownWhileCheckingACallerIdCarriesThatId() {
+        var down = new AtomicBoolean();
+        var client = TaskClient.builder()
+                .store(failingStore(down))
+                .jsonMapper(new JsonMapperTest())
+                .clock(clock)
+                .build();
+        long id = client.nextId();
+        down.set(true);
+
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).id(id).build()))
+                .isInstanceOfSatisfying(
+                        EnqueueFailedException.class, e -> assertThat(e.ids()).containsExactly(id));
     }
 
     @Test

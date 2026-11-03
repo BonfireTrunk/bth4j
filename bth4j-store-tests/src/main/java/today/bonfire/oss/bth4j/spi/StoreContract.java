@@ -194,6 +194,20 @@ public abstract class StoreContract {
     }
 
     @Test
+    void idHighWaterMarkIsTheFirstIdNotYetAllocated() {
+        long fresh = store.idHighWaterMark();
+        assertThat(fresh).isEqualTo(1);
+        assertThat(store.idHighWaterMark()).isEqualTo(fresh);
+
+        long first = store.allocateIds(10);
+        assertThat(first).isEqualTo(fresh);
+        assertThat(store.idHighWaterMark()).isEqualTo(first + 10);
+
+        long single = store.allocateIds(1);
+        assertThat(store.idHighWaterMark()).isEqualTo(single + 1);
+    }
+
+    @Test
     void allocateWorkerIdIsUniqueAcrossCalls() {
         int a = store.allocateWorkerId("a");
         int b = store.allocateWorkerId("b");

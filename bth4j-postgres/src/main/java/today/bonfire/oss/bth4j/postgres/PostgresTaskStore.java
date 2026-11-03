@@ -409,6 +409,18 @@ public class PostgresTaskStore implements FullStore {
     }
 
     @Override
+    public long idHighWaterMark() {
+        return withConnection(c -> {
+            try (var ps = c.prepareStatement(
+                            "SELECT CASE WHEN is_called THEN last_value + 1 ELSE last_value END FROM " + taskIdSeq);
+                    var rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getLong(1);
+            }
+        });
+    }
+
+    @Override
     public int allocateWorkerId(String label) {
         if (label == null) throw new IllegalArgumentException("label is required");
         return withConnection(c -> {

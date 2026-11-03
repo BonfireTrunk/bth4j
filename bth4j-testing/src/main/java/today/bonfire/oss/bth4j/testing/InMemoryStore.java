@@ -99,6 +99,16 @@ public final class InMemoryStore implements FullStore {
     public void init() {}
 
     @Override
+    public long idHighWaterMark() {
+        lock.lock();
+        try {
+            return nextTaskId;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
     public long allocateIds(int count) {
         if (count < 1) {
             throw new IllegalArgumentException("count must be positive: " + count);

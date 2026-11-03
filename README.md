@@ -210,7 +210,7 @@ a task at most 64 KiB.
 | `maxRun(duration)` | an attempt running longer is asked to stop, see "Cancelling tasks" |
 | `retryPolicy(name)` | a retry policy registered on the runner with that name, see "Retries" |
 | `account(text)`, `header(name, value)` | application labels, stored with the task (8 KiB of headers) |
-| `id(id)` | an id from `client.nextId()`, see below |
+| `id(id)` | an id the client allocated (`client.nextId()` or `EnqueueFailedException.ids()`), see below |
 
 `enqueue` returns `Accepted(id)` or `Duplicate(existingId)`; `enqueueAll` stores many requests in chunks.
 Payloads are limited to 256 KiB.
@@ -241,6 +241,13 @@ try {
     client.enqueue(request);        // same id: stored once, answered Accepted either way
 }
 ```
+
+Ids must come from the client: `client.nextId()` or `EnqueueFailedException.ids()`. An id that was never
+allocated is rejected with a `TaskValidationException`, and an id that already belongs to a task with another
+type, queue, payload or unique key throws `TaskIdReusedException` (a finished task may have dropped its payload,
+then only type, queue and a held unique key are compared). When the store fails before an id was fixed (the
+client could not reserve a block of ids), `EnqueueFailedException.ids()` is empty: nothing was written, retry
+the request without an id.
 
 ### Cancelling tasks
 

@@ -17,6 +17,7 @@ import today.bonfire.oss.bth4j.common.JsonMapper;
 import today.bonfire.oss.bth4j.common.QueuesHolder;
 import today.bonfire.oss.bth4j.exceptions.EnqueueFailedException;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.service.Codecs;
 import today.bonfire.oss.bth4j.service.DefaultAdminOps;
@@ -74,15 +75,21 @@ public final class TaskClient {
     /**
      * Stores the task.
      *
-     * @throws TaskValidationException when the request is invalid or exceeds a size limit
-     * @throws EnqueueFailedException  when the store could not be reached; it carries the id to retry with
+     * @throws TaskValidationException when the request is invalid or exceeds a size limit, or sets an id that
+     *                                 was never allocated
+     * @throws TaskIdReusedException   when the request sets an id that belongs to a task with other content
+     * @throws EnqueueFailedException  when the store could not be reached; it carries the id to retry with, or
+     *                                 none when the failure came before an id was fixed (retry without one)
      */
     public EnqueueResult enqueue(TaskRequest<?> request) {
-        var record = toRecord(request);
+        List<Long> known = request.id() == null ? List.of() : List.of(request.id());
         try {
-            return result(record.id(), store.enqueue(record));
+            if (request.id() != null) requireAllocated(request.id());
+            var record = toRecord(request);
+            known = List.of(record.id());
+            return result(record, store.enqueue(record));
         } catch (TaskStoreException e) {
-            throw new EnqueueFailedException(List.of(record.id()), 0, e);
+            throw new EnqueueFailedException(known, 0, e);
         }
     }
 
@@ -90,15 +97,29 @@ public final class TaskClient {
      * Stores several tasks in chunks. Every id is reserved before the first write; when a chunk fails the
      * exception carries the id of every request, so the caller can retry the same list with
      * {@link TaskRequest.Builder#id(long)} set from {@link EnqueueFailedException#ids()}: tasks already
-     * stored answer accepted again instead of being stored twice.
+     * stored answer accepted again instead of being stored twice. When the store fails before the ids are
+     * reserved, the exception carries no ids and nothing was written.
      *
      * @return one result per request, in order
+     * @throws TaskValidationException when a request sets an id that was never allocated
+     * @throws TaskIdReusedException   when a request sets an id that belongs to a task with other content;
+     *                                 earlier chunks may already be stored
      */
     public List<EnqueueResult> enqueueAll(List<? extends TaskRequest<?>> requests) {
         var records = new ArrayList<TaskRecord>(requests.size());
         var ids = new ArrayList<Long>(requests.size());
         var fresh = (int) requests.stream().filter(r -> r.id() == null).count();
-        var nextId = fresh == 0 ? 0 : this.ids.nextIds(fresh);
+        long nextId;
+        try {
+            requests.stream()
+                    .filter(r -> r.id() != null)
+                    .mapToLong(TaskRequest::id)
+                    .max()
+                    .ifPresent(this::requireAllocated);
+            nextId = fresh == 0 ? 0 : this.ids.nextIds(fresh);
+        } catch (TaskStoreException e) {
+            throw new EnqueueFailedException(List.of(), 0, e);
+        }
         for (var r : requests) {
             var record = toRecord(r, r.id() != null ? r.id() : nextId++);
             records.add(record);
@@ -107,14 +128,13 @@ public final class TaskClient {
         var results = new ArrayList<EnqueueResult>(records.size());
         for (int from = 0; from < records.size(); from += ENQUEUE_CHUNK) {
             var chunk = records.subList(from, Math.min(records.size(), from + ENQUEUE_CHUNK));
-            List<EnqueueOutcome> outcomes;
             try {
-                outcomes = store.enqueueAll(chunk);
+                var outcomes = store.enqueueAll(chunk);
+                for (int i = 0; i < chunk.size(); i++) {
+                    results.add(result(chunk.get(i), outcomes.get(i)));
+                }
             } catch (TaskStoreException e) {
                 throw new EnqueueFailedException(ids, results.size(), e);
-            }
-            for (int i = 0; i < chunk.size(); i++) {
-                results.add(result(chunk.get(i).id(), outcomes.get(i)));
             }
         }
         return results;
@@ -134,12 +154,42 @@ public final class TaskClient {
         return admin;
     }
 
-    private static EnqueueResult result(long id, EnqueueOutcome outcome) {
+    private void requireAllocated(long id) {
+        if (id >= store.idHighWaterMark()) {
+            throw new TaskValidationException("id " + id + " was never allocated; take ids from nextId()");
+        }
+    }
+
+    private EnqueueResult result(TaskRecord sent, EnqueueOutcome outcome) {
         return switch (outcome) {
-            case EnqueueOutcome.Stored s -> new EnqueueResult.Accepted(id);
-            case EnqueueOutcome.Exists e -> new EnqueueResult.Accepted(id);
+            case EnqueueOutcome.Stored s -> new EnqueueResult.Accepted(sent.id());
+            case EnqueueOutcome.Exists e -> {
+                requireSameContent(sent);
+                yield new EnqueueResult.Accepted(sent.id());
+            }
             case EnqueueOutcome.DuplicateKey d -> new EnqueueResult.Duplicate(d.existingId());
         };
+    }
+
+    /**
+     * An id the store already has is a retry only when the stored task is the one being sent. The payload is
+     * compared when the store still has it (a finished task may have dropped it), and the unique key unless
+     * the task finished and released it.
+     */
+    private void requireSameContent(TaskRecord sent) {
+        var stored = store.getTask(sent.id()).orElse(null);
+        if (stored == null) return;
+        if (stored.eventId() != sent.eventId()) throw new TaskIdReusedException(sent.id(), "another task type");
+        if (stored.queueId() != sent.queueId()) throw new TaskIdReusedException(sent.id(), "another queue");
+        if (stored.data() != null && !stored.data().equals(sent.data())) {
+            throw new TaskIdReusedException(sent.id(), "another payload");
+        }
+        var heldKey = stored.uniqueKey();
+        if (heldKey != null
+                ? !heldKey.equals(sent.uniqueKey())
+                : sent.uniqueKey() != null && !stored.state().isTerminal()) {
+            throw new TaskIdReusedException(sent.id(), "another unique key");
+        }
     }
 
     <T> TaskRecord toRecord(TaskRequest<T> request) {
