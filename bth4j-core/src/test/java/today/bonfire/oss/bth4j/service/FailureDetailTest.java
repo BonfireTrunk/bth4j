@@ -56,6 +56,8 @@ class FailureDetailTest {
     private Error observerError;
     private Error scheduleError;
     private boolean fixedDelay;
+    private Map<String, String> headers;
+    private boolean acked;
     private final AtomicReference<Instant> nextFire = new AtomicReference<>();
     private final AtomicReference<Boolean> paused = new AtomicReference<>();
 
@@ -316,6 +318,31 @@ class FailureDetailTest {
     }
 
     @Test
+    void aPolicyDecisionWithoutAReasonStillRecordsTheFailureInClassNameOnlyMode() {
+        policy = (task, error) -> RetryPolicy.Decision.dead(null);
+
+        run(FailureDetail.CLASS_NAME_ONLY, new IllegalStateException());
+
+        var died = (TaskEvent.Died) events.get(1);
+        assertThat(died.reason()).isEqualTo("no reason given");
+        assertThat(stored.get().type()).isEqualTo(IllegalStateException.class.getName());
+        assertThat(logText()).contains("no reason given").contains(IllegalStateException.class.getName());
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    @Test
+    void aPolicyDecisionWithoutAReasonStillRecordsTheFailureInFullMode() {
+        policy = (task, error) -> RetryPolicy.Decision.dead(null);
+
+        run(FailureDetail.FULL, new IllegalStateException());
+
+        var died = (TaskEvent.Died) events.get(1);
+        assertThat(died.reason()).isEqualTo("no reason given");
+        assertThat(stored.get().type()).isEqualTo(IllegalStateException.class.getName());
+        assertThat(finishedCalls).isEqualTo(1);
+    }
+
+    @Test
     void aFatalErrorFromTheStoreFailStillEmitsRetryingLostOnceAndIsRethrown() {
         var error = new OutOfMemoryError("store");
         storeFailError = error;
@@ -357,6 +384,32 @@ class FailureDetailTest {
     }
 
     @Test
+    void anOrdinaryTaskWithAnInvalidFixedDelayHeaderIsStillAcknowledged() {
+        headers = Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "invalid");
+
+        run(FailureDetail.FULL, null);
+
+        assertThat(acked).isTrue();
+        assertThat(nextFire.get()).isNull();
+        assertThat(events.get(1)).isInstanceOf(TaskEvent.Succeeded.class);
+        assertThat(status.issues()).noneMatch(i -> i.kind().equals("schedule-rearm"));
+    }
+
+    @Test
+    void anOccurrenceWithAnUnreadableFixedDelayHeaderIsAcknowledgedWithoutARearmAndRaisesAnIssue() {
+        fixedDelay = true;
+        headers = Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "invalid");
+
+        run(FailureDetail.FULL, null);
+
+        assertThat(acked).isTrue();
+        assertThat(nextFire.get()).isNull();
+        assertThat(events.get(1)).isInstanceOf(TaskEvent.Succeeded.class);
+        assertThat(status.issues()).anyMatch(i -> i.kind().equals("schedule-rearm"));
+        assertThat(logText()).contains("not re-armed");
+    }
+
+    @Test
     void anErrorFromTheScheduleUpdateLeavesTheTaskSucceededAndIsAStoreError() {
         scheduleError = new NoClassDefFoundError("x");
         fixedDelay = true;
@@ -382,6 +435,7 @@ class FailureDetailTest {
                         case "eventNames" -> Map.of(1, "boom");
                         case "ack" -> {
                             if (scheduleError != null) throw scheduleError;
+                            acked = true;
                             var effect = (ScheduleEffect) args[4];
                             if (effect != null && !effect.pauses()) {
                                 nextFire.set(effect.nextFire());
@@ -440,7 +494,10 @@ class FailureDetailTest {
                 .state(TaskState.LEASED)
                 .attempts(1)
                 .scheduleId(fixedDelay ? "sched" : null)
-                .headers(fixedDelay ? Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT1M") : null)
+                .headers(
+                        headers != null
+                                ? headers
+                                : fixedDelay ? Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT1M") : null)
                 .cancelRequestedAt(cancelRequested ? NOW : null)
                 .maxAttempts(3)
                 .build();
