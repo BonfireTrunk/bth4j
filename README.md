@@ -204,7 +204,7 @@ a task at most 64 KiB.
 |---|---|
 | `queue(name)` | target queue; the default queue when absent |
 | `delay(duration)` / `at(instant)` | run later; the last one set wins |
-| `uniqueKey(key)` / `uniqueKey(key, Uniqueness.keepFor(d))` | at most one task holds the key; released when the task finishes, or `d` after; an operator retry within `d` takes it again |
+| `uniqueKey(key)` / `uniqueKey(key, Uniqueness.keepFor(d))` | at most one task record holds the key; released when the task finishes, or `d` after; an operator retry within `d` takes it again |
 | `maxAttempts(n)` | attempts before the task is dead; the runner default when absent |
 | `startBy(instant)` | the task expires if it has not started by then, see "Cancelling tasks"; must not be before the run time |
 | `maxRun(duration)` | an attempt running longer is asked to stop, see "Cancelling tasks" |
@@ -218,6 +218,11 @@ inside its `keepFor` window, and is empty when no task holds it; `admin.cancelBy
 and cancelling a waiting fixed-delay occurrence (key `sched:<schedule id>`) pauses its schedule, as cancelling it by id does.
 A key follows the rule of `uniqueKey`: 1 to 256 characters, not blank.
 Payloads are limited to 256 KiB.
+
+A unique key protects task records, not running bodies. After lease loss, the old body can overlap a
+replacement until its next check or, for types using `interruptOnCancel()`, an interruptible blocking call
+after the runner detects the loss. Interrupts are cooperative too. Fence side effects with the task revision
+or an idempotent target; use steps to checkpoint completed work, but keep each step safe to repeat.
 
 `client.prepare(request)` validates and encodes a request into a `TaskRecord` with its id allocated, without
 writing it. With PostgreSQL, `PostgresTaskStore.enqueue(Connection, TaskRecord)` stores that record on your
@@ -302,8 +307,14 @@ runner.registry().register(EXPORT, (ctx, export) -> {
 });
 ```
 
-Starting a new `ctx.step` also checks. A processor that never checks and is not interruptible runs to its end
-and the task ends SUCCEEDED; the request is not applied after a normal return. If the worker dies while a cancel is pending, maintenance
+`interruptOnCancel()` also interrupts the body when lease renewal reports a lost lease. Only an attempt
+actually interrupted for lease loss has its outcome discarded, even if it swallows the interrupt and returns.
+Without that interrupt, a returned result or failure still goes through the store's revision fence and can
+be applied before maintenance takes over. `checkCancelled()` throws `TaskLeaseLostException` on known lease
+loss. Interruption is opt-in because it can close NIO channels.
+
+Starting a new `ctx.step` also checks. If the revision fence still accepts it, a processor that ignores cancellation
+and returns normally ends the task SUCCEEDED; the request is not applied after a normal return. If the worker dies while a cancel is pending, maintenance
 ends the task CANCELLED when its lease expires instead of retrying it.
 
 `maxRun(duration)` uses the same path: when an attempt has run longer, the lease renewal asks it to stop with

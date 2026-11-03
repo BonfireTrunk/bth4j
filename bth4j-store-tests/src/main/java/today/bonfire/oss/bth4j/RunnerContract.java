@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
+import today.bonfire.oss.bth4j.exceptions.TaskLeaseLostException;
 import today.bonfire.oss.bth4j.exceptions.TaskRescheduleException;
 import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
@@ -707,6 +708,85 @@ public abstract class RunnerContract {
 
         var done = awaitState(id, TaskState.CANCELLED);
         assertThat(done.cancelReason()).isEqualTo("wake up");
+    }
+
+    @Test
+    void lostLeaseInterruptsAnOptedInProcessorWithoutFinishingTheTask() throws Exception {
+        var type = TaskType.of("rc-lost-lease").interruptOnCancel();
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var interrupted = new CountDownLatch(1);
+        var events = new CopyOnWriteArrayList<TaskEvent>();
+        var runner = startRunner(
+                b -> b.observer(events::add),
+                r -> r.register(type, (ctx, payload) -> {
+                    started.countDown();
+                    try {
+                        release.await(30, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        interrupted.countDown();
+                        throw e;
+                    }
+                }));
+        try {
+            long id = enqueue(TaskRequest.of(type).build());
+            assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
+            runner.admin().pauseQueue("Q:DEF", true);
+            var running = client.task(id).orElseThrow();
+            assertThat(store.unclaim(id, running.revision())).isTrue();
+
+            assertThat(interrupted.await(5, TimeUnit.SECONDS)).isTrue();
+            await("the lost attempt to stop", () -> runner.runningTasks() == 0);
+
+            var task = client.task(id).orElseThrow();
+            assertThat(task.state()).isEqualTo(TaskState.QUEUED);
+            assertThat(task.revision()).isEqualTo(running.revision() + 1);
+            assertThat(task.failures()).isEmpty();
+            assertThat(eventNames(events, id)).containsExactly("Started");
+            await(
+                    "the lease-lost issue",
+                    () -> runner.issues().stream().anyMatch(i -> i.kind().equals("lease-lost")));
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    void lostLeaseWithoutOptInWaitsForTheProcessorToCheck() throws Exception {
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var stopped = new AtomicReference<Throwable>();
+        var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {
+            started.countDown();
+            try {
+                release.await(30, TimeUnit.SECONDS);
+                ctx.checkCancelled();
+            } catch (Exception e) {
+                stopped.set(e);
+                throw e;
+            }
+        }));
+        try {
+            long id = enqueue(TaskRequest.of(VOID_TYPE).build());
+            assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
+            runner.admin().pauseQueue("Q:DEF", true);
+            var running = client.task(id).orElseThrow();
+            assertThat(store.unclaim(id, running.revision())).isTrue();
+            await(
+                    "the lease-lost issue",
+                    () -> runner.issues().stream().anyMatch(i -> i.kind().equals("lease-lost")));
+            assertThat(stopped.get()).isNull();
+            assertThat(runner.runningTasks()).isEqualTo(1);
+
+            release.countDown();
+            await("the lost attempt to stop", () -> runner.runningTasks() == 0);
+
+            assertThat(stopped.get()).isInstanceOf(TaskLeaseLostException.class);
+            assertThat(client.task(id).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
+            assertThat(client.task(id).orElseThrow().failures()).isEmpty();
+        } finally {
+            release.countDown();
+        }
     }
 
     @Test

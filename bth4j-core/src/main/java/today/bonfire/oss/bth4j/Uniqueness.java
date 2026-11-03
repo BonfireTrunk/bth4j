@@ -2,7 +2,12 @@ package today.bonfire.oss.bth4j;
 
 import java.time.Duration;
 
-/** How long a {@link TaskRequest#uniqueKey()} stays taken. */
+/**
+ * How long a {@link TaskRequest#uniqueKey()} stays taken. At most one task record holds the key; an old
+ * processor can outlive its lease and overlap a replacement until it checks or responds to an opted-in
+ * interrupt at an interruptible blocking call. Fence side effects with the revision or an idempotent
+ * target, and use steps to checkpoint completed work.
+ */
 public sealed interface Uniqueness {
 
     /** The key is released as soon as the task reaches a terminal state. */

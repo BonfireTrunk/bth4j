@@ -182,8 +182,8 @@ public final class TaskRequest<T> {
         }
 
         /**
-         * Makes the task unique: while the key is taken, another request with the same key is answered with
-         * {@link EnqueueResult.Duplicate} instead of being stored.
+         * Makes the task record unique: while the key is taken, another request with the same key is answered with
+         * {@link EnqueueResult.Duplicate} instead of being stored. See {@link Uniqueness} for lease-loss limits.
          */
         public Builder<T> uniqueKey(String key) {
             if (key != null) requireUniqueKey(key);

@@ -73,8 +73,10 @@ public final class TaskExecution implements Runnable, TaskContext {
     private volatile String cancelReason;
     private volatile boolean leaseLost;
     private volatile Instant startedAt;
-    /** the thread running the processor, while it runs; the target of an interrupt on cancel */
-    private volatile Thread worker;
+    // Serializes interrupts with detachment so a late signal cannot reach the thread's next task.
+    private final ReentrantLock workerLock = new ReentrantLock();
+    private Thread worker;
+    private boolean leaseLossInterrupted;
     /** the fatal error to rethrow from run(), written by the thread that runs the task only */
     private Error fatal;
 
@@ -102,8 +104,7 @@ public final class TaskExecution implements Runnable, TaskContext {
     void requestCancel(String reason) {
         if (reason != null) cancelReason = reason;
         cancelRequested = true;
-        var t = worker;
-        if (interruptOnCancel && t != null) t.interrupt();
+        interruptWorker(false);
     }
 
     /** @return when the processor started, or null before that */
@@ -121,6 +122,20 @@ public final class TaskExecution implements Runnable, TaskContext {
 
     void leaseLost() {
         leaseLost = true;
+        interruptWorker(true);
+    }
+
+    private void interruptWorker(boolean leaseLoss) {
+        if (!interruptOnCancel) return;
+        workerLock.lock();
+        try {
+            if (worker != null) {
+                worker.interrupt();
+                leaseLossInterrupted |= leaseLoss;
+            }
+        } finally {
+            workerLock.unlock();
+        }
     }
 
     // ---- Runnable -------------------------------------------------------------------------------------
@@ -136,7 +151,6 @@ public final class TaskExecution implements Runnable, TaskContext {
             }
             throw t;
         } finally {
-            worker = null;
             onFinished.accept(this);
         }
         if (fatal != null) throw fatal;
@@ -145,7 +159,6 @@ public final class TaskExecution implements Runnable, TaskContext {
     private void runAttempt() {
         var started = s.clock().instant();
         startedAt = started;
-        worker = Thread.currentThread();
         emit(new TaskEvent.Started(view, record.workerId() == null ? 0 : record.workerId()));
         var registration = s.registry().get(view.event());
         if (registration == null) {
@@ -154,18 +167,32 @@ public final class TaskExecution implements Runnable, TaskContext {
         }
         Throwable failure = null;
         try {
+            workerLock.lock();
+            try {
+                worker = Thread.currentThread();
+            } finally {
+                workerLock.unlock();
+            }
+            if (leaseLost) throw new TaskLeaseLostException("lease of task " + record.id() + " was lost");
             process(registration);
         } catch (Throwable t) {
             failure = t;
+            remember(t);
         } finally {
-            worker = null;
-            // an interrupt sent for the cancel request must not leak into the executor thread's next task
-            Thread.interrupted();
+            workerLock.lock();
+            try {
+                worker = null;
+                // Clear cancel and lease-loss interrupts before bookkeeping or the thread's next task.
+                Thread.interrupted();
+            } finally {
+                workerLock.unlock();
+            }
         }
-        if (failure == null) {
+        if (leaseLossInterrupted) {
+            fail(new TaskLeaseLostException("lease of task " + record.id() + " was lost"));
+        } else if (failure == null) {
             succeed(started);
         } else {
-            remember(failure);
             fail(failure);
         }
     }
