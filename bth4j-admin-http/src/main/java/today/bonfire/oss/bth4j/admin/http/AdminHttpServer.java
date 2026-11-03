@@ -185,7 +185,9 @@ public final class AdminHttpServer {
                 throw new HttpError(405, "method not allowed");
             }
         } catch (HttpError e) {
-            sendJson(ex, e.status(), Views.obj("error", e.getMessage()));
+            var body = Views.obj("error", e.getMessage());
+            if (e.code() != null) body.put("code", e.code());
+            sendJson(ex, e.status(), body);
         } catch (Exception e) {
             log.error(
                     "Admin request {} {} failed",
@@ -461,7 +463,7 @@ public final class AdminHttpServer {
         var revision = revision(readObject(ex).get("revision"));
         var outcome = admin.retry(id, revision);
         if (outcome == RetryOutcome.DUPLICATE) {
-            throw new HttpError(409, "the unique key is held by another task");
+            throw new HttpError(409, "the unique key is held by another task", "KEY_HELD");
         }
         changeTask(ex, id, outcome == RetryOutcome.RETRIED);
     }

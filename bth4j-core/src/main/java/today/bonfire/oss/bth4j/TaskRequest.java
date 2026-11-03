@@ -249,9 +249,10 @@ public final class TaskRequest<T> {
          * reply safe. An id that was never allocated is rejected with a {@link TaskValidationException} when
          * the request is enqueued. An id that already belongs to a task is accepted again only when the stored
          * task has the same type, queue, payload (compared as stored text, when the task still has it) and
-         * unique key (unless a finished task released it); anything else throws a
+         * unique key (when the stored task still holds one); anything else throws a
          * {@link today.bonfire.oss.bth4j.exceptions.TaskIdReusedException}. Headers, account, attempts, retry
-         * policy, start-by, max run, delay and payload version are not compared. Never invent an id.
+         * policy, start-by, max run, delay, {@code at(...)} time, {@code keepFor} duration and payload version
+         * are not compared. Never invent an id.
          */
         public Builder<T> id(long id) {
             if (id <= 0) throw new TaskValidationException("id must be positive");

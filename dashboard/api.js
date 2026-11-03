@@ -95,7 +95,7 @@ async function request(method, path, { query, body, noRedirect } = {}) {
   }
   if (!res.ok) {
     if (res.status === 409) {
-      if (data && data.error === 'the unique key is held by another task') {
+      if (data && data.code === 'KEY_HELD') {
         throw new ApiError(409, data.error, true);
       }
       throw new ApiError(409, 'This item changed meanwhile. Reload it and try again.');

@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import redis.clients.jedis.Protocol;
@@ -224,12 +225,14 @@ public class RedisTaskStore implements FullStore {
                 .toList();
     }
 
-    private static List<String> enqueueArgs(TaskRecord t) {
+    static List<String> enqueueArgs(TaskRecord t) {
         var args = new ArrayList<String>();
         args.add(String.valueOf(t.id()));
         args.add(t.due() == null ? "" : ms(t.due()));
         args.add(t.uniqueKey() == null ? "" : t.uniqueKey());
         args.addAll(storeArgs(t));
+        args.add("wt");
+        args.add(Long.toHexString(ThreadLocalRandom.current().nextLong()));
         return args;
     }
 

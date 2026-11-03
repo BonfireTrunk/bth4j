@@ -17,6 +17,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.postgresql.ds.PGSimpleDataSource;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
@@ -149,6 +150,41 @@ class PostgresTaskStoreIT {
         }
         assertThat(ids).hasSize(40 * 64);
         assertThatThrownBy(() -> store.allocateIds(0)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void idHighWaterMarkNeedsOnlyUsageOnTheSequence() throws SQLException {
+        String role = prefix + "_producer";
+        sql("CREATE ROLE " + role + " LOGIN PASSWORD 'test-producer'");
+        try {
+            sql("GRANT USAGE ON SCHEMA public TO " + role);
+            sql("GRANT SELECT, UPDATE ON TABLE " + prefix + "_meta TO " + role);
+            sql("GRANT USAGE ON SEQUENCE " + prefix + "_task_id TO " + role);
+            var restricted = new PGSimpleDataSource();
+            try (var c = PostgresTestSupport.dataSource().getConnection()) {
+                restricted.setUrl(c.getMetaData().getURL());
+            }
+            restricted.setUser(role);
+            restricted.setPassword("test-producer");
+            var producer = new PostgresTaskStore(restricted, prefix);
+            try (var c = restricted.getConnection();
+                    var st = c.createStatement();
+                    var rs = st.executeQuery("SELECT current_user, has_sequence_privilege('" + prefix
+                            + "_task_id', 'USAGE'), has_sequence_privilege('" + prefix + "_task_id', 'SELECT')")) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getString(1)).isEqualTo(role);
+                assertThat(rs.getBoolean(2)).isTrue();
+                assertThat(rs.getBoolean(3)).isFalse();
+            }
+            assertThat(producer.idHighWaterMark()).isEqualTo(1);
+            assertThat(producer.allocateIds(3)).isEqualTo(1);
+            assertThat(producer.idHighWaterMark()).isEqualTo(4);
+            assertThat(store.allocateIds(2)).isEqualTo(4);
+            assertThat(producer.idHighWaterMark()).isEqualTo(6);
+        } finally {
+            sql("DROP OWNED BY " + role);
+            sql("DROP ROLE " + role);
+        }
     }
 
     @Test

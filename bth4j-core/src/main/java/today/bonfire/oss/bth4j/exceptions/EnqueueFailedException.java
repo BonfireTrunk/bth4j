@@ -8,9 +8,10 @@ import java.util.List;
  * last assigned id in request order; tasks may already be stored, so a retry must set those ids.
  * <p>
  * Retrying the same requests, encoded identically, is idempotent while the tasks are retained. A task that
- * ran and was removed can be stored again. If the cause reports occupied generated ids, failed id replacement
- * or concurrent caller-id reuse, resolve the collisions before retrying: the retained ids can belong to other
- * tasks, even with identical content.
+ * ran and was removed can be stored again. Collision exhaustion carries newly reserved, unwritten ids for
+ * the occupied positions and any generated positions in unattempted chunks. If replacement reservation fails
+ * or the cause reports concurrent caller-id reuse, resolve the collisions before retrying: the retained ids
+ * can belong to other tasks, even with identical content.
  */
 public class EnqueueFailedException extends RuntimeException {
     private final List<Long> ids;
@@ -30,6 +31,8 @@ public class EnqueueFailedException extends RuntimeException {
     }
 
     /**
+     * Check {@link #ids()} for emptiness before calling: a failure before reservation may carry no id.
+     *
      * @return the id of the first (or only) task of the call
      * @throws java.util.NoSuchElementException when {@link #ids()} is empty
      */

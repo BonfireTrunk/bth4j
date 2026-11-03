@@ -170,9 +170,12 @@ final class RedisScripts {
 
             -- fields come from ARGV[from..]. Returns {0} when the id exists, {2, id} when the unique key is
             -- held, {1} when stored. A k: string without TTL whose task is gone is stale and is overwritten.
-            local function store(id, dueArg, uk, qid, sb, data, from, forceScheduled)
+            local function store(id, dueArg, uk, qid, sb, data, from, forceScheduled, token)
               local tkey = P .. 't:' .. id
-              if redis.call('EXISTS', tkey) == 1 then return {0, ''} end
+              if redis.call('EXISTS', tkey) == 1 then
+                if token and redis.call('HGET', tkey, 'wt') == token then return {1, ''} end
+                return {0, ''}
+              end
               if uk then
                 local kkey = P .. 'k:' .. uk
                 local holder = redis.call('SET', kkey, id, 'NX', 'GET')
@@ -205,14 +208,14 @@ final class RedisScripts {
 
     /**
      * ARGV: id, due ms or '', unique key or '', queue id, start-by ms or '', has payload (1 or ''), payload,
-     * then field/value pairs. Returns {code, existing id}.
+     * then field/value pairs ending with wt and the write token. Returns {code, existing id}.
      */
     static final String ENQUEUE = PRELUDE + """
             local uk = ARGV[4] ~= '' and ARGV[4] or nil
             local due = ARGV[3] ~= '' and ARGV[3] or nil
             local sb = ARGV[6] ~= '' and ARGV[6] or nil
             local data = ARGV[7] == '1' and ARGV[8] or nil
-            return store(ARGV[2], due, uk, ARGV[5], sb, data, 9, false)
+            return store(ARGV[2], due, uk, ARGV[5], sb, data, 9, false, ARGV[#ARGV])
             """;
 
     /**
