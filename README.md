@@ -193,8 +193,9 @@ An `Error` (`AssertionError`, `StackOverflowError`, `NoClassDefFoundError`, ...)
 returns; on a retry the stored result is returned and the body does not run. A step is repeated only when
 the worker dies between finishing the body and storing the result, so put side effects inside steps and
 keep each step idempotent. Work outside a step runs on every attempt. Step results are encoded with the
-runner's JSON mapper; a step name is at most 64 characters, a result at most 8192 characters and all steps of
-a task at most 64 KiB.
+runner's JSON mapper; a step name must be nonblank and at most 64 UTF-16 code units, an encoded result at
+most 8192, and all step names and encoded results of a task together at most 65536. These limits use Java
+`String.length()`, not encoded bytes.
 
 ### Enqueueing
 
@@ -204,7 +205,7 @@ a task at most 64 KiB.
 |---|---|
 | `queue(name)` | target queue; the default queue when absent |
 | `delay(duration)` / `at(instant)` | run later; the last one set wins |
-| `uniqueKey(key)` / `uniqueKey(key, Uniqueness.keepFor(d))` | at most one task record holds the key; released when the task finishes, or `d` after; an operator retry within `d` takes it again |
+| `uniqueKey(key)` / `uniqueKey(key, Uniqueness.keepFor(d))` | at most one task record holds the key; released when the task finishes, or `d` after; an operator retry within `d` keeps it |
 | `maxAttempts(n)` | attempts before the task is dead; the runner default when absent |
 | `startBy(instant)` | the task expires if it has not started by then, see "Cancelling tasks"; must not be before the run time |
 | `maxRun(duration)` | an attempt running longer is asked to stop, see "Cancelling tasks" |
@@ -213,11 +214,25 @@ a task at most 64 KiB.
 | `id(id)` | an id the client allocated (`client.nextId()` or `EnqueueFailedException.ids()`), see below |
 
 `enqueue` returns `Accepted(id)` or `Duplicate(existingId)`; `enqueueAll` stores many requests in chunks.
-`client.taskByKey(key)` (and `admin.taskByKey(key)`) returns the task that holds a unique key now, open or finished
-inside its `keepFor` window, and is empty when no task holds it; `admin.cancelByKey(key, reason)` cancels that task,
+`client.taskByKey(key)` (and `admin.taskByKey(key)`) reads the task that holds a unique key now, open or finished
+inside its `keepFor` window, without writing; it is empty when no task holds it. `admin.cancelByKey(key, reason)` cancels that task,
 and cancelling a waiting fixed-delay occurrence (key `sched:<schedule id>`) pauses its schedule, as cancelling it by id does.
 A key follows the rule of `uniqueKey`: 1 to 256 characters, not blank.
 Payloads are limited to 256 KiB.
+
+A later enqueue with the same key and a shorter `keepFor` does not shorten the holder's window.
+`AdminOps.cancel` on a DEAD task answers `STALE` and leaves its key held for the window; a successful
+`AdminOps.delete` frees the key at once and removes the task and its failure history.
+
+For a repair sweep that re-enqueues work after a crash, the default until-done key is free as soon as the
+task finishes, so a late enqueue can run the job again. Use `keepFor` longer than the window in which a retry
+or sweep can still happen to prevent another enqueue from starting a second task after SUCCEEDED, DEAD or
+CANCELLED. A DEAD holder inside that window still answers `Duplicate` with its id; inspect it with
+`taskByKey`.
+
+A running task holds its key until it ends: a successor enqueued with that key from inside its processor
+answers `Duplicate`. Enqueue the successor after the task ends (and any keep window passes), or give it a
+different key. A processor uses its own `TaskClient` to enqueue; `TaskContext` has no enqueue method.
 
 A unique key protects task records, not running bodies. After lease loss, the old body can overlap a
 replacement until its next check or, for types using `interruptOnCancel()`, an interruptible blocking call
@@ -237,6 +252,9 @@ try (Connection c = dataSource.getConnection()) {
     c.commit();
 }
 ```
+
+An insert with the same unique key as another open transaction waits until that transaction ends. Enqueue
+last, after taking your own row locks, or outside the transaction, to avoid a lock-order cycle.
 
 If the store cannot be reached, `enqueue` throws `EnqueueFailedException` and the caller does not know
 whether the task was stored. Ids are allocated by the client before the write, so the retry is safe:
@@ -262,11 +280,15 @@ ids inside that fresh range, and compares every caller id with its stored task. 
 for requests without caller ids. A Redis failover that rolls the id counter back can make an allocated id look
 unallocated.
 
+With an existing id and matching content, `Accepted` only confirms that the record exists; it never starts
+another run, even when the task is DEAD. Use `AdminOps.retry` to run a dead task again.
+
 An empty `EnqueueFailedException.ids()` means nothing was written by this call: resend the **same requests
 unchanged**, keeping any ids you set yourself. For a batch, failure during the high-water read or initial
 reservation returns empty ids; after reservation, failures carry every request's id in request order. A single
 `enqueue` retains its caller id even if the high-water read fails. Non-empty ids mean tasks may already be
-stored, so set those ids on the retry. This prevents duplicates only while the original tasks are retained.
+stored, so set those ids on the retry. This prevents duplicates only while the original tasks are retained;
+after purge, the same allocated id stores a new task.
 
 Generated ids answered "exists" are retried with fresh ids, at most three writes per request. If a batch fails
 to replace occupied ids, it retains the last attempted ids; resolve the collisions before retrying, since an
@@ -361,9 +383,10 @@ The misfire threshold is twice `recurringTasksCheckInterval`, at least one minut
 continues from now, `FIRE_ONCE_NOW` creates one task now, `CATCH_UP` creates one task per missed fire time up
 to `max` (the most recent ones when more were missed) and continues from now. Every misfire is recorded as an
 issue. With `Overlap.SKIP`, an occurrence is skipped (and an issue `schedule-overlap` recorded) while the task
-of the previous one is not finished. A fixed-delay definition (at least 1 second) first fires one delay after
-registration; if an occurrence ends DEAD or CANCELLED (in its processor, through an expired lease or by an
-operator cancel) the definition is paused and an issue `schedule-paused` is recorded, so a failing job does
+of the previous one is not finished. This keys only the occurrence (`sched:<id>`); tasks its processor
+enqueues are unique only if the application gives them keys. A fixed-delay definition (at least 1 second)
+first fires one delay after registration; if an occurrence ends DEAD or CANCELLED (in its processor, through
+an expired lease or by an operator cancel) the definition is paused and an issue `schedule-paused` is recorded, so a failing job does
 not run again until an operator resumes it. Pausing,
 resuming and triggering a definition are `AdminOps` operations; a paused cron definition keeps its stored next
 fire time.
@@ -405,7 +428,13 @@ change on its next claim.
 The default retry policy waits 1 s after the first failed attempt, doubles per attempt, caps at 1 hour and
 varies each delay by up to 20 percent. Replace it with `retryPolicy(RetryPolicy.exponential(base, cap))`,
 `RetryPolicy.fixed(delay)` or your own `RetryPolicy`, which returns `RetryAfter(delay)` or `Dead(reason)`.
-The runner ends the task as dead anyway when the attempts are used up (10 by default).
+The runner ends the task as dead anyway when the attempts are used up (10 by default, at most 32767).
+For "retry until it works", throw `TaskRescheduleException(delay)` for expected transient failures: it runs
+again later without spending an attempt. Set a high `maxAttempts` with a capped backoff for crashes; the
+attempt budget is still finite.
+
+A retry's due time is computed on the worker's clock; promotion and leases use the store's clock. Keep
+these clocks synchronized: skew changes the effective retry delay.
 
 Register policies under a name and let a request choose one:
 
@@ -648,9 +677,14 @@ All settings are on `BackgroundRunner.builder()`.
 | `workerStaleAfter` | 10 minutes | worker registry rows without a heartbeat for this long are deleted by the purge |
 | `scheduledTasksCheckInterval` | 1 s (at least 10 ms) | upper bound of the wait between promotions of due scheduled tasks; it wakes earlier for the next due task |
 | `recurringTasksCheckInterval` | 10 s | how often recurring definitions are checked; twice this value (at least 1 minute) is the misfire threshold |
-| `idBlockSize` | 64 (1 to 100000) | task ids the client reserves per store call |
+| `idBlockSize` | 64 (1 to 100000) | task ids the client reserves per store call; prefer more than 1 for busy producers (see below) |
 | `defaultMaxAttempts` | 10 (1 to 32767) | attempts for requests that do not set `maxAttempts` |
 | `configureQueues` | `Q:DEF`, `Q:LOW`, `Q:MED`, `Q:HIGH`; default queue `Q:DEF` | available queues, queues this instance processes (round robin), default queue |
+
+With `idBlockSize(1)` every enqueue reserves its id with a store call, and on PostgreSQL that call takes the
+lock that keeps block allocation contiguous, so busy producers serialise on it. In a contention measurement on
+PostgreSQL, size 1 reached about one third of the enqueue rate of a larger block (10,743 against 32,379
+enqueues in 60 s).
 
 `start()` fails with `TaskConfigurationError` when no processor is registered. `quiet()` stops claiming while
 running tasks finish and `resume()` claims again. `stop()` stops the services, waits up to `shutdownTimeout`
