@@ -194,14 +194,15 @@ class RedisTaskStoreIT {
     @Test
     void enqueueResendWithTheSameTokenIsStoredAndAnotherTokenExists() {
         var scripts = new ScriptRunner(jedis, keys.meta, keys.prefix);
-        for (long id : List.of(11L, 12L)) {
-            var record = task(id).uniqueKey(id == 11 ? null : "resend-key").build();
-            var args = RedisTaskStore.enqueueArgs(record);
+        var first = store.allocateIds(2);
+        for (long id : List.of(first, first + 1)) {
+            var record = task(id).uniqueKey(id == first ? null : "resend-key").build();
+            var args = RedisTaskStore.enqueueArgs(record, store.allocateIds(1));
 
             assertThat(scripts.run(RedisScripts.ENQUEUE, args)).isEqualTo(List.of(1L, ""));
             var before = jedis.hgetAll(keys.task(id));
             assertThat(scripts.run(RedisScripts.ENQUEUE, args)).isEqualTo(List.of(1L, ""));
-            assertThat(scripts.run(RedisScripts.ENQUEUE, RedisTaskStore.enqueueArgs(record)))
+            assertThat(scripts.run(RedisScripts.ENQUEUE, RedisTaskStore.enqueueArgs(record, store.allocateIds(1))))
                     .isEqualTo(List.of(0L, ""));
             assertThat(jedis.hgetAll(keys.task(id))).isEqualTo(before);
             assertThat(jedis.zrange(keys.queue(queue), 0, -1)).contains(String.valueOf(id));
@@ -211,17 +212,61 @@ class RedisTaskStoreIT {
 
     @Test
     void enqueueCallsAndBatchRecordsHaveDistinctWriteTokens() {
-        var first = task(21).build();
-        var second = task(22).build();
+        var id = store.allocateIds(4);
+        var first = task(id).build();
+        var second = task(id + 1).build();
         assertThat(store.enqueue(first)).isEqualTo(EnqueueOutcome.STORED);
-        assertThat(store.enqueueAll(List.of(first, second, task(23).build())))
+        assertThat(store.enqueue(second)).isEqualTo(EnqueueOutcome.STORED);
+        assertThat(store.enqueueAll(
+                        List.of(first, task(id + 2).build(), task(id + 3).build())))
                 .containsExactly(EnqueueOutcome.EXISTS, EnqueueOutcome.STORED, EnqueueOutcome.STORED);
-        assertThat(List.of(21L, 22L, 23L).stream()
-                        .map(id -> jedis.hget(keys.task(id), "wt"))
+        assertThat(List.of(id, id + 1, id + 2, id + 3).stream()
+                        .map(taskId -> Long.parseLong(jedis.hget(keys.task(taskId), Keys.F_WRITE_TOKEN)))
                         .toList())
-                .doesNotContainNull()
-                .doesNotHaveDuplicates();
-        assertThat(counts().queued()).isEqualTo(3);
+                .containsExactly(id + 4, id + 5, id + 7, id + 8);
+        var reserved = 4 + RedisTaskStore.WRITE_TOKEN_BLOCK_SIZE;
+        assertThat(jedis.get(keys.seqId)).isEqualTo(String.valueOf(reserved));
+        assertThat(store.allocateIds(1)).isEqualTo(reserved + 1);
+        assertThat(counts().queued()).isEqualTo(4);
+    }
+
+    @Test
+    void largeBatchReservesOneTokenBlockAndTheNextWriteRefillsIt() {
+        var size = RedisTaskStore.WRITE_TOKEN_BLOCK_SIZE + 1;
+        var first = store.allocateIds(size + 2);
+        assertThat(store.enqueue(task(first).build())).isEqualTo(EnqueueOutcome.STORED);
+        var beforeBatch = Long.parseLong(jedis.get(keys.seqId));
+        var tasks = new ArrayList<TaskRecord>();
+        for (int i = 0; i < size; i++) {
+            tasks.add(task(first + 1 + i).build());
+        }
+
+        assertThat(store.enqueueAll(tasks)).containsOnly(EnqueueOutcome.STORED).hasSize(size);
+
+        for (int i = 0; i < size; i++) {
+            assertThat(jedis.hget(keys.task(first + 1 + i), Keys.F_WRITE_TOKEN))
+                    .isEqualTo(String.valueOf(beforeBatch + 1 + i));
+        }
+        assertThat(jedis.get(keys.seqId)).isEqualTo(String.valueOf(beforeBatch + size));
+        var last = first + size + 1;
+        assertThat(store.enqueue(task(last).build())).isEqualTo(EnqueueOutcome.STORED);
+        assertThat(jedis.hget(keys.task(last), Keys.F_WRITE_TOKEN)).isEqualTo(String.valueOf(beforeBatch + size + 1));
+        assertThat(jedis.get(keys.seqId))
+                .isEqualTo(String.valueOf(beforeBatch + size + RedisTaskStore.WRITE_TOKEN_BLOCK_SIZE));
+    }
+
+    @Test
+    void storesSharingANamespaceReserveSeparateTokenBlocks() {
+        var first = store.allocateIds(2);
+        var other = new RedisTaskStore(jedis, keys.namespace);
+
+        assertThat(store.enqueue(task(first).build())).isEqualTo(EnqueueOutcome.STORED);
+        assertThat(other.enqueue(task(first + 1).build())).isEqualTo(EnqueueOutcome.STORED);
+
+        assertThat(jedis.hget(keys.task(first), Keys.F_WRITE_TOKEN)).isEqualTo("3");
+        assertThat(jedis.hget(keys.task(first + 1), Keys.F_WRITE_TOKEN))
+                .isEqualTo(String.valueOf(3 + RedisTaskStore.WRITE_TOKEN_BLOCK_SIZE));
+        assertThat(store.allocateIds(1)).isEqualTo(3 + 2 * RedisTaskStore.WRITE_TOKEN_BLOCK_SIZE);
     }
 
     @Test
