@@ -29,8 +29,12 @@ import javax.net.ssl.SSLContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.AdminOps;
+import today.bonfire.oss.bth4j.TaskRequest;
+import today.bonfire.oss.bth4j.TaskViewPage;
 import today.bonfire.oss.bth4j.common.Json;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
+import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskState;
 
@@ -58,10 +62,9 @@ public final class AdminHttpServer {
     private static final int MAX_SESSIONS = 1000;
     private static final int DEFAULT_LIMIT = 50;
     private static final int MAX_LIMIT = 200;
-    private static final String HTML_CSP =
-            "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net 'unsafe-eval'; "
-                    + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; "
-                    + "base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+    private static final String HTML_CSP = "default-src 'self'; script-src 'self' 'unsafe-eval'; "
+            + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; "
+            + "base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
 
     private record User(byte[] digest, Role role) {}
 
@@ -182,7 +185,9 @@ public final class AdminHttpServer {
                 throw new HttpError(405, "method not allowed");
             }
         } catch (HttpError e) {
-            sendJson(ex, e.status(), Views.obj("error", e.getMessage()));
+            var body = Views.obj("error", e.getMessage());
+            if (e.code() != null) body.put("code", e.code());
+            sendJson(ex, e.status(), body);
         } catch (Exception e) {
             log.error(
                     "Admin request {} {} failed",
@@ -242,6 +247,13 @@ public final class AdminHttpServer {
                 throw new HttpError(403, "this action needs the ADMIN role");
             }
         }
+        var byKey = segments.size() >= 3
+                && segments.get(0).equals("tasks")
+                && segments.get(1).equals("by-key");
+        if (byKey) {
+            byKey(ex, method, segments);
+            return;
+        }
         if (segments.isEmpty() || segments.size() > 3) {
             throw new HttpError(404, "not found");
         }
@@ -278,6 +290,35 @@ public final class AdminHttpServer {
             case "GET workers" -> sendJson(ex, 200, Views.list(admin.workers(), Views::worker));
             case "GET issues" -> sendJson(ex, 200, Views.list(admin.issues(), Views::issue));
             default -> throw new HttpError(404, "not found");
+        }
+    }
+
+    private void byKey(HttpExchange ex, String method, List<String> segments) throws IOException {
+        var key = segments.get(2);
+        try {
+            TaskRequest.requireUniqueKey(key);
+        } catch (TaskValidationException e) {
+            throw new HttpError(400, e.getMessage());
+        }
+        if (segments.size() == 3 && method.equals("GET")) {
+            var task = admin.taskByKey(key).orElseThrow(() -> new HttpError(404, "no task holds this key"));
+            sendJson(ex, 200, Views.task(task));
+        } else if (segments.size() == 4
+                && method.equals("POST")
+                && segments.get(3).equals("cancel")) {
+            var reason = readObject(ex).get("reason");
+            if (reason != null && !(reason instanceof String)) {
+                throw new HttpError(400, "reason must be a string");
+            }
+            var outcome = admin.cancelByKey(key, (String) reason);
+            switch (outcome) {
+                case NOT_FOUND -> throw new HttpError(404, "no task holds this key");
+                case FINISHED -> throw new HttpError(409, "the task holding this key is already finished");
+                case STALE -> throw new HttpError(409, "the task changed meanwhile, retry");
+                default -> sendJson(ex, 200, Views.obj("ok", true, "outcome", outcome.name()));
+            }
+        } else {
+            throw new HttpError(404, "not found");
         }
     }
 
@@ -379,7 +420,7 @@ public final class AdminHttpServer {
         sendJson(ex, 200, Views.obj("ok", true));
     }
 
-    private List<Object> tasks(HttpExchange ex) {
+    private Object tasks(HttpExchange ex) {
         var query = query(ex);
         var stateName = query.get("state");
         if (stateName == null) {
@@ -391,7 +432,6 @@ public final class AdminHttpServer {
         } catch (IllegalArgumentException e) {
             throw new HttpError(400, "unknown state");
         }
-        var after = query.containsKey("after") ? parseLong(query.get("after"), "after") : 0L;
         var limit = DEFAULT_LIMIT;
         if (query.containsKey("limit")) {
             limit = (int) Math.min(parseLong(query.get("limit"), "limit"), MAX_LIMIT);
@@ -400,8 +440,19 @@ public final class AdminHttpServer {
             }
         }
         var queue = query.get("queue");
-        return Views.list(
-                admin.tasks(state, queue == null || queue.isEmpty() ? null : queue, after, limit), Views::task);
+        var queueName = queue == null || queue.isEmpty() ? null : queue;
+        if (!query.containsKey("cursor")) {
+            var after = query.containsKey("after") ? parseLong(query.get("after"), "after") : 0L;
+            return Views.list(admin.tasks(state, queueName, after, limit), Views::task);
+        }
+        var cursor = query.get("cursor");
+        TaskViewPage page;
+        try {
+            page = admin.tasks(state, queueName, cursor == null || cursor.isEmpty() ? null : cursor, limit);
+        } catch (IllegalArgumentException e) {
+            throw new HttpError(400, "malformed cursor");
+        }
+        return Views.obj("items", Views.list(page.items(), Views::task), "next", page.next());
     }
 
     private Map<String, Object> payload(long id) {
@@ -410,7 +461,11 @@ public final class AdminHttpServer {
 
     private void retry(HttpExchange ex, long id) throws IOException {
         var revision = revision(readObject(ex).get("revision"));
-        changeTask(ex, id, admin.retry(id, revision));
+        var outcome = admin.retry(id, revision);
+        if (outcome == RetryOutcome.DUPLICATE) {
+            throw new HttpError(409, "the unique key is held by another task", "KEY_HELD");
+        }
+        changeTask(ex, id, outcome == RetryOutcome.RETRIED);
     }
 
     private void cancel(HttpExchange ex, long id) throws IOException {

@@ -43,12 +43,13 @@ export function clearSession() {
 }
 
 export class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, duplicate = false) {
     super(message);
     this.status = status;
+    this.duplicate = duplicate;
   }
   get conflict() {
-    return this.status === 409;
+    return this.status === 409 && !this.duplicate;
   }
 }
 
@@ -56,7 +57,7 @@ function url(path, query) {
   const base = (window.BTH4J_API || '').replace(/\/+$/, '') + '/api/v1';
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(query || {})) {
-    if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+    if (v !== undefined && v !== null && (v !== '' || k === 'cursor')) q.set(k, String(v));
   }
   const qs = q.toString();
   return base + path + (qs ? '?' + qs : '');
@@ -94,6 +95,9 @@ async function request(method, path, { query, body, noRedirect } = {}) {
   }
   if (!res.ok) {
     if (res.status === 409) {
+      if (data && data.code === 'KEY_HELD') {
+        throw new ApiError(409, data.error, true);
+      }
       throw new ApiError(409, 'This item changed meanwhile. Reload it and try again.');
     }
     const detail = data && (data.error || data.message);
@@ -117,6 +121,7 @@ export const api = {
   resumeQueue: (name) => request('POST', '/queues/' + enc(name) + '/resume', { body: {} }),
   tasks: (query) => request('GET', '/tasks', { query }),
   task: (id) => request('GET', '/tasks/' + enc(id)),
+  taskByKey: (key) => request('GET', '/tasks/by-key/' + enc(key)),
   payload: (id) => request('GET', '/tasks/' + enc(id) + '/payload'),
   retryTask: (id, revision) => request('POST', '/tasks/' + enc(id) + '/retry', { body: { revision } }),
   cancelTask: (id, revision, reason) => request('POST', '/tasks/' + enc(id) + '/cancel', { body: { revision, reason } }),

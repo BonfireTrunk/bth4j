@@ -54,6 +54,26 @@ public final class IdAllocator {
         }
     }
 
+    /** Discards unhanded ids, so collision recovery starts with a newly allocated store block. */
+    public void abandonBlock() {
+        lock.lock();
+        try {
+            next = end;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** The exclusive end of the last block allocated by this client; every smaller positive id was allocated. */
+    public long knownEnd() {
+        lock.lock();
+        try {
+            return end;
+        } finally {
+            lock.unlock();
+        }
+    }
+
     private void reserve(int size) {
         next = store.allocateIds(size);
         end = Math.addExact(next, size);

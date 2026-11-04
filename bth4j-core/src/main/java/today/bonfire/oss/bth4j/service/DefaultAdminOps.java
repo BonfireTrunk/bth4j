@@ -13,12 +13,14 @@ import today.bonfire.oss.bth4j.Issue;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.TaskView;
+import today.bonfire.oss.bth4j.TaskViewPage;
 import today.bonfire.oss.bth4j.common.QueuesHolder;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
+import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
@@ -72,6 +74,11 @@ public final class DefaultAdminOps implements AdminOps {
     }
 
     @Override
+    public Optional<TaskView> taskByKey(String key) {
+        return store.taskByKey(key).map(names::view);
+    }
+
+    @Override
     public List<TaskView> tasks(TaskState state, String queue, long afterId, int limit) {
         var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.getValidQueue(queue)));
         var result = new ArrayList<TaskView>();
@@ -80,7 +87,16 @@ public final class DefaultAdminOps implements AdminOps {
     }
 
     @Override
-    public boolean retry(long id, int revision) {
+    public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
+        var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.getValidQueue(queue)));
+        var page = store.tasks(state, queueId, cursor, limit);
+        var result = new ArrayList<TaskView>();
+        for (var r : page.items()) result.add(names.view(r));
+        return new TaskViewPage(result, page.next());
+    }
+
+    @Override
+    public RetryOutcome retry(long id, int revision) {
         return store.retry(id, revision);
     }
 
@@ -89,19 +105,23 @@ public final class DefaultAdminOps implements AdminOps {
         if (reason != null && reason.length() > MAX_REASON) {
             throw new TaskValidationException("reason longer than " + MAX_REASON + " characters");
         }
-        var outcome = store.cancel(id, revision, reason == null || reason.isBlank() ? "cancelled by operator" : reason);
-        if (outcome == CancelOutcome.CANCELLED) {
-            // a waiting fixed-delay occurrence re-arms nothing, so its definition would stay parked
-            store.getTask(id)
-                    .filter(RecurringTaskService::isFixedDelayOccurrence)
-                    .ifPresent(r -> store.pauseRecurring(r.scheduleId(), true));
-        }
-        return outcome;
+        // a waiting fixed-delay occurrence re-arms nothing, so the store pauses its definition with the cancel
+        var pause = RecurringTaskService.pauseEffect(store.getTask(id).orElse(null));
+        return store.cancel(id, revision, reason == null || reason.isBlank() ? "cancelled by operator" : reason, pause);
+    }
+
+    @Override
+    public CancelOutcome cancelByKey(String key, String reason) {
+        var holder = store.taskByKey(key).orElse(null);
+        if (holder == null) return CancelOutcome.NOT_FOUND;
+        if (holder.state().isTerminal()) return CancelOutcome.FINISHED;
+        return cancel(holder.id(), holder.revision(), reason);
     }
 
     @Override
     public boolean delete(long id, int revision) {
-        return store.delete(id, revision);
+        var pause = RecurringTaskService.pauseEffect(store.getTask(id).orElse(null));
+        return store.delete(id, revision, pause);
     }
 
     @Override
@@ -140,9 +160,9 @@ public final class DefaultAdminOps implements AdminOps {
 
     @Override
     public boolean pauseSchedule(String id, boolean paused) {
-        if (!store.pauseRecurring(id, paused)) return false;
         if (!paused) {
-            // a fixed-delay definition parks its next fire while paused; resuming re-arms it from now
+            // a fixed-delay definition parks its next fire while paused; the re-arm goes first, while it is
+            // still paused, so the runner cannot commit an occurrence in between and fire again one delay later
             store.recurringDefinitions().stream()
                     .filter(s -> s.definition().scheduleId().equals(id)
                             && s.definition().isFixedDelay())
@@ -150,7 +170,7 @@ public final class DefaultAdminOps implements AdminOps {
                     .ifPresent(s -> store.setNextFire(
                             id, clock.instant().plusMillis(s.definition().fixedDelayMs())));
         }
-        return true;
+        return store.pauseRecurring(id, paused);
     }
 
     @Override

@@ -1,0 +1,751 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-02T19:14:21Z",
+  "title": "Design System: bth4j dashboard",
+  "extensions": {
+    "colorMeta": {
+      "live-teal": {
+        "role": "primary",
+        "displayName": "Live Teal",
+        "canonical": "#1c6f8c",
+        "darkValue": "#4fb0d2",
+        "tonalRamp": [
+          "#0e1b1f",
+          "#12333e",
+          "#164b5d",
+          "#1a637c",
+          "#398199",
+          "#72a4b3",
+          "#abc7ce",
+          "#e4eae8"
+        ]
+      },
+      "waiting-amber": {
+        "role": "secondary",
+        "displayName": "Waiting Amber",
+        "canonical": "#a8650a",
+        "darkValue": "#e5a21b",
+        "tonalRamp": [
+          "#23190c",
+          "#492f0b",
+          "#6f450b",
+          "#955a0a",
+          "#b37828",
+          "#c89e63",
+          "#ddc49f",
+          "#f2e9db"
+        ]
+      },
+      "arrived-green": {
+        "role": "tertiary",
+        "displayName": "Arrived Green",
+        "canonical": "#1f7a3f",
+        "darkValue": "#4fb577",
+        "tonalRamp": [
+          "#0f1c14",
+          "#133720",
+          "#18522c",
+          "#1d6d39",
+          "#3b8a56",
+          "#73ab84",
+          "#accbb2",
+          "#e4ebe0"
+        ]
+      },
+      "signal-red": {
+        "role": "tertiary",
+        "displayName": "Signal Red",
+        "canonical": "#b4231c",
+        "darkValue": "#e4675b",
+        "tonalRamp": [
+          "#250f0e",
+          "#4e1512",
+          "#771b16",
+          "#a0201a",
+          "#bd3e38",
+          "#cf756f",
+          "#e1aca6",
+          "#f3e3dd"
+        ]
+      },
+      "paper-ground": {
+        "role": "neutral",
+        "displayName": "Paper Ground",
+        "canonical": "#f6f3ec",
+        "darkValue": "#101214",
+        "tonalRamp": [
+          "#2f2f2e",
+          "#686764",
+          "#a19f9a",
+          "#dad7d1",
+          "#f7f4ed",
+          "#f8f5ee",
+          "#f9f6f0",
+          "#faf8f1"
+        ]
+      },
+      "paper-rail": {
+        "role": "neutral",
+        "displayName": "Paper Rail",
+        "canonical": "#efeadf",
+        "darkValue": "#131619",
+        "tonalRamp": [
+          "#2e2d2c",
+          "#65635f",
+          "#9c9992",
+          "#d3cfc5",
+          "#f0ece1",
+          "#f3efe6",
+          "#f6f3eb",
+          "#f9f7f0"
+        ]
+      },
+      "paper-surface": {
+        "role": "neutral",
+        "displayName": "Paper Surface",
+        "canonical": "#fffdf8",
+        "darkValue": "#171a1e",
+        "tonalRamp": [
+          "#30302f",
+          "#6b6b69",
+          "#a6a5a2",
+          "#e1e0db",
+          "#fefcf7",
+          "#fdfbf6",
+          "#fcfaf4",
+          "#faf8f3"
+        ]
+      },
+      "paper-sunk": {
+        "role": "neutral",
+        "displayName": "Paper Sunk",
+        "canonical": "#f1ede3",
+        "darkValue": "#1f2328",
+        "tonalRamp": [
+          "#2e2e2c",
+          "#666460",
+          "#9e9b95",
+          "#d5d2c9",
+          "#f2eee5",
+          "#f4f1e9",
+          "#f7f4ed",
+          "#f9f7f0"
+        ]
+      },
+      "ink-band": {
+        "role": "neutral",
+        "displayName": "Ink Band",
+        "canonical": "#15181c",
+        "darkValue": "#0b0d0f",
+        "tonalRamp": [
+          "#0d0e0e",
+          "#101112",
+          "#121416",
+          "#14171a",
+          "#323538",
+          "#6d6e6f",
+          "#a8a8a6",
+          "#e3e2dd"
+        ]
+      },
+      "band-text": {
+        "role": "neutral",
+        "displayName": "Band Text",
+        "canonical": "#f3efe4",
+        "darkValue": "#ece6d8",
+        "tonalRamp": [
+          "#2f2e2c",
+          "#676561",
+          "#9f9c95",
+          "#d7d3ca",
+          "#f4f0e6",
+          "#f6f2e9",
+          "#f8f5ed",
+          "#f9f7f1"
+        ]
+      },
+      "band-muted": {
+        "role": "neutral",
+        "displayName": "Band Muted",
+        "canonical": "#a39e90",
+        "darkValue": "#8f8a7d",
+        "tonalRamp": [
+          "#232220",
+          "#474540",
+          "#6c6960",
+          "#918c80",
+          "#aeaa9d",
+          "#c5c1b6",
+          "#dbd8cf",
+          "#f1efe8"
+        ]
+      },
+      "hairline": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "#ddd6c7",
+        "darkValue": "#31373f",
+        "tonalRamp": [
+          "#2b2a28",
+          "#5e5b55",
+          "#918c83",
+          "#c4bdb0",
+          "#e1dacd",
+          "#e8e3d8",
+          "#f0ece3",
+          "#f7f5ee"
+        ]
+      },
+      "hairline-strong": {
+        "role": "neutral",
+        "displayName": "Hairline Strong",
+        "canonical": "#b9b1a0",
+        "darkValue": "#4c545f",
+        "tonalRamp": [
+          "#262522",
+          "#504d46",
+          "#7a756a",
+          "#a49d8e",
+          "#c1baab",
+          "#d2ccc0",
+          "#e3dfd5",
+          "#f4f1ea"
+        ]
+      },
+      "ink-text": {
+        "role": "neutral",
+        "displayName": "Ink Text",
+        "canonical": "#1d2025",
+        "darkValue": "#ece6d8",
+        "tonalRamp": [
+          "#0f0f10",
+          "#131416",
+          "#17191c",
+          "#1b1e22",
+          "#393c3f",
+          "#727374",
+          "#ababa9",
+          "#e4e2de"
+        ]
+      },
+      "muted-text": {
+        "role": "neutral",
+        "displayName": "Muted Text",
+        "canonical": "#6b6960",
+        "darkValue": "#9a9689",
+        "tonalRamp": [
+          "#1a1a19",
+          "#31312d",
+          "#484741",
+          "#5f5e56",
+          "#7d7b73",
+          "#a2a098",
+          "#c7c5be",
+          "#eceae3"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "#15181c",
+        "darkValue": "#ece6d8",
+        "tonalRamp": [
+          "#0d0e0e",
+          "#101112",
+          "#121416",
+          "#14171a",
+          "#323538",
+          "#6d6e6f",
+          "#a8a8a6",
+          "#e3e2dd"
+        ]
+      },
+      "on-ink": {
+        "role": "neutral",
+        "displayName": "On Ink",
+        "canonical": "#f6f3ec",
+        "darkValue": "#101214",
+        "tonalRamp": [
+          "#2f2f2e",
+          "#686764",
+          "#a19f9a",
+          "#dad7d1",
+          "#f7f4ed",
+          "#f8f5ee",
+          "#f9f6f0",
+          "#faf8f1"
+        ]
+      },
+      "row-hover": {
+        "role": "neutral",
+        "displayName": "Row Hover",
+        "canonical": "#f3efe4",
+        "darkValue": "#1c2025",
+        "tonalRamp": [
+          "#2f2e2c",
+          "#676561",
+          "#9f9c95",
+          "#d7d3ca",
+          "#f4f0e6",
+          "#f6f2e9",
+          "#f8f5ed",
+          "#f9f7f1"
+        ]
+      },
+      "selected-wash": {
+        "role": "neutral",
+        "displayName": "Selected Wash",
+        "canonical": "#e9f2f6",
+        "darkValue": "#16262c",
+        "tonalRamp": [
+          "#2d2e2f",
+          "#636668",
+          "#989ea1",
+          "#ced6da",
+          "#ebf3f5",
+          "#f0f4f4",
+          "#f4f6f3",
+          "#f8f7f2"
+        ]
+      },
+      "waiting-amber-wash": {
+        "role": "secondary",
+        "displayName": "Waiting Amber Wash",
+        "canonical": "#fdf0cf",
+        "darkValue": "#342808",
+        "tonalRamp": [
+          "#302e29",
+          "#6b6659",
+          "#a59d88",
+          "#e0d4b7",
+          "#fdf1d4",
+          "#fcf3dc",
+          "#fbf5e6",
+          "#faf7ee"
+        ]
+      },
+      "waiting-amber-line": {
+        "role": "secondary",
+        "displayName": "Waiting Amber Line",
+        "canonical": "#e3b659",
+        "darkValue": "#8a6413",
+        "tonalRamp": [
+          "#2c2618",
+          "#604f2a",
+          "#95783d",
+          "#c9a150",
+          "#e6be6d",
+          "#eccf94",
+          "#f2e0bb",
+          "#f8f1e3"
+        ]
+      },
+      "live-teal-wash": {
+        "role": "primary",
+        "displayName": "Live Teal Wash",
+        "canonical": "#e2eff4",
+        "darkValue": "#123038",
+        "tonalRamp": [
+          "#2c2e2f",
+          "#606567",
+          "#949c9f",
+          "#c8d3d8",
+          "#e5f0f4",
+          "#ebf2f3",
+          "#f1f5f3",
+          "#f8f7f2"
+        ]
+      },
+      "arrived-green-wash": {
+        "role": "tertiary",
+        "displayName": "Arrived Green Wash",
+        "canonical": "#e3f1e6",
+        "darkValue": "#11291a",
+        "tonalRamp": [
+          "#2c2e2d",
+          "#606662",
+          "#959e97",
+          "#c9d5cc",
+          "#e6f2e8",
+          "#ecf4eb",
+          "#f2f6ee",
+          "#f8f7f1"
+        ]
+      },
+      "signal-red-wash": {
+        "role": "tertiary",
+        "displayName": "Signal Red Wash",
+        "canonical": "#fbe7e4",
+        "darkValue": "#3a1613",
+        "tonalRamp": [
+          "#302d2c",
+          "#6a6261",
+          "#a49795",
+          "#deccca",
+          "#fbe9e6",
+          "#fbeee9",
+          "#faf2ed",
+          "#faf6f1"
+        ]
+      },
+      "state-queued": {
+        "role": "tertiary",
+        "displayName": "Timetable Blue (Queued)",
+        "canonical": "#3b5b8f",
+        "darkValue": "#6f8fc4",
+        "tonalRamp": [
+          "#131820",
+          "#1e2b3f",
+          "#2a3e5f",
+          "#35517f",
+          "#546f9c",
+          "#8598b5",
+          "#b6c0cf",
+          "#e7e8e8"
+        ]
+      },
+      "state-scheduled": {
+        "role": "secondary",
+        "displayName": "Scheduled",
+        "canonical": "#a8650a",
+        "darkValue": "#d9962f",
+        "tonalRamp": [
+          "#23190c",
+          "#492f0b",
+          "#6f450b",
+          "#955a0a",
+          "#b37828",
+          "#c89e63",
+          "#ddc49f",
+          "#f2e9db"
+        ]
+      },
+      "state-leased": {
+        "role": "primary",
+        "displayName": "Leased",
+        "canonical": "#1c6f8c",
+        "darkValue": "#3e9dbe",
+        "tonalRamp": [
+          "#0e1b1f",
+          "#12333e",
+          "#164b5d",
+          "#1a637c",
+          "#398199",
+          "#72a4b3",
+          "#abc7ce",
+          "#e4eae8"
+        ]
+      },
+      "state-succeeded": {
+        "role": "tertiary",
+        "displayName": "Succeeded",
+        "canonical": "#1f7a3f",
+        "darkValue": "#3fa66a",
+        "tonalRamp": [
+          "#0f1c14",
+          "#133720",
+          "#18522c",
+          "#1d6d39",
+          "#3b8a56",
+          "#73ab84",
+          "#accbb2",
+          "#e4ebe0"
+        ]
+      },
+      "state-dead": {
+        "role": "tertiary",
+        "displayName": "Dead",
+        "canonical": "#b4231c",
+        "darkValue": "#d9503f",
+        "tonalRamp": [
+          "#250f0e",
+          "#4e1512",
+          "#771b16",
+          "#a0201a",
+          "#bd3e38",
+          "#cf756f",
+          "#e1aca6",
+          "#f3e3dd"
+        ]
+      },
+      "state-cancelled": {
+        "role": "neutral",
+        "displayName": "Slate (Cancelled)",
+        "canonical": "#5d6773",
+        "darkValue": "#7b8494",
+        "tonalRamp": [
+          "#181a1b",
+          "#2c3034",
+          "#3f464d",
+          "#535c66",
+          "#717a83",
+          "#9a9fa4",
+          "#c2c4c5",
+          "#eaeae5"
+        ]
+      },
+      "state-expired": {
+        "role": "tertiary",
+        "displayName": "Burnt Orange (Expired)",
+        "canonical": "#9a3412",
+        "darkValue": "#d07040",
+        "tonalRamp": [
+          "#21120d",
+          "#441c0e",
+          "#662510",
+          "#892f11",
+          "#a64d2f",
+          "#bf8068",
+          "#d8b2a2",
+          "#f0e4dc"
+        ]
+      },
+      "state-none": {
+        "role": "neutral",
+        "displayName": "No state",
+        "canonical": "#7a776d",
+        "darkValue": "#7b8494",
+        "tonalRamp": [
+          "#1c1c1b",
+          "#373632",
+          "#52504a",
+          "#6d6a61",
+          "#8a887e",
+          "#aba9a0",
+          "#cccac2",
+          "#edebe5"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "heading": {
+        "displayName": "Heading",
+        "purpose": "Page title; task id in mono at this size."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Panel and section headings."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "All running text, tabular figures on."
+      },
+      "figure": {
+        "displayName": "Figure",
+        "purpose": "Board strip numbers."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Uppercase table headers, form labels, route stop names."
+      },
+      "badge": {
+        "displayName": "Badge",
+        "purpose": "State badges and tags."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Identifiers, queue names, payloads, band clock."
+      }
+    },
+    "shadows": [
+      {
+        "name": "float",
+        "value": "0 8px 24px rgba(30, 24, 10, 0.18)",
+        "purpose": "Toasts and dialog only; dark theme uses rgba(0,0,0,0.5)."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease",
+        "value": "cubic-bezier(0.2, 0.7, 0.2, 1)",
+        "purpose": "150ms colour transitions on controls and rail links."
+      },
+      {
+        "name": "changed-fade",
+        "value": "600ms var(--ease)",
+        "purpose": "Changed-cell amber tint fade; disabled under reduced motion."
+      },
+      {
+        "name": "countdown-tick",
+        "value": "1s",
+        "purpose": "Relative times and band clock update once a second without a request."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "board",
+        "value": "1100px"
+      },
+      {
+        "name": "phone",
+        "value": "760px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Button",
+      "kind": "button",
+      "refersTo": "button",
+      "description": "Default action button.",
+      "html": "<button class=\"ds-btn\">Refresh</button>",
+      "css": ".ds-btn{font:inherit;font-weight:550;height:32px;padding:0 12px;border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--surface);color:var(--text);cursor:pointer;transition:background-color 150ms var(--ease),border-color 150ms var(--ease)}.ds-btn:hover{border-color:var(--text);background:var(--surface-2)}.ds-btn:focus-visible{outline:2px solid var(--live);outline-offset:2px}.ds-btn:active{transform:translateY(1px)}"
+    },
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Ink-filled confirming action.",
+      "html": "<button class=\"ds-btn ds-btn-primary\">Retry</button>",
+      "css": ".ds-btn{font:inherit;font-weight:550;height:32px;padding:0 12px;border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--surface);color:var(--text);cursor:pointer;transition:background-color 150ms var(--ease),border-color 150ms var(--ease)}.ds-btn:hover{border-color:var(--text);background:var(--surface-2)}.ds-btn:focus-visible{outline:2px solid var(--live);outline-offset:2px}.ds-btn:active{transform:translateY(1px)}.ds-btn-primary{background:var(--ink);border-color:var(--ink);color:var(--ink-text)}.ds-btn-primary:hover{background:var(--ink);opacity:.9}"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Destructive action, outlined red until hovered.",
+      "html": "<button class=\"ds-btn ds-btn-danger\">Cancel task</button>",
+      "css": ".ds-btn{font:inherit;font-weight:550;height:32px;padding:0 12px;border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--surface);color:var(--text);cursor:pointer;transition:background-color 150ms var(--ease),border-color 150ms var(--ease)}.ds-btn:hover{border-color:var(--text);background:var(--surface-2)}.ds-btn:focus-visible{outline:2px solid var(--live);outline-offset:2px}.ds-btn:active{transform:translateY(1px)}.ds-btn-danger{color:var(--danger);border-color:var(--danger);background:transparent}.ds-btn-danger:hover{background:var(--danger);color:#fff;border-color:var(--danger)}"
+    },
+    {
+      "name": "Small Button",
+      "kind": "button",
+      "refersTo": "button-small",
+      "description": "Row-level action, 28px high.",
+      "html": "<button class=\"ds-btn ds-btn-small\">Pause</button>",
+      "css": ".ds-btn{font:inherit;font-weight:550;height:32px;padding:0 12px;border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--surface);color:var(--text);cursor:pointer;transition:background-color 150ms var(--ease),border-color 150ms var(--ease)}.ds-btn:hover{border-color:var(--text);background:var(--surface-2)}.ds-btn:focus-visible{outline:2px solid var(--live);outline-offset:2px}.ds-btn:active{transform:translateY(1px)}.ds-btn-small{height:28px;padding:0 10px;font-size:12.5px}"
+    },
+    {
+      "name": "Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Text field with an uppercase label above.",
+      "html": "<label class=\"ds-label\">Queue<input class=\"ds-input\" placeholder=\"all queues\"></label>",
+      "css": ".ds-label{display:flex;flex-direction:column;gap:4px;font-size:11.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}.ds-input{font:inherit;font-size:13.5px;font-weight:400;letter-spacing:0;text-transform:none;height:32px;padding:0 10px;border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--surface);color:var(--text);min-width:0}.ds-input::placeholder{color:var(--muted)}.ds-input:focus-visible{outline:2px solid var(--live);outline-offset:2px}"
+    },
+    {
+      "name": "Side Rail Link",
+      "kind": "nav",
+      "refersTo": "nav-link",
+      "description": "Navigation entry; the active one carries a teal bar at the left edge.",
+      "html": "<nav class=\"ds-side\"><a class=\"ds-nav\" href=\"#\">Overview</a><a class=\"ds-nav active\" href=\"#\" aria-current=\"page\">Dead<span class=\"ds-count\">3</span></a></nav>",
+      "css": ".ds-side{display:flex;flex-direction:column;width:200px;padding:14px 0;background:var(--rail);border-right:1px solid var(--line)}.ds-nav{display:flex;align-items:center;gap:8px;padding:8px 18px 8px 15px;color:var(--text);text-decoration:none;border-left:3px solid transparent;transition:background-color 150ms var(--ease)}.ds-nav:hover{background:var(--row-hover)}.ds-nav:focus-visible{outline:2px solid var(--live);outline-offset:-2px}.ds-nav.active{border-left-color:var(--live);background:var(--selected);font-weight:650}.ds-count{margin-left:auto;font-size:11.5px;font-weight:600;color:var(--danger)}"
+    },
+    {
+      "name": "State Badge",
+      "kind": "chip",
+      "refersTo": "state-badge",
+      "description": "Fixed-width platform label carrying the state word.",
+      "html": "<span class=\"ds-badge ds-st-queued\">QUEUED</span> <span class=\"ds-badge ds-st-scheduled\">SCHEDULED</span> <span class=\"ds-badge ds-st-leased\">LEASED</span> <span class=\"ds-badge ds-st-succeeded\">SUCCEEDED</span> <span class=\"ds-badge ds-st-dead\">DEAD</span> <span class=\"ds-badge ds-st-cancelled\">CANCELLED</span> <span class=\"ds-badge ds-st-expired\">EXPIRED</span>",
+      "css": ".ds-badge{display:inline-block;min-width:86px;padding:2px 8px;border-radius:3px;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-align:center;color:#fff;white-space:nowrap}.ds-st-queued{background:var(--st-queued)}.ds-st-scheduled{background:var(--st-scheduled)}.ds-st-leased{background:var(--st-leased)}.ds-st-succeeded{background:var(--st-succeeded)}.ds-st-dead{background:var(--st-dead)}.ds-st-cancelled{background:var(--st-cancelled)}.ds-st-expired{background:var(--st-expired)}"
+    },
+    {
+      "name": "Tag",
+      "kind": "chip",
+      "refersTo": "tag-issue",
+      "description": "Small status tag: paused (neutral) or issue (red).",
+      "html": "<span class=\"ds-tag ds-tag-paused\">PAUSED</span> <span class=\"ds-tag ds-tag-issue\">ISSUE</span>",
+      "css": ".ds-tag{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.06em;padding:2px 7px;border-radius:3px}.ds-tag-paused{background:var(--surface-2);color:var(--text);border:1px solid var(--line-strong)}.ds-tag-issue{background:var(--danger-bg);color:var(--danger)}"
+    },
+    {
+      "name": "Board Strip",
+      "kind": "custom",
+      "refersTo": "board-strip-item",
+      "description": "One ruled line of the numbers that matter; the waiting figure is amber.",
+      "html": "<div class=\"ds-strip\"><span class=\"ds-item\"><span class=\"ds-n\">1284</span><span class=\"ds-l\">tasks stored</span></span><span class=\"ds-item\"><span class=\"ds-n ds-wait\">42</span><span class=\"ds-l\">waiting for time</span></span><span class=\"ds-item\"><span class=\"ds-n ds-alert\">3</span><span class=\"ds-l\">dead</span></span><span class=\"ds-item\"><span class=\"ds-n ds-zero\">0</span><span class=\"ds-l\">issues</span></span></div>",
+      "css": ".ds-strip{display:flex;flex-wrap:wrap;border-top:1px solid var(--line-strong);border-bottom:1px solid var(--line-strong);background:var(--surface);font-variant-numeric:tabular-nums}.ds-item{display:flex;align-items:baseline;gap:8px;padding:12px 18px;border-right:1px solid var(--line);color:var(--text)}.ds-item:last-child{border-right:0}.ds-n{font-size:24px;font-weight:650;line-height:1;letter-spacing:-.01em}.ds-n.ds-wait{color:var(--amber)}.ds-n.ds-alert{color:var(--danger)}.ds-n.ds-zero{color:var(--muted)}.ds-l{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}"
+    },
+    {
+      "name": "Table",
+      "kind": "custom",
+      "refersTo": "table-header",
+      "description": "Hairline-ruled table: uppercase 11.5px headers, right-aligned tabular counts, amber changed-cell tint.",
+      "html": "<div class=\"ds-wrap\"><table class=\"ds-table\"><thead><tr><th>Queue</th><th class=\"num\">Queued</th><th class=\"num\">Scheduled</th><th class=\"num\">Dead</th></tr></thead><tbody><tr><td class=\"plat\">default</td><td class=\"num\">12</td><td class=\"num ds-changed\">5</td><td class=\"num ds-zero\">0</td></tr><tr><td class=\"plat\">mail</td><td class=\"num\">3</td><td class=\"num\">0</td><td class=\"num\">2</td></tr></tbody></table></div>",
+      "css": ".ds-wrap{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);overflow-x:auto;font-variant-numeric:tabular-nums}.ds-table{width:100%;border-collapse:collapse}.ds-table th,.ds-table td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--line)}.ds-table thead th{font-size:11.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);white-space:nowrap;border-bottom:1px solid var(--line-strong)}.ds-table tbody tr:last-child td{border-bottom:0}.ds-table tbody tr:hover{background:var(--row-hover)}.ds-table .num{text-align:right}.ds-table .plat{font-family:var(--mono);font-size:12.5px;width:120px}.ds-zero{color:var(--muted)}td.ds-changed{background:var(--amber-bg);transition:background-color 600ms var(--ease)}"
+    },
+    {
+      "name": "Route Stop",
+      "kind": "custom",
+      "refersTo": "route-strip",
+      "description": "Task route: stations on one line, solid ink when reached, dashed when pending.",
+      "html": "<ol class=\"ds-route\"><li class=\"ds-stop reached\"><span class=\"ds-sl\">Created</span>09:12:04</li><li class=\"ds-stop reached\"><span class=\"ds-sl\">Due</span>09:12:34</li><li class=\"ds-stop pending\"><span class=\"ds-sl\">Claimed</span>pending</li></ol>",
+      "css": ".ds-route{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;margin:4px 0;padding:0;list-style:none;font-variant-numeric:tabular-nums}.ds-stop{position:relative;padding:14px 12px 0 0}.ds-stop::before{content:\"\";position:absolute;left:0;right:0;top:4px;height:2px;background:var(--line-strong)}.ds-stop::after{content:\"\";position:absolute;left:0;top:0;width:10px;height:10px;border-radius:50%;background:var(--surface);border:2px solid var(--line-strong);box-sizing:border-box}.ds-stop.reached::before{background:var(--ink)}.ds-stop.reached::after{background:var(--ink);border-color:var(--ink)}.ds-stop.pending::after{border-style:dashed}.ds-stop:last-child::before{right:auto;width:10px}.ds-sl{display:block;font-size:11.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-bottom:2px}"
+    },
+    {
+      "name": "Toast",
+      "kind": "custom",
+      "refersTo": "toast",
+      "description": "Ink-band floating message with a status dot.",
+      "html": "<div class=\"ds-toast\"><span>Conflict: the task changed (revision 7).</span><button class=\"ds-x\" aria-label=\"Dismiss\"><svg width=\"12\" height=\"12\" viewBox=\"0 0 12 12\" aria-hidden=\"true\"><path d=\"M2 2l8 8M10 2l-8 8\" stroke=\"currentColor\" stroke-width=\"1.6\"/></svg></button></div>",
+      "css": ".ds-toast{display:flex;gap:10px;align-items:flex-start;max-width:420px;padding:10px 12px;border-radius:var(--radius);background:var(--band);color:var(--band-text);box-shadow:var(--shadow)}.ds-toast::before{content:\"\";width:8px;height:8px;border-radius:50%;background:var(--danger);margin-top:6px;flex:none}.ds-toast span{flex:1}.ds-x{height:auto;padding:0 4px;border:0;background:transparent;color:var(--band-muted);cursor:pointer}.ds-x:hover{color:var(--band-text)}.ds-x:focus-visible{outline:2px solid var(--live);outline-offset:2px}"
+    },
+    {
+      "name": "Dialog",
+      "kind": "custom",
+      "refersTo": "dialog",
+      "description": "Confirm dialog with optional reason field; primary or danger confirm.",
+      "html": "<div class=\"ds-dialog\" role=\"dialog\"><h2>Cancel task</h2><p>The task will not run again.</p><input class=\"ds-dinput\" placeholder=\"Reason\"><div class=\"ds-drow\"><button class=\"ds-dbtn\">Back</button><button class=\"ds-dbtn ds-ddanger\">Cancel task</button></div></div>",
+      "css": ".ds-dialog{background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:18px 20px;width:min(460px,100%);box-shadow:var(--shadow)}.ds-dialog h2{margin:0 0 10px;font-size:16px;line-height:1.3;font-weight:650}.ds-dialog p{margin:0 0 10px}.ds-dinput{width:100%;font:inherit;height:32px;padding:0 10px;border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--surface);color:var(--text)}.ds-dinput:focus-visible,.ds-dbtn:focus-visible{outline:2px solid var(--live);outline-offset:2px}.ds-drow{display:flex;justify-content:flex-end;gap:10px;margin-top:12px}.ds-dbtn{font:inherit;font-weight:550;height:32px;padding:0 12px;border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--surface);color:var(--text);cursor:pointer}.ds-ddanger{color:var(--danger);border-color:var(--danger);background:transparent}.ds-ddanger:hover{background:var(--danger);color:#fff}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Departure Board",
+    "overview": "A background-task dashboard is a departure board, not a settings panel. Every row is something that will happen at a time, and the screen is organised around when, in what order, and whether it left on time. The surface is warm printed-timetable paper in light and a near-black Solari board in dark, under an ink-black station-header band whose clock ticks. It refuses the grey admin shell with a blue accent and equal-weight tables, and it refuses dark terminal neon.\n\nDensity is working density: 13.5px text, 32px controls, hairline-ruled tables, no cards inside cards. One system sans carries everything, with tabular numerals so counts line up from page to page; identifiers sit in the system mono. Colour is rationed by job: amber means only \"waiting on time\", one teal accent means selection and live state, and the signal colours are reserved for state. Motion is 150ms colour transitions and the once-a-second countdown tick; nothing enters or choreographs.\n\nThe system fonts are a product constraint (the CSP allows no font files), not a style choice. Character comes from the figures, the rules and the colour discipline instead.",
+    "keyCharacteristics": [
+      "Warm paper ground, ink band, hairline rules; flat everywhere except floating toasts and dialogs.",
+      "Amber is reserved for \"waiting on time\"; teal owns selection and live state.",
+      "Tabular numerals everywhere, right-aligned counts, fixed-width state badges.",
+      "Identifiers in mono; times read as departures (\"in 2:14\", relative first, clock time after).",
+      "Light and dark follow the OS with the same roles in both."
+    ],
+    "rules": [
+      {
+        "name": "The One Job Amber Rule",
+        "body": "Amber means waiting on time and nothing else. It never marks focus, selection, hover, paused, stale or warning.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Accent Rule",
+        "body": "Teal owns selection and live state. A second accent for navigation or decoration is not allowed.",
+        "section": "colors"
+      },
+      {
+        "name": "The Text Carries State Rule",
+        "body": "Colour is never the only carrier of a state; badges and labels always spell the library's own state word.",
+        "section": "colors"
+      },
+      {
+        "name": "The Tabular Figures Rule",
+        "body": "Every number is tabular and right-aligned in its column; counts share one column width across pages.",
+        "section": "typography"
+      },
+      {
+        "name": "The Departure Time Rule",
+        "body": "A time leads with its relative part in weight 600 and follows with the clock time in muted 12px; late times turn amber.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat-By-Default Rule",
+        "body": "Panels, tables, strips and buttons carry borders, never shadows. Only things that float above the page get Float.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** reserve amber (#a8650a light, #e5a21b dark) for waiting on time.",
+      "**Do** use teal for selection, focus and live state, and nothing else.",
+      "**Do** set counts, times and ids in tabular figures, right-aligned, and ids in the system mono.",
+      "**Do** keep state badges fixed width and always spelled out.",
+      "**Do** build every new surface from the `:root` tokens so light and dark both work.",
+      "**Do** keep tables hairline-ruled and flat; float only toasts and dialogs.",
+      "**Do** keep icons as inline SVG."
+    ],
+    "donts": [
+      "**Don't** add a second accent, a gradient, or decorative colour.",
+      "**Don't** use amber for focus, hover, paused, stale or warnings.",
+      "**Don't** invent trends, sparklines or history the API does not provide.",
+      "**Don't** add entrance choreography or animation beyond 150ms colour transitions and the countdown tick.",
+      "**Don't** hide counts or relabel the library's state words.",
+      "**Don't** add font files, font CDNs or icon fonts."
+    ]
+  }
+}

@@ -28,7 +28,9 @@ import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
+import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
+import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
@@ -214,20 +216,45 @@ class DefaultAdminOpsTest {
     }
 
     @Test
+    void cursorTasksMapTheQueueAndReturnTheStoresNextCursor() {
+        handlers.put("tasks", a -> new TaskPage(List.of(record(1, OTHER_QUEUE_ID)), "42:1"));
+
+        var page = ops.tasks(TaskState.QUEUED, "Q:OTHER", "7:3", 5);
+
+        assertThat(calls).contains("tasks[QUEUED, 2, 7:3, 5]");
+        assertThat(page.items()).extracting("queue").containsExactly("Q:OTHER");
+        assertThat(page.next()).isEqualTo("42:1");
+    }
+
+    @Test
+    void cursorTasksRejectAQueueThatIsNotAvailable() {
+        assertThatThrownBy(() -> ops.tasks(TaskState.QUEUED, "Q:MISSING", (String) null, 5))
+                .isInstanceOf(TaskErrorException.class);
+    }
+
+    @Test
     void tasksRejectAQueueThatIsNotAvailable() {
         assertThatThrownBy(() -> ops.tasks(TaskState.QUEUED, "Q:MISSING", 0, 5)).isInstanceOf(TaskErrorException.class);
     }
 
     @Test
-    void retryAndDeleteDelegateWithTheRevisionAndReturnTheStoreAnswer() {
-        handlers.put("retry", a -> a[1].equals(3));
-        handlers.put("delete", a -> a[1].equals(4));
+    void retryPassesADuplicateKeyRefusalThrough() {
+        handlers.put("retry", a -> RetryOutcome.DUPLICATE);
 
-        assertThat(ops.retry(9, 3)).isTrue();
-        assertThat(ops.retry(9, 2)).isFalse();
+        assertThat(ops.retry(9, 3)).isEqualTo(RetryOutcome.DUPLICATE);
+    }
+
+    @Test
+    void retryAndDeleteDelegateWithTheRevisionAndReturnTheStoreAnswer() {
+        handlers.put("retry", a -> a[1].equals(3) ? RetryOutcome.RETRIED : RetryOutcome.STALE);
+        handlers.put("delete", a -> a[1].equals(4));
+        handlers.put("getTask", a -> Optional.empty());
+
+        assertThat(ops.retry(9, 3)).isEqualTo(RetryOutcome.RETRIED);
+        assertThat(ops.retry(9, 2)).isEqualTo(RetryOutcome.STALE);
         assertThat(ops.delete(9, 4)).isTrue();
         assertThat(ops.delete(9, 5)).isFalse();
-        assertThat(calls).contains("retry[9, 3]", "delete[9, 4]");
+        assertThat(calls).contains("retry[9, 3]", "delete[9, 4, null]");
     }
 
     @Test
@@ -241,13 +268,95 @@ class DefaultAdminOpsTest {
     }
 
     @Test
+    void taskByKeyIsReturnedWithQueueAndEventNames() {
+        handlers.put("taskByKey", a -> Optional.of(record(42, OTHER_QUEUE_ID)));
+
+        var view = ops.taskByKey("invoice-9").orElseThrow();
+
+        assertThat(view.id()).isEqualTo(42);
+        assertThat(view.queue()).isEqualTo("Q:OTHER");
+        assertThat(calls).contains("taskByKey[invoice-9]");
+    }
+
+    @Test
+    void taskByKeyIsEmptyWhenNoTaskHoldsTheKey() {
+        handlers.put("taskByKey", a -> Optional.empty());
+
+        assertThat(ops.taskByKey("invoice-9")).isEmpty();
+    }
+
+    @Test
+    void cancelByKeyCancelsTheHolderWithTheRevisionItRead() {
+        handlers.put(
+                "taskByKey",
+                a -> Optional.of(
+                        record(42, OTHER_QUEUE_ID).toBuilder().revision(5).build()));
+        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("cancel", a -> CancelOutcome.REQUESTED);
+
+        assertThat(ops.cancelByKey("invoice-9", "duplicate")).isEqualTo(CancelOutcome.REQUESTED);
+        assertThat(calls).contains("cancel[42, 5, duplicate, null]");
+    }
+
+    @Test
+    void cancelByKeyReportsAChangeBetweenTheReadAndTheCancelAsStale() {
+        handlers.put("taskByKey", a -> Optional.of(record(42, OTHER_QUEUE_ID)));
+        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("cancel", a -> CancelOutcome.STALE);
+
+        assertThat(ops.cancelByKey("invoice-9", "duplicate")).isEqualTo(CancelOutcome.STALE);
+    }
+
+    @Test
+    void cancelByKeyIsNotFoundAndCancelsNothingWhenNoTaskHoldsTheKey() {
+        handlers.put("taskByKey", a -> Optional.empty());
+
+        assertThat(ops.cancelByKey("invoice-9", "duplicate")).isEqualTo(CancelOutcome.NOT_FOUND);
+        assertThat(calls).noneMatch(c -> c.startsWith("cancel["));
+    }
+
+    @Test
+    void cancelByKeyIsFinishedAndCancelsNothingWhenTheHolderHasEnded() {
+        for (var state : TaskState.values()) {
+            if (!state.isTerminal()) continue;
+            handlers.put(
+                    "taskByKey",
+                    a -> Optional.of(
+                            record(42, OTHER_QUEUE_ID).toBuilder().state(state).build()));
+
+            assertThat(ops.cancelByKey("invoice-9", "duplicate")).isEqualTo(CancelOutcome.FINISHED);
+        }
+        assertThat(calls).noneMatch(c -> c.startsWith("cancel["));
+    }
+
+    @Test
+    void cancelByKeyOfAWaitingFixedDelayOccurrencePassesThePauseToTheStore() {
+        var occurrence = TaskRecord.builder()
+                .id(7)
+                .queueId(OTHER_QUEUE_ID)
+                .eventId(EVENT_ID)
+                .state(TaskState.SCHEDULED)
+                .uniqueKey("sched:poll")
+                .scheduleId("poll")
+                .headers(Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT5S"))
+                .build();
+        handlers.put("taskByKey", a -> Optional.of(occurrence));
+        handlers.put("getTask", a -> Optional.of(occurrence));
+        handlers.put("cancel", a -> CancelOutcome.CANCELLED);
+
+        ops.cancelByKey("sched:poll", "stop");
+
+        assertThat(calls).contains("cancel[7, 0, stop, ScheduleEffect[poll, occurrence 7, pause]]");
+    }
+
+    @Test
     void cancelPassesTheReasonToTheStore() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
         handlers.put("getTask", a -> Optional.empty());
 
         ops.cancel(1, 2, "duplicate");
 
-        assertThat(calls).contains("cancel[1, 2, duplicate]");
+        assertThat(calls).contains("cancel[1, 2, duplicate, null]");
     }
 
     @Test
@@ -258,15 +367,14 @@ class DefaultAdminOpsTest {
         ops.cancel(1, 2, null);
         ops.cancel(1, 2, "   ");
 
-        assertThat(calls).contains("cancel[1, 2, cancelled by operator]");
-        assertThat(calls.stream().filter(c -> c.equals("cancel[1, 2, cancelled by operator]")))
+        assertThat(calls).contains("cancel[1, 2, cancelled by operator, null]");
+        assertThat(calls.stream().filter(c -> c.equals("cancel[1, 2, cancelled by operator, null]")))
                 .hasSize(2);
     }
 
     @Test
-    void cancelOfAWaitingFixedDelayOccurrencePausesItsDefinition() {
+    void cancelOfAWaitingFixedDelayOccurrencePassesThePauseToTheStore() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
-        handlers.put("pauseRecurring", a -> true);
         handlers.put(
                 "getTask",
                 a -> Optional.of(TaskRecord.builder()
@@ -280,7 +388,27 @@ class DefaultAdminOpsTest {
 
         ops.cancel(7, 1, "stop");
 
-        assertThat(calls).containsExactly("cancel[7, 1, stop]", "getTask[7]", "pauseRecurring[poll, true]");
+        assertThat(calls)
+                .containsExactly("getTask[7]", "cancel[7, 1, stop, ScheduleEffect[poll, occurrence 7, pause]]");
+    }
+
+    @Test
+    void deleteOfAFixedDelayOccurrencePassesThePauseToTheStore() {
+        handlers.put("delete", a -> true);
+        handlers.put(
+                "getTask",
+                a -> Optional.of(TaskRecord.builder()
+                        .id((Long) a[0])
+                        .queueId(OTHER_QUEUE_ID)
+                        .eventId(EVENT_ID)
+                        .state(TaskState.QUEUED)
+                        .scheduleId("poll")
+                        .headers(Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT5S"))
+                        .build()));
+
+        assertThat(ops.delete(7, 1)).isTrue();
+
+        assertThat(calls).containsExactly("getTask[7]", "delete[7, 1, ScheduleEffect[poll, occurrence 7, pause]]");
     }
 
     @Test
@@ -290,15 +418,16 @@ class DefaultAdminOpsTest {
 
         ops.cancel(7, 1, "stop");
 
-        assertThat(calls).containsExactly("cancel[7, 1, stop]", "getTask[7]");
+        assertThat(calls).containsExactly("getTask[7]", "cancel[7, 1, stop, null]");
     }
 
     @Test
-    void cancelRequestedOnARunningTaskDoesNotLookTheTaskUp() {
+    void cancelRequestedOnARunningTaskPassesNoEffect() {
         handlers.put("cancel", a -> CancelOutcome.REQUESTED);
+        handlers.put("getTask", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
 
         assertThat(ops.cancel(7, 1, "stop")).isEqualTo(CancelOutcome.REQUESTED);
-        assertThat(calls).containsExactly("cancel[7, 1, stop]");
+        assertThat(calls).containsExactly("getTask[7]", "cancel[7, 1, stop, null]");
     }
 
     @Test
@@ -360,10 +489,11 @@ class DefaultAdminOpsTest {
     @Test
     void pausingAnUnknownScheduleReturnsFalseAndDoesNothingElse() {
         handlers.put("pauseRecurring", a -> false);
+        handlers.put("recurringDefinitions", a -> List.of());
 
         assertThat(ops.pauseSchedule("missing", false)).isFalse();
 
-        assertThat(calls).containsExactly("pauseRecurring[missing, false]");
+        assertThat(calls).containsExactly("recurringDefinitions[]", "pauseRecurring[missing, false]");
     }
 
     @Test
@@ -378,8 +508,11 @@ class DefaultAdminOpsTest {
 
         assertThat(ops.pauseSchedule("poll", false)).isTrue();
 
-        assertThat(calls).contains("setNextFire[poll, " + NOW.plusSeconds(90) + "]");
-        assertThat(calls).noneMatch(c -> c.startsWith("setNextFire[other"));
+        assertThat(calls)
+                .containsExactly(
+                        "recurringDefinitions[]",
+                        "setNextFire[poll, " + NOW.plusSeconds(90) + "]",
+                        "pauseRecurring[poll, false]");
     }
 
     @Test

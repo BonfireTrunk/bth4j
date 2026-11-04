@@ -19,6 +19,13 @@ public final class TaskRequest<T> {
     public static final int MAX_HEADERS_BYTES = 8 * 1024;
     public static final int MAX_PAYLOAD_BYTES = 256 * 1024;
 
+    /** The rule for a unique key, for enqueueing and for looking one up. */
+    public static void requireUniqueKey(String key) {
+        if (key.isBlank() || key.length() > MAX_UNIQUE_KEY_LENGTH) {
+            throw new TaskValidationException("uniqueKey must be 1 to " + MAX_UNIQUE_KEY_LENGTH + " characters");
+        }
+    }
+
     private final TaskType<T> type;
     private final T payload;
     private final String queue;
@@ -49,6 +56,28 @@ public final class TaskRequest<T> {
         this.maxRun = b.maxRun;
         this.retryPolicy = b.retryPolicy;
         this.id = b.id;
+    }
+
+    private TaskRequest(TaskRequest<T> source, long id) {
+        this.type = source.type;
+        this.payload = source.payload;
+        this.queue = source.queue;
+        this.account = source.account;
+        this.at = source.at;
+        this.delay = source.delay;
+        this.uniqueKey = source.uniqueKey;
+        this.uniqueness = source.uniqueness;
+        this.maxAttempts = source.maxAttempts;
+        this.headers = source.headers;
+        this.startBy = source.startBy;
+        this.maxRun = source.maxRun;
+        this.retryPolicy = source.retryPolicy;
+        this.id = positiveId(id);
+    }
+
+    private static long positiveId(long id) {
+        if (id <= 0) throw new TaskValidationException("id must be positive");
+        return id;
     }
 
     public static <T> Builder<T> of(TaskType<T> type, T payload) {
@@ -125,6 +154,15 @@ public final class TaskRequest<T> {
         return id;
     }
 
+    /**
+     * Copies this request with an allocated id; all other fields, including the payload, are preserved.
+     *
+     * @throws TaskValidationException when the id is not positive
+     */
+    public TaskRequest<T> withId(long id) {
+        return new TaskRequest<>(this, id);
+    }
+
     public static final class Builder<T> {
         private final TaskType<T> type;
         private final T payload;
@@ -175,13 +213,11 @@ public final class TaskRequest<T> {
         }
 
         /**
-         * Makes the task unique: while the key is taken, another request with the same key is answered with
-         * {@link EnqueueResult.Duplicate} instead of being stored.
+         * Makes the task record unique: while the key is taken, another request with the same key is answered with
+         * {@link EnqueueResult.Duplicate} instead of being stored. See {@link Uniqueness} for lease-loss limits.
          */
         public Builder<T> uniqueKey(String key) {
-            if (key != null && (key.isBlank() || key.length() > MAX_UNIQUE_KEY_LENGTH)) {
-                throw new TaskValidationException("uniqueKey must be 1 to " + MAX_UNIQUE_KEY_LENGTH + " characters");
-            }
+            if (key != null) requireUniqueKey(key);
             this.uniqueKey = key;
             return this;
         }
@@ -238,12 +274,20 @@ public final class TaskRequest<T> {
         }
 
         /**
-         * Uses an id obtained from {@link TaskClient#nextId()}. Enqueueing the same id twice stores the task once,
-         * which makes a retry after a lost reply safe.
+         * Uses an id allocated by a client of this namespace: {@link TaskClient#nextId()}, or an id an
+         * {@link today.bonfire.oss.bth4j.exceptions.EnqueueFailedException} carries outside its
+         * {@code notStored()} positions. Enqueueing the same request,
+         * encoded identically, with the same id twice stores the task once, which makes a retry after a lost
+         * reply safe. An id that was never allocated is rejected with a {@link TaskValidationException} when
+         * the request is enqueued. An id that already belongs to a task is accepted again only when the stored
+         * task has the same type, queue, payload (compared as stored text, when the task still has it) and
+         * unique key (when the stored task still holds one); anything else throws a
+         * {@link today.bonfire.oss.bth4j.exceptions.TaskIdReusedException}. Headers, account, attempts, retry
+         * policy, start-by, max run, delay, {@code at(...)} time, {@code keepFor} duration and payload version
+         * are not compared. Never invent an id.
          */
         public Builder<T> id(long id) {
-            if (id <= 0) throw new TaskValidationException("id must be positive");
-            this.id = id;
+            this.id = positiveId(id);
             return this;
         }
 
