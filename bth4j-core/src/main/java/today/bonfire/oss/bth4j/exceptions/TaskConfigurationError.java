@@ -1,14 +1,13 @@
 package today.bonfire.oss.bth4j.exceptions;
 
 public class TaskConfigurationError extends RuntimeException {
-
-    private TaskConfigurationError() {}
+    private static final String PREFIX = "ERR11_Error in configuration ";
 
     public TaskConfigurationError(String message) {
-        super(Errors.CONFIGURATION_ERROR + message);
+        super(PREFIX + message);
     }
 
     public TaskConfigurationError(String message, Throwable cause) {
-        super(Errors.CONFIGURATION_ERROR + message, cause);
+        super(PREFIX + message, cause);
     }
 }

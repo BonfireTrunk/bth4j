@@ -6,7 +6,7 @@ import java.time.Duration;
  * Thrown by a task processor to run the task again after a delay without counting the attempt. The task
  * keeps its id and payload.
  */
-public class TaskRescheduleException extends RuntimeException {
+public final class TaskRescheduleException extends TaskSignal {
 
     private final Duration delay;
 

@@ -72,7 +72,7 @@ Requires Java 21.
 
 ## Quick start
 
-A payload is converted to text by a `JsonMapper`, a four-method interface that wraps the JSON library you
+A payload is converted to text by a `JsonMapper`, a two-method interface that wraps the JSON library you
 already use. With Jackson (2.12 or newer for records):
 
 ```java
@@ -80,9 +80,7 @@ public class JacksonMapper implements JsonMapper {
     private final ObjectMapper mapper = new ObjectMapper();
 
     @Override public <T> T fromJson(String json, Class<T> type) throws Exception { return mapper.readValue(json, type); }
-    @Override public <T> T fromJson(byte[] json, Class<T> type) throws Exception { return mapper.readValue(json, type); }
     @Override public String toJson(Object o) throws Exception { return mapper.writeValueAsString(o); }
-    @Override public byte[] toJsonAsBytes(Object o) throws Exception { return mapper.writeValueAsBytes(o); }
 }
 ```
 
