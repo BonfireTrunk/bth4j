@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j.redis;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -11,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -22,6 +24,14 @@ import redis.clients.jedis.ConnectionPoolConfig;
 import redis.clients.jedis.DefaultJedisClientConfig;
 import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.RedisClient;
+import redis.clients.jedis.exceptions.JedisDataException;
+import redis.clients.jedis.exceptions.JedisNoScriptException;
+import today.bonfire.oss.bth4j.EnqueueResult;
+import today.bonfire.oss.bth4j.JsonMapperTest;
+import today.bonfire.oss.bth4j.TaskClient;
+import today.bonfire.oss.bth4j.TaskRequest;
+import today.bonfire.oss.bth4j.TaskType;
+import today.bonfire.oss.bth4j.exceptions.EnqueueFailedException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
@@ -31,6 +41,7 @@ import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
+import today.bonfire.oss.bth4j.spi.TaskStoreException;
 
 /**
  * The script efficiency changes of {@link RedisTaskStore}: step and failure markers read by CLAIM, head-first
@@ -52,6 +63,8 @@ class RedisScriptsIT {
     private static RedisClient jedis;
 
     private RedisTaskStore store;
+    private RecordingJedis spy;
+    private RedisTaskStore spied;
     private Keys keys;
     private int queue;
     private int type;
@@ -88,6 +101,13 @@ class RedisScriptsIT {
         store.init();
         queue = store.queueId("default");
         type = store.typeId("send");
+        spy = RecordingJedis.connect(REDIS.getHost(), REDIS.getMappedPort(6379));
+        spied = new RedisTaskStore(spy, keys.namespace);
+    }
+
+    @AfterEach
+    void closeSpy() {
+        spy.close();
     }
 
     private TaskRecord.Builder task(long id) {
@@ -115,14 +135,6 @@ class RedisScriptsIT {
 
     private String marker(long id, String field) {
         return jedis.hget(keys.task(id), field);
-    }
-
-    private static void sleep(long ms) {
-        try {
-            Thread.sleep(ms);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
     }
 
     // ---- markers for steps and failures --------------------------------------------------------------
@@ -286,26 +298,101 @@ class RedisScriptsIT {
 
     // ---- script cache --------------------------------------------------------------------------------
 
-    @Test
-    void batchAfterScriptFlushLoadsOnceAndKeepsOrder() {
-        store.enqueue(task(10).build());
-        store.enqueue(task(20).build());
-        jedis.scriptFlush();
+    private List<TaskRecord> batch(int count) {
         var batch = new ArrayList<TaskRecord>();
-        for (var id = 1; id <= 40; id++) {
+        for (var id = 1; id <= count; id++) {
             batch.add(task(id).build());
         }
+        return batch;
+    }
 
-        var outcomes = store.enqueueAll(batch);
-
-        assertThat(outcomes).hasSize(40);
-        for (var i = 0; i < 40; i++) {
+    private void assertBatchOutcomes(List<EnqueueOutcome> outcomes, int count) {
+        assertThat(outcomes).hasSize(count);
+        for (var i = 0; i < count; i++) {
             var id = i + 1;
             assertThat(outcomes.get(i))
                     .as("id %d", id)
                     .isEqualTo(id == 10 || id == 20 ? EnqueueOutcome.EXISTS : EnqueueOutcome.STORED);
         }
+    }
+
+    @Test
+    void batchAfterScriptFlushLoadsOnceAndKeepsOrder() {
+        store.enqueue(task(10).build());
+        store.enqueue(task(20).build());
+        jedis.scriptFlush();
+
+        var outcomes = spied.enqueueAll(batch(40));
+
+        assertBatchOutcomes(outcomes, 40);
         assertThat(jedis.exists(keys.task(40))).isTrue();
+        assertThat(spy.events()).containsExactly("pipeline 40", "load", "pipeline 40");
+    }
+
+    @Test
+    void batchWithSomeCallsUnknownToTheServerLoadsOnceAndResendsOnlyThose() {
+        store.enqueue(task(10).build());
+        store.enqueue(task(20).build());
+        spy.rejectInNextPipeline(call -> call % 2 == 1);
+
+        var outcomes = spied.enqueueAll(batch(40));
+
+        assertBatchOutcomes(outcomes, 40);
+        assertThat(spy.events()).containsExactly("pipeline 40", "load", "pipeline 20");
+    }
+
+    @Test
+    void aSecondEvictionAfterTheLoadFallsBackToOneCallAtATimeAndLoadsAgainOnce() {
+        jedis.scriptFlush();
+        spy.flushAfterLoads(1);
+
+        var outcomes = spied.enqueueAll(batch(5));
+
+        assertThat(outcomes).containsOnly(EnqueueOutcome.STORED).hasSize(5);
+        assertThat(jedis.exists(keys.task(5))).isTrue();
+        assertThat(spy.events())
+                .containsExactly(
+                        "pipeline 5",
+                        "load",
+                        "pipeline 5",
+                        "evalsha",
+                        "load",
+                        "evalsha",
+                        "evalsha",
+                        "evalsha",
+                        "evalsha",
+                        "evalsha");
+    }
+
+    @Test
+    void aScriptErrorThatIsNotNoScriptIsNotRetriedAndLoadsNothing() {
+        var broken = store.queueId("broken");
+        store.enqueue(task(99).build());
+        jedis.set(keys.queue(broken), "not a sorted set");
+
+        assertThatThrownBy(() -> spied.enqueueAll(
+                        List.of(task(1).build(), task(2).queueId(broken).build(), task(3).build())))
+                .isInstanceOf(TaskStoreException.class)
+                .hasMessageContaining("WRONGTYPE")
+                .cause()
+                .isInstanceOf(JedisDataException.class)
+                .isNotInstanceOf(JedisNoScriptException.class);
+
+        assertThat(spy.events()).containsExactly("pipeline 3");
+        assertThat(jedis.exists(keys.task(1))).isTrue();
+    }
+
+    private List<LeaseRef> leaseRefs(int count, int wrongEvery) {
+        var tasks = new ArrayList<TaskRecord>();
+        for (var i = 1; i <= count; i++) {
+            tasks.add(task(i).build());
+        }
+        store.enqueueAll(tasks);
+        var refs = new ArrayList<LeaseRef>();
+        for (var t : claim(count)) {
+            refs.add(new LeaseRef(t.id(), t.revision() + (t.id() % wrongEvery == 0 ? 1 : 0)));
+        }
+        return refs;
     }
 
     @Test
@@ -315,7 +402,7 @@ class RedisScriptsIT {
         var b = claim(1).getFirst();
         jedis.scriptFlush();
 
-        var statuses = store.renew(
+        var statuses = spied.renew(
                 List.of(
                         new LeaseRef(2, b.revision()),
                         new LeaseRef(1, a.revision() + 1),
@@ -324,6 +411,110 @@ class RedisScriptsIT {
 
         assertThat(statuses).extracting(s -> s.id()).containsExactly(2L, 1L, 1L);
         assertThat(statuses).extracting(s -> s.owned()).containsExactly(true, false, true);
+        assertThat(spy.events()).containsExactly("pipeline 1", "load", "pipeline 1");
+    }
+
+    @Test
+    void renewWithOneChunkUnknownToTheServerLoadsOnceAndResendsOnlyThatChunk() {
+        var refs = leaseRefs(600, 100);
+        store.renew(refs.subList(0, 1), LEASE);
+        spy.rejectInNextPipeline(call -> call == 1);
+
+        var statuses = spied.renew(refs, LEASE);
+
+        assertThat(statuses).hasSize(600);
+        for (var i = 0; i < refs.size(); i++) {
+            assertThat(statuses.get(i).id()).isEqualTo(refs.get(i).id());
+            assertThat(statuses.get(i).owned())
+                    .as("id %d", refs.get(i).id())
+                    .isEqualTo(refs.get(i).id() % 100 != 0);
+        }
+        assertThat(spy.events()).containsExactly("pipeline 3", "load", "pipeline 1");
+    }
+
+    // ---- transport resend and lost replies ------------------------------------------------------------
+
+    @Test
+    void enqueueResentByTheTransportWithTheSameTokenIsStoredOnceAndReportedStored() {
+        spy.resendEveryEvalsha(true);
+
+        var outcome = spied.enqueue(task(1).uniqueKey("k").build());
+
+        assertThat(outcome).isEqualTo(EnqueueOutcome.STORED);
+        assertThat(jedis.zrange(keys.queue(queue), 0, -1)).containsExactly("1");
+        assertThat(jedis.get(keys.uniqueKey("k"))).isEqualTo("1");
+        assertThat(store.counts().get(queue).queued()).isEqualTo(1);
+        spy.resendEveryEvalsha(false);
+        assertThat(store.enqueue(task(1).build())).isEqualTo(EnqueueOutcome.EXISTS);
+    }
+
+    @Test
+    void batchResentByTheTransportWithTheSameTokensIsStoredOnceAndReportedStored() {
+        var tasks = List.of(
+                task(1).uniqueKey("k").build(),
+                task(2).build(),
+                task(3).uniqueKey("j").build());
+        spy.resendEveryEvalsha(true);
+
+        var outcomes = spied.enqueueAll(tasks);
+
+        assertThat(outcomes).containsExactly(EnqueueOutcome.STORED, EnqueueOutcome.STORED, EnqueueOutcome.STORED);
+        assertThat(jedis.zrange(keys.queue(queue), 0, -1)).containsExactlyInAnyOrder("1", "2", "3");
+        assertThat(store.counts().get(queue).queued()).isEqualTo(3);
+        spy.resendEveryEvalsha(false);
+        assertThat(store.enqueueAll(tasks)).containsOnly(EnqueueOutcome.EXISTS);
+    }
+
+    @Test
+    void enqueueWhoseReplyWasLostIsAcceptedOnResendWithoutADuplicate() {
+        var type = TaskType.of("lost-reply");
+        var client = TaskClient.builder()
+                .store(spied)
+                .jsonMapper(new JsonMapperTest())
+                .build();
+        client.enqueue(TaskRequest.of(type).build());
+        var id = client.nextId();
+        var request = TaskRequest.of(type).id(id).uniqueKey("lost").build();
+        spy.loseNextReply();
+
+        assertThatThrownBy(() -> client.enqueue(request))
+                .isInstanceOfSatisfying(
+                        EnqueueFailedException.class, e -> assertThat(e.ids()).containsExactly(id));
+        assertThat(jedis.exists(keys.task(id))).isTrue();
+
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(store.counts().get(store.queueId("Q:DEF")).queued()).isEqualTo(2);
+        assertThat(jedis.get(keys.uniqueKey("lost"))).isEqualTo(String.valueOf(id));
+    }
+
+    @Test
+    void batchWhoseReplyWasLostIsAcceptedOnRetryWithoutDuplicates() {
+        var type = TaskType.of("lost-reply");
+        var client = TaskClient.builder()
+                .store(spied)
+                .jsonMapper(new JsonMapperTest())
+                .build();
+        client.enqueue(TaskRequest.of(type).build());
+        var requests = List.of(
+                TaskRequest.of(type).uniqueKey("a").build(),
+                TaskRequest.of(type).build(),
+                TaskRequest.of(type).uniqueKey("c").build());
+        spy.loseNextReply();
+
+        EnqueueFailedException failed = null;
+        try {
+            client.enqueueAll(requests);
+        } catch (EnqueueFailedException e) {
+            failed = e;
+        }
+        assertThat(failed).isNotNull();
+        assertThat(failed.ids()).hasSize(3);
+        assertThat(jedis.exists(keys.task(failed.ids().getFirst()))).isTrue();
+
+        var results = client.enqueueAll(failed.retryRequests(requests));
+
+        assertThat(results).hasSize(3).allSatisfy(r -> assertThat(r).isInstanceOf(EnqueueResult.Accepted.class));
+        assertThat(store.counts().get(store.queueId("Q:DEF")).queued()).isEqualTo(4);
     }
 
     // ---- promote -------------------------------------------------------------------------------------
@@ -335,9 +526,10 @@ class RedisScriptsIT {
         }
         var later = Instant.now().plusSeconds(3600).truncatedTo(ChronoUnit.MILLIS);
         var laterQueue = store.queueId("later");
-        store.enqueue(task(1).due(Instant.now().plusMillis(300)).build());
+        store.enqueue(task(1).due(Instant.now().plusSeconds(1800)).build());
         store.enqueue(task(2).queueId(laterQueue).due(later).build());
-        sleep(450);
+        assertThat(store.getTask(1).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
+        RedisFixtures.ageDue(jedis, keys, queue, 1, Instant.now().minusSeconds(5));
 
         var first = store.promote(100);
 
@@ -365,10 +557,14 @@ class RedisScriptsIT {
     @Test
     void promoteKeepsItsLimitAndReportsTheStillDueHeadAsNextDue() {
         var other = store.queueId("other");
-        store.enqueue(task(1).due(Instant.now().plusMillis(200)).build());
-        store.enqueue(task(2).queueId(other).due(Instant.now().plusMillis(200)).build());
-        store.enqueue(task(3).due(Instant.now().plusMillis(200)).build());
-        sleep(350);
+        store.enqueue(task(1).due(Instant.now().plusSeconds(1800)).build());
+        store.enqueue(
+                task(2).queueId(other).due(Instant.now().plusSeconds(1800)).build());
+        store.enqueue(task(3).due(Instant.now().plusSeconds(1800)).build());
+        var past = Instant.now().minusSeconds(5);
+        RedisFixtures.ageDue(jedis, keys, queue, 1, past);
+        RedisFixtures.ageDue(jedis, keys, other, 2, past);
+        RedisFixtures.ageDue(jedis, keys, queue, 3, past);
 
         var r = store.promote(2);
 
