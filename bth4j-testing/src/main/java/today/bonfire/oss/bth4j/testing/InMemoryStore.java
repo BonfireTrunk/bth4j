@@ -15,8 +15,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.function.Predicate;
-import java.util.stream.Stream;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
@@ -749,28 +747,6 @@ public final class InMemoryStore implements FullStore {
             Map<Integer, StateCounts> result = new TreeMap<>();
             raw.forEach((q, c) -> result.put(q, new StateCounts(c[0], c[1], c[2], c[3], c[4], c[5], c[6])));
             return result;
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    @Override
-    public List<TaskRecord> tasks(TaskState state, Integer queueId, long afterId, int limit) {
-        lock.lock();
-        try {
-            Comparator<TaskRecord> order =
-                    Comparator.comparing(TaskRecord::stateChanged).thenComparingLong(TaskRecord::id);
-            TaskRecord cursor = afterId == 0 ? null : tasks.get(afterId);
-            Predicate<TaskRecord> afterCursor = afterId == 0
-                    ? t -> true
-                    : cursor != null ? t -> order.compare(t, cursor) > 0 : t -> t.id() > afterId;
-            Stream<TaskRecord> stream = tasks.values().stream()
-                    .filter(t -> t.state() == state)
-                    .filter(t -> queueId == null || t.queueId() == queueId)
-                    .filter(afterCursor)
-                    .sorted(order)
-                    .limit(limit);
-            return stream.toList();
         } finally {
             lock.unlock();
         }

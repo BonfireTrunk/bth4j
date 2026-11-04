@@ -89,7 +89,7 @@ class TaskProcessorCapacityTest {
         var stale = running.get(id);
         clock.advance(LEASE.plusMillis(1));
         var failure = new FailureInfo(1, clock.instant(), "lease-expired", "lease expired", null);
-        assertThat(store.failExpired(id, stale.revision(), failure, clock.instant(), true))
+        assertThat(store.failExpired(id, stale.revision(), failure, clock.instant(), true, null))
                 .isEqualTo(FailOutcome.RETRY);
         store.promote(10);
 

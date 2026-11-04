@@ -273,7 +273,7 @@ class RedisTaskStoreIT {
         var t = claimOne(1);
         assertThat(store.enqueue(task(1).build())).isEqualTo(EnqueueOutcome.EXISTS);
 
-        store.ack(1, t.revision(), true, true);
+        store.ack(1, t.revision(), true, true, null);
 
         assertThat(store.enqueue(task(1).build())).isEqualTo(EnqueueOutcome.EXISTS);
         assertThat(counts().queued()).isZero();
@@ -296,7 +296,7 @@ class RedisTaskStoreIT {
         var t = claim(1).getFirst();
         assertThat(store.enqueue(task(2).uniqueKey("k").build())).isInstanceOf(EnqueueOutcome.DuplicateKey.class);
 
-        store.ack(1, t.revision(), true, true);
+        store.ack(1, t.revision(), true, true, null);
 
         assertThat(jedis.exists(keys.uniqueKey("k"))).isFalse();
         assertThat(jedis.hexists(keys.task(1), "uk")).isFalse();
@@ -310,8 +310,8 @@ class RedisTaskStoreIT {
                 task(2).data("p").uniqueKey("j").keyKeep(Duration.ofMillis(600)).build());
         var claimed = claim(2);
 
-        store.ack(1, claimed.get(0).revision(), true, true);
-        store.ack(2, claimed.get(1).revision(), false, false);
+        store.ack(1, claimed.get(0).revision(), true, true, null);
+        store.ack(2, claimed.get(1).revision(), false, false, null);
 
         assertThat(jedis.pttl(keys.uniqueKey("k"))).isBetween(1L, 600L);
         assertThat(jedis.pttl(keys.uniqueKey("j"))).isBetween(1L, 600L);
@@ -330,7 +330,7 @@ class RedisTaskStoreIT {
     void keyFieldsOfFinishedTasksExpireWithTheWindowAndReleaseKeysHasNothingToDo() {
         store.enqueue(task(1).uniqueKey("k").keyKeep(Duration.ofMillis(200)).build());
         var t = claim(1).getFirst();
-        store.ack(1, t.revision(), true, true);
+        store.ack(1, t.revision(), true, true, null);
         assertThat(jedis.hpttl(keys.task(1), "uk", "kk", "ku"))
                 .allSatisfy(ttl -> assertThat(ttl).isPositive());
         assertThat(store.releaseKeys(10)).isZero();
@@ -548,7 +548,7 @@ class RedisTaskStoreIT {
     void ackWithoutKeepRemovesTheTaskCompletely() {
         var t = claimOne(1);
 
-        assertThat(store.ack(1, t.revision(), false, false)).isTrue();
+        assertThat(store.ack(1, t.revision(), false, false, null)).isTrue();
 
         assertThat(store.getTask(1)).isEmpty();
         assertThat(jedis.zscore(keys.leased, "1")).isNull();
@@ -563,8 +563,8 @@ class RedisTaskStoreIT {
         var claimed = claim(2);
         store.saveSteps(1, claimed.get(0).revision(), Map.of("s", new StepResult(Instant.ofEpochMilli(5), "r")));
 
-        assertThat(store.ack(1, claimed.get(0).revision(), true, false)).isTrue();
-        assertThat(store.ack(2, claimed.get(1).revision(), true, true)).isTrue();
+        assertThat(store.ack(1, claimed.get(0).revision(), true, false, null)).isTrue();
+        assertThat(store.ack(2, claimed.get(1).revision(), true, true, null)).isTrue();
 
         var dropped = store.getTask(1).orElseThrow();
         assertThat(dropped.state()).isEqualTo(TaskState.SUCCEEDED);
@@ -587,7 +587,7 @@ class RedisTaskStoreIT {
         var t = claimOne(1);
         var retryAt = Instant.now().plusSeconds(30).truncatedTo(ChronoUnit.MILLIS);
 
-        assertThat(store.fail(1, t.revision(), failure(1), retryAt, true)).isEqualTo(FailOutcome.RETRY);
+        assertThat(store.fail(1, t.revision(), failure(1), retryAt, true, null)).isEqualTo(FailOutcome.RETRY);
 
         var back = store.getTask(1).orElseThrow();
         assertThat(back.state()).isEqualTo(TaskState.SCHEDULED);
@@ -606,7 +606,7 @@ class RedisTaskStoreIT {
     @Test
     void failIsDeadWithoutRetryAtOrWhenAttemptsAreExhausted() {
         var t = claimOne(1);
-        assertThat(store.fail(1, t.revision(), failure(1), null, true)).isEqualTo(FailOutcome.DEAD);
+        assertThat(store.fail(1, t.revision(), failure(1), null, true, null)).isEqualTo(FailOutcome.DEAD);
         assertThat(store.getTask(1).orElseThrow().state()).isEqualTo(TaskState.DEAD);
         assertThat(jedis.zscore(keys.index(4, queue), "1")).isNotNull();
         assertThat(counts().dead()).isEqualTo(1);
@@ -614,14 +614,15 @@ class RedisTaskStoreIT {
         store.enqueue(task(2).maxAttempts(1).build());
         var u = claim(1).getFirst();
 
-        assertThat(store.fail(2, u.revision(), failure(1), Instant.now(), true)).isEqualTo(FailOutcome.DEAD);
+        assertThat(store.fail(2, u.revision(), failure(1), Instant.now(), true, null))
+                .isEqualTo(FailOutcome.DEAD);
     }
 
     @Test
     void deadTaskIsRemovedWhenNotKept() {
         var t = claimOne(1);
 
-        assertThat(store.fail(1, t.revision(), failure(1), null, false)).isEqualTo(FailOutcome.DEAD);
+        assertThat(store.fail(1, t.revision(), failure(1), null, false, null)).isEqualTo(FailOutcome.DEAD);
 
         assertThat(store.getTask(1)).isEmpty();
         assertThat(counts()).isEqualTo(StateCounts.ZERO);
@@ -633,7 +634,7 @@ class RedisTaskStoreIT {
         store.enqueue(task(1).uniqueKey("k").keyKeep(Duration.ofMinutes(1)).build());
         var t = claim(1).getFirst();
 
-        assertThat(store.fail(1, t.revision(), failure(1), null, false)).isEqualTo(FailOutcome.DEAD);
+        assertThat(store.fail(1, t.revision(), failure(1), null, false, null)).isEqualTo(FailOutcome.DEAD);
 
         var back = store.getTask(1).orElseThrow();
         assertThat(back.state()).isEqualTo(TaskState.DEAD);
@@ -648,8 +649,8 @@ class RedisTaskStoreIT {
         store.enqueue(task(2).uniqueKey("j").keyKeep(Duration.ofMinutes(1)).build());
         var claimed = claim(2);
 
-        store.fail(1, claimed.get(0).revision(), failure(1), null, true);
-        store.fail(2, claimed.get(1).revision(), failure(1), null, true);
+        store.fail(1, claimed.get(0).revision(), failure(1), null, true, null);
+        store.fail(2, claimed.get(1).revision(), failure(1), null, true, null);
 
         assertThat(jedis.exists(keys.uniqueKey("k"))).isFalse();
         assertThat(jedis.pttl(keys.uniqueKey("j"))).isPositive();
@@ -662,7 +663,7 @@ class RedisTaskStoreIT {
         for (var attempt = 1; attempt <= 25; attempt++) {
             var t = claim(1).getFirst();
             var f = new FailureInfo(attempt, Instant.ofEpochMilli(1_000L + attempt), "T", nasty + attempt, nasty);
-            assertThat(store.fail(1, t.revision(), f, Instant.now().minusSeconds(1), true))
+            assertThat(store.fail(1, t.revision(), f, Instant.now().minusSeconds(1), true, null))
                     .isEqualTo(FailOutcome.RETRY);
             assertThat(store.promote(10).moved()).isEqualTo(1);
         }
@@ -683,7 +684,8 @@ class RedisTaskStoreIT {
         enqueued(1);
         var t = store.claim(new ClaimRequest(List.of(queue), 1, Duration.ofMillis(300), 1, null))
                 .getFirst();
-        assertThat(store.failExpired(1, t.revision(), failure(1), null, true)).isEqualTo(FailOutcome.LOST);
+        assertThat(store.failExpired(1, t.revision(), failure(1), null, true, null))
+                .isEqualTo(FailOutcome.LOST);
         assertThat(store.reclaim(10)).isEmpty();
         sleep(400);
 
@@ -698,7 +700,7 @@ class RedisTaskStoreIT {
         assertThat(e.eventId()).isEqualTo(event);
         assertThat(e.cancelRequested()).isFalse();
         assertThat(store.getTask(1).orElseThrow().state()).isEqualTo(TaskState.LEASED);
-        assertThat(store.failExpired(1, e.revision(), failure(1), Instant.now().plusSeconds(5), true))
+        assertThat(store.failExpired(1, e.revision(), failure(1), Instant.now().plusSeconds(5), true, null))
                 .isEqualTo(FailOutcome.RETRY);
     }
 
@@ -712,7 +714,8 @@ class RedisTaskStoreIT {
         store.renew(List.of(new LeaseRef(1, t.revision())), LEASE);
         sleep(800);
 
-        assertThat(store.failExpired(1, t.revision(), failure(1), null, true)).isEqualTo(FailOutcome.LOST);
+        assertThat(store.failExpired(1, t.revision(), failure(1), null, true, null))
+                .isEqualTo(FailOutcome.LOST);
         assertThat(store.reclaim(10)).isEmpty();
     }
 
@@ -762,9 +765,9 @@ class RedisTaskStoreIT {
         var stale = t.revision() - 1;
         var wrong = t.revision() + 1;
         for (var rev : new int[] {stale, wrong}) {
-            assertThat(store.ack(1, rev, true, true)).isFalse();
-            assertThat(store.fail(1, rev, failure(1), null, true)).isEqualTo(FailOutcome.LOST);
-            assertThat(store.failExpired(1, rev, failure(1), null, true)).isEqualTo(FailOutcome.LOST);
+            assertThat(store.ack(1, rev, true, true, null)).isFalse();
+            assertThat(store.fail(1, rev, failure(1), null, true, null)).isEqualTo(FailOutcome.LOST);
+            assertThat(store.failExpired(1, rev, failure(1), null, true, null)).isEqualTo(FailOutcome.LOST);
             assertThat(store.reschedule(1, rev, Instant.now())).isFalse();
             assertThat(store.unclaim(1, rev)).isFalse();
             assertThat(store.saveSteps(1, rev, Map.of())).isFalse();
@@ -777,9 +780,9 @@ class RedisTaskStoreIT {
         assertThat(store.getTask(1).orElseThrow().revision()).isEqualTo(t.revision());
 
         assertThat(store.unclaim(1, t.revision())).isTrue();
-        assertThat(store.ack(1, t.revision(), true, true)).isFalse();
-        assertThat(store.fail(1, t.revision(), failure(1), null, true)).isEqualTo(FailOutcome.LOST);
-        assertThat(store.ack(404, 0, true, true)).isFalse();
+        assertThat(store.ack(1, t.revision(), true, true, null)).isFalse();
+        assertThat(store.fail(1, t.revision(), failure(1), null, true, null)).isEqualTo(FailOutcome.LOST);
+        assertThat(store.ack(404, 0, true, true, null)).isFalse();
     }
 
     // ---- maintenance ---------------------------------------------------------------------------------
@@ -827,10 +830,10 @@ class RedisTaskStoreIT {
         store.enqueue(task(3).uniqueKey("k").keyKeep(Duration.ofMinutes(5)).build());
         store.enqueue(task(4).build());
         var claimed = claim(4);
-        store.ack(1, claimed.get(0).revision(), true, true);
-        store.ack(2, claimed.get(1).revision(), true, true);
-        store.ack(3, claimed.get(2).revision(), true, true);
-        store.fail(4, claimed.get(3).revision(), failure(1), null, true);
+        store.ack(1, claimed.get(0).revision(), true, true, null);
+        store.ack(2, claimed.get(1).revision(), true, true, null);
+        store.ack(3, claimed.get(2).revision(), true, true, null);
+        store.fail(4, claimed.get(3).revision(), failure(1), null, true, null);
         sleep(150);
 
         assertThat(store.purge(TaskState.SUCCEEDED, Duration.ofMinutes(1), 10)).isZero();
@@ -854,7 +857,7 @@ class RedisTaskStoreIT {
             store.enqueue(task(i).build());
         }
         for (var t : claim(5)) {
-            store.ack(t.id(), t.revision(), true, true);
+            store.ack(t.id(), t.revision(), true, true, null);
         }
         sleep(50);
 
@@ -893,17 +896,16 @@ class RedisTaskStoreIT {
             store.enqueue(task(i).queueId(i % 3 == 0 ? other : queue).build());
         }
         for (var t : store.claim(new ClaimRequest(List.of(queue, other), 12, LEASE, 1, null))) {
-            store.ack(t.id(), t.revision(), true, true);
+            store.ack(t.id(), t.revision(), true, true, null);
         }
 
-        long after = 0;
-        List<TaskRecord> page;
+        String cursor = null;
         do {
-            page = store.tasks(TaskState.SUCCEEDED, null, after, 5);
-            assertThat(page.size()).isLessThanOrEqualTo(5);
-            page.forEach(t -> done.add(t.id()));
-            after = page.isEmpty() ? after : page.getLast().id();
-        } while (!page.isEmpty());
+            var page = store.tasks(TaskState.SUCCEEDED, null, cursor, 5);
+            assertThat(page.items().size()).isLessThanOrEqualTo(5);
+            page.items().forEach(t -> done.add(t.id()));
+            cursor = page.next();
+        } while (cursor != null);
 
         assertThat(done).hasSize(12).doesNotHaveDuplicates();
         var byTime = new ArrayList<TaskRecord>();
@@ -911,11 +913,11 @@ class RedisTaskStoreIT {
         assertThat(byTime)
                 .isSortedAccordingTo(
                         java.util.Comparator.comparing(TaskRecord::stateChanged).thenComparingLong(TaskRecord::id));
-        assertThat(store.tasks(TaskState.SUCCEEDED, other, 0, 100))
+        assertThat(store.tasks(TaskState.SUCCEEDED, other, null, 100).items())
                 .extracting(TaskRecord::id)
                 .containsExactlyInAnyOrder(3L, 6L, 9L, 12L);
-        assertThat(store.tasks(TaskState.DEAD, null, 0, 10)).isEmpty();
-        assertThat(store.tasks(TaskState.SUCCEEDED, null, 0, 0)).isEmpty();
+        assertThat(store.tasks(TaskState.DEAD, null, null, 10).items()).isEmpty();
+        assertThat(store.tasks(TaskState.SUCCEEDED, null, null, 0).items()).isEmpty();
     }
 
     @Test
@@ -928,13 +930,12 @@ class RedisTaskStoreIT {
         store.enqueueAll(tasks);
 
         var seen = new ArrayList<TaskRecord>();
-        long after = 0;
-        List<TaskRecord> page;
+        String cursor = null;
         do {
-            page = store.tasks(TaskState.QUEUED, queue, after, 400);
-            seen.addAll(page);
-            after = page.isEmpty() ? after : page.getLast().id();
-        } while (!page.isEmpty());
+            var page = store.tasks(TaskState.QUEUED, queue, cursor, 400);
+            seen.addAll(page.items());
+            cursor = page.next();
+        } while (cursor != null);
 
         assertThat(seen).hasSize(1100);
         assertThat(seen.stream().map(TaskRecord::id).distinct().count()).isEqualTo(1100);
@@ -951,10 +952,10 @@ class RedisTaskStoreIT {
             jedis.hset(keys.task(id), "due", "5000");
         }
 
-        var first = store.tasks(TaskState.QUEUED, queue, 0, 2);
-        var second = store.tasks(TaskState.QUEUED, queue, first.getLast().id(), 10);
+        var first = store.tasks(TaskState.QUEUED, queue, null, 2);
+        var second = store.tasks(TaskState.QUEUED, queue, first.next(), 10).items();
 
-        assertThat(first).extracting(TaskRecord::id).containsExactly(9L, 10L);
+        assertThat(first.items()).extracting(TaskRecord::id).containsExactly(9L, 10L);
         assertThat(second).extracting(TaskRecord::id).containsExactly(11L, 100L);
     }
 
@@ -967,19 +968,20 @@ class RedisTaskStoreIT {
         store.enqueue(task(4).build());
         claim(1);
 
-        assertThat(store.tasks(TaskState.QUEUED, null, 0, 10))
+        assertThat(store.tasks(TaskState.QUEUED, null, null, 10).items())
                 .extracting(TaskRecord::id)
                 .containsExactly(4L);
-        assertThat(store.tasks(TaskState.LEASED, queue, 0, 10))
+        assertThat(store.tasks(TaskState.LEASED, queue, null, 10).items())
                 .extracting(TaskRecord::id)
                 .containsExactly(1L);
-        assertThat(store.tasks(TaskState.SCHEDULED, null, 0, 10))
+        assertThat(store.tasks(TaskState.SCHEDULED, null, null, 10).items())
                 .extracting(TaskRecord::id)
                 .containsExactly(2L, 3L);
-        assertThat(store.tasks(TaskState.SCHEDULED, other, 0, 10))
+        assertThat(store.tasks(TaskState.SCHEDULED, other, null, 10).items())
                 .extracting(TaskRecord::id)
                 .containsExactly(3L);
-        assertThat(store.tasks(TaskState.SCHEDULED, null, 2, 10))
+        var afterTask2 = store.tasks(TaskState.SCHEDULED, null, null, 1).next();
+        assertThat(store.tasks(TaskState.SCHEDULED, null, afterTask2, 10).items())
                 .extracting(TaskRecord::id)
                 .containsExactly(3L);
     }
@@ -994,7 +996,7 @@ class RedisTaskStoreIT {
     void recurringDefinitionsAreStoredListedAndDeleted() {
         var fire = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
 
-        store.putRecurring(definition("s", "* * * * *"), fire);
+        store.putRecurring(definition("s", "* * * * *"), fire, fire);
 
         assertThat(store.recurringSchedules()).containsEntry("s", fire);
         assertThat(store.dueRecurring(fire.minusSeconds(1), 10)).isEmpty();
@@ -1020,13 +1022,13 @@ class RedisTaskStoreIT {
     void replacingADefinitionKeepsTheFireTimeOnlyWhenTheCronIsUnchanged() {
         var first = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
         var second = first.plusSeconds(500);
-        store.putRecurring(definition("s", "* * * * *"), first);
+        store.putRecurring(definition("s", "* * * * *"), first, first);
         var rev1 = store.dueRecurring(first, 1).getFirst().definition().revision();
 
-        store.putRecurring(definition("s", "* * * * *"), second);
+        store.putRecurring(definition("s", "* * * * *"), second, second);
         assertThat(store.recurringSchedules()).containsEntry("s", first);
         var rev2 = store.dueRecurring(first, 1).getFirst().definition().revision();
-        store.putRecurring(definition("s", "0 * * * *"), second);
+        store.putRecurring(definition("s", "0 * * * *"), second, second);
 
         assertThat(rev2).isGreaterThan(rev1);
         assertThat(store.recurringSchedules()).containsEntry("s", second);
@@ -1036,7 +1038,7 @@ class RedisTaskStoreIT {
     void commitStoresTheOccurrenceScheduledAndAdvancesTheDefinitionOnce() {
         var fire = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MILLIS);
         var next = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
-        store.putRecurring(definition("s", "* * * * *"), fire);
+        store.putRecurring(definition("s", "* * * * *"), fire, fire);
         var due = store.dueRecurring(Instant.now(), 10).getFirst();
         var occurrence = task(50).scheduleId("s").due(fire).build();
 
@@ -1057,9 +1059,9 @@ class RedisTaskStoreIT {
     @Test
     void commitIsRejectedForAReplacedOrDeletedDefinition() {
         var fire = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MILLIS);
-        store.putRecurring(definition("s", "* * * * *"), fire);
+        store.putRecurring(definition("s", "* * * * *"), fire, fire);
         var due = store.dueRecurring(Instant.now(), 10).getFirst();
-        store.putRecurring(definition("s", "* * * * *"), fire);
+        store.putRecurring(definition("s", "* * * * *"), fire, fire);
 
         assertThat(store.commitRecurring(due, fire.plusSeconds(60), task(60).build()))
                 .isFalse();

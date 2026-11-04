@@ -1027,7 +1027,7 @@ public abstract class RunnerContract {
         await("a future fire time", () -> client.schedules().get("late-skip").isAfter(Instant.now()));
         pause(300);
         assertThat(runs.get()).isZero();
-        assertThat(client.tasks(TaskState.QUEUED, null, 0, 10)).isEmpty();
+        assertThat(client.tasks(TaskState.QUEUED, null, null, 10).items()).isEmpty();
         assertThat(runner.issues()).anyMatch(i -> i.kind().equals("schedule-misfire"));
     }
 
@@ -1078,7 +1078,7 @@ public abstract class RunnerContract {
         release.countDown();
         await(
                 "the first occurrence to finish",
-                () -> client.tasks(TaskState.LEASED, null, 0, 10).isEmpty());
+                () -> client.tasks(TaskState.LEASED, null, null, 10).items().isEmpty());
         assertThat(runner.admin().triggerSchedule("guarded")).isTrue();
         await("a second run", () -> runs.get() == 2);
     }
@@ -1138,7 +1138,7 @@ public abstract class RunnerContract {
                 3,
                 false,
                 0);
-        store.putRecurring(def, Instant.now().minus(late));
+        store.putRecurring(def, Instant.now().minus(late), Instant.now().minus(late));
     }
 
     private static List<String> eventNames(List<TaskEvent> events, long id) {

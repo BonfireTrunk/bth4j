@@ -1235,40 +1235,6 @@ public class PostgresTaskStore implements FullStore {
         });
     }
 
-    /**
-     * Best effort: the cursor is the {@code (state_changed, id)} of the {@code afterId} task when it still exists,
-     * else {@code id > afterId}. A cursor task that moved to another state since continues from its new state
-     * change time, which can end the listing early. The {@code String} cursor form has no such case.
-     */
-    @Override
-    public List<TaskRecord> tasks(TaskState state, Integer queueId, long afterId, int limit) {
-        if (limit <= 0) return List.of();
-        var sql = new StringBuilder("SELECT * FROM " + task + " WHERE state = ?");
-        if (queueId != null) sql.append(" AND queue_id = ?");
-        if (afterId != 0) {
-            sql.append(" AND ((state_changed, id) > (SELECT state_changed, id FROM ")
-                    .append(task)
-                    .append(" WHERE id = ?) OR (NOT EXISTS (SELECT 1 FROM ")
-                    .append(task)
-                    .append(" WHERE id = ?) AND id > ?))");
-        }
-        sql.append(" ORDER BY state_changed, id LIMIT ?");
-        return withConnection(c -> {
-            try (var ps = c.prepareStatement(sql.toString())) {
-                int i = 1;
-                ps.setInt(i++, state.code());
-                if (queueId != null) ps.setInt(i++, queueId);
-                if (afterId != 0) {
-                    ps.setLong(i++, afterId);
-                    ps.setLong(i++, afterId);
-                    ps.setLong(i++, afterId);
-                }
-                ps.setInt(i, limit);
-                return readAll(ps);
-            }
-        });
-    }
-
     /** The cursor is {@code <state_changed in epoch microseconds>:<id>} of the last task of the page. */
     @Override
     public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {

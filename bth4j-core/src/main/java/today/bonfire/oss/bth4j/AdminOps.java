@@ -36,13 +36,6 @@ public interface AdminOps {
     Optional<TaskView> taskByKey(String key);
 
     /**
-     * @param queue null for all queues; results are ordered by state change time then id and start after {@code afterId}.
-     *              Paging by {@code afterId} is best effort: a task that changes state between pages can end the
-     *              listing early or repeat it. Use the cursor form for a walk that does not depend on the last task of the previous page.
-     */
-    List<TaskView> tasks(TaskState state, String queue, long afterId, int limit);
-
-    /**
      * @param queue null for all queues
      * @param cursor {@link TaskViewPage#next()} of the previous page; null starts at the beginning
      * @throws IllegalArgumentException if the cursor is malformed

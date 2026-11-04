@@ -703,26 +703,11 @@ public class RedisTaskStore implements FullStore {
     /**
      * Lists from the structure that holds the state: {@code idx:<state>:<qid>} for LEASED and the terminal states,
      * {@code q:<qid>} for QUEUED and {@code sched:<qid>} for SCHEDULED. Order is by the zset score, then numeric
-     * id: stateChanged for the indexed states, due for QUEUED and SCHEDULED. Best effort for {@code afterId}: the
-     * cursor is the score the {@code afterId} task has in the zset being paged (not its {@code due} field, which a deferral leaves
-     * behind), so each page costs a seek plus at most one chunk of 500 per zset; when that task is no longer in
-     * that state, ids after it are listed from the start, which can repeat tasks. The {@code String} cursor form
-     * carries the score itself and has no such case.
+     * id: stateChanged for the indexed states, due for QUEUED and SCHEDULED. The cursor is
+     * {@code <score>:<id>} of the last entry of the page, the score it has in the zset being paged (not the
+     * task's {@code due} field, which a deferral leaves behind), so each page costs a seek plus at most one chunk
+     * of 500 per zset.
      */
-    @Override
-    public List<TaskRecord> tasks(TaskState state, Integer queueId, long afterId, int limit) {
-        if (limit < 1) {
-            return List.of();
-        }
-        return guard(() -> {
-            var cursor = afterId > 0 ? cursorScore(state, afterId) : null;
-            return load(listing(state, queueId, cursor, afterId, limit).stream()
-                    .map(Entry::id)
-                    .toList());
-        });
-    }
-
-    /** The cursor is {@code <score>:<id>} of the last entry of the page, the score it has in the zset being paged. */
     @Override
     public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
         var position = cursor == null ? null : decodeCursor(cursor);
@@ -731,9 +716,7 @@ public class RedisTaskStore implements FullStore {
         }
         return guard(() -> {
             var probe = (int) Math.min((long) limit + 1, Integer.MAX_VALUE);
-            var found = position == null
-                    ? listing(state, queueId, null, 0, probe)
-                    : listing(state, queueId, position.score(), position.id(), probe);
+            var found = listing(state, queueId, position, probe);
             var entries = found.subList(0, Math.min(limit, found.size()));
             var items = load(entries.stream().map(Entry::id).toList());
             var last = entries.isEmpty() ? null : entries.getLast();
@@ -755,11 +738,11 @@ public class RedisTaskStore implements FullStore {
         throw new IllegalArgumentException("malformed cursor");
     }
 
-    private List<Entry> listing(TaskState state, Integer queueId, Double cursor, long afterId, int limit) {
+    private List<Entry> listing(TaskState state, Integer queueId, Entry after, int limit) {
         var entries = new ArrayList<Entry>();
         var qids = queueId == null ? sortedQueueIds() : List.of(queueId);
         for (var qid : qids) {
-            entries.addAll(page(stateZset(state, qid), cursor, afterId, limit));
+            entries.addAll(page(stateZset(state, qid), after, limit));
         }
         entries.sort(ORDER);
         return entries.subList(0, Math.min(limit, entries.size()));
@@ -778,21 +761,13 @@ public class RedisTaskStore implements FullStore {
         };
     }
 
-    private Double cursorScore(TaskState state, long afterId) {
-        var v = jedis.hmget(keys.task(afterId), F_STATE, F_QUEUE);
-        if (v.get(0) == null || v.get(1) == null || Integer.parseInt(v.get(0)) != state.code()) {
-            return null;
-        }
-        return jedis.zscore(stateZset(state, Integer.parseInt(v.get(1))), String.valueOf(afterId));
-    }
-
     /**
      * Reads one zset in (score, numeric id) order after the cursor. Redis breaks score ties by member bytes, so a
      * chunk's trailing score group is re-read whole before it is ordered by number.
      */
-    private List<Entry> page(String zset, Double cursor, long afterId, int limit) {
+    private List<Entry> page(String zset, Entry after, int limit) {
         var out = new ArrayList<Entry>();
-        var min = cursor == null ? "-inf" : String.valueOf((long) cursor.doubleValue());
+        var min = after == null ? "-inf" : String.valueOf((long) after.score());
         while (out.size() < limit) {
             var chunk = jedis.zrangeByScoreWithScores(zset, min, "+inf", 0, PAGE_CHUNK);
             if (chunk.isEmpty()) {
@@ -819,8 +794,7 @@ public class RedisTaskStore implements FullStore {
             }
             ordered.sort(ORDER);
             for (var e : ordered) {
-                var after = cursor == null ? e.id() > afterId : ORDER.compare(e, new Entry(cursor, afterId)) > 0;
-                if (after) {
+                if (after == null || ORDER.compare(e, after) > 0) {
                     out.add(e);
                 }
             }

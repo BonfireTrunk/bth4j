@@ -816,7 +816,7 @@ through `FullStore`:
 | `ExecutionStore` | `enqueue`, `enqueueAll`, `claim`, `renew`, `ack`, `fail`, `failExpired`, `finishCancelled`, `reschedule`, `unclaim`, `saveSteps`, `progress` |
 | `MaintenanceStore` | `promote`, `reclaim`, `expire`, `purge`, `purgeWorkers`, `releaseKeys`, `nextDue` |
 | `ScheduleStore` | `putRecurring`, `deleteRecurring`, `recurringSchedules`, `recurringDefinitions`, `dueRecurring`, `commitRecurring`, `pauseRecurring`, `setNextFire` |
-| `InspectionStore` | `getTask`, `counts`, `tasks` (by state, keyset paging on `(stateChanged, id)`) |
+| `InspectionStore` | `getTask`, `counts`, `tasks` (by state, paged by an opaque cursor on `(stateChanged, id)`) |
 | `AdminStore` | `cancel`, `retry`, `delete`, `pauseQueue`, `queues`, `heartbeat`, `workers` |
 
 The contract is small because the services never read and then write in two steps: each method is one

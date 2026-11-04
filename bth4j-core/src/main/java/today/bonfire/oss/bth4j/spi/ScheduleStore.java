@@ -18,10 +18,6 @@ public interface ScheduleStore extends TaskStore {
      */
     void putRecurring(RecurringDefinition definition, Instant nextFire, Instant keepUntil);
 
-    default void putRecurring(RecurringDefinition definition, Instant nextFire) {
-        putRecurring(definition, nextFire, nextFire);
-    }
-
     /** @return true when a definition with that id existed */
     boolean deleteRecurring(String scheduleId);
 

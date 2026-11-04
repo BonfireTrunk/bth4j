@@ -103,7 +103,7 @@ class TaskClientTest {
 
         assertThat(first).isEqualTo(new EnqueueResult.Accepted(id));
         assertThat(second).isEqualTo(new EnqueueResult.Accepted(id));
-        assertThat(client.tasks(TaskState.QUEUED, null, 0, 100))
+        assertThat(client.tasks(TaskState.QUEUED, null, null, 100).items())
                 .extracting(TaskView::id)
                 .containsExactly(id);
     }
@@ -140,7 +140,7 @@ class TaskClientTest {
                         .id(id)
                         .build()))
                 .isInstanceOf(TaskIdReusedException.class);
-        assertThat(client.tasks(TaskState.QUEUED, null, 0, 100)).hasSize(1);
+        assertThat(client.tasks(TaskState.QUEUED, null, null, 100).items()).hasSize(1);
     }
 
     @Test
@@ -185,7 +185,7 @@ class TaskClientTest {
                 .isInstanceOf(TaskValidationException.class);
         assertThat(client.enqueue(TaskRequest.of(VOID).id(next).build()).accepted())
                 .isTrue();
-        assertThat(client.tasks(TaskState.QUEUED, null, 0, 100)).hasSize(1);
+        assertThat(client.tasks(TaskState.QUEUED, null, null, 100).items()).hasSize(1);
     }
 
     private FullStore failingStore(AtomicBoolean down) {
@@ -232,7 +232,7 @@ class TaskClientTest {
 
         assertThat(result.accepted()).isTrue();
         assertThat(result.id()).isEqualTo(11);
-        assertThat(b.tasks(TaskState.QUEUED, null, 0, 100))
+        assertThat(b.tasks(TaskState.QUEUED, null, null, 100).items())
                 .extracting(TaskView::id)
                 .containsExactly(2L, 11L);
     }
@@ -267,7 +267,7 @@ class TaskClientTest {
         assertThat(results.get(0).id()).isEqualTo(2);
         assertThat(results.get(2).id()).isEqualTo(4);
         assertThat(results.get(1).id()).isGreaterThan(4);
-        assertThat(b.tasks(TaskState.QUEUED, null, 0, 100)).hasSize(4);
+        assertThat(b.tasks(TaskState.QUEUED, null, null, 100).items()).hasSize(4);
     }
 
     @Test
@@ -284,7 +284,7 @@ class TaskClientTest {
 
         assertThatThrownBy(() -> client.enqueueAll(requests)).isInstanceOf(TaskIdReusedException.class);
 
-        assertThat(client.tasks(TaskState.QUEUED, null, 0, 100))
+        assertThat(client.tasks(TaskState.QUEUED, null, null, 100).items())
                 .extracting(TaskView::id)
                 .containsExactly(other);
     }
@@ -299,7 +299,7 @@ class TaskClientTest {
                         TaskRequest.of(VOID).id(id).build())))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("more than one");
-        assertThat(client.tasks(TaskState.QUEUED, null, 0, 100)).isEmpty();
+        assertThat(client.tasks(TaskState.QUEUED, null, null, 100).items()).isEmpty();
     }
 
     @Test
@@ -447,7 +447,7 @@ class TaskClientTest {
                         store.allocateWorkerId("test"),
                         null))
                 .getFirst();
-        assertThat(store.ack(id, leased.revision(), true, false)).isTrue();
+        assertThat(store.ack(id, leased.revision(), true, false, null)).isTrue();
         assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
         assertThat(store.getTask(id).orElseThrow().data()).isNull();
         var retry = TaskRequest.of(TYPED, new Payload("different")).id(id).build();
@@ -1087,7 +1087,7 @@ class TaskClientTest {
         assertThat(second.accepted()).isFalse();
         assertThat(second.id()).isEqualTo(first.id());
         assertThat(other.accepted()).isTrue();
-        assertThat(client.tasks(TaskState.QUEUED, null, 0, 100)).hasSize(2);
+        assertThat(client.tasks(TaskState.QUEUED, null, null, 100).items()).hasSize(2);
     }
 
     @Test
@@ -1155,7 +1155,7 @@ class TaskClientTest {
         assertThatThrownBy(() -> client.enqueue(TaskRequest.of(TYPED, tooBig).build()))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("exceeds");
-        assertThat(client.tasks(TaskState.QUEUED, null, 0, 10)).isEmpty();
+        assertThat(client.tasks(TaskState.QUEUED, null, null, 10).items()).isEmpty();
     }
 
     @Test
@@ -1290,15 +1290,15 @@ class TaskClientTest {
             ids.add(client.enqueue(TaskRequest.of(VOID).build()).id());
         client.enqueue(TaskRequest.of(VOID).queue("Q:LOW").build());
 
-        var all = client.tasks(TaskState.QUEUED, "Q:DEF", 0, 100);
-        var firstPage = client.tasks(TaskState.QUEUED, "Q:DEF", 0, 2);
+        var all = client.tasks(TaskState.QUEUED, "Q:DEF", null, 100).items();
+        var firstPage = client.tasks(TaskState.QUEUED, "Q:DEF", null, 2);
         var secondPage =
-                client.tasks(TaskState.QUEUED, "Q:DEF", firstPage.getLast().id(), 100);
+                client.tasks(TaskState.QUEUED, "Q:DEF", firstPage.next(), 100).items();
 
         assertThat(all).extracting(TaskView::id).containsExactlyElementsOf(ids);
-        assertThat(firstPage).extracting(TaskView::id).containsExactlyElementsOf(ids.subList(0, 2));
+        assertThat(firstPage.items()).extracting(TaskView::id).containsExactlyElementsOf(ids.subList(0, 2));
         assertThat(secondPage).extracting(TaskView::id).containsExactlyElementsOf(ids.subList(2, 5));
-        assertThat(client.tasks(TaskState.SUCCEEDED, null, 0, 100)).isEmpty();
+        assertThat(client.tasks(TaskState.SUCCEEDED, null, null, 100).items()).isEmpty();
     }
 
     @Test
