@@ -377,7 +377,7 @@ class RecurringTaskServiceTest {
     }
 
     private void round() throws Exception {
-        PrivateMethods.invoke(service(), "queueDueOccurrences");
+        service().queueDueOccurrences();
     }
 
     private List<TaskRecord> occurrences() {

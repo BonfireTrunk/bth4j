@@ -551,7 +551,7 @@ class TaskProcessorCapacityTest {
     }
 
     private static void processOnce(TaskProcessorService processor) throws Exception {
-        PrivateMethods.invoke(processor, "processOnce");
+        processor.processOnce();
     }
 
     private static final class ManualExecutor implements BackgroundExecutor {

@@ -80,7 +80,7 @@ class MaintenanceService extends CustomThread {
         executor.scheduleWithFixedDelay(this::purge, delay, purgeInterval.toMillis(), TimeUnit.MILLISECONDS);
     }
 
-    private void cycle() {
+    void cycle() {
         reclaimExpiredLeases();
         expireMissedStarts();
         heartbeat();
@@ -202,7 +202,7 @@ class MaintenanceService extends CustomThread {
         }
     }
 
-    private void purge() {
+    void purge() {
         try {
             for (var entry : retention.entrySet()) {
                 long removed = 0;

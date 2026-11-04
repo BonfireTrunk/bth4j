@@ -117,7 +117,7 @@ class RecurringTaskService extends CustomThread {
         }
     }
 
-    private void queueDueOccurrences() {
+    void queueDueOccurrences() {
         var queued = 0;
         try {
             for (var round = 0; round < MAX_ROUNDS_PER_CYCLE && this.canContinueProcessing; round++) {

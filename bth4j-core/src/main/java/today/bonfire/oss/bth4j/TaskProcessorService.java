@@ -116,7 +116,7 @@ class TaskProcessorService extends CustomThread {
         }
     }
 
-    private void processOnce() throws InterruptedException {
+    void processOnce() throws InterruptedException {
         if (quiet) {
             Thread.sleep(idlePollInterval);
             return;

@@ -237,7 +237,7 @@ class TaskProcessorOverrunTest {
         abandon(processor);
 
         clock.advance(LEASE);
-        PrivateMethods.invoke(maintenance(), "cycle");
+        maintenance().cycle();
 
         var ended = store.getTask(id).orElseThrow();
         assertThat(ended.state()).isEqualTo(TaskState.CANCELLED);
@@ -252,7 +252,7 @@ class TaskProcessorOverrunTest {
 
         clock.advance(Duration.ofHours(1));
         store.promote(10);
-        PrivateMethods.invoke(processor, "processOnce");
+        processor.processOnce();
         assertThat(executor.tasks).hasSize(1);
         assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.CANCELLED);
 
@@ -269,7 +269,7 @@ class TaskProcessorOverrunTest {
 
     private long startStuckAttempt(TaskProcessorService processor, TaskRequest<Void> request) throws Exception {
         long id = client.enqueue(request).id();
-        PrivateMethods.invoke(processor, "processOnce");
+        processor.processOnce();
         worker = new Thread(executor.tasks.getFirst(), "overrun-test-worker");
         worker.start();
         assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
@@ -288,7 +288,7 @@ class TaskProcessorOverrunTest {
     /** Lets the abandoned attempt's lease run out and maintenance end it, then makes the retry claimable. */
     private void expireAndRecover(long id, TaskExecution stale) throws Exception {
         clock.advance(LEASE);
-        PrivateMethods.invoke(maintenance(), "cycle");
+        maintenance().cycle();
         assertThat(events)
                 .anySatisfy(e -> assertThat(e)
                         .isInstanceOfSatisfying(
@@ -300,7 +300,7 @@ class TaskProcessorOverrunTest {
     }
 
     private TaskExecution startReplacement(TaskProcessorService processor, long id) throws Exception {
-        PrivateMethods.invoke(processor, "processOnce");
+        processor.processOnce();
         replacementWorker = new Thread(executor.tasks.getLast(), "overrun-test-replacement");
         replacementWorker.start();
         assertThat(replacementStarted.await(5, TimeUnit.SECONDS)).isTrue();

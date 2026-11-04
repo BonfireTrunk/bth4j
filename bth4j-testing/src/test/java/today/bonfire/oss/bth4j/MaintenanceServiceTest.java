@@ -615,11 +615,11 @@ class MaintenanceServiceTest {
     }
 
     private void cycle() throws Exception {
-        PrivateMethods.invoke(service(), "cycle");
+        service().cycle();
     }
 
     private void purge() throws Exception {
-        PrivateMethods.invoke(service(), "purge");
+        service().purge();
     }
 
     private MaintenanceService service() {
