@@ -330,7 +330,7 @@ class TaskClientTest {
                         TaskRequest.of(VOID).id(external).build())))
                 .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
                     assertThat(e.ids()).isEmpty();
-                    assertThat(e.stored()).isZero();
+                    assertThat(e.storedCount()).isZero();
                 });
         assertThat(allocations.get()).isEqualTo(1);
         assertThat(client.nextId()).isEqualTo(mine + 1);
@@ -468,7 +468,7 @@ class TaskClientTest {
         assertThatThrownBy(() -> failing.enqueue(TaskRequest.of(VOID).id(id).build()))
                 .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
                     assertThat(e.ids()).containsExactly(id);
-                    assertThat(e.stored()).isZero();
+                    assertThat(e.storedCount()).isZero();
                 });
         assertThatThrownBy(() -> failing.enqueueAll(List.of(
                         TaskRequest.of(VOID).build(),
@@ -477,7 +477,7 @@ class TaskClientTest {
                     assertThat(e.ids()).hasSize(2);
                     assertThat(e.notStored()).containsExactly(0);
                     assertThat(e.ids().get(1)).isEqualTo(id);
-                    assertThat(e.stored()).isZero();
+                    assertThat(e.storedCount()).isZero();
                 });
         assertThat(client.counts().get("Q:DEF").queued()).isEqualTo(1);
     }
@@ -538,14 +538,14 @@ class TaskClientTest {
         assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).build()))
                 .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
                     assertThat(e.ids()).isEmpty();
-                    assertThat(e.stored()).isZero();
+                    assertThat(e.storedCount()).isZero();
                 });
         assertThatThrownBy(() -> client.enqueueAll(List.of(
                         TaskRequest.of(VOID).build(), TaskRequest.of(VOID).build())))
                 .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
                     assertThat(e.ids()).containsExactly(2L, 3L);
                     assertThat(e.notStored()).containsExactlyInAnyOrder(0, 1);
-                    assertThat(e.stored()).isZero();
+                    assertThat(e.storedCount()).isZero();
                 });
         assertThat(store.getTask(1)).isEmpty();
         assertThat(store.getTask(2)).isEmpty();
@@ -588,7 +588,7 @@ class TaskClientTest {
                 .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
                     assertThat(e.ids()).hasSize(requests.size()).doesNotHaveDuplicates();
                     assertThat(e.ids().get(500)).isEqualTo(callerId);
-                    assertThat(e.stored()).isEqualTo(500);
+                    assertThat(e.storedCount()).isEqualTo(500);
                     assertThat(e.notStored()).containsExactly(1000);
                     assertThat(store.counts().get(store.queueId("Q:DEF")).queued())
                             .isEqualTo(501);
@@ -622,7 +622,7 @@ class TaskClientTest {
                 .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
                     assertThat(e.ids()).containsExactly(1L, 2L);
                     assertThat(e.notStored()).isEmpty();
-                    assertThat(e.stored()).isZero();
+                    assertThat(e.storedCount()).isZero();
                     assertThat(healthy.enqueueAll(e.retryRequests(requests)))
                             .extracting(EnqueueResult::id)
                             .containsExactly(1L, 2L);
@@ -669,7 +669,7 @@ class TaskClientTest {
         assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).build()))
                 .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
                     assertThat(e.ids()).isEmpty();
-                    assertThat(e.stored()).isZero();
+                    assertThat(e.storedCount()).isZero();
                     assertThat(e.getCause()).isInstanceOf(TaskStoreException.class);
                 });
         assertThat(writes.get()).isEqualTo(3);
@@ -692,7 +692,7 @@ class TaskClientTest {
         assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).build()))
                 .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
                     assertThat(e.ids()).isEmpty();
-                    assertThat(e.stored()).isZero();
+                    assertThat(e.storedCount()).isZero();
                 });
         assertThat(collided.get()).isTrue();
     }
@@ -710,7 +710,7 @@ class TaskClientTest {
         assertThatThrownBy(() -> failing.enqueue(TaskRequest.of(VOID).build()))
                 .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
                     assertThat(e.ids()).containsExactly(1L);
-                    assertThat(e.stored()).isZero();
+                    assertThat(e.storedCount()).isZero();
                     assertThat(healthy.enqueue(TaskRequest.of(VOID).id(e.id()).build()))
                             .isEqualTo(new EnqueueResult.Accepted(1));
                 });
@@ -746,7 +746,7 @@ class TaskClientTest {
                     assertThat(e.ids()).isEmpty();
                     assertThat(e.notStored()).containsExactly(0);
                     assertThat(e.retryRequests(requests)).containsExactlyElementsOf(requests);
-                    assertThat(e.stored()).isZero();
+                    assertThat(e.storedCount()).isZero();
                     assertThat(healthy.counts().get("Q:DEF").queued()).isEqualTo(1);
                 });
         assertThat(calls).containsExactly("idHighWaterMark", "allocateIds");
@@ -768,7 +768,7 @@ class TaskClientTest {
                             TaskRequest.of(VOID).id(callerId).build())))
                     .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
                         assertThat(e.ids()).containsExactly(firstGenerated, callerId);
-                        assertThat(e.stored()).isZero();
+                        assertThat(e.storedCount()).isZero();
                         assertThat(e.notStored()).containsExactly(0);
                     });
             assertThat(store.getTask(firstGenerated)).isEmpty();
@@ -799,7 +799,7 @@ class TaskClientTest {
                     assertThat(e.ids()).containsExactly(1L, 129L, 3L);
                     assertThat(e.notStored()).containsExactly(1);
                     assertThat(allocations).hasValue(3);
-                    assertThat(e.stored()).isZero();
+                    assertThat(e.storedCount()).isZero();
                     assertThat(e.getCause()).hasMessageContaining("3 tries");
                     var retry = builder().build().enqueueAll(e.retryRequests(requests));
                     assertThat(retry).hasSize(3).allMatch(EnqueueResult::accepted);
@@ -872,7 +872,7 @@ class TaskClientTest {
                 .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
                     assertThat(e.ids()).containsExactly(1L, 2L);
                     assertThat(e.notStored()).containsExactly(1);
-                    assertThat(e.stored()).isZero();
+                    assertThat(e.storedCount()).isZero();
                     assertThat(e.getCause()).hasMessageContaining("occupied generated task ids");
                     assertThat(e.getCause().getCause()).hasMessage("store down");
                     var a = store.getTask(1).orElseThrow();
@@ -1051,7 +1051,7 @@ class TaskClientTest {
                 .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
                     assertThat(e.ids()).hasSize(501).doesNotHaveDuplicates();
                     assertThat(e.ids().getLast()).isEqualTo(callerId);
-                    assertThat(e.stored()).isEqualTo(500);
+                    assertThat(e.storedCount()).isEqualTo(500);
                     assertThat(e.getCause()).isInstanceOf(TaskIdReusedException.class);
                     assertThat(store.getTask(e.ids().getFirst())).isPresent();
                 });
