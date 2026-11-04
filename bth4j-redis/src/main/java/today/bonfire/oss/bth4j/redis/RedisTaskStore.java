@@ -14,7 +14,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import redis.clients.jedis.Protocol;
@@ -65,16 +65,12 @@ public class RedisTaskStore implements FullStore {
     public static final int LAYOUT_VERSION = 2;
 
     private static final int PAGE_CHUNK = 500;
-    static final int WRITE_TOKEN_BLOCK_SIZE = 64;
 
     private final UnifiedJedis jedis;
     private final Keys keys;
     private final ScriptRunner scripts;
     private final Map<String, Integer> queueIds = new ConcurrentHashMap<>();
     private final Map<String, Integer> eventIds = new ConcurrentHashMap<>();
-    private final ReentrantLock writeTokenLock = new ReentrantLock();
-    private long nextWriteToken;
-    private long writeTokenEnd;
 
     /**
      * @param jedis     client used for all Redis operations, for example a {@code RedisClient}. The store does not
@@ -215,8 +211,7 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public EnqueueOutcome enqueue(TaskRecord task) {
-        var token = writeTokens(1);
-        return outcome(guard(() -> scripts.run(RedisScripts.ENQUEUE, enqueueArgs(task, token))));
+        return outcome(guard(() -> scripts.run(RedisScripts.ENQUEUE, enqueueArgs(task))));
     }
 
     @Override
@@ -224,37 +219,13 @@ public class RedisTaskStore implements FullStore {
         if (tasks.isEmpty()) {
             return List.of();
         }
-        var token = writeTokens(tasks.size());
-        var calls = new ArrayList<List<String>>(tasks.size());
-        for (var task : tasks) {
-            calls.add(enqueueArgs(task, token++));
-        }
+        var calls = tasks.stream().map(RedisTaskStore::enqueueArgs).toList();
         return guard(() -> scripts.runAll(RedisScripts.ENQUEUE, calls)).stream()
                 .map(RedisTaskStore::outcome)
                 .toList();
     }
 
-    private long writeTokens(int count) {
-        writeTokenLock.lock();
-        try {
-            if (writeTokenEnd - nextWriteToken < count) {
-                // Abandon the remainder so a batch needs only one reservation.
-                var size = Math.max(WRITE_TOKEN_BLOCK_SIZE, count);
-                var first = allocateIds(size);
-                writeTokenEnd = Math.addExact(first, size);
-                nextWriteToken = first;
-            }
-            var first = nextWriteToken;
-            nextWriteToken += count;
-            return first;
-        } catch (ArithmeticException e) {
-            throw new TaskStoreException("Redis write token block exhausted", e);
-        } finally {
-            writeTokenLock.unlock();
-        }
-    }
-
-    static List<String> enqueueArgs(TaskRecord t, long token) {
+    static List<String> enqueueArgs(TaskRecord t) {
         var args = new ArrayList<String>();
         args.add(String.valueOf(t.id()));
         args.add(t.due() == null ? "" : ms(t.due()));
@@ -262,7 +233,7 @@ public class RedisTaskStore implements FullStore {
         args.addAll(storeArgs(t));
         args.add(Keys.F_WRITE_TOKEN);
         // decimal, so the hash listpack stores it as an integer
-        args.add(Long.toString(token));
+        args.add(Long.toString(ThreadLocalRandom.current().nextLong()));
         return args;
     }
 
