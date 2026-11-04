@@ -13,6 +13,7 @@ import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.RedisClient;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.StoreContract;
+import today.bonfire.oss.bth4j.spi.TaskStore;
 
 /** The shared store contract run against {@link RedisTaskStore} on a real Redis. Needs Docker. */
 @Testcontainers
@@ -59,5 +60,11 @@ class RedisStoreContractIT extends StoreContract {
     @Override
     protected FullStore newStore(String namespace) {
         return new RedisTaskStore(jedis, namespace);
+    }
+
+    @Override
+    protected void fillRegistry(TaskStore fresh, String namespace, Registry registry, int lastId) {
+        var counter = new Keys(namespace).prefix + "seq:" + (registry == Registry.QUEUE ? "queue" : "event");
+        jedis.set(counter, Integer.toString(lastId));
     }
 }
