@@ -352,12 +352,13 @@ class PostgresTaskStoreIT {
 
     @Test
     void releaseKeysFreesExpiredWindows() throws Exception {
-        var a = enqueueAndClaim(task(newId()).uniqueKey("a").keyKeep(Duration.ofMillis(100)));
+        var a = enqueueAndClaim(task(newId()).uniqueKey("a").keyKeep(Duration.ofHours(1)));
         store.ack(a.id(), a.revision(), true, true, null);
         var b = enqueueAndClaim(task(newId()).uniqueKey("b").keyKeep(Duration.ofHours(1)));
         store.ack(b.id(), b.revision(), true, true, null);
+        assertThat(store.releaseKeys(10)).isZero();
 
-        Thread.sleep(200);
+        sql("UPDATE " + prefix + "_task SET key_until = now() - interval '1 second' WHERE id = " + a.id());
         assertThat(store.releaseKeys(10)).isEqualTo(1);
         assertThat(get(a.id()).uniqueKey()).isNull();
         assertThat(get(b.id()).uniqueKey()).isEqualTo("b");
