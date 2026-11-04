@@ -141,7 +141,7 @@ class RedisScriptsIT {
         var t = claimOne(1);
         assertThat(store.saveSteps(1, t.revision(), STEPS)).isTrue();
         assertThat(marker(1, "hs")).isEqualTo("1");
-        assertThat(store.fail(1, t.revision(), failure(1), Instant.now().minusSeconds(1), true))
+        assertThat(store.fail(1, t.revision(), failure(1), Instant.now().minusSeconds(1), true, null))
                 .isEqualTo(FailOutcome.RETRY);
         assertThat(marker(1, "fc")).isEqualTo("1");
         assertThat(store.promote(10).moved()).isEqualTo(1);
@@ -158,7 +158,7 @@ class RedisScriptsIT {
     void stepsAndFailuresSurviveAnOperatorRetryOfADeadTask() {
         var t = claimOne(1);
         store.saveSteps(1, t.revision(), STEPS);
-        assertThat(store.fail(1, t.revision(), failure(1), null, true)).isEqualTo(FailOutcome.DEAD);
+        assertThat(store.fail(1, t.revision(), failure(1), null, true, null)).isEqualTo(FailOutcome.DEAD);
         assertThat(marker(1, "fc")).isEqualTo("1");
         assertThat(marker(1, "hs")).isEqualTo("1");
         var dead = store.getTask(1).orElseThrow();
@@ -175,7 +175,7 @@ class RedisScriptsIT {
     @Test
     void failureWithoutStepsIsReadByTheNextClaimAndStepsStayAbsent() {
         var t = claimOne(1);
-        store.fail(1, t.revision(), failure(1), Instant.now().minusSeconds(1), true);
+        store.fail(1, t.revision(), failure(1), Instant.now().minusSeconds(1), true, null);
         store.promote(10);
 
         var again = claim(1).getFirst();
@@ -201,7 +201,7 @@ class RedisScriptsIT {
     void failureListIsTrimmedToTheLastTwenty() {
         var rev = claimOne(1).revision();
         for (var attempt = 1; attempt <= 23; attempt++) {
-            assertThat(store.fail(1, rev, failure(attempt), Instant.now().minusSeconds(1), true))
+            assertThat(store.fail(1, rev, failure(attempt), Instant.now().minusSeconds(1), true, null))
                     .isEqualTo(FailOutcome.RETRY);
             store.promote(10);
             rev = claim(1).getFirst().revision();

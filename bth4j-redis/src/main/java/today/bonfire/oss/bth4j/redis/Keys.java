@@ -72,8 +72,6 @@ public final class Keys {
     public static final String F_CANCEL_AT = "cra";
     public static final String F_CANCEL_REASON = "crs";
     public static final String F_PROGRESS = "prg";
-    public static final String F_HAS_STEPS = "hs";
-    public static final String F_HAS_FAILURES = "fc";
 
     public static final String F_CRON = "cron";
     public static final String F_NEXT = "next";
