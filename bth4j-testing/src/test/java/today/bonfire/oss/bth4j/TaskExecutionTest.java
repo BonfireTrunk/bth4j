@@ -10,7 +10,6 @@ import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -34,8 +33,6 @@ import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
-import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
@@ -531,40 +528,8 @@ class TaskExecutionTest {
 
     private TaskExecution fixedDelayExecution(TaskType<Void> type, TaskProcessor<Void> processor) {
         registry.register(type, processor);
-        var now = clock.instant();
-        var definition = new RecurringDefinition(
-                "sched",
-                store.typeId(type.name()),
-                0,
-                store.queueId("Q:DEF"),
-                null,
-                null,
-                null,
-                null,
-                0,
-                60_000L,
-                false,
-                null,
-                3,
-                null,
-                false,
-                0);
-        store.putRecurring(definition, now, now);
-        var due = store.dueRecurring(now, 10).getFirst();
-        var occurrence = TaskRecord.builder()
-                .id(client.nextId())
-                .queueId(definition.queueId())
-                .typeId(definition.typeId())
-                .state(TaskState.QUEUED)
-                .maxAttempts(definition.maxAttempts())
-                .createdAt(now)
-                .due(now)
-                .scheduleId("sched")
-                .headers(Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT1M"))
-                .build();
-        assertThat(store.commitRecurring(due, now.plus(Duration.ofDays(36_500)), occurrence))
-                .isTrue();
-        store.promote(10);
+        ScheduleFixtures.fixedDelayOccurrence(
+                store, client, clock.instant(), store.typeId(type.name()), store.queueId("Q:DEF"), 3);
         var record = store.claim(new ClaimRequest(List.of(store.queueId("Q:DEF")), 1, LEASE, 1, null))
                 .getFirst();
         return new TaskExecution(record, settings(), e -> {});

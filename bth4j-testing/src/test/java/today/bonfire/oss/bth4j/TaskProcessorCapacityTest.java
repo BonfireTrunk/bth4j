@@ -3,8 +3,6 @@ package today.bonfire.oss.bth4j;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -279,7 +277,7 @@ class TaskProcessorCapacityTest {
         var executor = new ManualExecutor(2);
         var fail = new AtomicInteger(1);
         var processor = processorOn(
-                intercepting((method, args, real) -> {
+                StoreInterceptor.around(store, (method, args, real) -> {
                     if (method.equals("claim") && fail.getAndDecrement() > 0) {
                         throw new TaskStoreException("claim failed");
                     }
@@ -289,7 +287,7 @@ class TaskProcessorCapacityTest {
                 2);
         long id = enqueue();
 
-        assertThatThrownBy(() -> processOnce(processor)).hasRootCauseInstanceOf(TaskStoreException.class);
+        assertThatThrownBy(() -> processOnce(processor)).isInstanceOf(TaskStoreException.class);
 
         assertThat(state(id)).isEqualTo(TaskState.QUEUED);
         assertThat(executor.available()).isEqualTo(2);
@@ -308,7 +306,7 @@ class TaskProcessorCapacityTest {
         var executor = new ManualExecutor(2);
         var fail = new AtomicInteger(1);
         var processor = processorOn(
-                intercepting((method, args, real) -> {
+                StoreInterceptor.around(store, (method, args, real) -> {
                     var result = real.proceed();
                     if (method.equals("claim") && fail.getAndDecrement() > 0) {
                         throw new TaskStoreException("reply lost");
@@ -319,7 +317,7 @@ class TaskProcessorCapacityTest {
                 2);
         long id = enqueue();
 
-        assertThatThrownBy(() -> processOnce(processor)).hasRootCauseInstanceOf(TaskStoreException.class);
+        assertThatThrownBy(() -> processOnce(processor)).isInstanceOf(TaskStoreException.class);
 
         assertThat(state(id)).isEqualTo(TaskState.LEASED);
         assertThat(running).isEmpty();
@@ -348,7 +346,7 @@ class TaskProcessorCapacityTest {
         var executor = new ManualExecutor(4);
         var claims = new AtomicInteger();
         var processor = processorOn(
-                intercepting((method, args, real) -> {
+                StoreInterceptor.around(store, (method, args, real) -> {
                     if (method.equals("claim") && claims.incrementAndGet() == 2) {
                         throw new TaskStoreException("second queue failed");
                     }
@@ -361,7 +359,7 @@ class TaskProcessorCapacityTest {
         var firstIds = enqueue(3, "Q:FIRST");
         var secondIds = enqueue(3, "Q:SECOND");
 
-        assertThatThrownBy(() -> processOnce(processor)).hasRootCauseInstanceOf(TaskStoreException.class);
+        assertThatThrownBy(() -> processOnce(processor)).isInstanceOf(TaskStoreException.class);
 
         assertThat(leased(firstIds)).isEqualTo(2);
         assertThat(leased(secondIds)).isZero();
@@ -381,7 +379,7 @@ class TaskProcessorCapacityTest {
         var executor = new ManualExecutor(1);
         var fail = new AtomicInteger(1);
         var processor = processorOn(
-                intercepting((method, args, real) -> {
+                StoreInterceptor.around(store, (method, args, real) -> {
                     if (method.equals("renew") && fail.getAndDecrement() > 0) {
                         throw new TaskStoreException("renew failed");
                     }
@@ -415,7 +413,7 @@ class TaskProcessorCapacityTest {
         var executor = new ManualExecutor(1);
         executor.reject = true;
         var processor = processorOn(
-                intercepting((method, args, real) -> {
+                StoreInterceptor.around(store, (method, args, real) -> {
                     if (method.equals("unclaim")) throw new TaskStoreException("unclaim failed");
                     return real.proceed();
                 }),
@@ -552,31 +550,8 @@ class TaskProcessorCapacityTest {
                 .create();
     }
 
-    private interface RealCall {
-        Object proceed() throws Throwable;
-    }
-
-    private interface Interceptor {
-        Object intercept(String method, Object[] args, RealCall real) throws Throwable;
-    }
-
-    private FullStore intercepting(Interceptor interceptor) {
-        return (FullStore) Proxy.newProxyInstance(
-                FullStore.class.getClassLoader(), new Class<?>[] {FullStore.class}, (proxy, m, args) -> {
-                    return interceptor.intercept(m.getName(), args, () -> {
-                        try {
-                            return m.invoke(store, args);
-                        } catch (InvocationTargetException e) {
-                            throw e.getCause();
-                        }
-                    });
-                });
-    }
-
     private static void processOnce(TaskProcessorService processor) throws Exception {
-        var method = TaskProcessorService.class.getDeclaredMethod("processOnce");
-        method.setAccessible(true);
-        method.invoke(processor);
+        PrivateMethods.invoke(processor, "processOnce");
     }
 
     private static final class ManualExecutor implements BackgroundExecutor {
