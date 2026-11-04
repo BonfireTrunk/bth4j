@@ -4,7 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import org.junit.jupiter.api.Test;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 
 class TaskTypeTest {
 
@@ -65,14 +65,14 @@ class TaskTypeTest {
     void payloadVersionBelowOneIsRejected() {
         var type = TaskType.of("send-mail", Payload.class);
 
-        assertThatThrownBy(() -> type.payloadVersion(0)).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> type.payloadVersion(0)).isInstanceOf(TaskConfigurationException.class);
     }
 
     @Test
     void nameMustBeOneTo128Characters() {
-        assertThatThrownBy(() -> TaskType.of(null)).isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> TaskType.of(" ")).isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> TaskType.of("x".repeat(129))).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> TaskType.of(null)).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> TaskType.of(" ")).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> TaskType.of("x".repeat(129))).isInstanceOf(TaskConfigurationException.class);
         assertThat(TaskType.of("x".repeat(128)).name()).hasSize(128);
     }
 

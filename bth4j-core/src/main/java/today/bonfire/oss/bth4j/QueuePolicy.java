@@ -1,6 +1,6 @@
 package today.bonfire.oss.bth4j;
 
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 
 /**
  * How one runner shares its executor slots between queues.
@@ -12,8 +12,8 @@ public record QueuePolicy(int weight, int maxConcurrent) {
     public static final QueuePolicy DEFAULT = new QueuePolicy(1, 0);
 
     public QueuePolicy {
-        if (weight < 1) throw new TaskConfigurationError("weight must be at least 1");
-        if (maxConcurrent < 0) throw new TaskConfigurationError("maxConcurrent cannot be negative");
+        if (weight < 1) throw new TaskConfigurationException("weight must be at least 1");
+        if (maxConcurrent < 0) throw new TaskConfigurationException("maxConcurrent cannot be negative");
     }
 
     public static QueuePolicy weight(int weight) {

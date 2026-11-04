@@ -13,7 +13,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.QueuePolicy;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.executor.BackgroundExecutor;
 import today.bonfire.oss.bth4j.executor.CustomThread;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
@@ -463,12 +463,12 @@ public class TaskProcessorService extends CustomThread {
         }
 
         public TaskProcessorService create() {
-            if (settings == null) throw new TaskConfigurationError("settings are required");
-            if (executor == null) throw new TaskConfigurationError("executor is required");
-            if (queueIds == null || queueIds.isEmpty()) throw new TaskConfigurationError("queueIds are required");
-            if (knownTypeIds == null) throw new TaskConfigurationError("knownTypeIds are required");
+            if (settings == null) throw new TaskConfigurationException("settings are required");
+            if (executor == null) throw new TaskConfigurationException("executor is required");
+            if (queueIds == null || queueIds.isEmpty()) throw new TaskConfigurationException("queueIds are required");
+            if (knownTypeIds == null) throw new TaskConfigurationException("knownTypeIds are required");
             if (group == null || threadName == null) {
-                throw new TaskConfigurationError("Thread group and name are required");
+                throw new TaskConfigurationException("Thread group and name are required");
             }
             return new TaskProcessorService(this);
         }

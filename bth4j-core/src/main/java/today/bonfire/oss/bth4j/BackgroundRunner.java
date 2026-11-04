@@ -23,7 +23,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.common.JsonMapper;
 import today.bonfire.oss.bth4j.common.QueuesHolder;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.executor.BackgroundExecutor;
 import today.bonfire.oss.bth4j.executor.CustomThread;
 import today.bonfire.oss.bth4j.executor.DefaultVtExecutor;
@@ -181,7 +181,7 @@ public final class BackgroundRunner {
      * Starts all services and the monitor that restarts a service if its thread dies. Returns after
      * starting. Calling it a second time, or after {@link #stop()}, logs a warning and does nothing.
      *
-     * @throws TaskConfigurationError when no processor is registered
+     * @throws TaskConfigurationException when no processor is registered
      */
     public void start() {
         if (!started.compareAndSet(false, true)) {
@@ -189,7 +189,7 @@ public final class BackgroundRunner {
             return;
         }
         if (registry.isEmpty()) {
-            throw new TaskConfigurationError("No task processor registered; register processors before start()");
+            throw new TaskConfigurationException("No task processor registered; register processors before start()");
         }
         lifecycleLock.lock();
         try {
@@ -532,14 +532,14 @@ public final class BackgroundRunner {
         }
 
         public Builder clock(Clock clock) {
-            if (clock == null) throw new TaskConfigurationError("clock cannot be null");
+            if (clock == null) throw new TaskConfigurationException("clock cannot be null");
             this.clock = clock;
             return this;
         }
 
         /** How many tasks run at once. Default twice the number of processors, fixed. */
         public Builder concurrency(Concurrency concurrency) {
-            if (concurrency == null) throw new TaskConfigurationError("concurrency cannot be null");
+            if (concurrency == null) throw new TaskConfigurationException("concurrency cannot be null");
             this.concurrency = concurrency;
             return this;
         }
@@ -552,7 +552,7 @@ public final class BackgroundRunner {
 
         /** Decides the delay after a failed attempt. Default exponential backoff with jitter, capped at 1 hour. */
         public Builder retryPolicy(RetryPolicy retryPolicy) {
-            if (retryPolicy == null) throw new TaskConfigurationError("retryPolicy cannot be null");
+            if (retryPolicy == null) throw new TaskConfigurationException("retryPolicy cannot be null");
             this.retryPolicy = retryPolicy;
             return this;
         }
@@ -563,9 +563,9 @@ public final class BackgroundRunner {
          */
         public Builder retryPolicy(String name, RetryPolicy retryPolicy) {
             if (StringUtils.isBlank(name) || name.length() > 64) {
-                throw new TaskConfigurationError("retry policy name must be 1 to 64 characters");
+                throw new TaskConfigurationException("retry policy name must be 1 to 64 characters");
             }
-            if (retryPolicy == null) throw new TaskConfigurationError("retryPolicy cannot be null");
+            if (retryPolicy == null) throw new TaskConfigurationException("retryPolicy cannot be null");
             this.namedRetryPolicies.put(name, retryPolicy);
             return this;
         }
@@ -576,8 +576,8 @@ public final class BackgroundRunner {
          * one claim per cycle to one claim per queue.
          */
         public Builder queue(String name, QueuePolicy policy) {
-            if (StringUtils.isBlank(name)) throw new TaskConfigurationError("queue name cannot be blank");
-            if (policy == null) throw new TaskConfigurationError("policy cannot be null");
+            if (StringUtils.isBlank(name)) throw new TaskConfigurationException("queue name cannot be blank");
+            if (policy == null) throw new TaskConfigurationException("policy cannot be null");
             this.queuePolicies.put(name, policy);
             return this;
         }
@@ -596,7 +596,7 @@ public final class BackgroundRunner {
         /** Identifies this process in the worker registry. Default is the JVM name (pid@host). */
         public Builder workerLabel(String label) {
             if (StringUtils.isBlank(label) || label.length() > 128) {
-                throw new TaskConfigurationError("workerLabel must be 1 to 128 characters");
+                throw new TaskConfigurationException("workerLabel must be 1 to 128 characters");
             }
             this.workerLabel = label;
             return this;
@@ -604,7 +604,7 @@ public final class BackgroundRunner {
 
         public Builder threadGroupName(String threadGroupName) {
             if (StringUtils.isBlank(threadGroupName))
-                throw new TaskConfigurationError("threadGroupName cannot be blank");
+                throw new TaskConfigurationException("threadGroupName cannot be blank");
             this.threadGroupName = threadGroupName;
             return this;
         }
@@ -638,7 +638,7 @@ public final class BackgroundRunner {
          * {@link FailureDetail#CLASS_NAME_ONLY} for hosts whose exception messages may carry customer data.
          */
         public Builder failureDetail(FailureDetail detail) {
-            if (detail == null) throw new TaskConfigurationError("failureDetail must not be null");
+            if (detail == null) throw new TaskConfigurationException("failureDetail must not be null");
             this.failureDetail = detail;
             return this;
         }
@@ -651,7 +651,7 @@ public final class BackgroundRunner {
 
         /** Tasks removed per purge call; the purge loops until a call removes fewer. Default 500. */
         public Builder purgeBatchSize(int size) {
-            if (size < 1) throw new TaskConfigurationError("purgeBatchSize must be at least 1");
+            if (size < 1) throw new TaskConfigurationException("purgeBatchSize must be at least 1");
             this.purgeBatchSize = size;
             return this;
         }
@@ -662,7 +662,8 @@ public final class BackgroundRunner {
          */
         public Builder leaseDuration(Duration lease) {
             requirePositive(lease, "leaseDuration");
-            if (lease.toMillis() < 1000) throw new TaskConfigurationError("leaseDuration cannot be less than 1 second");
+            if (lease.toMillis() < 1000)
+                throw new TaskConfigurationException("leaseDuration cannot be less than 1 second");
             this.leaseDuration = lease;
             return this;
         }
@@ -678,7 +679,7 @@ public final class BackgroundRunner {
         public Builder defaultMaxRunTime(Duration maxRunTime) {
             requirePositive(maxRunTime, "defaultMaxRunTime");
             if (maxRunTime.compareTo(TaskRequest.MAX_RUN_TIME) > 0) {
-                throw new TaskConfigurationError("defaultMaxRunTime must be at most " + TaskRequest.MAX_RUN_TIME);
+                throw new TaskConfigurationException("defaultMaxRunTime must be at most " + TaskRequest.MAX_RUN_TIME);
             }
             this.defaultMaxRunTime = maxRunTime;
             return this;
@@ -687,14 +688,15 @@ public final class BackgroundRunner {
         /** How long the processor sleeps when a claim found nothing. Default 500 ms, at least 10 ms. */
         public Builder idlePollInterval(Duration interval) {
             requirePositive(interval, "idlePollInterval");
-            if (interval.toMillis() < 10) throw new TaskConfigurationError("idlePollInterval cannot be less than 10ms");
+            if (interval.toMillis() < 10)
+                throw new TaskConfigurationException("idlePollInterval cannot be less than 10ms");
             this.idlePollInterval = interval;
             return this;
         }
 
         /** The most tasks claimed in one call, bounded by free executor slots. Default 32. */
         public Builder claimBatchSize(int size) {
-            if (size < 1) throw new TaskConfigurationError("claimBatchSize must be at least 1");
+            if (size < 1) throw new TaskConfigurationException("claimBatchSize must be at least 1");
             this.claimBatchSize = size;
             return this;
         }
@@ -714,7 +716,7 @@ public final class BackgroundRunner {
         public Builder maintenanceCheckInterval(Duration interval) {
             requirePositive(interval, "maintenanceCheckInterval");
             if (interval.toMillis() < 1000)
-                throw new TaskConfigurationError("maintenanceCheckInterval cannot be less than 1 second");
+                throw new TaskConfigurationException("maintenanceCheckInterval cannot be less than 1 second");
             this.maintenanceCheckInterval = interval;
             return this;
         }
@@ -723,7 +725,7 @@ public final class BackgroundRunner {
         public Builder scheduledTasksCheckInterval(Duration interval) {
             requirePositive(interval, "scheduledTasksCheckInterval");
             if (interval.toMillis() < 10)
-                throw new TaskConfigurationError("scheduledTasksCheckInterval cannot be less than 10ms");
+                throw new TaskConfigurationException("scheduledTasksCheckInterval cannot be less than 10ms");
             this.scheduledTasksCheckInterval = interval;
             return this;
         }
@@ -736,7 +738,7 @@ public final class BackgroundRunner {
 
         /** How many ids the client reserves per store call. Default 64. */
         public Builder idBlockSize(int size) {
-            if (size < 1 || size > 100_000) throw new TaskConfigurationError("idBlockSize must be 1 to 100000");
+            if (size < 1 || size > 100_000) throw new TaskConfigurationException("idBlockSize must be 1 to 100000");
             this.idBlockSize = size;
             return this;
         }
@@ -744,7 +746,7 @@ public final class BackgroundRunner {
         /** Attempts for requests that do not set their own. Default 10. */
         public Builder defaultMaxAttempts(int attempts) {
             if (attempts < 1 || attempts > TaskRequest.MAX_ATTEMPTS) {
-                throw new TaskConfigurationError("defaultMaxAttempts must be 1 to " + TaskRequest.MAX_ATTEMPTS);
+                throw new TaskConfigurationException("defaultMaxAttempts must be 1 to " + TaskRequest.MAX_ATTEMPTS);
             }
             this.defaultMaxAttempts = attempts;
             return this;
@@ -764,9 +766,9 @@ public final class BackgroundRunner {
         public Builder configureQueues(
                 List<String> availableQueues, List<String> queuesToProcess, String defaultQueue) {
             if (ObjectUtils.isEmpty(availableQueues))
-                throw new TaskConfigurationError("Available queues cannot be empty");
+                throw new TaskConfigurationException("Available queues cannot be empty");
             availableQueues.forEach(s -> {
-                if (StringUtils.isBlank(s)) throw new TaskConfigurationError("Queue names cannot be blank");
+                if (StringUtils.isBlank(s)) throw new TaskConfigurationException("Queue names cannot be blank");
             });
             // LinkedHashSet keeps the order given by the caller, a HashSet would make it random
             this.availableQueues = new LinkedHashSet<>(availableQueues);
@@ -778,18 +780,19 @@ public final class BackgroundRunner {
         }
 
         QueuesHolder queues() {
-            if (queuesToProcess.isEmpty()) throw new TaskConfigurationError("Queues to process cannot be empty");
+            if (queuesToProcess.isEmpty()) throw new TaskConfigurationException("Queues to process cannot be empty");
             for (var q : queuesToProcess) {
                 if (!availableQueues.contains(q)) {
-                    throw new TaskConfigurationError("Queue to process " + q + " is not an available queue");
+                    throw new TaskConfigurationException("Queue to process " + q + " is not an available queue");
                 }
             }
             if (!availableQueues.contains(defaultQueue)) {
-                throw new TaskConfigurationError("Default queue " + defaultQueue + " is not an available queue");
+                throw new TaskConfigurationException("Default queue " + defaultQueue + " is not an available queue");
             }
             for (var q : queuePolicies.keySet()) {
                 if (!queuesToProcess.contains(q)) {
-                    throw new TaskConfigurationError("Queue policy for " + q + ", which this runner does not process");
+                    throw new TaskConfigurationException(
+                            "Queue policy for " + q + ", which this runner does not process");
                 }
             }
             return new QueuesHolder(availableQueues, queuesToProcess, defaultQueue);
@@ -800,18 +803,19 @@ public final class BackgroundRunner {
          * {@link BackgroundRunner#start()}.
          */
         public BackgroundRunner build() {
-            if (store == null) throw new TaskConfigurationError("Cannot build runner without a store");
+            if (store == null) throw new TaskConfigurationException("Cannot build runner without a store");
             queues();
             return new BackgroundRunner(this);
         }
 
         private static Duration requirePositive(Duration d, String name) {
-            if (d == null || d.isZero() || d.isNegative()) throw new TaskConfigurationError(name + " must be positive");
+            if (d == null || d.isZero() || d.isNegative())
+                throw new TaskConfigurationException(name + " must be positive");
             return d;
         }
 
         private static Duration requireNonNegative(Duration d, String name) {
-            if (d == null || d.isNegative()) throw new TaskConfigurationError(name + " cannot be null or negative");
+            if (d == null || d.isNegative()) throw new TaskConfigurationException(name + " cannot be null or negative");
             return d;
         }
     }

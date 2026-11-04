@@ -21,7 +21,6 @@ import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.Issue;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.common.QueuesHolder;
-import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
@@ -175,7 +174,7 @@ class DefaultAdminOpsTest {
     void pauseQueueRejectsAQueueThatIsNotAvailable() {
         handlers.put("pauseQueue", a -> null);
 
-        assertThatThrownBy(() -> ops.pauseQueue("Q:MISSING", true)).isInstanceOf(TaskErrorException.class);
+        assertThatThrownBy(() -> ops.pauseQueue("Q:MISSING", true)).isInstanceOf(TaskValidationException.class);
         assertThat(calls).noneMatch(c -> c.startsWith("pauseQueue"));
     }
 
@@ -230,7 +229,7 @@ class DefaultAdminOpsTest {
     @Test
     void cursorTasksRejectAQueueThatIsNotAvailable() {
         assertThatThrownBy(() -> ops.tasks(TaskState.QUEUED, "Q:MISSING", (String) null, 5))
-                .isInstanceOf(TaskErrorException.class);
+                .isInstanceOf(TaskValidationException.class);
     }
 
     @Test

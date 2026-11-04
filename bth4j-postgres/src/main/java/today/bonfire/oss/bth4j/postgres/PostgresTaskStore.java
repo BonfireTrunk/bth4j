@@ -24,7 +24,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Pattern;
 import javax.sql.DataSource;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
@@ -126,9 +126,9 @@ public class PostgresTaskStore implements FullStore {
      *                   Runners with the same prefix on the same database share the work.
      */
     public PostgresTaskStore(DataSource dataSource, String prefix) {
-        if (dataSource == null) throw new TaskConfigurationError("DataSource is required");
+        if (dataSource == null) throw new TaskConfigurationException("DataSource is required");
         if (prefix == null || !PREFIX.matcher(prefix).matches()) {
-            throw new TaskConfigurationError("prefix must match " + PREFIX.pattern());
+            throw new TaskConfigurationException("prefix must match " + PREFIX.pattern());
         }
         this.dataSource = dataSource;
         this.prefix = prefix;

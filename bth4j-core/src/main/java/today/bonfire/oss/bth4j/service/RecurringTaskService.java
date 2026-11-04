@@ -10,7 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.TaskEvent;
 import today.bonfire.oss.bth4j.common.Cron;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.executor.CustomThread;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.InspectionStore;
@@ -326,8 +326,8 @@ public class RecurringTaskService extends CustomThread {
 
         public RecurringTaskService create() {
             if (group == null || threadName == null)
-                throw new TaskConfigurationError("group and threadName are required");
-            if (store == null || ids == null) throw new TaskConfigurationError("store and ids are required");
+                throw new TaskConfigurationException("group and threadName are required");
+            if (store == null || ids == null) throw new TaskConfigurationException("store and ids are required");
             return new RecurringTaskService(this);
         }
     }

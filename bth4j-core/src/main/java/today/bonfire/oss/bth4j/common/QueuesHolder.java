@@ -3,7 +3,7 @@ package today.bonfire.oss.bth4j.common;
 import java.util.List;
 import java.util.Set;
 import org.apache.commons.lang3.StringUtils;
-import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /**
  * Queue configuration of a runner, with logical queue names (without namespace). Immutable.
@@ -21,7 +21,7 @@ public final class QueuesHolder {
 
     /**
      * @return the given queue name, or the default queue when it is blank
-     * @throws TaskErrorException if the queue is not one of the available queues
+     * @throws TaskValidationException if the queue is not one of the available queues
      */
     public String getValidQueue(String queueName) {
         if (StringUtils.isBlank(queueName)) {
@@ -30,7 +30,7 @@ public final class QueuesHolder {
         if (availableQueues.contains(queueName)) {
             return queueName;
         }
-        throw new TaskErrorException("Queue name is not in available list: " + queueName);
+        throw new TaskValidationException("Queue name is not in available list: " + queueName);
     }
 
     @Override

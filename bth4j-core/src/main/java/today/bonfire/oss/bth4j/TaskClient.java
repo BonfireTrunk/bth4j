@@ -18,7 +18,7 @@ import today.bonfire.oss.bth4j.common.Cron;
 import today.bonfire.oss.bth4j.common.JsonMapper;
 import today.bonfire.oss.bth4j.common.QueuesHolder;
 import today.bonfire.oss.bth4j.exceptions.EnqueueFailedException;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.service.Codecs;
@@ -503,14 +503,14 @@ public final class TaskClient {
         }
 
         public Builder clock(Clock clock) {
-            if (clock == null) throw new TaskConfigurationError("clock cannot be null");
+            if (clock == null) throw new TaskConfigurationException("clock cannot be null");
             this.clock = clock;
             return this;
         }
 
         /** How many ids are reserved per store call; 1 means one call per enqueue. Default 64. */
         public Builder idBlockSize(int size) {
-            if (size < 1 || size > 100_000) throw new TaskConfigurationError("idBlockSize must be 1 to 100000");
+            if (size < 1 || size > 100_000) throw new TaskConfigurationException("idBlockSize must be 1 to 100000");
             this.idBlockSize = size;
             return this;
         }
@@ -518,7 +518,7 @@ public final class TaskClient {
         /** Attempts for requests that do not set their own. Default 10. */
         public Builder defaultMaxAttempts(int attempts) {
             if (attempts < 1 || attempts > TaskRequest.MAX_ATTEMPTS) {
-                throw new TaskConfigurationError("defaultMaxAttempts must be 1 to " + TaskRequest.MAX_ATTEMPTS);
+                throw new TaskConfigurationException("defaultMaxAttempts must be 1 to " + TaskRequest.MAX_ATTEMPTS);
             }
             this.defaultMaxAttempts = attempts;
             return this;
@@ -530,14 +530,15 @@ public final class TaskClient {
          */
         public Builder queues(List<String> availableQueues, String defaultQueue) {
             if (availableQueues == null || availableQueues.isEmpty()) {
-                throw new TaskConfigurationError("availableQueues cannot be empty");
+                throw new TaskConfigurationException("availableQueues cannot be empty");
             }
             for (var q : availableQueues) {
-                if (StringUtils.isBlank(q)) throw new TaskConfigurationError("queue names cannot be blank");
+                if (StringUtils.isBlank(q)) throw new TaskConfigurationException("queue names cannot be blank");
             }
             Set<String> available = new LinkedHashSet<>(availableQueues);
             var def = StringUtils.isBlank(defaultQueue) ? availableQueues.getFirst() : defaultQueue;
-            if (!available.contains(def)) throw new TaskConfigurationError("default queue is not an available queue");
+            if (!available.contains(def))
+                throw new TaskConfigurationException("default queue is not an available queue");
             this.queues = new QueuesHolder(available, List.copyOf(available), def);
             return this;
         }
@@ -554,7 +555,7 @@ public final class TaskClient {
 
         /** Builds the client and initializes the store schema. */
         public TaskClient build() {
-            if (store == null) throw new TaskConfigurationError("store is required");
+            if (store == null) throw new TaskConfigurationException("store is required");
             store.init();
             return new TaskClient(this);
         }

@@ -15,8 +15,7 @@ import java.util.function.BiConsumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.exceptions.EnqueueFailedException;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
-import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
@@ -1211,7 +1210,7 @@ class TaskClientTest {
         assertThat(client.task(999_999)).isEmpty();
         assertThatThrownBy(() ->
                         client.enqueue(TaskRequest.of(VOID).queue("Q:NOPE").build()))
-                .isInstanceOf(TaskErrorException.class);
+                .isInstanceOf(TaskValidationException.class);
     }
 
     @Test
@@ -1224,7 +1223,7 @@ class TaskClientTest {
         assertThat(defaulted.queue()).isEqualTo("B");
         assertThatThrownBy(
                         () -> client.enqueue(TaskRequest.of(VOID).queue("Q:DEF").build()))
-                .isInstanceOf(TaskErrorException.class);
+                .isInstanceOf(TaskValidationException.class);
     }
 
     @Test
@@ -1358,13 +1357,14 @@ class TaskClientTest {
 
     @Test
     void builderRequiresAStoreAndValidatesItsSettings() {
-        assertThatThrownBy(() -> TaskClient.builder().build()).isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> TaskClient.builder().idBlockSize(0)).isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> TaskClient.builder().defaultMaxAttempts(0)).isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> TaskClient.builder().clock(null)).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> TaskClient.builder().build()).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> TaskClient.builder().idBlockSize(0)).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> TaskClient.builder().defaultMaxAttempts(0))
+                .isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> TaskClient.builder().clock(null)).isInstanceOf(TaskConfigurationException.class);
         assertThatThrownBy(() -> TaskClient.builder().queues(List.of(), null))
-                .isInstanceOf(TaskConfigurationError.class);
+                .isInstanceOf(TaskConfigurationException.class);
         assertThatThrownBy(() -> TaskClient.builder().queues(List.of("A"), "B"))
-                .isInstanceOf(TaskConfigurationError.class);
+                .isInstanceOf(TaskConfigurationException.class);
     }
 }

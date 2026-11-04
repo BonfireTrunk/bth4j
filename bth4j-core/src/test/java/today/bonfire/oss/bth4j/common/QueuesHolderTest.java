@@ -8,7 +8,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
-import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 class QueuesHolderTest {
 
@@ -33,7 +33,7 @@ class QueuesHolderTest {
     @Test
     void unknownQueueNameThrows() {
         assertThatThrownBy(() -> holder().getValidQueue("zzz"))
-                .isInstanceOf(TaskErrorException.class)
+                .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("zzz");
     }
 

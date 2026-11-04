@@ -726,7 +726,7 @@ lock that keeps block allocation contiguous, so busy producers serialise on it. 
 PostgreSQL, size 1 reached about one third of the enqueue rate of a larger block (10,743 against 32,379
 enqueues in 60 s).
 
-`start()` fails with `TaskConfigurationError` when no processor is registered. `quiet()` stops claiming while
+`start()` fails with `TaskConfigurationException` when no processor is registered. `quiet()` stops claiming while
 running tasks finish and `resume()` claims again. `stop()` stops the services, waits up to `shutdownTimeout`
 and keeps renewing leases of running tasks meanwhile; tasks still running afterwards are retried when their
 lease expires. A lease that has lapsed is not revived by a later renewal, so `leaseDuration` must sit well above the worst pause of a worker (GC, container freeze, slow store round trip). A process that only produces tasks can use `TaskClient.builder().store(store).jsonMapper(mapper).build()`.

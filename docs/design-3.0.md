@@ -589,7 +589,7 @@ clock.
 ## Lifecycle
 
 - `build()` creates the client and calls `store.init()`; nothing else touches the store.
-- `start()` fails with `TaskConfigurationError` when no processor is registered. It freezes the registry,
+- `start()` fails with `TaskConfigurationException` when no processor is registered. It freezes the registry,
   allocates the worker id, resolves queue and type ids (also those of the queue policies), starts the four services (processor, scheduled,
   recurring, maintenance) and a monitor that restarts a service whose thread died every
   `serviceCheckInterval` (default 10 s). It returns after starting. A second call, or a call after

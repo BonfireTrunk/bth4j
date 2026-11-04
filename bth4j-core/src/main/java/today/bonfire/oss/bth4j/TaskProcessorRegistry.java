@@ -3,7 +3,7 @@ package today.bonfire.oss.bth4j;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 
 /**
  * Maps task types to their processors. Register everything before the runner starts; the registry is
@@ -17,12 +17,12 @@ public final class TaskProcessorRegistry {
     private final Map<String, Registration<?>> registrations = new ConcurrentHashMap<>();
     private volatile boolean frozen;
 
-    /** @throws TaskConfigurationError when the type name is already registered or the registry is frozen */
+    /** @throws TaskConfigurationException when the type name is already registered or the registry is frozen */
     public <T> TaskProcessorRegistry register(TaskType<T> type, TaskProcessor<T> processor) {
-        if (type == null || processor == null) throw new TaskConfigurationError("type and processor are required");
-        if (frozen) throw new TaskConfigurationError("The runner is started; register processors before start()");
+        if (type == null || processor == null) throw new TaskConfigurationException("type and processor are required");
+        if (frozen) throw new TaskConfigurationException("The runner is started; register processors before start()");
         if (registrations.putIfAbsent(type.name(), new Registration<>(type, processor)) != null) {
-            throw new TaskConfigurationError("A processor for task type " + type + " is already registered");
+            throw new TaskConfigurationException("A processor for task type " + type + " is already registered");
         }
         return this;
     }
