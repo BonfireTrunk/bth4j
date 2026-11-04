@@ -293,7 +293,7 @@ When a processor throws, the runner maps the exception:
 
 `RetryPolicy.decide(task, error)` returns `RetryAfter(delay)` or `Dead(reason)`. The runner holds the default
 policy and the named ones given to `BackgroundRunner.builder().retryPolicy(name, policy)`; the execution picks
-`record.retryPolicy()` from that map (`service.RetryPolicies`), and a null name means the default. An unknown
+`record.retryPolicy()` from that map (`RetryPolicies`), and a null name means the default. An unknown
 name uses the default policy and records the issue `retry-policy`; so does a policy that throws, which retries
 at once. The default is
 exponential backoff with jitter, `RetryPolicy.exponential(1 s, 1 h)`: 1 s doubling per failed attempt,
@@ -796,7 +796,7 @@ is removed, the unique key released, the counters corrected), `pauseQueue`, `que
 `heartbeat` and `workers`.
 
 `AdminOps` in core is the application-facing interface over the stores, implemented by
-`service.DefaultAdminOps`. It resolves queue names to ids, builds `TaskView`s, adds the schedule view
+`DefaultAdminOps`. It resolves queue names to ids, builds `TaskView`s, adds the schedule view
 (`ScheduleView` from `recurringDefinitions`) and, for `pauseSchedule(id, false)`, the re-arm of fixed-delay
 definitions. `TaskClient.admin()` returns one without health and issues; `BackgroundRunner.admin()` returns one
 that also supplies `health()` and `issues()` of that runner. The reason of a cancel is limited to 512

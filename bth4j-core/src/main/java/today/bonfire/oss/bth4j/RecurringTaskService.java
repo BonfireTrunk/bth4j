@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.service;
+package today.bonfire.oss.bth4j;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -8,11 +8,8 @@ import java.util.ArrayList;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import today.bonfire.oss.bth4j.Misfire;
-import today.bonfire.oss.bth4j.TaskEvent;
 import today.bonfire.oss.bth4j.common.Cron;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
-import today.bonfire.oss.bth4j.executor.CustomThread;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.InspectionStore;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
@@ -31,19 +28,19 @@ import today.bonfire.oss.bth4j.spi.TaskState;
  * occurrence re-arms it when it ends (see {@link TaskExecution}). An occurrence of a definition with overlap
  * protection carries the unique key {@code sched:<id>}, so the store skips it while the previous one runs.
  */
-public class RecurringTaskService extends CustomThread {
+class RecurringTaskService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(RecurringTaskService.class);
     private static final int MAX_ROUNDS_PER_CYCLE = 100;
     private static final Duration NEVER = Duration.ofDays(365L * 100);
     private static final Duration MIN_MISFIRE_THRESHOLD = Duration.ofMinutes(1);
 
     /** Header of a fixed-delay occurrence holding the delay as an ISO-8601 duration. */
-    public static final String FIXED_DELAY_HEADER = "bth4j.fixed-delay";
+    static final String FIXED_DELAY_HEADER = "bth4j.fixed-delay";
 
-    public static final String OVERLAP_KEY_PREFIX = "sched:";
+    static final String OVERLAP_KEY_PREFIX = "sched:";
 
     /** True for an occurrence of a fixed-delay definition; its definition is parked until the occurrence ends. */
-    public static boolean isFixedDelayOccurrence(TaskRecord r) {
+    static boolean isFixedDelayOccurrence(TaskRecord r) {
         return r != null
                 && r.scheduleId() != null
                 && r.headers() != null
@@ -51,12 +48,12 @@ public class RecurringTaskService extends CustomThread {
     }
 
     /** The re-arm to apply when this fixed-delay occurrence succeeds; null for any other task. */
-    public static ScheduleEffect rearmEffect(TaskRecord r, Instant nextFire) {
+    static ScheduleEffect rearmEffect(TaskRecord r, Instant nextFire) {
         return isFixedDelayOccurrence(r) ? ScheduleEffect.rearm(r.scheduleId(), r.id(), nextFire) : null;
     }
 
     /** The pause to apply when this fixed-delay occurrence ends without succeeding; null for any other task. */
-    public static ScheduleEffect pauseEffect(TaskRecord r) {
+    static ScheduleEffect pauseEffect(TaskRecord r) {
         return isFixedDelayOccurrence(r) ? ScheduleEffect.pause(r.scheduleId(), r.id()) : null;
     }
 
@@ -172,7 +169,7 @@ public class RecurringTaskService extends CustomThread {
 
     private boolean misfired(DueSchedule d, Instant now, ZoneId zone, Duration late) {
         var def = d.definition();
-        var misfire = Misfires.fromCode(def.misfire(), def.catchUpMaxFires());
+        var misfire = RecurringDefinition.misfire(def.misfire(), def.catchUpMaxFires());
         switch (misfire) {
             case Misfire.Skip s -> {
                 var next = nextOrPark(def, now, zone, d.fireAt());
@@ -261,7 +258,7 @@ public class RecurringTaskService extends CustomThread {
         return committed;
     }
 
-    public static class Builder {
+    static class Builder {
         private ThreadGroup group;
         private String threadName;
         private ScheduleStore store;
@@ -273,58 +270,58 @@ public class RecurringTaskService extends CustomThread {
         private Duration checkInterval = Duration.ofSeconds(10);
         private int batchSize = 100;
 
-        public Builder group(ThreadGroup group) {
+        Builder group(ThreadGroup group) {
             this.group = group;
             return this;
         }
 
-        public Builder threadName(String threadName) {
+        Builder threadName(String threadName) {
             this.threadName = threadName;
             return this;
         }
 
-        public Builder store(ScheduleStore store) {
+        Builder store(ScheduleStore store) {
             this.store = store;
             return this;
         }
 
         /** Lets the service tell a skipped overlapping occurrence from a created one. Optional. */
-        public Builder inspection(InspectionStore inspection) {
+        Builder inspection(InspectionStore inspection) {
             this.inspection = inspection;
             return this;
         }
 
-        public Builder ids(IdAllocator ids) {
+        Builder ids(IdAllocator ids) {
             this.ids = ids;
             return this;
         }
 
-        public Builder observer(Observers observer) {
+        Builder observer(Observers observer) {
             this.observer = observer;
             return this;
         }
 
-        public Builder clock(Clock clock) {
+        Builder clock(Clock clock) {
             this.clock = clock;
             return this;
         }
 
-        public Builder status(RunnerStatus status) {
+        Builder status(RunnerStatus status) {
             this.status = status;
             return this;
         }
 
-        public Builder checkInterval(Duration checkInterval) {
+        Builder checkInterval(Duration checkInterval) {
             this.checkInterval = checkInterval;
             return this;
         }
 
-        public Builder batchSize(int batchSize) {
+        Builder batchSize(int batchSize) {
             this.batchSize = batchSize;
             return this;
         }
 
-        public RecurringTaskService create() {
+        RecurringTaskService create() {
             if (group == null || threadName == null)
                 throw new TaskConfigurationException("group and threadName are required");
             if (store == null || ids == null) throw new TaskConfigurationException("store and ids are required");

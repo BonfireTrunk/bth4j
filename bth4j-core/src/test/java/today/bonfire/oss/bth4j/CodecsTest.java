@@ -1,13 +1,9 @@
-package today.bonfire.oss.bth4j.service;
+package today.bonfire.oss.bth4j;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import org.junit.jupiter.api.Test;
-import today.bonfire.oss.bth4j.JsonMapperTest;
-import today.bonfire.oss.bth4j.PayloadCodec;
-import today.bonfire.oss.bth4j.TaskRequest;
-import today.bonfire.oss.bth4j.TaskType;
 import today.bonfire.oss.bth4j.exceptions.TaskDataException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 

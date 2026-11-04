@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.service;
+package today.bonfire.oss.bth4j;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -6,11 +6,10 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantLock;
-import today.bonfire.oss.bth4j.Issue;
 
 /** What one runner knows about itself: last activity per service and the issues it noticed. */
-public final class RunnerStatus {
-    public static final int MAX_ISSUES = 100;
+final class RunnerStatus {
+    static final int MAX_ISSUES = 100;
 
     private final Clock clock;
     private final ArrayDeque<Issue> issues = new ArrayDeque<>();
@@ -20,25 +19,25 @@ public final class RunnerStatus {
     private volatile Instant lastStoreErrorAt;
     private volatile String lastStoreError;
 
-    public RunnerStatus(Clock clock) {
+    RunnerStatus(Clock clock) {
         this.clock = clock;
     }
 
-    public void claimed() {
+    void claimed() {
         lastClaimAt = clock.instant();
     }
 
-    public void maintained() {
+    void maintained() {
         lastMaintenanceAt = clock.instant();
     }
 
-    public void storeError(Throwable error) {
+    void storeError(Throwable error) {
         lastStoreErrorAt = clock.instant();
         lastStoreError = error.toString();
         issue("store-error", error.toString(), null);
     }
 
-    public void issue(String kind, String detail, Long taskId) {
+    void issue(String kind, String detail, Long taskId) {
         var issue = new Issue(clock.instant(), kind, detail, taskId);
         issuesLock.lock();
         try {
@@ -49,7 +48,7 @@ public final class RunnerStatus {
         }
     }
 
-    public List<Issue> issues() {
+    List<Issue> issues() {
         issuesLock.lock();
         try {
             return new ArrayList<>(issues);
@@ -58,7 +57,7 @@ public final class RunnerStatus {
         }
     }
 
-    public int issueCount() {
+    int issueCount() {
         issuesLock.lock();
         try {
             return issues.size();
@@ -67,19 +66,19 @@ public final class RunnerStatus {
         }
     }
 
-    public Instant lastClaimAt() {
+    Instant lastClaimAt() {
         return lastClaimAt;
     }
 
-    public Instant lastMaintenanceAt() {
+    Instant lastMaintenanceAt() {
         return lastMaintenanceAt;
     }
 
-    public Instant lastStoreErrorAt() {
+    Instant lastStoreErrorAt() {
         return lastStoreErrorAt;
     }
 
-    public String lastStoreError() {
+    String lastStoreError() {
         return lastStoreError;
     }
 }

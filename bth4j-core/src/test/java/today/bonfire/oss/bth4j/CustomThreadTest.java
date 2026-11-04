@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.executor;
+package today.bonfire.oss.bth4j;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

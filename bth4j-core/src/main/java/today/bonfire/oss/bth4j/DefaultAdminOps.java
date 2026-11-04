@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.service;
+package today.bonfire.oss.bth4j;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -9,18 +9,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
-import today.bonfire.oss.bth4j.AdminOps;
-import today.bonfire.oss.bth4j.Issue;
-import today.bonfire.oss.bth4j.Overlap;
-import today.bonfire.oss.bth4j.RunnerHealth;
-import today.bonfire.oss.bth4j.ScheduleView;
-import today.bonfire.oss.bth4j.TaskView;
-import today.bonfire.oss.bth4j.TaskViewPage;
-import today.bonfire.oss.bth4j.common.QueuesHolder;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
+import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
@@ -28,7 +21,7 @@ import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /** {@link AdminOps} over a store; health and issues come from the runner when there is one. */
-public final class DefaultAdminOps implements AdminOps {
+final class DefaultAdminOps implements AdminOps {
     private static final int MAX_REASON = 512;
 
     private final FullStore store;
@@ -38,7 +31,7 @@ public final class DefaultAdminOps implements AdminOps {
     private final Supplier<RunnerHealth> health;
     private final Supplier<List<Issue>> issues;
 
-    public DefaultAdminOps(
+    DefaultAdminOps(
             FullStore store,
             Names names,
             QueuesHolder queues,
@@ -144,7 +137,7 @@ public final class DefaultAdminOps implements AdminOps {
                 d.account(),
                 d.cron(),
                 d.zone() == null ? null : ZoneId.of(d.zone()),
-                Misfires.fromCode(d.misfire(), d.catchUpMaxFires()),
+                RecurringDefinition.misfire(d.misfire(), d.catchUpMaxFires()),
                 d.fixedDelayMs() == null ? null : Duration.ofMillis(d.fixedDelayMs()),
                 d.overlapSkip() ? Overlap.SKIP : Overlap.ALLOW,
                 d.paused(),

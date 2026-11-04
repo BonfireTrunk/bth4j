@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.common;
+package today.bonfire.oss.bth4j;
 
 import java.util.List;
 import java.util.Set;
@@ -8,12 +8,12 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 /**
  * Queue configuration of a runner, with logical queue names (without namespace). Immutable.
  */
-public final class QueuesHolder {
-    public final String defaultQueue;
-    public final Set<String> availableQueues;
-    public final List<String> queuesToProcess;
+final class QueuesHolder {
+    final String defaultQueue;
+    final Set<String> availableQueues;
+    final List<String> queuesToProcess;
 
-    public QueuesHolder(Set<String> availableQueues, List<String> queuesToProcess, String defaultQueue) {
+    QueuesHolder(Set<String> availableQueues, List<String> queuesToProcess, String defaultQueue) {
         this.availableQueues = Set.copyOf(availableQueues);
         this.queuesToProcess = List.copyOf(queuesToProcess);
         this.defaultQueue = defaultQueue;
@@ -23,7 +23,7 @@ public final class QueuesHolder {
      * @return the given queue name, or the default queue when it is blank
      * @throws TaskValidationException if the queue is not one of the available queues
      */
-    public String validQueue(String queueName) {
+    String validQueue(String queueName) {
         if (StringUtils.isBlank(queueName)) {
             return defaultQueue;
         }

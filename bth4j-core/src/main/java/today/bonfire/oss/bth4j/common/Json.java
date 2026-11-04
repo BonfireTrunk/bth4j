@@ -10,6 +10,9 @@ import java.util.Map;
  * Minimal strict JSON encoder and parser without dependencies. Parsed values are {@code Map<String,Object>}
  * (insertion ordered), {@code List<Object>}, {@code String}, {@code Long} or {@code Double}, {@code Boolean}
  * and null.
+ *
+ * <p>This class is internal to bth4j and not part of the supported API. It is public only because the other
+ * bth4j modules use it; it can change in any release.
  */
 public final class Json {
 

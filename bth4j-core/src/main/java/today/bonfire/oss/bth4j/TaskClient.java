@@ -16,16 +16,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.common.Cron;
 import today.bonfire.oss.bth4j.common.JsonMapper;
-import today.bonfire.oss.bth4j.common.QueuesHolder;
 import today.bonfire.oss.bth4j.exceptions.EnqueueFailedException;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
-import today.bonfire.oss.bth4j.service.Codecs;
-import today.bonfire.oss.bth4j.service.DefaultAdminOps;
-import today.bonfire.oss.bth4j.service.IdAllocator;
-import today.bonfire.oss.bth4j.service.Misfires;
-import today.bonfire.oss.bth4j.service.Names;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
@@ -376,8 +370,8 @@ public final class TaskClient {
                 definition.account(),
                 definition.cron(),
                 definition.zone() == null ? null : definition.zone().getId(),
-                Misfires.code(definition.misfire()),
-                Misfires.maxFires(definition.misfire()),
+                RecurringDefinition.misfireCode(definition.misfire()),
+                RecurringDefinition.misfireMaxFires(definition.misfire()),
                 definition.fixedDelay() == null ? null : definition.fixedDelay().toMillis(),
                 definition.overlap() == Overlap.SKIP,
                 codecs.encode(type, definition.payload()),
@@ -445,27 +439,27 @@ public final class TaskClient {
         return new TaskViewPage(result, page.next());
     }
 
-    public FullStore store() {
+    FullStore store() {
         return store;
     }
 
-    public Names names() {
+    Names names() {
         return names;
     }
 
-    public Codecs codecs() {
+    Codecs codecs() {
         return codecs;
     }
 
-    public IdAllocator ids() {
+    IdAllocator ids() {
         return ids;
     }
 
-    public QueuesHolder queues() {
+    QueuesHolder queues() {
         return queues;
     }
 
-    public Clock clock() {
+    Clock clock() {
         return clock;
     }
 

@@ -1,16 +1,13 @@
-package today.bonfire.oss.bth4j.service;
+package today.bonfire.oss.bth4j;
 
 import java.time.Clock;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import today.bonfire.oss.bth4j.FailureDetail;
-import today.bonfire.oss.bth4j.QueuePolicy;
-import today.bonfire.oss.bth4j.TaskProcessorRegistry;
 import today.bonfire.oss.bth4j.spi.FullStore;
 
 /** Everything the task processor needs, resolved once at start. */
-public final class RunnerServices {
+final class RunnerServices {
 
     private final TaskExecution.Settings settings;
     private final List<Integer> queueIds;
@@ -18,7 +15,7 @@ public final class RunnerServices {
     private final Set<Integer> knownTypeIds;
     private final int workerId;
 
-    public RunnerServices(
+    RunnerServices(
             FullStore store,
             Names names,
             Codecs codecs,
@@ -56,7 +53,7 @@ public final class RunnerServices {
         this.workerId = workerId;
     }
 
-    public TaskProcessorService.Builder processorBuilder() {
+    TaskProcessorService.Builder processorBuilder() {
         return new TaskProcessorService.Builder()
                 .settings(settings)
                 .queueIds(queueIds)

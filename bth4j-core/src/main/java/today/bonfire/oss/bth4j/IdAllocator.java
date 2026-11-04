@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.service;
+package today.bonfire.oss.bth4j;
 
 import java.util.concurrent.locks.ReentrantLock;
 import today.bonfire.oss.bth4j.spi.TaskStore;
@@ -7,7 +7,7 @@ import today.bonfire.oss.bth4j.spi.TaskStore;
  * Hands out task ids from blocks reserved in the store, one store call per block. Ids from one process
  * are increasing; across processes they interleave.
  */
-public final class IdAllocator {
+final class IdAllocator {
 
     private final TaskStore store;
     private final int blockSize;
@@ -15,12 +15,12 @@ public final class IdAllocator {
     private long next;
     private long end;
 
-    public IdAllocator(TaskStore store, int blockSize) {
+    IdAllocator(TaskStore store, int blockSize) {
         this.store = store;
         this.blockSize = Math.max(1, blockSize);
     }
 
-    public long nextId() {
+    long nextId() {
         lock.lock();
         try {
             if (next >= end) {
@@ -37,7 +37,7 @@ public final class IdAllocator {
      * has room, otherwise from one new block of at least {@code count} ids; the rest of the old block is
      * abandoned, which leaves a gap in the sequence and nothing else.
      */
-    public long nextIds(int count) {
+    long nextIds(int count) {
         lock.lock();
         try {
             if (count < 1) {
@@ -55,7 +55,7 @@ public final class IdAllocator {
     }
 
     /** Discards unhanded ids, so collision recovery starts with a newly allocated store block. */
-    public void abandonBlock() {
+    void abandonBlock() {
         lock.lock();
         try {
             next = end;
@@ -65,7 +65,7 @@ public final class IdAllocator {
     }
 
     /** The exclusive end of the last block allocated by this client; every smaller positive id was allocated. */
-    public long knownEnd() {
+    long knownEnd() {
         lock.lock();
         try {
             return end;
