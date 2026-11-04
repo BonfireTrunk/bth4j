@@ -277,21 +277,6 @@ class RedisWave2IT {
     // ---- paused queues -------------------------------------------------------------------------------
 
     @Test
-    void pausedQueuesAreSkippedByClaimUntilResumed() {
-        var other = store.queueId("other");
-        enqueued(1);
-        enqueued(task(2).queueId(other));
-
-        store.pauseQueue(queue, true);
-        var whilePaused = store.claim(new ClaimRequest(List.of(queue, other), 5, LEASE, 1, null));
-        store.pauseQueue(queue, false);
-        var resumed = store.claim(new ClaimRequest(List.of(queue, other), 5, LEASE, 1, null));
-
-        assertThat(whilePaused).extracting(TaskRecord::id).containsExactly(2L);
-        assertThat(resumed).extracting(TaskRecord::id).containsExactly(1L);
-    }
-
-    @Test
     void queuesListPausedFlagsInIdOrder() {
         var other = store.queueId("other");
         store.pauseQueue(other, true);

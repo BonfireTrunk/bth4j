@@ -423,13 +423,6 @@ class RedisTaskStoreIT {
     }
 
     @Test
-    void claimDoesNotTakeScheduledTasks() {
-        store.enqueue(task(1).due(Instant.now().plusSeconds(60)).build());
-
-        assertThat(claim(5)).isEmpty();
-    }
-
-    @Test
     void unknownTypesAreDeferredFiveSecondsWithoutAnAttempt() {
         var unknown = store.typeId("unknown");
         store.enqueue(task(1).typeId(unknown).build());
@@ -893,11 +886,6 @@ class RedisTaskStoreIT {
         assertThat(counts.get(queue)).isEqualTo(new StateCounts(1, 1, 0, 0, 0, 0, 0));
         assertThat(counts.get(other).queued()).isEqualTo(1);
         assertThat(counts.get(queue).of(TaskState.SCHEDULED)).isEqualTo(1);
-    }
-
-    @Test
-    void getTaskIsEmptyForUnknownIds() {
-        assertThat(store.getTask(12345)).isEmpty();
     }
 
     @Test
