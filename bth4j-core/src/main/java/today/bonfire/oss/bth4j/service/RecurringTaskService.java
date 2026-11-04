@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import today.bonfire.oss.bth4j.Misfire;
 import today.bonfire.oss.bth4j.TaskEvent;
 import today.bonfire.oss.bth4j.common.Cron;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
@@ -171,34 +172,33 @@ public class RecurringTaskService extends CustomThread {
 
     private boolean misfired(DueSchedule d, Instant now, ZoneId zone, Duration late) {
         var def = d.definition();
-        var misfire = def.misfire() == null ? RecurringDefinition.MISFIRE_FIRE_ONCE_NOW : def.misfire();
+        var misfire = Misfires.fromCode(def.misfire(), def.catchUpMaxFires());
         switch (misfire) {
-            case RecurringDefinition.MISFIRE_SKIP -> {
+            case Misfire.Skip s -> {
                 var next = nextOrPark(def, now, zone, d.fireAt());
                 if (store.setNextFire(d.scheduleId(), def.revision(), d.fireAt(), next)) {
                     misfireIssue(d, late, "skipped, next at " + next);
                 }
                 return false;
             }
-            case RecurringDefinition.MISFIRE_CATCH_UP -> {
+            case Misfire.CatchUp c -> {
                 var fires = new ArrayList<Instant>();
                 var fire = d.fireAt();
-                while (fire != null && !fire.isAfter(now) && fires.size() <= def.catchUpMaxFires()) {
+                while (fire != null && !fire.isAfter(now) && fires.size() <= c.maxFires()) {
                     fires.add(fire);
                     fire = Cron.next(def.cron(), fire, zone).orElse(null);
                 }
-                if (fires.size() > def.catchUpMaxFires()) {
-                    var resume = fires.get(fires.size() - def.catchUpMaxFires());
+                if (fires.size() > c.maxFires()) {
+                    var resume = fires.get(fires.size() - c.maxFires());
                     if (store.setNextFire(d.scheduleId(), def.revision(), d.fireAt(), resume)) {
-                        misfireIssue(
-                                d, late, "catching up the last " + def.catchUpMaxFires() + " fires from " + resume);
+                        misfireIssue(d, late, "catching up the last " + c.maxFires() + " fires from " + resume);
                     }
                     return false;
                 }
                 // each missed fire gets its own occurrence; the next round picks the following one up
                 return commitOccurrence(d, d.fireAt(), nextOrPark(def, d.fireAt(), zone, d.fireAt()));
             }
-            default -> {
+            case Misfire.FireOnceNow f -> {
                 misfireIssue(d, late, "firing once now");
                 return commitOccurrence(d, now, nextOrPark(def, now, zone, d.fireAt()));
             }

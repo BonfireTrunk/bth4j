@@ -56,8 +56,8 @@ export default {
             <td>{{ s.queue }}</td>
             <td class="mono"><template v-if="s.cron">{{ s.cron }}</template><template v-else-if="s.fixedDelay">every {{ duration(s.fixedDelay) }}</template><template v-else>-</template></td>
             <td>{{ s.zone || 'UTC' }}</td>
-            <td>{{ s.misfire || '-' }}</td>
-            <td>{{ s.overlapSkip ? 'skip' : 'allow' }}</td>
+            <td>{{ s.misfire === 'CATCH_UP' ? 'CATCH_UP, up to ' + s.catchUpMaxFires : (s.misfire || '-') }}</td>
+            <td>{{ s.overlap.toLowerCase() }}</td>
             <td><span v-if="s.paused" class="tag paused">PAUSED</span><span v-else class="muted">armed</span></td>
             <td class="actions">
               <button type="button" class="small" :disabled="!admin() || busy === s.id" :title="admin() ? '' : 'Admin role required'" @click="s.paused ? resume(s) : pause(s)">{{ s.paused ? 'Resume' : 'Pause' }}</button>

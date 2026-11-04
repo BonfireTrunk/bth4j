@@ -1095,7 +1095,7 @@ public abstract class RunnerContract {
                 .filter(s -> s.id().equals("guarded"))
                 .findFirst()
                 .orElseThrow();
-        assertThat(guarded.overlapSkip()).isTrue();
+        assertThat(guarded.overlap()).isEqualTo(Overlap.SKIP);
         assertThat(guarded.nextFire()).isAfter(Instant.now());
 
         release.countDown();
@@ -1117,8 +1117,8 @@ public abstract class RunnerContract {
                 .filter(s -> s.id().equals("kolkata"))
                 .findFirst()
                 .orElseThrow();
-        assertThat(view.zone()).isEqualTo("Asia/Kolkata");
-        assertThat(view.misfire()).isEqualTo("SKIP");
+        assertThat(view.zone()).isEqualTo(java.time.ZoneId.of("Asia/Kolkata"));
+        assertThat(view.misfire()).isEqualTo(Misfire.SKIP);
         assertThat(view.cron()).isEqualTo("30 9 * * *");
         assertThat(view.nextFire().atZone(java.time.ZoneId.of("Asia/Kolkata")).getHour())
                 .isEqualTo(9);

@@ -7,6 +7,7 @@ import java.lang.reflect.Proxy;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -19,6 +20,8 @@ import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.Issue;
+import today.bonfire.oss.bth4j.Misfire;
+import today.bonfire.oss.bth4j.Overlap;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.common.QueuesHolder;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
@@ -100,6 +103,18 @@ class DefaultAdminOpsTest {
     }
 
     private static RecurringDefinition definition(String id, String cron, Long fixedDelayMs, boolean paused) {
+        return definition(id, cron, fixedDelayMs, paused, "Europe/Berlin", RecurringDefinition.MISFIRE_SKIP, 0, true);
+    }
+
+    private static RecurringDefinition definition(
+            String id,
+            String cron,
+            Long fixedDelayMs,
+            boolean paused,
+            String zone,
+            String misfire,
+            int catchUpMaxFires,
+            boolean overlapSkip) {
         return new RecurringDefinition(
                 id,
                 TYPE_ID,
@@ -107,11 +122,11 @@ class DefaultAdminOpsTest {
                 OTHER_QUEUE_ID,
                 "acme",
                 cron,
-                "Europe/Berlin",
-                RecurringDefinition.MISFIRE_SKIP,
-                0,
+                zone,
+                misfire,
+                catchUpMaxFires,
                 fixedDelayMs,
-                true,
+                overlapSkip,
                 null,
                 5,
                 null,
@@ -461,15 +476,46 @@ class DefaultAdminOpsTest {
         assertThat(nightly.queue()).isEqualTo("Q:OTHER");
         assertThat(nightly.account()).isEqualTo("acme");
         assertThat(nightly.cron()).isEqualTo("0 2 * * *");
-        assertThat(nightly.zone()).isEqualTo("Europe/Berlin");
-        assertThat(nightly.misfire()).isEqualTo("SKIP");
+        assertThat(nightly.zone()).isEqualTo(ZoneId.of("Europe/Berlin"));
+        assertThat(nightly.misfire()).isEqualTo(Misfire.SKIP);
         assertThat(nightly.fixedDelay()).isNull();
-        assertThat(nightly.overlapSkip()).isTrue();
+        assertThat(nightly.overlap()).isEqualTo(Overlap.SKIP);
         assertThat(nightly.paused()).isFalse();
         assertThat(nightly.nextFire()).isEqualTo(NOW.plusSeconds(60));
         assertThat(nightly.maxAttempts()).isEqualTo(5);
         assertThat(views.get(1).fixedDelay()).isEqualTo(Duration.ofSeconds(90));
         assertThat(views.get(1).paused()).isTrue();
+    }
+
+    @Test
+    void scheduleViewMapsZoneMisfireAndOverlapToTheirTypes() {
+        handlers.put(
+                "recurringDefinitions",
+                a -> List.of(
+                        new RecurringSchedule(
+                                definition(
+                                        "zoned",
+                                        "0 2 * * *",
+                                        null,
+                                        false,
+                                        "Europe/Berlin",
+                                        RecurringDefinition.MISFIRE_CATCH_UP,
+                                        4,
+                                        false),
+                                NOW),
+                        new RecurringSchedule(
+                                definition(
+                                        "plain", null, 1_000L, false, null, RecurringDefinition.MISFIRE_SKIP, 0, true),
+                                NOW)));
+
+        var views = ops.schedules();
+
+        assertThat(views.get(0).zone()).isEqualTo(ZoneId.of("Europe/Berlin"));
+        assertThat(views.get(0).misfire()).isEqualTo(Misfire.catchUp(4));
+        assertThat(views.get(0).overlap()).isEqualTo(Overlap.ALLOW);
+        assertThat(views.get(1).zone()).isNull();
+        assertThat(views.get(1).misfire()).isEqualTo(Misfire.SKIP);
+        assertThat(views.get(1).overlap()).isEqualTo(Overlap.SKIP);
     }
 
     @Test

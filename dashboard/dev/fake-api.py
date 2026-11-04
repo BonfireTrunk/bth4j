@@ -69,9 +69,9 @@ def counts():
 
 schedules = {
     "nightly-report": {"id": "nightly-report", "type": "build-report", "queue": "reports", "account": None, "cron": "0 0 2 * * *", "zone": "Europe/Berlin",
-                       "misfire": "FIRE_ONCE", "fixedDelay": None, "overlapSkip": True, "paused": False, "nextFire": iso(7200), "maxAttempts": 3},
+                       "misfire": "CATCH_UP", "catchUpMaxFires": 3, "fixedDelay": None, "overlap": "SKIP", "paused": False, "nextFire": iso(7200), "maxAttempts": 3},
     "mail-pump": {"id": "mail-pump", "type": "send-mail", "queue": "mail", "account": None, "cron": None, "zone": None,
-                  "misfire": "SKIP", "fixedDelay": "PT30S", "overlapSkip": False, "paused": True, "nextFire": iso(25), "maxAttempts": 5},
+                  "misfire": "SKIP", "fixedDelay": "PT30S", "overlap": "ALLOW", "paused": True, "nextFire": iso(25), "maxAttempts": 5},
 }
 workers = [
     {"id": 7, "label": "host-a/1234", "startedAt": iso(-7200), "lastSeen": iso(-2), "running": 3},

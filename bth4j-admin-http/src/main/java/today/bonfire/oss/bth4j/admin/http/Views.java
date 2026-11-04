@@ -7,9 +7,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import today.bonfire.oss.bth4j.Issue;
+import today.bonfire.oss.bth4j.Misfire;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.TaskView;
+import today.bonfire.oss.bth4j.service.Misfires;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
@@ -121,20 +123,22 @@ final class Views {
     }
 
     static Map<String, Object> schedule(ScheduleView s) {
-        return obj(
+        var view = obj(
                 "id", s.id(),
                 "type", s.type(),
                 "queue", s.queue(),
                 "account", s.account(),
                 "cron", s.cron(),
-                "zone", s.zone(),
-                "misfire", s.misfire(),
+                "zone", s.zone() == null ? null : s.zone().getId(),
+                "misfire", Misfires.code(s.misfire()),
                 "fixedDelay", text(s.fixedDelay()),
-                "overlapSkip", s.overlapSkip(),
+                "overlap", s.overlap().name(),
                 "paused", s.paused(),
                 "nextFire", s.nextFire(),
                 "maxAttempts", s.maxAttempts(),
                 "maxRunTime", text(s.maxRunTime()));
+        if (s.misfire() instanceof Misfire.CatchUp c) view.put("catchUpMaxFires", c.maxFires());
+        return view;
     }
 
     static Map<String, Object> worker(WorkerInfo w) {

@@ -24,6 +24,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.service.Codecs;
 import today.bonfire.oss.bth4j.service.DefaultAdminOps;
 import today.bonfire.oss.bth4j.service.IdAllocator;
+import today.bonfire.oss.bth4j.service.Misfires;
 import today.bonfire.oss.bth4j.service.Names;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
@@ -367,11 +368,6 @@ public final class TaskClient {
             keepUntil = Cron.next(definition.cron(), next, zone).orElse(next);
         }
         var type = definition.type();
-        var misfire = switch (definition.misfire()) {
-            case Misfire.Skip s -> RecurringDefinition.MISFIRE_SKIP;
-            case Misfire.FireOnceNow f -> RecurringDefinition.MISFIRE_FIRE_ONCE_NOW;
-            case Misfire.CatchUp c -> RecurringDefinition.MISFIRE_CATCH_UP;
-        };
         var stored = new RecurringDefinition(
                 definition.id(),
                 names.typeId(type.name()),
@@ -380,8 +376,8 @@ public final class TaskClient {
                 definition.account(),
                 definition.cron(),
                 definition.zone() == null ? null : definition.zone().getId(),
-                misfire,
-                definition.misfire() instanceof Misfire.CatchUp c ? c.maxFires() : 0,
+                Misfires.code(definition.misfire()),
+                Misfires.maxFires(definition.misfire()),
                 definition.fixedDelay() == null ? null : definition.fixedDelay().toMillis(),
                 definition.overlap() == Overlap.SKIP,
                 codecs.encode(type, definition.payload()),
