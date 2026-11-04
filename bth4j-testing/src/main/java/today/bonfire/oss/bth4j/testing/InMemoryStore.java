@@ -91,7 +91,7 @@ public final class InMemoryStore implements FullStore {
 
     @Override
     public StoreInfo info() {
-        return new StoreInfo("memory", StoreInfo.SCHEMA_VERSION);
+        return new StoreInfo("memory", 1);
     }
 
     @Override

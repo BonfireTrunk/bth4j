@@ -101,6 +101,17 @@ class PostgresTaskStoreIT {
         }
     }
 
+    private static boolean tableExists(String name) throws SQLException {
+        try (var c = PostgresTestSupport.dataSource().getConnection();
+                var ps = c.prepareStatement("SELECT to_regclass(?) IS NOT NULL")) {
+            ps.setString(1, name);
+            try (var rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getBoolean(1);
+            }
+        }
+    }
+
     // ---- schema and identity -------------------------------------------------------------------------
 
     @Test
@@ -108,15 +119,26 @@ class PostgresTaskStoreIT {
         store.init();
         store.init();
         assertThat(store.info().engine()).isEqualTo("postgresql");
-        assertThat(store.info().schemaVersion()).isEqualTo(1);
+        assertThat(store.info().schemaVersion()).isEqualTo(PostgresTaskStore.SCHEMA_VERSION);
     }
 
     @Test
     void initRefusesAnotherSchemaVersion() throws SQLException {
-        sql("UPDATE " + prefix + "_meta SET value = '2' WHERE key = 'schema_version'");
+        sql("UPDATE " + prefix + "_meta SET value = '3' WHERE key = 'schema_version'");
         assertThatThrownBy(store::init)
                 .isInstanceOf(TaskStoreException.class)
-                .hasMessage("schema version 2, this library needs 1");
+                .hasMessage("schema version 3, this library needs 2");
+    }
+
+    @Test
+    void initRefusesThe30SchemaBeforeChangingIt() throws SQLException {
+        var old = new PostgresTaskStore(PostgresTestSupport.dataSource(), prefix + "_v1");
+        sql("CREATE TABLE " + prefix + "_v1_meta (key text PRIMARY KEY, value text NOT NULL)");
+        sql("INSERT INTO " + prefix + "_v1_meta (key, value) VALUES ('schema_version', '1')");
+        assertThatThrownBy(old::init)
+                .isInstanceOf(TaskStoreException.class)
+                .hasMessage("schema version 1, this library needs 2");
+        assertThat(tableExists(prefix + "_v1_task")).isFalse();
     }
 
     @Test

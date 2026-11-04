@@ -451,10 +451,10 @@ or by running `schemaStatements()` from a migration tool:
 
 | Table | Content |
 |---|---|
-| `<prefix>_meta` | `schema_version` |
+| `<prefix>_meta` | `schema_version` (2; 3.0 wrote 1) |
 | `<prefix>_queue`, `<prefix>_event`, `<prefix>_worker` | registries (above); `_queue.paused` and `_worker.running` (`integer NOT NULL DEFAULT 0`) belong to the admin SPI |
 | `<prefix>_task` | one row per task |
-| `<prefix>_schedule` | recurring definitions: `id`, `event_id`, `payload_version`, `queue_id`, `account`, `cron`, `zone`, `misfire`, `catch_up_max`, `fixed_delay_ms`, `overlap_skip`, `data`, `max_attempts`, `paused`, `rev`, `next_fire` |
+| `<prefix>_schedule` | recurring definitions: `id`, `event_id`, `payload_version`, `queue_id`, `account`, `cron`, `zone`, `misfire`, `catch_up_max`, `fixed_delay_ms`, `overlap_skip`, `data`, `max_attempts`, `paused`, `rev`, `occurrence_id`, `next_fire` |
 
 Task columns: `id bigint PK`, `revision integer`, `queue_id smallint`, `event_id smallint`,
 `payload_version smallint`, `state smallint`, `attempts smallint`, `max_attempts smallint`, `created`,
@@ -520,8 +520,8 @@ CTEs and advisory locks (9.1). The minimum is therefore 9.5; the tests run on 17
 
 Times are `timestamptz` and are written with millisecond precision so a value read back equals the value
 written. `init()` takes a transaction-level advisory lock per prefix, so several runners starting at once
-create the schema once, then checks `schema_version` and refuses another version or a task table without
-a meta table.
+check `schema_version` before they change anything and refuse another version or a task table without
+a meta table, then create the schema once.
 
 ## Concurrency model
 
@@ -833,7 +833,7 @@ Rules every store follows:
 - Time for `due` defaults, leases, promote, reclaim and retention is the store's clock.
 - Calls are made concurrently from many threads and processes; each must be atomic and safe to repeat.
 - A failure to reach the engine throws `TaskStoreException`; callers retry on their next cycle.
-- `init()` creates the schema or verifies `StoreInfo.SCHEMA_VERSION` (currently 1) and refuses another one.
+- `init()` creates the schema or verifies the store's schema version (`StoreInfo.schemaVersion`) and refuses another one.
 
 The tests are `StoreContract` in `bth4j-store-tests`. A store module subclasses it, supplies a fresh,
 isolated store per test from `newStore(namespace)` and, when the test can move time, the clock from

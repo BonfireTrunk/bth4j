@@ -67,6 +67,12 @@ import today.bonfire.oss.bth4j.spi.WorkerInfo;
  * driver and a {@link DataSource}, normally pooled.
  */
 public class PostgresTaskStore implements FullStore {
+    /**
+     * The schema this class writes, stored in the {@code meta} table. {@link #init} refuses tables written with
+     * another one; there is no migration between schemas. Version 1 is the 3.0 schema.
+     */
+    public static final int SCHEMA_VERSION = 2;
+
     private static final Pattern PREFIX = Pattern.compile("[a-z][a-z0-9_]{0,40}");
     private static final int MAX_FAILURES = 20;
     private static final int MAX_REGISTRY_ID = Short.MAX_VALUE;
@@ -257,7 +263,7 @@ public class PostgresTaskStore implements FullStore {
 
     @Override
     public StoreInfo info() {
-        return new StoreInfo("postgresql", StoreInfo.SCHEMA_VERSION);
+        return new StoreInfo("postgresql", SCHEMA_VERSION);
     }
 
     /** The DDL for this prefix, idempotent; for migration tools that manage the schema themselves. */
@@ -336,10 +342,9 @@ public class PostgresTaskStore implements FullStore {
                         + " rev bigint NOT NULL,"
                         + " occurrence_id bigint,"
                         + " next_fire timestamptz NOT NULL)",
-                "ALTER TABLE " + schedule + " ADD COLUMN IF NOT EXISTS occurrence_id bigint",
                 "CREATE SEQUENCE IF NOT EXISTS " + scheduleSeq,
                 "CREATE INDEX IF NOT EXISTS " + schedule + "_due ON " + schedule + " (next_fire) WHERE NOT paused",
-                "INSERT INTO " + meta + " (key, value) VALUES ('schema_version', '" + StoreInfo.SCHEMA_VERSION + "')"
+                "INSERT INTO " + meta + " (key, value) VALUES ('schema_version', '" + SCHEMA_VERSION + "')"
                         + " ON CONFLICT (key) DO NOTHING");
     }
 
@@ -357,30 +362,32 @@ public class PostgresTaskStore implements FullStore {
                 ps.setString(1, "bth4j:" + prefix);
                 ps.executeQuery().close();
             }
+            boolean hasMeta;
             try (var ps = c.prepareStatement("SELECT to_regclass(?) IS NOT NULL, to_regclass(?) IS NOT NULL")) {
                 ps.setString(1, meta);
                 ps.setString(2, task);
                 try (var rs = ps.executeQuery()) {
                     rs.next();
-                    if (!rs.getBoolean(1) && rs.getBoolean(2)) {
+                    hasMeta = rs.getBoolean(1);
+                    if (!hasMeta && rs.getBoolean(2)) {
                         throw new TaskStoreException("table " + task + " exists without " + meta
-                                + ": an older bth4j layout, this library needs schema version "
-                                + StoreInfo.SCHEMA_VERSION);
+                                + ": an older bth4j layout, this library needs schema version " + SCHEMA_VERSION);
+                    }
+                }
+            }
+            if (hasMeta) {
+                try (var ps = c.prepareStatement("SELECT value FROM " + meta + " WHERE key = 'schema_version'");
+                        var rs = ps.executeQuery()) {
+                    var version = rs.next() ? rs.getString(1) : null;
+                    if (!String.valueOf(SCHEMA_VERSION).equals(version)) {
+                        throw new TaskStoreException(
+                                "schema version " + version + ", this library needs " + SCHEMA_VERSION);
                     }
                 }
             }
             try (var st = c.createStatement()) {
                 for (var sql : schemaStatements()) {
                     st.execute(sql);
-                }
-            }
-            try (var ps = c.prepareStatement("SELECT value FROM " + meta + " WHERE key = 'schema_version'");
-                    var rs = ps.executeQuery()) {
-                rs.next();
-                var version = rs.getString(1);
-                if (!String.valueOf(StoreInfo.SCHEMA_VERSION).equals(version)) {
-                    throw new TaskStoreException(
-                            "schema version " + version + ", this library needs " + StoreInfo.SCHEMA_VERSION);
                 }
             }
             return null;

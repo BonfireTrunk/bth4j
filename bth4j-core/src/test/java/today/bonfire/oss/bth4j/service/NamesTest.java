@@ -54,7 +54,7 @@ class NamesTest {
 
         @Override
         public StoreInfo info() {
-            return new StoreInfo("test", StoreInfo.SCHEMA_VERSION);
+            return new StoreInfo("test", 1);
         }
 
         @Override
