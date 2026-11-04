@@ -13,7 +13,7 @@ public final class LoggingTaskObserver implements TaskObserver {
     private final Logger log;
 
     public LoggingTaskObserver() {
-        this(LoggerFactory.getLogger("bth4j.tasks"));
+        this(LoggerFactory.getLogger(Loggers.TASKS));
     }
 
     public LoggingTaskObserver(Logger log) {

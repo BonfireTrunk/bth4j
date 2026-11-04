@@ -38,7 +38,7 @@ import today.bonfire.oss.bth4j.spi.TaskState;
  * the work. Delivery is at least once.
  */
 public final class BackgroundRunner {
-    private static final Logger log = LoggerFactory.getLogger(BackgroundRunner.class);
+    private static final Logger log = LoggerFactory.getLogger(Loggers.RUNNER);
 
     private final Builder config;
     private final FullStore store;

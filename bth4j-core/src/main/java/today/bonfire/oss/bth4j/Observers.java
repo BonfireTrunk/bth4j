@@ -5,7 +5,7 @@ import org.slf4j.LoggerFactory;
 
 /** Delivers events to the configured observer and keeps its failures away from the task outcome. */
 final class Observers {
-    private static final Logger log = LoggerFactory.getLogger(Observers.class);
+    private static final Logger log = LoggerFactory.getLogger(Loggers.OBSERVERS);
 
     private final TaskObserver observer;
 

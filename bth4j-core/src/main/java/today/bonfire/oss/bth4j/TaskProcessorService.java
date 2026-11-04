@@ -34,7 +34,7 @@ import today.bonfire.oss.bth4j.spi.TaskRecord;
  * still finishing during shutdown keep their leases.
  */
 class TaskProcessorService extends CustomThread {
-    private static final Logger log = LoggerFactory.getLogger(TaskProcessorService.class);
+    private static final Logger log = LoggerFactory.getLogger(Loggers.PROCESSOR);
 
     private final BackgroundExecutor executor;
     private final TaskExecution.Settings settings;

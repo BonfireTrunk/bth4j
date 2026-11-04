@@ -8,7 +8,7 @@ import today.bonfire.oss.bth4j.spi.MaintenanceStore;
 
 /** Moves scheduled tasks whose time has come into their queues. Any number of instances may run it. */
 class ScheduledTaskService extends CustomThread {
-    private static final Logger log = LoggerFactory.getLogger(ScheduledTaskService.class);
+    private static final Logger log = LoggerFactory.getLogger(Loggers.PROMOTION);
 
     private final MaintenanceStore store;
     private final Duration pollInterval;

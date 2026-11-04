@@ -29,7 +29,7 @@ import today.bonfire.oss.bth4j.spi.TaskState;
  * protection carries the unique key {@code sched:<id>}, so the store skips it while the previous one runs.
  */
 class RecurringTaskService extends CustomThread {
-    private static final Logger log = LoggerFactory.getLogger(RecurringTaskService.class);
+    private static final Logger log = LoggerFactory.getLogger(Loggers.RECURRING);
     private static final int MAX_ROUNDS_PER_CYCLE = 100;
     private static final Duration NEVER = Duration.ofDays(365L * 100);
     private static final Duration MIN_MISFIRE_THRESHOLD = Duration.ofMinutes(1);

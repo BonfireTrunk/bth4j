@@ -513,6 +513,11 @@ BackgroundRunner.builder()
 `new LoggingTaskObserver()` is a ready observer that writes one SLF4J line per event (logger `bth4j.tasks`) and
 puts `bth4j.task`, `bth4j.type` and `bth4j.queue` in the MDC; pass your own `Logger` to use another name.
 
+The runner's own log lines go to the logger names in `Loggers`: `RUNNER`, `CLIENT`, `PROCESSOR`, `ATTEMPT`
+(one attempt of a task), `MAINTENANCE`, `RECURRING`, `PROMOTION` and `OBSERVERS`, plus `TASKS` for
+`LoggingTaskObserver`. They follow the class names below `today.bonfire.oss.bth4j`, so a level set on that
+package covers them, and they do not change when an internal class moves.
+
 ### Inspection
 
 ```java
@@ -801,6 +806,10 @@ clock.advance(Duration.ofHours(1));                 // the task is promoted and 
 Redis and PostgreSQL stores, so behaviour in tests matches production. The services still wait in real
 time between their checks, so a test that moves the clock should poll for the result (for example with
 Awaitility) instead of asserting at once.
+
+`new Codecs(jsonMapper)` encodes and decodes payloads (`encode(type, payload)`, `decode(type, text)`) and step
+results (`encodeStep(result)`, `decodeStep(text, class)`) exactly as the runner stores them, so a test can pin
+the stored form of a payload version or a step result against the library's own rules.
 
 The integration tests of the store modules start containers with Testcontainers: `redis:8.8-alpine` and
 `postgres:18-alpine` by default. `./mvnw -pl bth4j-redis -am verify -Pvalkey` runs the Redis suite against

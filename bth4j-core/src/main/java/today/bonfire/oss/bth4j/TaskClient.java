@@ -35,7 +35,7 @@ import today.bonfire.oss.bth4j.spi.TaskStoreException;
  * {@link BackgroundRunner#client()}; a process that only produces builds one with {@link #builder()}.
  */
 public final class TaskClient {
-    private static final Logger log = LoggerFactory.getLogger(TaskClient.class);
+    private static final Logger log = LoggerFactory.getLogger(Loggers.CLIENT);
     private static final int ENQUEUE_CHUNK = 500;
     private static final int MAX_ID_TRIES = 3;
     private static final String ID_TAKEN = "generated task ids were already in use after " + MAX_ID_TRIES + " tries";

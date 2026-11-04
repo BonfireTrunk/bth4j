@@ -33,7 +33,7 @@ import today.bonfire.oss.bth4j.spi.TaskState;
  * retries the task.
  */
 final class TaskExecution implements Runnable, TaskContext {
-    private static final Logger log = LoggerFactory.getLogger(TaskExecution.class);
+    private static final Logger log = LoggerFactory.getLogger(Loggers.ATTEMPT);
     private static final int MAX_PROGRESS = 4 * 1024;
     private static final int MAX_STEP_NAME = 64;
     private static final int MAX_STEP_RESULT = 8 * 1024;

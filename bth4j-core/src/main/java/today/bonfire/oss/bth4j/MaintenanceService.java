@@ -28,7 +28,7 @@ import today.bonfire.oss.bth4j.spi.TaskState;
  * returns at once and {@link #waitTillDone(Duration)} waits for a job in progress.
  */
 class MaintenanceService extends CustomThread {
-    private static final Logger log = LoggerFactory.getLogger(MaintenanceService.class);
+    private static final Logger log = LoggerFactory.getLogger(Loggers.MAINTENANCE);
 
     private final ScheduledExecutorService executor;
     private final FullStore store;
