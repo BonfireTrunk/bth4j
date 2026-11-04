@@ -4,10 +4,12 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.IntStream;
 import redis.clients.jedis.Response;
 import redis.clients.jedis.UnifiedJedis;
 import redis.clients.jedis.exceptions.JedisNoScriptException;
@@ -41,25 +43,42 @@ final class ScriptRunner {
         }
     }
 
-    /** One pipelined round trip for all calls; calls the server rejected as unknown are loaded and retried. */
+    /**
+     * One pipelined round trip for all calls. When the server rejected some as unknown, the script is loaded
+     * once and only those calls are pipelined again; results stay in call order.
+     */
     List<Object> runAll(String script, List<List<String>> calls) {
         var sha = shaByScript.computeIfAbsent(script, ScriptRunner::sha1);
-        var results = new ArrayList<Object>(calls.size());
-        var responses = new ArrayList<Response<Object>>(calls.size());
+        var results = new Object[calls.size()];
+        var missing =
+                pipeline(sha, calls, IntStream.range(0, calls.size()).boxed().toList(), results);
+        if (!missing.isEmpty()) {
+            jedis.scriptLoad(script, routing.getFirst());
+            for (var i : pipeline(sha, calls, missing, results)) {
+                results[i] = run(script, calls.get(i));
+            }
+        }
+        return Arrays.asList(results);
+    }
+
+    /** Sends the calls at the given indexes in one pipeline, stores their replies and returns the indexes the server did not know the script for. */
+    private List<Integer> pipeline(String sha, List<List<String>> calls, List<Integer> indexes, Object[] results) {
+        var responses = new ArrayList<Response<Object>>(indexes.size());
         try (var pipeline = jedis.pipelined()) {
-            for (var args : calls) {
-                responses.add(pipeline.evalsha(sha, routing, withPrefix(args)));
+            for (var i : indexes) {
+                responses.add(pipeline.evalsha(sha, routing, withPrefix(calls.get(i))));
             }
             pipeline.sync();
         }
-        for (var i = 0; i < calls.size(); i++) {
+        var missing = new ArrayList<Integer>();
+        for (var k = 0; k < indexes.size(); k++) {
             try {
-                results.add(responses.get(i).get());
+                results[indexes.get(k)] = responses.get(k).get();
             } catch (JedisNoScriptException e) {
-                results.add(run(script, calls.get(i)));
+                missing.add(indexes.get(k));
             }
         }
-        return results;
+        return missing;
     }
 
     private List<String> withPrefix(List<String> args) {

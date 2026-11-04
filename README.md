@@ -737,6 +737,12 @@ a different token under the same id returns exists, before checking the unique k
 the task exists: with a zero succeeded retention a task that already ran and was removed is stored again by a
 resend.
 
+Memory: the task hash stays a listpack only while every value is at most `hash-max-listpack-value` bytes
+(default 64). A header map, account, unique key, progress text or cancel reason longer than that makes the
+hash a hashtable, about 5 times larger for that task; raise the setting if your tasks carry such values.
+Zsets (queues, `leased`, the state indexes) leave the listpack encoding above `zset-max-listpack-entries`
+entries (default 128) and cost about 6 times more per entry as a skiplist; raising it trades CPU for memory.
+
 ### PostgreSQL
 
 ```java
