@@ -4,6 +4,7 @@ import java.time.Clock;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import today.bonfire.oss.bth4j.exceptions.TaskCancelledException;
+import today.bonfire.oss.bth4j.exceptions.TaskLeaseLostException;
 
 /** What a {@link TaskProcessor} knows about the task it is running and can report back while running. */
 public interface TaskContext {
@@ -24,7 +25,17 @@ public interface TaskContext {
     /** @return true when an operator asked for this task to stop */
     boolean cancelRequested();
 
-    /** @throws TaskCancelledException when {@link #cancelRequested()} is true, which ends the task as cancelled */
+    /**
+     * Checks for cancellation or a known lost lease. After lease loss the old body can keep running until
+     * it checks, or responds to an interrupt when its type opted into {@link TaskType#interruptOnCancel()}.
+     * A unique key protects the task record only; fence side effects with the revision or an idempotent
+     * target, and use steps to checkpoint completed work.
+     * Only an attempt actually interrupted for lease loss has its outcome discarded; otherwise a returned
+     * result or failure still goes through the store's revision fence and can be applied before takeover.
+     *
+     * @throws TaskLeaseLostException when the runner knows the lease was lost
+     * @throws TaskCancelledException when {@link #cancelRequested()} is true, which ends the task as cancelled
+     */
     void checkCancelled();
 
     /**

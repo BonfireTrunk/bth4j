@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import redis.clients.jedis.Protocol;
@@ -37,6 +38,7 @@ import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecordJson;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
+import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
@@ -141,6 +143,12 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
+    public long idHighWaterMark() {
+        var last = guard(() -> jedis.get(keys.seqId));
+        return last == null ? 1 : Long.parseLong(last) + 1;
+    }
+
+    @Override
     public long allocateIds(int count) {
         if (count < 1) {
             throw new IllegalArgumentException("count must be positive");
@@ -217,12 +225,15 @@ public class RedisTaskStore implements FullStore {
                 .toList();
     }
 
-    private static List<String> enqueueArgs(TaskRecord t) {
+    static List<String> enqueueArgs(TaskRecord t) {
         var args = new ArrayList<String>();
         args.add(String.valueOf(t.id()));
         args.add(t.due() == null ? "" : ms(t.due()));
         args.add(t.uniqueKey() == null ? "" : t.uniqueKey());
         args.addAll(storeArgs(t));
+        args.add(Keys.F_WRITE_TOKEN);
+        // decimal, so the hash listpack stores it as an integer
+        args.add(Long.toString(ThreadLocalRandom.current().nextLong()));
         return args;
     }
 
@@ -876,9 +887,13 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public boolean retry(long id, int revision) {
+    public RetryOutcome retry(long id, int revision) {
         var args = List.of(String.valueOf(id), String.valueOf(revision));
-        return num(guard(() -> scripts.run(RedisScripts.RETRY, args))) == 1;
+        return switch ((int) num(guard(() -> scripts.run(RedisScripts.RETRY, args)))) {
+            case 1 -> RetryOutcome.RETRIED;
+            case 2 -> RetryOutcome.DUPLICATE;
+            default -> RetryOutcome.STALE;
+        };
     }
 
     @Override

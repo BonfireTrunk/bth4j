@@ -17,6 +17,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.postgresql.ds.PGSimpleDataSource;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
@@ -27,6 +28,7 @@ import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
+import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
@@ -148,6 +150,41 @@ class PostgresTaskStoreIT {
         }
         assertThat(ids).hasSize(40 * 64);
         assertThatThrownBy(() -> store.allocateIds(0)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void idHighWaterMarkNeedsOnlyUsageOnTheSequence() throws SQLException {
+        String role = prefix + "_producer";
+        sql("CREATE ROLE " + role + " LOGIN PASSWORD 'test-producer'");
+        try {
+            sql("GRANT USAGE ON SCHEMA public TO " + role);
+            sql("GRANT SELECT, UPDATE ON TABLE " + prefix + "_meta TO " + role);
+            sql("GRANT USAGE ON SEQUENCE " + prefix + "_task_id TO " + role);
+            var restricted = new PGSimpleDataSource();
+            try (var c = PostgresTestSupport.dataSource().getConnection()) {
+                restricted.setUrl(c.getMetaData().getURL());
+            }
+            restricted.setUser(role);
+            restricted.setPassword("test-producer");
+            var producer = new PostgresTaskStore(restricted, prefix);
+            try (var c = restricted.getConnection();
+                    var st = c.createStatement();
+                    var rs = st.executeQuery("SELECT current_user, has_sequence_privilege('" + prefix
+                            + "_task_id', 'USAGE'), has_sequence_privilege('" + prefix + "_task_id', 'SELECT')")) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getString(1)).isEqualTo(role);
+                assertThat(rs.getBoolean(2)).isTrue();
+                assertThat(rs.getBoolean(3)).isFalse();
+            }
+            assertThat(producer.idHighWaterMark()).isEqualTo(1);
+            assertThat(producer.allocateIds(3)).isEqualTo(1);
+            assertThat(producer.idHighWaterMark()).isEqualTo(4);
+            assertThat(store.allocateIds(2)).isEqualTo(4);
+            assertThat(producer.idHighWaterMark()).isEqualTo(6);
+        } finally {
+            sql("DROP OWNED BY " + role);
+            sql("DROP ROLE " + role);
+        }
     }
 
     @Test
@@ -970,8 +1007,8 @@ class PostgresTaskStoreIT {
         store.fail(t.id(), t.revision(), failure(1), null, true);
         var dead = get(t.id());
 
-        assertThat(store.retry(t.id(), dead.revision() - 1)).isFalse();
-        assertThat(store.retry(t.id(), dead.revision())).isTrue();
+        assertThat(store.retry(t.id(), dead.revision() - 1)).isEqualTo(RetryOutcome.STALE);
+        assertThat(store.retry(t.id(), dead.revision())).isEqualTo(RetryOutcome.RETRIED);
 
         var r = get(t.id());
         assertThat(r.state()).isEqualTo(TaskState.QUEUED);
@@ -979,13 +1016,13 @@ class PostgresTaskStoreIT {
         assertThat(r.attempts()).isZero();
         assertThat(r.due()).isAfterOrEqualTo(dead.stateChanged());
         assertThat(r.workerId()).isNull();
-        assertThat(r.uniqueKey()).isNull();
-        assertThat(r.keyKeep()).isNull();
+        assertThat(r.uniqueKey()).isEqualTo("r");
+        assertThat(r.keyKeep()).isEqualTo(Duration.ofHours(1));
         assertThat(r.keyUntil()).isNull();
         assertThat(r.failures()).hasSize(1);
         assertThat(r.steps()).isEqualTo(steps);
         assertThat(r.data()).isEqualTo(t.data());
-        assertThat(store.retry(t.id(), r.revision())).isFalse();
+        assertThat(store.retry(t.id(), r.revision())).isEqualTo(RetryOutcome.STALE);
         assertThat(claim(1)).extracting(TaskRecord::id).containsExactly(t.id());
     }
 
@@ -999,8 +1036,8 @@ class PostgresTaskStoreIT {
         Thread.sleep(50);
         store.expire(10);
 
-        assertThat(store.retry(cancelled, 1)).isTrue();
-        assertThat(store.retry(expired, 1)).isTrue();
+        assertThat(store.retry(cancelled, 1)).isEqualTo(RetryOutcome.RETRIED);
+        assertThat(store.retry(expired, 1)).isEqualTo(RetryOutcome.RETRIED);
         var c = get(cancelled);
         assertThat(c.cancelRequestedAt()).isNull();
         assertThat(c.cancelReason()).isNull();

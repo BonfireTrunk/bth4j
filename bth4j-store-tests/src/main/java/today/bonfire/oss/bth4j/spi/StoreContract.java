@@ -194,6 +194,20 @@ public abstract class StoreContract {
     }
 
     @Test
+    void idHighWaterMarkIsTheFirstIdNotYetAllocated() {
+        long fresh = store.idHighWaterMark();
+        assertThat(fresh).isEqualTo(1);
+        assertThat(store.idHighWaterMark()).isEqualTo(fresh);
+
+        long first = store.allocateIds(10);
+        assertThat(first).isEqualTo(fresh);
+        assertThat(store.idHighWaterMark()).isEqualTo(first + 10);
+
+        long single = store.allocateIds(1);
+        assertThat(store.idHighWaterMark()).isEqualTo(single + 1);
+    }
+
+    @Test
     void allocateWorkerIdIsUniqueAcrossCalls() {
         int a = store.allocateWorkerId("a");
         int b = store.allocateWorkerId("b");
@@ -672,6 +686,151 @@ public abstract class StoreContract {
         advance(PAST_SHORT);
         assertThat(store.purge(TaskState.DEAD, Duration.ZERO, 10)).isEqualTo(1);
         assertThat(store.getTask(t.id())).isEmpty();
+    }
+
+    @Test
+    void retryOfADeadKeyedTaskKeepsTheKeyAndHoldsItAsAnOpenTask() {
+        TaskRecord t = leased(task().uniqueKey("k").keyKeep(Duration.ofHours(1)));
+        assertThat(store.fail(t.id(), t.revision(), failure(1), null, true)).isEqualTo(FailOutcome.DEAD);
+        TaskRecord dead = get(t.id());
+        assertThat(dead.keyUntil()).isNotNull();
+        assertThat(store.retry(t.id(), dead.revision() - 1)).isEqualTo(RetryOutcome.STALE);
+        assertThat(get(t.id())).isEqualTo(dead);
+
+        assertThat(store.retry(t.id(), dead.revision())).isEqualTo(RetryOutcome.RETRIED);
+
+        TaskRecord retried = get(t.id());
+        assertThat(retried.state()).isEqualTo(TaskState.QUEUED);
+        assertThat(retried.revision()).isEqualTo(dead.revision() + 1);
+        assertThat(retried.attempts()).isZero();
+        assertThat(retried.uniqueKey()).isEqualTo("k");
+        assertThat(retried.keyKeep()).isEqualTo(Duration.ofHours(1));
+        assertThat(retried.keyUntil()).isNull();
+        assertThat(store.enqueue(task().uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(t.id()));
+        TaskRecord running = claimOne();
+        assertThat(running.id()).isEqualTo(t.id());
+        assertThat(store.enqueue(task().uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(t.id()));
+        assertThat(store.ack(running.id(), running.revision(), true, true)).isTrue();
+        assertThat(get(t.id()).keyUntil()).isNotNull();
+    }
+
+    @Test
+    void retryOfACancelledKeyedTaskKeepsTheKeyToo() {
+        long id = put(task().uniqueKey("k").keyKeep(Duration.ofHours(1)));
+        assertThat(store.cancel(id, get(id).revision(), "no")).isEqualTo(CancelOutcome.CANCELLED);
+
+        assertThat(store.retry(id, get(id).revision())).isEqualTo(RetryOutcome.RETRIED);
+
+        assertThat(get(id).uniqueKey()).isEqualTo("k");
+        assertThat(store.enqueue(task().uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(id));
+    }
+
+    @Test
+    void retryOfAnExpiredKeyedTaskKeepsTheKeyAndClearsTheDeadline() {
+        long id = put(task().uniqueKey("k").keyKeep(Duration.ofHours(1)).startBy(now().plus(SHORT)));
+        advance(PAST_SHORT);
+        assertThat(store.expire(10)).containsExactly(id);
+
+        assertThat(store.retry(id, get(id).revision())).isEqualTo(RetryOutcome.RETRIED);
+
+        assertThat(get(id).startBy()).isNull();
+        assertThat(get(id).keyUntil()).isNull();
+        assertThat(store.taskByKey("k")).contains(get(id));
+        assertThat(store.enqueue(task().uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(id));
+        assertThat(claimOne().id()).isEqualTo(id);
+    }
+
+    @Test
+    void retryKeepsTheKeyPastItsOldWindowAndStartsAFreshWindowOnCompletion() {
+        TaskRecord t = leased(task().uniqueKey("k").keyKeep(MID));
+        assertThat(store.fail(t.id(), t.revision(), failure(1), null, true)).isEqualTo(FailOutcome.DEAD);
+        Instant oldUntil = get(t.id()).keyUntil();
+        assertThat(store.retry(t.id(), get(t.id()).revision())).isEqualTo(RetryOutcome.RETRIED);
+
+        advance(PAST_MID);
+        store.releaseKeys(10);
+        assertThat(store.purge(TaskState.DEAD, Duration.ZERO, 10)).isZero();
+        assertThat(store.taskByKey("k")).contains(get(t.id()));
+        assertThat(store.enqueue(task().uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(t.id()));
+
+        TaskRecord running = claimOne();
+        assertThat(running.id()).isEqualTo(t.id());
+        assertThat(store.ack(running.id(), running.revision(), true, true)).isTrue();
+        TaskRecord finished = get(t.id());
+        assertThat(finished.keyKeep()).isEqualTo(MID);
+        assertThat(finished.keyUntil())
+                .isAfter(oldUntil)
+                .isEqualTo(finished.stateChanged().plus(MID));
+        assertThat(store.enqueue(task().uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(t.id()));
+        assertThat(store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10)).isZero();
+
+        advance(PAST_MID);
+        assertThat(store.taskByKey("k")).isEmpty();
+        put(task().uniqueKey("k"));
+    }
+
+    @Test
+    void retryAfterTheKeyWindowPassedAndAnotherTaskTookTheKeyLeavesTheNewHolder() {
+        TaskRecord t = leased(task().uniqueKey("k").keyKeep(SHORT));
+        assertThat(store.fail(t.id(), t.revision(), failure(1), null, true)).isEqualTo(FailOutcome.DEAD);
+        advance(PAST_SHORT);
+        long newer = put(task().uniqueKey("k"));
+        TaskRecord holder = get(newer);
+        TaskRecord before = get(t.id());
+
+        assertThat(store.retry(t.id(), before.revision())).isEqualTo(RetryOutcome.RETRIED);
+
+        assertThat(get(t.id()).state()).isEqualTo(TaskState.QUEUED);
+        assertThat(get(t.id()).revision()).isEqualTo(before.revision() + 1);
+        assertThat(get(t.id()).uniqueKey()).isNull();
+        assertThat(get(newer)).isEqualTo(holder);
+        assertThat(store.taskByKey("k")).contains(holder);
+        assertThat(store.enqueue(task().uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(newer));
+    }
+
+    @Test
+    void retryAfterTheKeyWindowPassedDoesNotTakeTheKey() {
+        TaskRecord t = leased(task().uniqueKey("k").keyKeep(SHORT));
+        assertThat(store.fail(t.id(), t.revision(), failure(1), null, true)).isEqualTo(FailOutcome.DEAD);
+        advance(PAST_SHORT);
+
+        assertThat(store.retry(t.id(), get(t.id()).revision())).isEqualTo(RetryOutcome.RETRIED);
+
+        assertThat(get(t.id()).uniqueKey()).isNull();
+        assertThat(get(t.id()).keyUntil()).isNull();
+        assertThat(get(t.id()).keyKeep()).isNull();
+        assertThat(store.taskByKey("k")).isEmpty();
+        long other = put(task().uniqueKey("k"));
+        assertThat(claim(2)).extracting(TaskRecord::id).containsExactlyInAnyOrder(t.id(), other);
+    }
+
+    @Test
+    void retryWithAReleasedUntilDoneKeyAllowsASecondTaskWithThatKey() {
+        TaskRecord t = dead();
+        assertThat(t.uniqueKey()).isNull();
+
+        assertThat(store.retry(t.id(), t.revision())).isEqualTo(RetryOutcome.RETRIED);
+
+        assertThat(get(t.id()).uniqueKey()).isNull();
+        assertThat(store.taskByKey("k")).isEmpty();
+        long other = put(task().uniqueKey("k"));
+        assertThat(claim(2)).extracting(TaskRecord::id).containsExactlyInAnyOrder(t.id(), other);
+    }
+
+    @Test
+    void retryOfAnUnkeyedTaskOnlyRequeuesIt() {
+        TaskRecord t = leased(task());
+        assertThat(store.fail(t.id(), t.revision(), failure(1), null, true)).isEqualTo(FailOutcome.DEAD);
+        int revision = get(t.id()).revision();
+
+        assertThat(store.retry(t.id(), revision - 1)).isEqualTo(RetryOutcome.STALE);
+        assertThat(store.retry(t.id(), revision)).isEqualTo(RetryOutcome.RETRIED);
+
+        TaskRecord retried = get(t.id());
+        assertThat(retried.state()).isEqualTo(TaskState.QUEUED);
+        assertThat(retried.uniqueKey()).isNull();
+        assertThat(retried.keyKeep()).isNull();
+        assertThat(store.retry(t.id(), retried.revision())).isEqualTo(RetryOutcome.STALE);
     }
 
     @Test
@@ -1489,7 +1648,7 @@ public abstract class StoreContract {
     void retryReturnsADeadTaskToTheQueueWithItsHistory() {
         TaskRecord t = dead();
         assertThat(t.uniqueKey()).isNull();
-        assertThat(store.retry(t.id(), t.revision())).isTrue();
+        assertThat(store.retry(t.id(), t.revision())).isEqualTo(RetryOutcome.RETRIED);
         TaskRecord r = get(t.id());
         assertThat(r.state()).isEqualTo(TaskState.QUEUED);
         assertThat(r.attempts()).isZero();
@@ -1508,14 +1667,14 @@ public abstract class StoreContract {
     }
 
     @Test
-    void retryWorksFromCancelledAndExpiredAndClearsTheKey() {
+    void retryWorksFromCancelledAndExpiredWithReleasedKeys() {
         TaskRecord c = cancelled();
-        assertThat(store.retry(c.id(), c.revision())).isTrue();
+        assertThat(store.retry(c.id(), c.revision())).isEqualTo(RetryOutcome.RETRIED);
         assertThat(get(c.id()).state()).isEqualTo(TaskState.QUEUED);
         assertThat(get(c.id()).cancelReason()).isNull();
         assertThat(get(c.id()).uniqueKey()).isNull();
         TaskRecord e = expired();
-        assertThat(store.retry(e.id(), e.revision())).isTrue();
+        assertThat(store.retry(e.id(), e.revision())).isEqualTo(RetryOutcome.RETRIED);
         assertThat(get(e.id()).state()).isEqualTo(TaskState.QUEUED);
         assertThat(get(e.id()).attempts()).isZero();
         long other = put(task().uniqueKey("k"));
@@ -1528,17 +1687,23 @@ public abstract class StoreContract {
     @Test
     void retryRefusesOtherStatesAndStaleRevisions() {
         TaskRecord q = get(putNew());
-        assertThat(store.retry(q.id(), q.revision())).isFalse();
+        assertThat(store.retry(q.id(), q.revision())).isEqualTo(RetryOutcome.STALE);
+        assertThat(get(q.id())).isEqualTo(q);
+        TaskRecord scheduled = get(put(task().due(now().plus(Duration.ofHours(1)))));
+        assertThat(store.retry(scheduled.id(), scheduled.revision())).isEqualTo(RetryOutcome.STALE);
+        assertThat(get(scheduled.id())).isEqualTo(scheduled);
         TaskRecord l = claimOne();
         assertThat(l.id()).isEqualTo(q.id());
-        assertThat(store.retry(l.id(), l.revision())).isFalse();
+        assertThat(store.retry(l.id(), l.revision())).isEqualTo(RetryOutcome.STALE);
+        assertThat(get(l.id())).isEqualTo(l);
         assertThat(store.ack(l.id(), l.revision(), true, true)).isTrue();
         TaskRecord s = get(l.id());
-        assertThat(store.retry(s.id(), s.revision())).isFalse();
+        assertThat(store.retry(s.id(), s.revision())).isEqualTo(RetryOutcome.STALE);
+        assertThat(get(s.id())).isEqualTo(s);
         TaskRecord d = dead();
-        assertThat(store.retry(d.id(), d.revision() - 1)).isFalse();
-        assertThat(get(d.id()).state()).isEqualTo(TaskState.DEAD);
-        assertThat(store.retry(store.allocateIds(1), 1)).isFalse();
+        assertThat(store.retry(d.id(), d.revision() - 1)).isEqualTo(RetryOutcome.STALE);
+        assertThat(get(d.id())).isEqualTo(d);
+        assertThat(store.retry(store.allocateIds(1), 1)).isEqualTo(RetryOutcome.STALE);
     }
 
     @Test
@@ -1713,7 +1878,7 @@ public abstract class StoreContract {
         assertThat(counts()).isEqualTo(new StateCounts(1, 1, 1, 0, 0, 1, 0));
         assertThat(store.finishCancelled(l.id(), l.revision(), "x", true)).isTrue();
         assertThat(counts()).isEqualTo(new StateCounts(1, 1, 0, 0, 0, 2, 0));
-        assertThat(store.retry(a, get(a).revision())).isTrue();
+        assertThat(store.retry(a, get(a).revision())).isEqualTo(RetryOutcome.RETRIED);
         assertThat(counts()).isEqualTo(new StateCounts(2, 1, 0, 0, 0, 1, 0));
         assertThat(store.delete(c, get(c).revision())).isTrue();
         assertThat(store.delete(b, get(b).revision())).isTrue();
@@ -1823,7 +1988,7 @@ public abstract class StoreContract {
     void retryOfAnExpiredTaskClearsStartByAndTheTaskIsClaimable() {
         TaskRecord e = expired();
         assertThat(e.startBy()).isNotNull();
-        assertThat(store.retry(e.id(), e.revision())).isTrue();
+        assertThat(store.retry(e.id(), e.revision())).isEqualTo(RetryOutcome.RETRIED);
         assertThat(get(e.id()).startBy()).isNull();
         advance(PAST_SHORT);
         assertThat(store.expire(10)).isEmpty();
@@ -2538,13 +2703,16 @@ public abstract class StoreContract {
     }
 
     @Test
-    void taskByKeyIsEmptyAfterAnOperatorRetryClearedTheKey() {
+    void taskByKeyReturnsTheRetriedTaskInsideItsKeepWindow() {
         TaskRecord t = leased(task().uniqueKey("k").keyKeep(Duration.ofHours(1)));
         assertThat(store.fail(t.id(), t.revision(), failure(1), null, true)).isEqualTo(FailOutcome.DEAD);
         assertThat(store.taskByKey("k")).isPresent();
-        assertThat(store.retry(t.id(), get(t.id()).revision())).isTrue();
+        assertThat(store.retry(t.id(), get(t.id()).revision())).isEqualTo(RetryOutcome.RETRIED);
 
-        assertThat(store.taskByKey("k")).isEmpty();
+        assertThat(store.taskByKey("k")).contains(get(t.id()));
+        TaskRecord running = claimOne();
+        assertThat(running.id()).isEqualTo(t.id());
+        assertThat(store.taskByKey("k")).contains(running);
     }
 
     @Test

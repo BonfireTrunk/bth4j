@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.Optional;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
+import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
@@ -15,7 +16,7 @@ import today.bonfire.oss.bth4j.spi.WorkerInfo;
  * issues; {@link BackgroundRunner#admin()} gives one that also reports the runner it belongs to.
  * <p>
  * Every change to a task takes the revision the operator saw; a stale revision changes nothing and is
- * reported as false or {@link CancelOutcome#STALE}.
+ * reported as false, {@link CancelOutcome#STALE} or {@link RetryOutcome#STALE}.
  */
 public interface AdminOps {
     Map<String, StateCounts> counts();
@@ -26,7 +27,12 @@ public interface AdminOps {
 
     Optional<TaskView> task(long id);
 
-    /** @return the task that holds the unique key now, open or finished inside its keep window; empty when none does */
+    /**
+     * An operator retry inside the keep window retains the key, so this lookup returns the retried task.
+     * A retry after the key was released runs without it and cannot be found by that key.
+     *
+     * @return the task that holds the unique key now, open or finished inside its keep window; empty when none does
+     */
     Optional<TaskView> taskByKey(String key);
 
     /**
@@ -43,13 +49,25 @@ public interface AdminOps {
      */
     TaskViewPage tasks(TaskState state, String queue, String cursor, int limit);
 
-    boolean retry(long id, int revision);
+    /**
+     * Requeues a DEAD, CANCELLED or EXPIRED task with attempts reset and revision incremented; failures and
+     * steps are kept. A key still held inside its keep window is retained without expiry while the task is
+     * open, and its keep window applies again when it finishes. A released key is not taken again: the retry
+     * runs without a key, and an enqueue with that key is accepted as a second task when no other task holds it.
+     *
+     * @return {@link RetryOutcome#RETRIED} on success, {@link RetryOutcome#STALE} for a missing task or a
+     *         revision or state mismatch, or {@link RetryOutcome#DUPLICATE} when another task holds the key;
+     *         either refusal changes nothing
+     */
+    RetryOutcome retry(long id, int revision);
 
     CancelOutcome cancel(long id, int revision, String reason);
 
     /**
      * Cancels the task that holds the unique key, with the revision read for it, as {@link #cancel(long, int, String)}
      * does by id; cancelling a waiting fixed-delay occurrence (key {@code sched:<schedule id>}) pauses its schedule.
+     * A task retried inside its keep window is still reachable by key. A retry after key release is not;
+     * this operation targets the current holder, which may be a different task.
      *
      * @return {@link CancelOutcome#NOT_FOUND} when no task holds the key, {@link CancelOutcome#FINISHED} when the
      *         holder has already finished (it only keeps the key for its window), {@link CancelOutcome#STALE} when it

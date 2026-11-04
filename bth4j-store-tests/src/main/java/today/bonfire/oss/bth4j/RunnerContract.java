@@ -25,9 +25,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
+import today.bonfire.oss.bth4j.exceptions.TaskLeaseLostException;
 import today.bonfire.oss.bth4j.exceptions.TaskRescheduleException;
 import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.FullStore;
+import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.TaskState;
 
 /**
@@ -196,6 +200,90 @@ public abstract class RunnerContract {
         var done = awaitState(id, TaskState.SUCCEEDED);
         assertThat(done.data()).isNull();
         assertThat(done.leaseUntil()).isNull();
+    }
+
+    @Test
+    void callerIdIsComparedWithTheStoredTask() {
+        long id = client.nextId();
+        var request = TaskRequest.of(PAYLOAD_TYPE, new Payload("one", 1)).id(id).build();
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("two", 1))
+                        .id(id)
+                        .build()))
+                .isInstanceOf(TaskIdReusedException.class);
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID_TYPE).id(id).build()))
+                .isInstanceOf(TaskIdReusedException.class);
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("one", 1))
+                        .queue("Q:LOW")
+                        .id(id)
+                        .build()))
+                .isInstanceOf(TaskIdReusedException.class);
+        assertThatThrownBy(() -> client.enqueueAll(
+                        List.of(TaskRequest.of(VOID_TYPE).id(id).build())))
+                .isInstanceOf(TaskIdReusedException.class);
+
+        startRunner(r -> r.register(PAYLOAD_TYPE, (ctx, payload) -> {}));
+        var done = awaitState(id, TaskState.SUCCEEDED);
+        assertThat(done.data()).isNull();
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("two", 1))
+                        .id(id)
+                        .build()))
+                .isEqualTo(new EnqueueResult.Accepted(id));
+        assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID_TYPE).id(id).build()))
+                .isInstanceOf(TaskIdReusedException.class);
+    }
+
+    @Test
+    void resendAfterOperatorRetryAcceptsAReleasedKey() {
+        long id = client.nextId();
+        var request = TaskRequest.of(VOID_TYPE).uniqueKey("released-key").id(id).build();
+        client.enqueue(request);
+        var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {
+            throw new TaskUnrecoverableException("done");
+        }));
+        var dead = awaitState(id, TaskState.DEAD);
+        runner.admin().pauseQueue("Q:DEF", true);
+        assertThat(dead.uniqueKey()).isNull();
+        assertThat(client.admin().retry(id, dead.revision())).isEqualTo(RetryOutcome.RETRIED);
+        assertThat(client.task(id).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
+        assertThat(client.task(id).orElseThrow().uniqueKey()).isNull();
+
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueueAll(List.of(request))).containsExactly(new EnqueueResult.Accepted(id));
+        assertThat(client.counts().get("Q:DEF").queued()).isEqualTo(1);
+    }
+
+    @Test
+    void generatedIdCollisionsAbandonTheClientsCurrentBlock() {
+        for (boolean batch : List.of(false, true)) {
+            var producer = TaskClient.builder().store(store).idBlockSize(4).build();
+            long first = producer.nextId();
+            long occupied = first + 1;
+            client.enqueue(TaskRequest.of(VOID_TYPE).id(occupied).build());
+            var request = TaskRequest.of(VOID_TYPE).build();
+
+            var result = batch ? producer.enqueueAll(List.of(request)).getFirst() : producer.enqueue(request);
+
+            assertThat(result).isEqualTo(new EnqueueResult.Accepted(first + 4));
+            assertThat(store.getTask(occupied)).isPresent();
+            assertThat(store.getTask(result.id())).isPresent();
+        }
+        assertThat(client.counts().get("Q:DEF").queued()).isEqualTo(4);
+    }
+
+    @Test
+    void callerIdThatWasNeverAllocatedIsRejected() {
+        long unallocated = store.idHighWaterMark();
+        assertThatThrownBy(() ->
+                        client.enqueue(TaskRequest.of(VOID_TYPE).id(unallocated).build()))
+                .isInstanceOf(TaskValidationException.class);
+
+        long id = client.nextId();
+        assertThat(client.enqueue(TaskRequest.of(VOID_TYPE).id(id).build()).accepted())
+                .isTrue();
     }
 
     @Test
@@ -620,7 +708,7 @@ public abstract class RunnerContract {
         assertThat(runner.admin().cancel(id, queued.revision(), null))
                 .isEqualTo(today.bonfire.oss.bth4j.spi.CancelOutcome.STALE);
 
-        assertThat(runner.admin().retry(id, cancelled.revision())).isTrue();
+        assertThat(runner.admin().retry(id, cancelled.revision())).isEqualTo(RetryOutcome.RETRIED);
         runner.resume();
         awaitState(id, TaskState.SUCCEEDED);
         assertThat(ran.await(20, TimeUnit.SECONDS)).isTrue();
@@ -658,6 +746,93 @@ public abstract class RunnerContract {
 
         var done = awaitState(id, TaskState.CANCELLED);
         assertThat(done.cancelReason()).isEqualTo("wake up");
+    }
+
+    @Test
+    void lostLeaseInterruptsAnOptedInProcessorWithoutFinishingTheTask() throws Exception {
+        var type = TaskType.of("rc-lost-lease").interruptOnCancel();
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var interrupted = new CountDownLatch(1);
+        var events = new CopyOnWriteArrayList<TaskEvent>();
+        var runner = startRunner(
+                b -> b.observer(events::add),
+                r -> r.register(type, (ctx, payload) -> {
+                    started.countDown();
+                    try {
+                        release.await(30, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        interrupted.countDown();
+                        throw e;
+                    }
+                }));
+        try {
+            long id = enqueue(TaskRequest.of(type).build());
+            assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
+            runner.admin().pauseQueue("Q:DEF", true);
+            var running = client.task(id).orElseThrow();
+            assertThat(store.unclaim(id, running.revision())).isTrue();
+
+            assertThat(interrupted.await(5, TimeUnit.SECONDS)).isTrue();
+            await("the lost attempt to stop", () -> runner.runningTasks() == 0);
+
+            var task = client.task(id).orElseThrow();
+            assertThat(task.state()).isEqualTo(TaskState.QUEUED);
+            assertThat(task.revision()).isEqualTo(running.revision() + 1);
+            assertThat(task.failures()).isEmpty();
+            assertThat(eventNames(events, id)).containsExactly("Started", "Retrying");
+            assertThat(events.stream()
+                            .filter(e -> e instanceof TaskEvent.Retrying)
+                            .toList())
+                    .singleElement()
+                    .isInstanceOfSatisfying(TaskEvent.Retrying.class, e -> {
+                        assertThat(e.outcome()).isEqualTo(TaskEvent.Outcome.LOST);
+                        assertThat(e.error()).isInstanceOf(TaskLeaseLostException.class);
+                    });
+            await(
+                    "the lease-lost issue",
+                    () -> runner.issues().stream().anyMatch(i -> i.kind().equals("lease-lost")));
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    void lostLeaseWithoutOptInWaitsForTheProcessorToCheck() throws Exception {
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var stopped = new AtomicReference<Throwable>();
+        var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {
+            started.countDown();
+            try {
+                release.await(30, TimeUnit.SECONDS);
+                ctx.checkCancelled();
+            } catch (Exception e) {
+                stopped.set(e);
+                throw e;
+            }
+        }));
+        try {
+            long id = enqueue(TaskRequest.of(VOID_TYPE).build());
+            assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
+            runner.admin().pauseQueue("Q:DEF", true);
+            var running = client.task(id).orElseThrow();
+            assertThat(store.unclaim(id, running.revision())).isTrue();
+            await(
+                    "the lease-lost issue",
+                    () -> runner.issues().stream().anyMatch(i -> i.kind().equals("lease-lost")));
+            assertThat(stopped.get()).isNull();
+            assertThat(runner.runningTasks()).isEqualTo(1);
+
+            release.countDown();
+            await("the lost attempt to stop", () -> runner.runningTasks() == 0);
+
+            assertThat(stopped.get()).isInstanceOf(TaskLeaseLostException.class);
+            assertThat(client.task(id).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
+            assertThat(client.task(id).orElseThrow().failures()).isEmpty();
+        } finally {
+            release.countDown();
+        }
     }
 
     @Test
@@ -862,10 +1037,10 @@ public abstract class RunnerContract {
         startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));
         registerLate(
                 "late-catch",
-                "* * * * *",
+                farCron(),
                 today.bonfire.oss.bth4j.spi.RecurringDefinition.MISFIRE_CATCH_UP,
                 2,
-                Duration.ofMinutes(10));
+                Duration.ofHours(10));
 
         await("two catch-up runs", () -> runs.get() == 2);
         await("a future fire time", () -> client.schedules().get("late-catch").isAfter(Instant.now()));

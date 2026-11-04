@@ -31,6 +31,7 @@ import today.bonfire.oss.bth4j.spi.PromoteResult;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
+import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
@@ -97,6 +98,16 @@ public final class InMemoryStore implements FullStore {
 
     @Override
     public void init() {}
+
+    @Override
+    public long idHighWaterMark() {
+        lock.lock();
+        try {
+            return nextTaskId;
+        } finally {
+            lock.unlock();
+        }
+    }
 
     @Override
     public long allocateIds(int count) {
@@ -937,7 +948,7 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public boolean retry(long id, int revision) {
+    public RetryOutcome retry(long id, int revision) {
         lock.lock();
         try {
             TaskRecord t = tasks.get(id);
@@ -946,11 +957,25 @@ public final class InMemoryStore implements FullStore {
                     || (t.state() != TaskState.DEAD
                             && t.state() != TaskState.CANCELLED
                             && t.state() != TaskState.EXPIRED)) {
-                return false;
+                return RetryOutcome.STALE;
             }
             Instant now = clock.instant();
-            if (t.uniqueKey() != null) {
-                keyHolders.remove(t.uniqueKey(), id);
+            String key = t.uniqueKey();
+            if (key != null && t.keyUntil() != null && !t.keyUntil().isAfter(now)) {
+                releaseKey(id);
+                t = tasks.get(id);
+                key = null;
+            }
+            if (key != null) {
+                Long holderId = keyHolders.get(key);
+                if (holderId != null && holderId != id) {
+                    TaskRecord holder = tasks.get(holderId);
+                    if (holder != null && keyHeld(holder, now)) {
+                        return RetryOutcome.DUPLICATE;
+                    }
+                    releaseKey(holderId);
+                }
+                keyHolders.put(key, id);
             }
             tasks.put(
                     id,
@@ -964,12 +989,11 @@ public final class InMemoryStore implements FullStore {
                             .cancelReason(null)
                             .workerId(null)
                             .leaseUntil(null)
-                            .keyKeep(null)
+                            .keyKeep(key != null ? t.keyKeep() : null)
                             .keyUntil(null)
-                            .uniqueKey(null)
                             .startBy(null)
                             .build());
-            return true;
+            return RetryOutcome.RETRIED;
         } finally {
             lock.unlock();
         }

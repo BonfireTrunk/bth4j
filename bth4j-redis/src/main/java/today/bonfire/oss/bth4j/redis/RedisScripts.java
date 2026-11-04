@@ -170,9 +170,12 @@ final class RedisScripts {
 
             -- fields come from ARGV[from..]. Returns {0} when the id exists, {2, id} when the unique key is
             -- held, {1} when stored. A k: string without TTL whose task is gone is stale and is overwritten.
-            local function store(id, dueArg, uk, qid, sb, data, from, forceScheduled)
+            local function store(id, dueArg, uk, qid, sb, data, from, forceScheduled, token)
               local tkey = P .. 't:' .. id
-              if redis.call('EXISTS', tkey) == 1 then return {0, ''} end
+              if redis.call('EXISTS', tkey) == 1 then
+                if token and redis.call('HGET', tkey, 'wt') == token then return {1, ''} end
+                return {0, ''}
+              end
               if uk then
                 local kkey = P .. 'k:' .. uk
                 local holder = redis.call('SET', kkey, id, 'NX', 'GET')
@@ -205,14 +208,14 @@ final class RedisScripts {
 
     /**
      * ARGV: id, due ms or '', unique key or '', queue id, start-by ms or '', has payload (1 or ''), payload,
-     * then field/value pairs. Returns {code, existing id}.
+     * then field/value pairs ending with wt and the write token. Returns {code, existing id}.
      */
     static final String ENQUEUE = PRELUDE + """
             local uk = ARGV[4] ~= '' and ARGV[4] or nil
             local due = ARGV[3] ~= '' and ARGV[3] or nil
             local sb = ARGV[6] ~= '' and ARGV[6] or nil
             local data = ARGV[7] == '1' and ARGV[8] or nil
-            return store(ARGV[2], due, uk, ARGV[5], sb, data, 9, false)
+            return store(ARGV[2], due, uk, ARGV[5], sb, data, 9, false, ARGV[#ARGV])
             """;
 
     /**
@@ -687,24 +690,39 @@ final class RedisScripts {
 
     /**
      * ARGV: id, revision. DEAD, CANCELLED or EXPIRED back to QUEUED. The start-by time is cleared as well, so a
-     * retried EXPIRED task is not expired again. Steps and failures stay. Returns 1, or 0 on a mismatch.
+     * retried EXPIRED task is not expired again. Steps and failures stay. A task that still has its uk field
+     * (its keep window is open, so the field has not expired) becomes the open holder of the key again: k: is
+     * taken with the SET NX GET that STORE uses and loses its expiry, and uk and kk are rewritten so they lose
+     * theirs, while ku goes. Returns 1, 0 on a mismatch, or 2 when another task holds the key; nothing changes
+     * then.
      */
     static final String RETRY = PRELUDE + """
             local id = ARGV[2]
             local tkey = P .. 't:' .. id
-            local v = redis.call('HMGET', tkey, 'rev', 'state', 'q', 'uk')
+            local v = redis.call('HMGET', tkey, 'rev', 'state', 'q', 'uk', 'kk')
             if v[1] ~= ARGV[3] then return 0 end
             local state = tonumber(v[2])
             if state < 4 or state > 6 then return 0 end
             local at = now()
-            move(id, v[3], state, 0, at, at)
-            zrem(P .. 'startby', id)
+            local f = {'state', 0, 'sc', at, 'rev', tonumber(v[1]) + 1, 'due', at, 'att', 0}
             if v[4] then
               local kkey = P .. 'k:' .. v[4]
-              if redis.call('GET', kkey) == id then redis.call('DEL', kkey) end
+              local holder = redis.call('SET', kkey, id, 'NX', 'GET')
+              if holder then
+                if holder ~= id and (redis.call('PTTL', kkey) ~= -1 or redis.call('EXISTS', P .. 't:' .. holder) == 1) then
+                  return 2
+                end
+                redis.call('SET', kkey, id)
+              end
+              f[#f + 1] = 'uk'; f[#f + 1] = v[4]
+              if v[5] then f[#f + 1] = 'kk'; f[#f + 1] = v[5] end
+            else
+              redis.call('HDEL', tkey, 'kk')
             end
-            redis.call('HSET', tkey, 'state', 0, 'sc', at, 'rev', tonumber(v[1]) + 1, 'due', at, 'att', 0)
-            redis.call('HDEL', tkey, 'wid', 'lease', 'cra', 'crs', 'kk', 'ku', 'uk', 'sb')
+            move(id, v[3], state, 0, at, at)
+            zrem(P .. 'startby', id)
+            redis.call('HSET', tkey, unpack(f))
+            redis.call('HDEL', tkey, 'wid', 'lease', 'cra', 'crs', 'ku', 'sb')
             flush()
             return 1
             """;

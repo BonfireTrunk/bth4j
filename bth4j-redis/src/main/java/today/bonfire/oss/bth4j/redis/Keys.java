@@ -18,7 +18,8 @@ package today.bonfire.oss.bth4j.redis;
  * them without scanning; an id leaves it on claim, cancel, delete and expire and returns when a task goes back to
  * QUEUED or SCHEDULED</li>
  * <li>{@code t:<id>} task hash, only non-null fields and every value under 64 bytes so that it stays a
- * listpack; never expires, only purge removes it. {@code lease} is only meaningful while LEASED and
+ * listpack; never expires, only purge removes it. {@code wt} is the enqueue write token, which lets a
+ * transport resend return stored without writing again. {@code lease} is only meaningful while LEASED and
  * {@code wid} only while LEASED or terminal: the transitions leave them in place and the reader ignores them</li>
  * <li>{@code d:<id>} string with the payload; {@code st:<id>} string with the steps JSON; {@code f:<id>} list
  * of failures, one JSON object each, the last {@link RedisScripts#MAX_FAILURES} kept</li>
@@ -42,6 +43,7 @@ public final class Keys {
 
     public static final String F_REVISION = "rev";
     public static final String F_QUEUE = "q";
+    public static final String F_WRITE_TOKEN = "wt";
     public static final String F_EVENT = "ev";
     public static final String F_PAYLOAD_VERSION = "pv";
     public static final String F_STATE = "state";
