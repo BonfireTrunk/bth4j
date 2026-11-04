@@ -56,7 +56,7 @@ class DefaultVtExecutorTest {
     @Test
     void executeRunsTasksAndReleasesPermits() throws InterruptedException {
         var executor = newExecutor();
-        int permits = executor.getAvailablePermits();
+        int permits = executor.availablePermits();
         int tasks = Math.min(permits, 4);
         assertThat(executor.reserve(tasks, Duration.ofSeconds(1))).isEqualTo(tasks);
         var latch = new CountDownLatch(tasks);
@@ -66,18 +66,18 @@ class DefaultVtExecutorTest {
         }
 
         assertThat(latch.await(10, TimeUnit.SECONDS)).isTrue();
-        awaitTrue(() -> executor.activeCount() == 0 && executor.getAvailablePermits() >= permits);
+        awaitTrue(() -> executor.activeCount() == 0 && executor.availablePermits() >= permits);
     }
 
     @Test
     void reserveReturnsBetweenOneAndMaxWhenSlotsAreFree() throws InterruptedException {
         var executor = newExecutor();
-        int permits = executor.getAvailablePermits();
+        int permits = executor.availablePermits();
 
         int reserved = executor.reserve(permits + 5, Duration.ofSeconds(1));
 
         assertThat(reserved).isBetween(1, permits);
-        assertThat(executor.getAvailablePermits()).isEqualTo(permits - reserved);
+        assertThat(executor.availablePermits()).isEqualTo(permits - reserved);
     }
 
     @Test
@@ -89,7 +89,7 @@ class DefaultVtExecutorTest {
     @Test
     void reserveReturnsZeroWhenAllSlotsAreReservedAndReleaseMakesThemAvailable() throws InterruptedException {
         var executor = newExecutor();
-        int permits = executor.getAvailablePermits();
+        int permits = executor.availablePermits();
         assertThat(executor.reserve(permits, Duration.ofSeconds(1))).isEqualTo(permits);
 
         assertThat(executor.reserve(1, SHORT)).isZero();
@@ -101,7 +101,7 @@ class DefaultVtExecutorTest {
     @Test
     void executeConsumesOneReservedSlotAndFreesItWhenTheTaskFinishes() throws InterruptedException {
         var executor = newExecutor();
-        int permits = executor.getAvailablePermits();
+        int permits = executor.availablePermits();
         assertThat(executor.reserve(permits, Duration.ofSeconds(1))).isEqualTo(permits);
         var started = new CountDownLatch(1);
         var release = new CountDownLatch(1);
@@ -117,14 +117,14 @@ class DefaultVtExecutorTest {
     @Test
     void failedTaskReleasesItsSlot() throws InterruptedException {
         var executor = newExecutor();
-        int permits = executor.getAvailablePermits();
+        int permits = executor.availablePermits();
         assertThat(executor.reserve(1, Duration.ofSeconds(1))).isEqualTo(1);
 
         executor.execute(() -> {
             throw new IllegalStateException("simulated task failure");
         });
 
-        awaitTrue(() -> executor.activeCount() == 0 && executor.getAvailablePermits() >= permits);
+        awaitTrue(() -> executor.activeCount() == 0 && executor.availablePermits() >= permits);
     }
 
     @Test
@@ -145,13 +145,13 @@ class DefaultVtExecutorTest {
     @Test
     void executeAfterShutdownIsRejectedAndFreesTheReservedSlot() throws InterruptedException {
         var executor = newExecutor();
-        int permits = executor.getAvailablePermits();
+        int permits = executor.availablePermits();
         assertThat(executor.reserve(permits, Duration.ofSeconds(1))).isEqualTo(permits);
         executor.shutdown();
 
         assertThatThrownBy(() -> executor.execute(() -> {})).isInstanceOf(RejectedExecutionException.class);
 
-        assertThat(executor.getAvailablePermits()).isEqualTo(1);
+        assertThat(executor.availablePermits()).isEqualTo(1);
         assertThat(executor.reserve(1, SHORT)).isEqualTo(1);
         assertThat(executor.activeCount()).isZero();
     }
@@ -183,15 +183,14 @@ class DefaultVtExecutorTest {
     @Test
     void initialLimitIsTheNumberOfProcessors() {
         var executor = newExecutor();
-        assertThat(executor.getCurrentMaxThreads())
-                .isEqualTo(Runtime.getRuntime().availableProcessors());
-        assertThat(executor.getAvailablePermits()).isEqualTo(executor.getCurrentMaxThreads());
+        assertThat(executor.currentMaxThreads()).isEqualTo(Runtime.getRuntime().availableProcessors());
+        assertThat(executor.availablePermits()).isEqualTo(executor.currentMaxThreads());
     }
 
     @Test
     void maxConcurrencyBelowMinimumIsClampedToMinimum() {
         var executor = new DefaultVtExecutor(4, 2);
         created.add(executor);
-        assertThat(executor.getCurrentMaxThreads()).isEqualTo(4);
+        assertThat(executor.currentMaxThreads()).isEqualTo(4);
     }
 }

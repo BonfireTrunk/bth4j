@@ -309,7 +309,7 @@ public final class TaskClient {
         }
         var b = TaskRecord.builder()
                 .id(id)
-                .queueId(names.queueId(queues.getValidQueue(request.queue())))
+                .queueId(names.queueId(queues.validQueue(request.queue())))
                 .typeId(names.typeId(type.name()))
                 .payloadVersion(type.payloadVersion())
                 .state(due != null && due.isAfter(now) ? TaskState.SCHEDULED : TaskState.QUEUED)
@@ -376,7 +376,7 @@ public final class TaskClient {
                 definition.id(),
                 names.typeId(type.name()),
                 type.payloadVersion(),
-                names.queueId(queues.getValidQueue(definition.queue())),
+                names.queueId(queues.validQueue(definition.queue())),
                 definition.account(),
                 definition.cron(),
                 definition.zone() == null ? null : definition.zone().getId(),
@@ -442,7 +442,7 @@ public final class TaskClient {
      * @throws IllegalArgumentException if the cursor is malformed
      */
     public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
-        var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.getValidQueue(queue)));
+        var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.validQueue(queue)));
         var page = store.tasks(state, queueId, cursor, limit);
         var result = new ArrayList<TaskView>();
         for (var r : page.items()) result.add(names.view(r));

@@ -23,7 +23,7 @@ public final class QueuesHolder {
      * @return the given queue name, or the default queue when it is blank
      * @throws TaskValidationException if the queue is not one of the available queues
      */
-    public String getValidQueue(String queueName) {
+    public String validQueue(String queueName) {
         if (StringUtils.isBlank(queueName)) {
             return defaultQueue;
         }

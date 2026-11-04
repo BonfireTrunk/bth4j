@@ -65,7 +65,7 @@ public final class DefaultAdminOps implements AdminOps {
 
     @Override
     public void pauseQueue(String queue, boolean paused) {
-        store.pauseQueue(names.queueId(queues.getValidQueue(queue)), paused);
+        store.pauseQueue(names.queueId(queues.validQueue(queue)), paused);
     }
 
     @Override
@@ -80,7 +80,7 @@ public final class DefaultAdminOps implements AdminOps {
 
     @Override
     public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
-        var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.getValidQueue(queue)));
+        var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.validQueue(queue)));
         var page = store.tasks(state, queueId, cursor, limit);
         var result = new ArrayList<TaskView>();
         for (var r : page.items()) result.add(names.view(r));
