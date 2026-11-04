@@ -58,6 +58,28 @@ public final class TaskRequest<T> {
         this.id = b.id;
     }
 
+    private TaskRequest(TaskRequest<T> source, long id) {
+        this.type = source.type;
+        this.payload = source.payload;
+        this.queue = source.queue;
+        this.account = source.account;
+        this.at = source.at;
+        this.delay = source.delay;
+        this.uniqueKey = source.uniqueKey;
+        this.uniqueness = source.uniqueness;
+        this.maxAttempts = source.maxAttempts;
+        this.headers = source.headers;
+        this.startBy = source.startBy;
+        this.maxRun = source.maxRun;
+        this.retryPolicy = source.retryPolicy;
+        this.id = positiveId(id);
+    }
+
+    private static long positiveId(long id) {
+        if (id <= 0) throw new TaskValidationException("id must be positive");
+        return id;
+    }
+
     public static <T> Builder<T> of(TaskType<T> type, T payload) {
         if (type == null) throw new TaskValidationException("type is required");
         if (type.hasPayload() && payload == null) {
@@ -130,6 +152,15 @@ public final class TaskRequest<T> {
     /** @return the id the caller reserved for this task, or null when the client allocates one */
     public Long id() {
         return id;
+    }
+
+    /**
+     * Copies this request with an allocated id; all other fields, including the payload, are preserved.
+     *
+     * @throws TaskValidationException when the id is not positive
+     */
+    public TaskRequest<T> withId(long id) {
+        return new TaskRequest<>(this, id);
     }
 
     public static final class Builder<T> {
@@ -244,7 +275,8 @@ public final class TaskRequest<T> {
 
         /**
          * Uses an id allocated by a client of this namespace: {@link TaskClient#nextId()}, or an id an
-         * {@link today.bonfire.oss.bth4j.exceptions.EnqueueFailedException} carries. Enqueueing the same request,
+         * {@link today.bonfire.oss.bth4j.exceptions.EnqueueFailedException} carries outside its
+         * {@code notStored()} positions. Enqueueing the same request,
          * encoded identically, with the same id twice stores the task once, which makes a retry after a lost
          * reply safe. An id that was never allocated is rejected with a {@link TaskValidationException} when
          * the request is enqueued. An id that already belongs to a task is accepted again only when the stored
@@ -255,8 +287,7 @@ public final class TaskRequest<T> {
          * are not compared. Never invent an id.
          */
         public Builder<T> id(long id) {
-            if (id <= 0) throw new TaskValidationException("id must be positive");
-            this.id = id;
+            this.id = positiveId(id);
             return this;
         }
 

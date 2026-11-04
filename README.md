@@ -211,7 +211,7 @@ most 8192, and all step names and encoded results of a task together at most 655
 | `maxRun(duration)` | an attempt running longer is asked to stop, see "Cancelling tasks" |
 | `retryPolicy(name)` | a retry policy registered on the runner with that name, see "Retries" |
 | `account(text)`, `header(name, value)` | application labels, stored with the task (8 KiB of headers) |
-| `id(id)` | an id the client allocated (`client.nextId()` or `EnqueueFailedException.ids()`), see below |
+| `id(id)` | an id the client allocated (`client.nextId()` or a retry prepared with `EnqueueFailedException.retryRequests(...)`), see below |
 
 `enqueue` returns `Accepted(id)` or `Duplicate(existingId)`; `enqueueAll` stores many requests in chunks.
 `client.taskByKey(key)` (and `admin.taskByKey(key)`) reads the task that holds a unique key now, open or finished
@@ -271,9 +271,9 @@ try {
 }
 ```
 
-Ids must be allocated by a client of this namespace: `client.nextId()` or `EnqueueFailedException.ids()`. An id
-that was never allocated is rejected with a `TaskValidationException`. An id that already belongs to a task is
-accepted again only for the same request, encoded identically: the stored task is compared on type, queue, the
+Ids must be allocated by a client of this namespace: `client.nextId()` or an exception id outside its
+`notStored()` positions. An id that was never allocated is rejected with a `TaskValidationException`. An id
+that already belongs to a task is accepted again only for the same request, encoded identically: the stored task is compared on type, queue, the
 payload as stored text (when the task still has it; a finished task may have dropped it) and the unique key
 (only while the stored task holds one, even after an operator retry). Headers, account, attempts, retry policy,
 `startBy`, `maxRun`, delay, `at(...)`, the `keepFor` duration and payload version are not compared. Any other
@@ -289,18 +289,43 @@ another run, even when the task is DEAD. Use `AdminOps.retry` to run a dead task
 
 An empty `EnqueueFailedException.ids()` means nothing was written by this call: resend the **same requests
 unchanged**, keeping any ids you set yourself. For a batch, failure during the high-water read or initial
-reservation returns empty ids; after reservation, failures carry every request's id in request order. A single
-`enqueue` retains its caller id even if the high-water read fails. Non-empty ids mean tasks may already be
-stored, so set those ids on the retry. This prevents duplicates only while the original tasks are retained;
-after purge, the same allocated id stores a new task.
+reservation returns empty ids; after reservation, failures carry every request's last assigned id in request
+order. A single `enqueue` retains its caller id even if the high-water read fails, and carries a generated id
+only once it tried to write it.
+
+For a failed batch, call `retryRequests` with the list that just failed, in the same order. If the retry fails
+too, prepare the next one from the retry list, not the original, or the ids of tasks the first call may have
+stored are lost and those tasks are stored twice:
+
+```java
+List<? extends TaskRequest<?>> batch = requests;
+for (int attempt = 1; ; attempt++) {
+    try {
+        client.enqueueAll(batch);
+        break;
+    } catch (EnqueueFailedException e) {
+        if (attempt == 3) throw e;
+        batch = e.retryRequests(batch);
+    }
+}
+```
+
+`notStored()` contains zero-based positions of generated-id requests this call knows it did not write:
+confirmed collisions and requests in unattempted chunks, including failures before the first write.
+**Do not reuse the ids at those positions:** they may belong to other tasks, even with identical content.
+`retryRequests` leaves those requests without an id so the client generates fresh ids. It sets the last
+assigned id on other positions, including writes whose replies were lost, and always preserves caller-set
+ids. With empty `ids()`, it returns every request unchanged. Retries must encode identically and prevent
+duplicates only while the original tasks are retained; after purge, the same allocated id stores a new task.
+One case stays open: when a write's reply is lost, the client cannot tell whether its generated id was free, so a
+retry keeps that id; if another task with identical content already held it, the retry answers accepted for that
+task and this one is not stored.
 
 Generated ids answered "exists" abandon the client's current id block and are retried from a newly allocated
-block, at most three writes per request. After exhaustion, occupied positions and generated positions in
-unattempted chunks receive newly reserved ids that this call did not write (not checked to be free) before the
-exception is thrown. If a batch cannot reserve replacements, or the replacements overlap a caller id of the
-batch, it retains occupied ids; those collisions must be resolved before retrying, since an
-occupied id may belong to another task even with identical content. A caller id taken by another writer after
-preflight also fails with `EnqueueFailedException`, carrying the batch ids and a `TaskIdReusedException` cause.
+block, at most three writes per request. On exhaustion, replacement-allocation failure or replacement overlap
+with a caller id, the colliding positions remain marked in `notStored()`; exhaustion does not reserve more
+replacement ids. A caller id taken by another writer after preflight also fails with `EnqueueFailedException`,
+carrying a `TaskIdReusedException` cause. Such caller-id reuse still requires caller correction.
 
 On PostgreSQL the id check reads the id sequence with `pg_sequence_last_value` (PostgreSQL 10 or newer), which
 needs only the USAGE privilege on `<prefix>_task_id` that `allocateIds` already uses.
@@ -711,7 +736,7 @@ var store = new RedisTaskStore(jedis, "my-app");   // UnifiedJedis (for example 
 The namespace prefixes every key and carries the Redis Cluster hash tag, so all keys of a store share one
 slot. The store does not close the Jedis client. Redis 7.4 or newer, or Valkey 9 or newer, is required (the
 store expires the key fields of finished tasks with hash field expiry). A namespace written by bth4j 3.0 has
-another layout and is refused by `init`; start 3.1 with a new namespace. Enqueue writes a random per-record
+another layout and is refused by `init`; start 4.0 with a new namespace. Enqueue writes a random per-record
 token in task hash field `wt` with the other fields. A transport resend with that token returns stored again;
 a different token under the same id returns exists, before checking the unique key. The token only helps while
 the task exists: with a zero succeeded retention a task that already ran and was removed is stored again by a
