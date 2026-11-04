@@ -97,7 +97,11 @@ Present only when set (a store never writes a null field):
 `due` has one meaning in every state: the time from which the task may run. For an immediate task it is
 the enqueue time; for a scheduled task the requested time; after a failure the retry time. Promote and
 claim keep it, and unclaim returns a task to its queue with its old `due`, so ordering inside a queue is
-always `(due, id)` and a task put back is not overtaken by later ones. The earlier variants of this idea
+always `(due, id)` and a task put back is not overtaken by later ones. On Redis, tasks with the same `due`
+are ordered by the id's decimal text (zset members compare as bytes), so 10 comes before 9 when both are due
+in the same millisecond. Ids come from one counter, so ids of different digit counts only share a due time
+around a power of ten (999999 and 1000000); padding the members to a fixed width would cost every zset
+entry its compact integer encoding for a difference no ordinary workload sees. The earlier variants of this idea
 (eligible, queued, fire time) are all `due`.
 
 `stateChanged` is when the current state was entered. For terminal states it is the finish time, which is
@@ -390,7 +394,7 @@ key only routes the call.
 | `d:<id>` | string | the payload |
 | `st:<id>` | string | the steps as JSON |
 | `f:<id>` | list | the failures, one JSON object each, the last 20 kept |
-| `q:<qid>` | zset | QUEUED ids, score `due` ms |
+| `q:<qid>` | zset | QUEUED ids, score `due` ms; equal scores in id text order |
 | `sched:<qid>` | zset | SCHEDULED ids, score `due` ms |
 | `leased` | zset | LEASED ids, score lease expiry ms |
 | `idx:<state>:<qid>` | zset | ids in LEASED and the terminal states, score `stateChanged` ms |

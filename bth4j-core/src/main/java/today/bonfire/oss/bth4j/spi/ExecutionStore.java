@@ -35,7 +35,9 @@ public interface ExecutionStore extends TaskStore {
 
     /**
      * Moves up to {@code count} queued tasks to LEASED and returns them with their new revision, lease and
-     * worker. Queues are read in the given order by {@code (due, id)}. Tasks whose event is not in
+     * worker. Queues are read in the given order by {@code (due, id)}; a store may order tasks with the same
+     * {@code due} by the id's decimal text instead of its value (the Redis store does), which differs only
+     * where ids of different digit counts share a due time. Tasks whose event is not in
      * {@link ClaimRequest#knownEventIds()} are left alone; a store that cannot filter cheaply may instead
      * move their due time a few seconds ahead without counting an attempt. Each claim adds one to
      * {@code attempts}, sets {@code claimedAt} and keeps {@code due}.
