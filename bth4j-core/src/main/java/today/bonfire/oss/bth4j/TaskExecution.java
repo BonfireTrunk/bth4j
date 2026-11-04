@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.service;
+package today.bonfire.oss.bth4j;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -10,14 +10,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import today.bonfire.oss.bth4j.FailureDetail;
-import today.bonfire.oss.bth4j.RetryPolicy;
-import today.bonfire.oss.bth4j.TaskContext;
-import today.bonfire.oss.bth4j.TaskEvent;
 import today.bonfire.oss.bth4j.TaskEvent.Outcome;
-import today.bonfire.oss.bth4j.TaskProcessor;
-import today.bonfire.oss.bth4j.TaskProcessorRegistry;
-import today.bonfire.oss.bth4j.TaskView;
 import today.bonfire.oss.bth4j.exceptions.TaskCancelledException;
 import today.bonfire.oss.bth4j.exceptions.TaskDataException;
 import today.bonfire.oss.bth4j.exceptions.TaskLeaseLostException;
@@ -39,7 +32,7 @@ import today.bonfire.oss.bth4j.spi.TaskState;
  * meanwhile. If the store is unreachable when the outcome is applied, the lease expires and maintenance
  * retries the task.
  */
-public final class TaskExecution implements Runnable, TaskContext {
+final class TaskExecution implements Runnable, TaskContext {
     private static final Logger log = LoggerFactory.getLogger(TaskExecution.class);
     private static final int MAX_PROGRESS = 4 * 1024;
     private static final int MAX_STEP_NAME = 64;
@@ -47,7 +40,7 @@ public final class TaskExecution implements Runnable, TaskContext {
     private static final int MAX_STEPS_BYTES = 64 * 1024;
     private static final Duration DEFER = Duration.ofSeconds(5);
 
-    public record Settings(
+    record Settings(
             ExecutionStore store,
             InspectionStore inspection,
             Names names,

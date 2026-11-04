@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.service;
+package today.bonfire.oss.bth4j;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -10,12 +10,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.IntSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import today.bonfire.oss.bth4j.FailureDetail;
-import today.bonfire.oss.bth4j.RetryPolicy;
-import today.bonfire.oss.bth4j.TaskEvent;
 import today.bonfire.oss.bth4j.TaskEvent.Outcome;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
-import today.bonfire.oss.bth4j.executor.CustomThread;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
@@ -31,7 +27,7 @@ import today.bonfire.oss.bth4j.spi.TaskState;
  * window passed and deletes stale worker rows. Jobs run on the scheduler thread itself; {@link #stopThread()}
  * returns at once and {@link #waitTillDone(Duration)} waits for a job in progress.
  */
-public class MaintenanceService extends CustomThread {
+class MaintenanceService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(MaintenanceService.class);
 
     private final ScheduledExecutorService executor;
@@ -234,19 +230,19 @@ public class MaintenanceService extends CustomThread {
 
     /** Stops the maintenance schedule without waiting; a job in progress finishes. */
     @Override
-    public void stopThread() {
+    void stopThread() {
         super.stopThread();
         executor.shutdown();
     }
 
     @Override
-    public void waitTillDone() throws InterruptedException {
+    void waitTillDone() throws InterruptedException {
         executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
     }
 
     /** A job still running when the timeout elapses is interrupted. @return true when terminated in time */
     @Override
-    public boolean waitTillDone(Duration timeout) throws InterruptedException {
+    boolean waitTillDone(Duration timeout) throws InterruptedException {
         if (executor.awaitTermination(timeout.toNanos(), TimeUnit.NANOSECONDS)) {
             return true;
         }
@@ -255,11 +251,11 @@ public class MaintenanceService extends CustomThread {
     }
 
     @Override
-    public boolean isRunning() {
+    boolean isRunning() {
         return !executor.isShutdown();
     }
 
-    public static class Builder {
+    static class Builder {
         private ThreadGroup group;
         private String threadName;
         private FullStore store;
@@ -279,95 +275,95 @@ public class MaintenanceService extends CustomThread {
         private IntSupplier running = () -> 0;
         private Duration workerStaleAfter = Duration.ofMinutes(10);
 
-        public Builder group(ThreadGroup group) {
+        Builder group(ThreadGroup group) {
             this.group = group;
             return this;
         }
 
-        public Builder threadName(String threadName) {
+        Builder threadName(String threadName) {
             this.threadName = threadName;
             return this;
         }
 
-        public Builder store(FullStore store) {
+        Builder store(FullStore store) {
             this.store = store;
             return this;
         }
 
-        public Builder names(Names names) {
+        Builder names(Names names) {
             this.names = names;
             return this;
         }
 
-        public Builder retryPolicies(RetryPolicies retryPolicies) {
+        Builder retryPolicies(RetryPolicies retryPolicies) {
             this.retryPolicies = retryPolicies;
             return this;
         }
 
-        public Builder observer(Observers observer) {
+        Builder observer(Observers observer) {
             this.observer = observer;
             return this;
         }
 
-        public Builder clock(Clock clock) {
+        Builder clock(Clock clock) {
             this.clock = clock;
             return this;
         }
 
-        public Builder status(RunnerStatus status) {
+        Builder status(RunnerStatus status) {
             this.status = status;
             return this;
         }
 
-        public Builder checkInterval(Duration checkInterval) {
+        Builder checkInterval(Duration checkInterval) {
             this.checkInterval = checkInterval;
             return this;
         }
 
-        public Builder purgeInterval(Duration purgeInterval) {
+        Builder purgeInterval(Duration purgeInterval) {
             this.purgeInterval = purgeInterval;
             return this;
         }
 
         /** Retention per terminal state; a state that is missing is never purged by this runner. */
-        public Builder retention(Map<TaskState, Duration> retention) {
+        Builder retention(Map<TaskState, Duration> retention) {
             this.retention = retention;
             return this;
         }
 
-        public Builder keepDead(boolean keepDead) {
+        Builder keepDead(boolean keepDead) {
             this.keepDead = keepDead;
             return this;
         }
 
-        public Builder failureDetail(FailureDetail failureDetail) {
+        Builder failureDetail(FailureDetail failureDetail) {
             this.failureDetail = failureDetail;
             return this;
         }
 
-        public Builder batchSize(int batchSize) {
+        Builder batchSize(int batchSize) {
             this.batchSize = batchSize;
             return this;
         }
 
-        public Builder purgeBatchSize(int purgeBatchSize) {
+        Builder purgeBatchSize(int purgeBatchSize) {
             this.purgeBatchSize = purgeBatchSize;
             return this;
         }
 
         /** The worker whose heartbeat this service records; 0 records none. */
-        public Builder worker(int workerId, IntSupplier running) {
+        Builder worker(int workerId, IntSupplier running) {
             this.workerId = workerId;
             this.running = running;
             return this;
         }
 
-        public Builder workerStaleAfter(Duration workerStaleAfter) {
+        Builder workerStaleAfter(Duration workerStaleAfter) {
             this.workerStaleAfter = workerStaleAfter;
             return this;
         }
 
-        public MaintenanceService create() {
+        MaintenanceService create() {
             if (group == null || threadName == null)
                 throw new TaskConfigurationException("group and threadName are required");
             if (store == null || names == null) throw new TaskConfigurationException("store and names are required");

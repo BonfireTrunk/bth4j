@@ -1,5 +1,7 @@
 package today.bonfire.oss.bth4j.spi;
 
+import today.bonfire.oss.bth4j.Misfire;
+
 /**
  * A recurring definition as the store keeps it. Each occurrence becomes a task with the definition's type,
  * queue, account, payload, maximum attempts and maximum run time.
@@ -37,6 +39,30 @@ public record RecurringDefinition(
     public static final String MISFIRE_SKIP = "SKIP";
     public static final String MISFIRE_FIRE_ONCE_NOW = "FIRE_ONCE_NOW";
     public static final String MISFIRE_CATCH_UP = "CATCH_UP";
+
+    /** @return the stored text of the policy: {@code SKIP}, {@code FIRE_ONCE_NOW} or {@code CATCH_UP} */
+    public static String misfireCode(Misfire misfire) {
+        return switch (misfire) {
+            case Misfire.Skip s -> MISFIRE_SKIP;
+            case Misfire.FireOnceNow f -> MISFIRE_FIRE_ONCE_NOW;
+            case Misfire.CatchUp c -> MISFIRE_CATCH_UP;
+        };
+    }
+
+    /** @return the stored catch-up count of the policy; zero unless it is a catch-up */
+    public static int misfireMaxFires(Misfire misfire) {
+        return misfire instanceof Misfire.CatchUp c ? c.maxFires() : 0;
+    }
+
+    /** @return the policy for a stored text; null and any unknown text mean {@link Misfire#FIRE_ONCE_NOW} */
+    public static Misfire misfire(String code, int catchUpMaxFires) {
+        if (code == null) return Misfire.FIRE_ONCE_NOW;
+        return switch (code) {
+            case MISFIRE_SKIP -> Misfire.SKIP;
+            case MISFIRE_CATCH_UP -> Misfire.catchUp(catchUpMaxFires);
+            default -> Misfire.FIRE_ONCE_NOW;
+        };
+    }
 
     /** A cron definition in UTC with the default misfire handling and no overlap protection. */
     public RecurringDefinition(

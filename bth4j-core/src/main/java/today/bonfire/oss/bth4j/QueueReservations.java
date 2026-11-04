@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.service;
+package today.bonfire.oss.bth4j;
 
 import java.util.Map;
 import java.util.Set;
@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * whether or not it is still the running map's entry for its id: a retry of the same id claimed while an
  * earlier attempt was still finishing holds a slot of its own.
  */
-public final class QueueReservations {
+final class QueueReservations {
     private final Map<TaskExecution, Integer> held = new ConcurrentHashMap<>();
     private final Map<Integer, AtomicInteger> perQueue = new ConcurrentHashMap<>();
     private final Set<TaskExecution> abandoned = ConcurrentHashMap.newKeySet();
@@ -42,12 +42,12 @@ public final class QueueReservations {
     }
 
     /** @return the abandoned executions still holding a slot */
-    public int abandoned() {
+    int abandoned() {
         return abandoned.size();
     }
 
     /** @return the executions of that queue holding a slot */
-    public int running(int queueId) {
+    int running(int queueId) {
         var count = perQueue.get(queueId);
         return count == null ? 0 : count.get();
     }

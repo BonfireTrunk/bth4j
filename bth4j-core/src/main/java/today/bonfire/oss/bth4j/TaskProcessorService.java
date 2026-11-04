@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.service;
+package today.bonfire.oss.bth4j;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -12,10 +12,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import today.bonfire.oss.bth4j.QueuePolicy;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.executor.BackgroundExecutor;
-import today.bonfire.oss.bth4j.executor.CustomThread;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
@@ -35,7 +33,7 @@ import today.bonfire.oss.bth4j.spi.TaskRecord;
  * It keeps running after {@link #stopThread()} until {@link #stopLeaseRenewal()} is called, so that tasks
  * still finishing during shutdown keep their leases.
  */
-public class TaskProcessorService extends CustomThread {
+class TaskProcessorService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(TaskProcessorService.class);
 
     private final BackgroundExecutor executor;
@@ -347,26 +345,26 @@ public class TaskProcessorService extends CustomThread {
     }
 
     /** @return the tasks currently running on this instance */
-    public int runningCount() {
+    int runningCount() {
         return running.size();
     }
 
     /** Stops claiming new tasks; running ones finish. */
-    public void quiet(boolean quiet) {
+    void quiet(boolean quiet) {
         this.quiet = quiet;
     }
 
-    public boolean isQuiet() {
+    boolean isQuiet() {
         return quiet;
     }
 
     /** Stops renewing leases. Call it after the executor has terminated. */
-    public void stopLeaseRenewal() {
+    void stopLeaseRenewal() {
         renewalRunning = false;
         renewer.interrupt();
     }
 
-    public static class Builder {
+    static class Builder {
         private ThreadGroup group;
         private String threadName;
         private BackgroundExecutor executor;
@@ -383,86 +381,86 @@ public class TaskProcessorService extends CustomThread {
         private Map<Long, TaskExecution> running = new ConcurrentHashMap<>();
         private QueueReservations reservations = new QueueReservations();
 
-        public Builder group(ThreadGroup group) {
+        Builder group(ThreadGroup group) {
             this.group = group;
             return this;
         }
 
-        public Builder threadName(String threadName) {
+        Builder threadName(String threadName) {
             this.threadName = threadName;
             return this;
         }
 
-        public Builder executor(BackgroundExecutor executor) {
+        Builder executor(BackgroundExecutor executor) {
             this.executor = executor;
             return this;
         }
 
-        public Builder settings(TaskExecution.Settings settings) {
+        Builder settings(TaskExecution.Settings settings) {
             this.settings = settings;
             return this;
         }
 
-        public Builder queueIds(List<Integer> queueIds) {
+        Builder queueIds(List<Integer> queueIds) {
             this.queueIds = queueIds;
             return this;
         }
 
         /** Policies by queue id; queues without one get {@link QueuePolicy#DEFAULT}. */
-        public Builder queuePolicies(Map<Integer, QueuePolicy> queuePolicies) {
+        Builder queuePolicies(Map<Integer, QueuePolicy> queuePolicies) {
             this.queuePolicies = queuePolicies;
             return this;
         }
 
-        public Builder knownTypeIds(Set<Integer> knownTypeIds) {
+        Builder knownTypeIds(Set<Integer> knownTypeIds) {
             this.knownTypeIds = knownTypeIds;
             return this;
         }
 
-        public Builder workerId(int workerId) {
+        Builder workerId(int workerId) {
             this.workerId = workerId;
             return this;
         }
 
-        public Builder lease(Duration lease) {
+        Builder lease(Duration lease) {
             this.lease = lease;
             return this;
         }
 
         /** The maximum run time of an attempt whose task sets none. */
-        public Builder defaultMaxRunTime(Duration defaultMaxRunTime) {
+        Builder defaultMaxRunTime(Duration defaultMaxRunTime) {
             this.defaultMaxRunTime = defaultMaxRunTime;
             return this;
         }
 
-        public Builder idlePollInterval(Duration idlePollInterval) {
+        Builder idlePollInterval(Duration idlePollInterval) {
             this.idlePollInterval = idlePollInterval;
             return this;
         }
 
-        public Builder claimBatchSize(int claimBatchSize) {
+        Builder claimBatchSize(int claimBatchSize) {
             this.claimBatchSize = claimBatchSize;
             return this;
         }
 
-        public Builder quiet(boolean quiet) {
+        Builder quiet(boolean quiet) {
             this.quiet = quiet;
             return this;
         }
 
         /** The tasks being executed, to hand over from a processor that died to its replacement. */
-        public Builder running(Map<Long, TaskExecution> running) {
+        Builder running(Map<Long, TaskExecution> running) {
             this.running = running;
             return this;
         }
 
         /** The queue slots held by the running tasks, shared with the replacement of a processor that died. */
-        public Builder reservations(QueueReservations reservations) {
+        Builder reservations(QueueReservations reservations) {
             this.reservations = reservations;
             return this;
         }
 
-        public TaskProcessorService create() {
+        TaskProcessorService create() {
             if (settings == null) throw new TaskConfigurationException("settings are required");
             if (executor == null) throw new TaskConfigurationException("executor is required");
             if (queueIds == null || queueIds.isEmpty()) throw new TaskConfigurationException("queueIds are required");

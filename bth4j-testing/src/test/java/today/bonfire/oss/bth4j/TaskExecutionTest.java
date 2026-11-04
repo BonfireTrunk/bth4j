@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.service;
+package today.bonfire.oss.bth4j;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -22,14 +22,6 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.slf4j.LoggerFactory;
-import today.bonfire.oss.bth4j.FailureDetail;
-import today.bonfire.oss.bth4j.RetryPolicy;
-import today.bonfire.oss.bth4j.TaskClient;
-import today.bonfire.oss.bth4j.TaskEvent;
-import today.bonfire.oss.bth4j.TaskProcessor;
-import today.bonfire.oss.bth4j.TaskProcessorRegistry;
-import today.bonfire.oss.bth4j.TaskRequest;
-import today.bonfire.oss.bth4j.TaskType;
 import today.bonfire.oss.bth4j.exceptions.TaskCancelledException;
 import today.bonfire.oss.bth4j.exceptions.TaskLeaseLostException;
 import today.bonfire.oss.bth4j.exceptions.TaskRescheduleException;

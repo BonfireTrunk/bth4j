@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.service;
+package today.bonfire.oss.bth4j;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -20,12 +20,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
-import today.bonfire.oss.bth4j.FailureDetail;
-import today.bonfire.oss.bth4j.RetryPolicy;
-import today.bonfire.oss.bth4j.TaskEvent;
-import today.bonfire.oss.bth4j.TaskProcessor;
-import today.bonfire.oss.bth4j.TaskProcessorRegistry;
-import today.bonfire.oss.bth4j.TaskType;
 import today.bonfire.oss.bth4j.exceptions.RedactedFailure;
 import today.bonfire.oss.bth4j.exceptions.TaskCancelledException;
 import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;

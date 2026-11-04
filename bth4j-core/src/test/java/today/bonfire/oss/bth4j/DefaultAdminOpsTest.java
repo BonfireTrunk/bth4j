@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.service;
+package today.bonfire.oss.bth4j;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -19,11 +19,6 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import today.bonfire.oss.bth4j.Issue;
-import today.bonfire.oss.bth4j.Misfire;
-import today.bonfire.oss.bth4j.Overlap;
-import today.bonfire.oss.bth4j.RunnerHealth;
-import today.bonfire.oss.bth4j.common.QueuesHolder;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;

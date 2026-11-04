@@ -1,22 +1,20 @@
-package today.bonfire.oss.bth4j.service;
+package today.bonfire.oss.bth4j;
 
 import java.nio.charset.StandardCharsets;
-import today.bonfire.oss.bth4j.TaskRequest;
-import today.bonfire.oss.bth4j.TaskType;
 import today.bonfire.oss.bth4j.common.JsonMapper;
 import today.bonfire.oss.bth4j.exceptions.TaskDataException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /** Encodes and decodes payloads and step results with a type's codec or the configured JSON mapper. */
-public final class Codecs {
+final class Codecs {
 
     private final JsonMapper mapper;
 
-    public Codecs(JsonMapper mapper) {
+    Codecs(JsonMapper mapper) {
         this.mapper = mapper;
     }
 
-    public <T> String encode(TaskType<T> type, T payload) {
+    <T> String encode(TaskType<T> type, T payload) {
         if (!type.hasPayload() || payload == null) return null;
         String text;
         try {
@@ -31,7 +29,7 @@ public final class Codecs {
         return text;
     }
 
-    public <T> T decode(TaskType<T> type, String text) {
+    <T> T decode(TaskType<T> type, String text) {
         if (!type.hasPayload()) return null;
         if (text == null) {
             throw new TaskDataException("Task type " + type + " needs a payload but the task has none");
@@ -43,7 +41,7 @@ public final class Codecs {
         }
     }
 
-    public String encodeStep(Object result) {
+    String encodeStep(Object result) {
         if (result == null) return null;
         try {
             return mapper().toJson(result);
@@ -52,7 +50,7 @@ public final class Codecs {
         }
     }
 
-    public <R> R decodeStep(String text, Class<R> type) {
+    <R> R decodeStep(String text, Class<R> type) {
         if (text == null || type == Void.class) return null;
         try {
             return mapper().fromJson(text, type);

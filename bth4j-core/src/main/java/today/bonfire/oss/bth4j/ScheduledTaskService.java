@@ -1,14 +1,13 @@
-package today.bonfire.oss.bth4j.service;
+package today.bonfire.oss.bth4j;
 
 import java.time.Duration;
 import java.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import today.bonfire.oss.bth4j.executor.CustomThread;
 import today.bonfire.oss.bth4j.spi.MaintenanceStore;
 
 /** Moves scheduled tasks whose time has come into their queues. Any number of instances may run it. */
-public class ScheduledTaskService extends CustomThread {
+class ScheduledTaskService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(ScheduledTaskService.class);
 
     private final MaintenanceStore store;
@@ -72,41 +71,41 @@ public class ScheduledTaskService extends CustomThread {
         }
     }
 
-    public static class Builder {
+    static class Builder {
         private ThreadGroup group;
         private String threadName;
         private MaintenanceStore store;
         private Duration pollInterval = Duration.ofSeconds(1);
         private int batchSize = 100;
 
-        public Builder() {}
+        Builder() {}
 
-        public Builder setGroup(ThreadGroup group) {
+        Builder setGroup(ThreadGroup group) {
             this.group = group;
             return this;
         }
 
-        public Builder setThreadName(String threadName) {
+        Builder setThreadName(String threadName) {
             this.threadName = threadName;
             return this;
         }
 
-        public Builder setStore(MaintenanceStore store) {
+        Builder setStore(MaintenanceStore store) {
             this.store = store;
             return this;
         }
 
-        public Builder setPollInterval(Duration pollInterval) {
+        Builder setPollInterval(Duration pollInterval) {
             this.pollInterval = pollInterval;
             return this;
         }
 
-        public Builder setBatchSize(int batchSize) {
+        Builder setBatchSize(int batchSize) {
             this.batchSize = batchSize;
             return this;
         }
 
-        public ScheduledTaskService create() {
+        ScheduledTaskService create() {
             return new ScheduledTaskService(this);
         }
     }

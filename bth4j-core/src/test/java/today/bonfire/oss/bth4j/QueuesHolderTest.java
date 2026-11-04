@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.common;
+package today.bonfire.oss.bth4j;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;

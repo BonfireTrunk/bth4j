@@ -11,8 +11,8 @@ import today.bonfire.oss.bth4j.Misfire;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.TaskView;
-import today.bonfire.oss.bth4j.service.Misfires;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
+import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
@@ -130,7 +130,7 @@ final class Views {
                 "account", s.account(),
                 "cron", s.cron(),
                 "zone", s.zone() == null ? null : s.zone().getId(),
-                "misfire", Misfires.code(s.misfire()),
+                "misfire", RecurringDefinition.misfireCode(s.misfire()),
                 "fixedDelay", text(s.fixedDelay()),
                 "overlap", s.overlap().name(),
                 "paused", s.paused(),

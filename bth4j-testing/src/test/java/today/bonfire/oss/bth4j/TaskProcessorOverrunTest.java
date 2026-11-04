@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.service;
+package today.bonfire.oss.bth4j;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -13,13 +13,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import today.bonfire.oss.bth4j.FailureDetail;
-import today.bonfire.oss.bth4j.RetryPolicy;
-import today.bonfire.oss.bth4j.TaskClient;
-import today.bonfire.oss.bth4j.TaskContext;
-import today.bonfire.oss.bth4j.TaskProcessorRegistry;
-import today.bonfire.oss.bth4j.TaskRequest;
-import today.bonfire.oss.bth4j.TaskType;
 import today.bonfire.oss.bth4j.executor.BackgroundExecutor;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
