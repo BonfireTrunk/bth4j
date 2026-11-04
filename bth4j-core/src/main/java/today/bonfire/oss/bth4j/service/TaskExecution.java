@@ -73,6 +73,7 @@ public final class TaskExecution implements Runnable, TaskContext {
     private volatile String cancelReason;
     private volatile boolean leaseLost;
     private volatile Instant startedAt;
+    private volatile Instant overrunSince;
     // Serializes interrupts with detachment so a late signal cannot reach the thread's next task.
     private final ReentrantLock workerLock = new ReentrantLock();
     private Thread worker;
@@ -114,6 +115,15 @@ public final class TaskExecution implements Runnable, TaskContext {
 
     Duration maxRun() {
         return record.maxRun();
+    }
+
+    /** @return when the runner found this attempt past its maximum run time, or null */
+    Instant overrunSince() {
+        return overrunSince;
+    }
+
+    void markOverrun(Instant at) {
+        overrunSince = at;
     }
 
     int queueId() {

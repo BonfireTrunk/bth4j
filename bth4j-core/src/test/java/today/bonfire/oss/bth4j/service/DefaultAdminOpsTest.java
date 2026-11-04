@@ -559,7 +559,7 @@ class DefaultAdminOpsTest {
 
     @Test
     void healthIsTheSuppliedSnapshot() {
-        var snapshot = new RunnerHealth(RunnerHealth.Status.RUNNING, 3, 1, NOW, NOW, null, null, 0);
+        var snapshot = new RunnerHealth(RunnerHealth.Status.RUNNING, 3, 1, 0, NOW, NOW, null, null, 0);
         health = () -> snapshot;
 
         assertThat(ops.health()).contains(snapshot);

@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j.service;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -46,6 +47,8 @@ public class TaskProcessorService extends CustomThread {
     private final Set<Integer> knownEventIds;
     private final int workerId;
     private final Duration lease;
+    private final Duration renewInterval;
+    private final Duration defaultMaxRun;
     private final Duration idlePollInterval;
     private final int claimBatchSize;
     private final AtomicInteger queueOffset = new AtomicInteger();
@@ -71,6 +74,8 @@ public class TaskProcessorService extends CustomThread {
         this.running = b.running;
         this.reservations = b.reservations;
         this.lease = b.lease;
+        this.renewInterval = Duration.ofMillis(Math.max(100, lease.toMillis() / 3));
+        this.defaultMaxRun = b.defaultMaxRun;
         this.idlePollInterval = b.idlePollInterval;
         this.claimBatchSize = b.claimBatchSize;
         this.quiet = b.quiet;
@@ -251,49 +256,82 @@ public class TaskProcessorService extends CustomThread {
     }
 
     private void renewLeases() {
-        var interval = Duration.ofMillis(Math.max(100, lease.toMillis() / 3));
         while (renewalRunning) {
-            sleepQuietly(interval);
-            if (running.isEmpty()) continue;
-            var executions = List.copyOf(running.values());
-            cancelOverrunning(executions);
-            var refs = new ArrayList<LeaseRef>(executions.size());
-            for (var e : executions) refs.add(new LeaseRef(e.taskId(), e.revision()));
-            try {
-                var statuses = settings.store().renew(refs, lease);
-                int lost = 0;
-                for (int i = 0; i < statuses.size() && i < executions.size(); i++) {
-                    var status = statuses.get(i);
-                    var execution = executions.get(i);
-                    if (!status.owned()) {
-                        lost++;
-                        execution.leaseLost();
-                        settings.status().issue("lease-lost", "lease not renewed", execution.taskId());
-                    } else if (status.cancelRequested()) {
-                        execution.requestCancel(null);
-                    }
-                }
-                if (lost > 0) {
-                    log.warn("{} of {} leases could not be renewed, those tasks were taken over", lost, refs.size());
-                }
-            } catch (RuntimeException e) {
-                settings.status().storeError(e);
-                log.error("Lease renewal failed for {} running tasks", refs.size(), e);
-            }
+            sleepQuietly(renewInterval);
+            renewOnce();
         }
     }
 
-    private void cancelOverrunning(List<TaskExecution> executions) {
+    /**
+     * One renewal round: requests cancellation of attempts past their maximum run time, abandons those still
+     * running one renewal period after that, and renews the leases of the others.
+     */
+    void renewOnce() {
+        if (running.isEmpty()) return;
         var now = settings.clock().instant();
-        for (var e : executions) {
-            var maxRun = e.maxRun();
-            var started = e.startedAt();
-            if (maxRun == null || started == null || e.cancelRequested()) continue;
-            if (now.isAfter(started.plus(maxRun))) {
-                log.warn("Task {} exceeded its maximum run time of {}, requesting cancellation", e.taskId(), maxRun);
-                e.requestCancel("max run time " + maxRun + " exceeded");
-            }
+        var executions = new ArrayList<TaskExecution>(running.size());
+        for (var e : List.copyOf(running.values())) {
+            cancelIfOverrunning(e, now);
+            if (!abandonIfStuck(e, now)) executions.add(e);
         }
+        if (executions.isEmpty()) return;
+        var refs = new ArrayList<LeaseRef>(executions.size());
+        for (var e : executions) refs.add(new LeaseRef(e.taskId(), e.revision()));
+        try {
+            var statuses = settings.store().renew(refs, lease);
+            int lost = 0;
+            for (int i = 0; i < statuses.size() && i < executions.size(); i++) {
+                var status = statuses.get(i);
+                var execution = executions.get(i);
+                if (!status.owned()) {
+                    lost++;
+                    execution.leaseLost();
+                    settings.status().issue("lease-lost", "lease not renewed", execution.taskId());
+                } else if (status.cancelRequested()) {
+                    execution.requestCancel(null);
+                }
+            }
+            if (lost > 0) {
+                log.warn("{} of {} leases could not be renewed, those tasks were taken over", lost, refs.size());
+            }
+        } catch (RuntimeException e) {
+            settings.status().storeError(e);
+            log.error("Lease renewal failed for {} running tasks", refs.size(), e);
+        }
+    }
+
+    private Duration maxRun(TaskExecution e) {
+        return e.maxRun() != null ? e.maxRun() : defaultMaxRun;
+    }
+
+    private void cancelIfOverrunning(TaskExecution e, Instant now) {
+        var started = e.startedAt();
+        if (started == null || e.overrunSince() != null) return;
+        var maxRun = maxRun(e);
+        if (!now.isAfter(started.plus(maxRun))) return;
+        e.markOverrun(now);
+        if (e.cancelRequested()) return;
+        log.warn("Task {} exceeded its maximum run time of {}, requesting cancellation", e.taskId(), maxRun);
+        e.requestCancel("max run time " + maxRun + " exceeded");
+    }
+
+    /**
+     * An attempt still running one renewal period after its maximum run time stops being renewed, so its lease
+     * expires and maintenance retries or ends the task. Its thread and slots stay held until it returns.
+     *
+     * @return true when the attempt is abandoned
+     */
+    private boolean abandonIfStuck(TaskExecution e, Instant now) {
+        var since = e.overrunSince();
+        if (since == null || now.isBefore(since.plus(renewInterval))) return false;
+        if (reservations.abandon(e)) {
+            var detail = "task " + e.taskId() + " ran past its maximum run time of " + maxRun(e)
+                    + " and did not stop; its lease is no longer renewed and its slot stays held until it returns ("
+                    + reservations.abandoned() + " abandoned attempts hold slots)";
+            settings.status().issue("attempt-abandoned", detail, e.taskId());
+            log.warn(detail);
+        }
+        return true;
     }
 
     private static void sleepQuietly(Duration d) {
@@ -334,6 +372,7 @@ public class TaskProcessorService extends CustomThread {
         private Set<Integer> knownEventIds;
         private int workerId;
         private Duration lease = Duration.ofSeconds(60);
+        private Duration defaultMaxRun = Duration.ofHours(1);
         private Duration idlePollInterval = Duration.ofMillis(500);
         private int claimBatchSize = 32;
         private boolean quiet;
@@ -383,6 +422,12 @@ public class TaskProcessorService extends CustomThread {
 
         public Builder lease(Duration lease) {
             this.lease = lease;
+            return this;
+        }
+
+        /** The maximum run time of an attempt whose task sets none. */
+        public Builder defaultMaxRun(Duration defaultMaxRun) {
+            this.defaultMaxRun = defaultMaxRun;
             return this;
         }
 

@@ -594,7 +594,7 @@ class AdminHttpServerTest {
         ops.workers.add(new WorkerInfo(1, "w", Instant.EPOCH, Instant.EPOCH, 0));
         ops.issues.add(new Issue(Instant.EPOCH, "store-error", "boom", 5L));
         ops.issues.add(new Issue(Instant.EPOCH, "lease-lost", "x", null));
-        ops.health = new RunnerHealth(RunnerHealth.Status.RUNNING, 1, 2, null, null, null, null, 2);
+        ops.health = new RunnerHealth(RunnerHealth.Status.RUNNING, 1, 2, 0, null, null, null, null, 2);
         start();
 
         var overview = json(get("/api/v1/overview", viewer()));
@@ -630,7 +630,7 @@ class AdminHttpServerTest {
 
     @Test
     void healthEndpointReturnsRunnerHealth() throws Exception {
-        ops.health = new RunnerHealth(RunnerHealth.Status.QUIET, 3, 0, null, null, null, null, 0);
+        ops.health = new RunnerHealth(RunnerHealth.Status.QUIET, 3, 0, 0, null, null, null, null, 0);
         start();
 
         var res = get("/api/v1/health", viewer());

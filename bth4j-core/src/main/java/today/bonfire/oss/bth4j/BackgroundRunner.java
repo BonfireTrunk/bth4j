@@ -141,6 +141,14 @@ public final class BackgroundRunner {
         return runningTasks.size();
     }
 
+    /**
+     * @return the running attempts that passed their maximum run time without stopping; each still holds its
+     *     executor and queue slot until its processor returns
+     */
+    public int abandonedAttempts() {
+        return queueReservations.abandoned();
+    }
+
     /** Operator view and operations, including this runner's {@link #health()} and {@link #issues()}. */
     public AdminOps admin() {
         return admin;
@@ -156,6 +164,7 @@ public final class BackgroundRunner {
                 s,
                 workerId,
                 runningTasks.size(),
+                queueReservations.abandoned(),
                 status.lastClaimAt(),
                 status.lastMaintenanceAt(),
                 status.lastStoreErrorAt(),
@@ -391,6 +400,7 @@ public final class BackgroundRunner {
                 .running(runningTasks)
                 .reservations(queueReservations)
                 .lease(config.leaseDuration)
+                .defaultMaxRun(config.defaultMaxRun)
                 .idlePollInterval(config.idlePollInterval)
                 .claimBatchSize(config.claimBatchSize)
                 .quiet(quiet)
@@ -479,6 +489,7 @@ public final class BackgroundRunner {
         private Duration purgeInterval = Duration.ofMinutes(1);
         private int purgeBatchSize = 500;
         private Duration leaseDuration = Duration.ofSeconds(60);
+        private Duration defaultMaxRun = Duration.ofHours(1);
         private Duration idlePollInterval = Duration.ofMillis(500);
         private int claimBatchSize = 32;
         private Duration shutdownTimeout = Duration.ofSeconds(30);
@@ -653,6 +664,19 @@ public final class BackgroundRunner {
             requirePositive(lease, "leaseDuration");
             if (lease.toMillis() < 1000) throw new TaskConfigurationError("leaseDuration cannot be less than 1 second");
             this.leaseDuration = lease;
+            return this;
+        }
+
+        /**
+         * The maximum run time of an attempt whose task or schedule sets no {@code maxRun}. Past it the runner
+         * requests cancellation (and interrupts the processor when its type opted in with
+         * {@code interruptOnCancel}); an attempt still running one renewal period later is abandoned: its lease
+         * is no longer renewed, so maintenance retries or ends the task, while the stuck thread keeps its slots
+         * until it returns and is reported as the issue {@code attempt-abandoned}. Default one hour.
+         */
+        public Builder defaultMaxRun(Duration maxRun) {
+            requirePositive(maxRun, "defaultMaxRun");
+            this.defaultMaxRun = maxRun;
             return this;
         }
 

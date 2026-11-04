@@ -21,13 +21,15 @@ class MicrometerRunnerMetricsTest {
     private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     private final AtomicReference<Map<String, StateCounts>> counts = new AtomicReference<>(Map.of());
     private final AtomicReference<RunnerHealth.Status> status = new AtomicReference<>(RunnerHealth.Status.RUNNING);
+    private final AtomicInteger abandoned = new AtomicInteger();
 
     private final AdminOps admin = (AdminOps) Proxy.newProxyInstance(
             AdminOps.class.getClassLoader(), new Class<?>[] {AdminOps.class}, (proxy, method, args) -> {
                 return switch (method.getName()) {
                     case "counts" -> counts.get();
                     case "health" ->
-                        Optional.of(new RunnerHealth(status.get(), 1, 0, Instant.now(), null, null, null, 0));
+                        Optional.of(new RunnerHealth(
+                                status.get(), 1, 0, abandoned.get(), Instant.now(), null, null, null, 0));
                     default -> throw new UnsupportedOperationException(method.getName());
                 };
             });
@@ -38,6 +40,18 @@ class MicrometerRunnerMetricsTest {
 
     private double state(String queue, String state) {
         return gauge("bth4j.tasks.state", "queue", queue, "state", state);
+    }
+
+    @Test
+    void abandonedAttemptsComeFromHealth() {
+        try (var metrics = MicrometerRunnerMetrics.bind(admin, () -> 0, registry, Duration.ofHours(1))) {
+            assertThat(gauge("bth4j.runner.abandoned")).isEqualTo(0);
+
+            abandoned.set(2);
+            metrics.refresh();
+
+            assertThat(gauge("bth4j.runner.abandoned")).isEqualTo(2);
+        }
     }
 
     @Test

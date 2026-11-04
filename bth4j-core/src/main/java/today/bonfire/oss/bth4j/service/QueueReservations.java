@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j.service;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -14,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class QueueReservations {
     private final Map<TaskExecution, Integer> held = new ConcurrentHashMap<>();
     private final Map<Integer, AtomicInteger> perQueue = new ConcurrentHashMap<>();
+    private final Set<TaskExecution> abandoned = ConcurrentHashMap.newKeySet();
 
     void reserve(TaskExecution execution) {
         if (held.putIfAbsent(execution, execution.queueId()) == null) {
@@ -24,6 +26,24 @@ public final class QueueReservations {
     void release(TaskExecution execution) {
         var queueId = held.remove(execution);
         if (queueId != null) count(queueId).decrementAndGet();
+        abandoned.remove(execution);
+    }
+
+    /**
+     * Marks an execution whose lease is no longer renewed while it still holds its slot.
+     *
+     * @return true the first time, false when it was already marked or has been released
+     */
+    boolean abandon(TaskExecution execution) {
+        if (!held.containsKey(execution) || !abandoned.add(execution)) return false;
+        if (held.containsKey(execution)) return true;
+        abandoned.remove(execution);
+        return false;
+    }
+
+    /** @return the abandoned executions still holding a slot */
+    public int abandoned() {
+        return abandoned.size();
     }
 
     /** @return the executions of that queue holding a slot */

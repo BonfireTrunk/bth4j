@@ -112,6 +112,7 @@ final class Views {
                 "status", h.status().name(),
                 "workerId", h.workerId(),
                 "running", h.running(),
+                "abandoned", h.abandoned(),
                 "lastClaimAt", h.lastClaimAt(),
                 "lastMaintenanceAt", h.lastMaintenanceAt(),
                 "lastStoreErrorAt", h.lastStoreErrorAt(),
