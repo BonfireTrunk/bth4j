@@ -537,7 +537,7 @@ public abstract class RunnerContract {
         var startedAt = new AtomicReference<Instant>();
         startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> startedAt.set(Instant.now())));
 
-        var enqueuedAfter = Instant.now();
+        var enqueuedAfter = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
         long id =
                 enqueue(TaskRequest.of(VOID_TYPE).delay(Duration.ofMillis(300)).build());
 
