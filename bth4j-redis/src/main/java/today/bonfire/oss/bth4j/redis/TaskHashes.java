@@ -54,7 +54,8 @@ final class TaskHashes {
      * @param steps    the {@code st:<id>} string, or null
      * @param failures the {@code f:<id>} entries in order, empty when there are none
      */
-    static TaskRecord fromHash(long id, Map<String, String> h, String data, String steps, List<String> failures) {
+    static TaskRecord fromHash(
+            long id, Map<String, String> h, String encodedPayload, String steps, List<String> failures) {
         var state = TaskState.fromCode(integer(h, F_STATE));
         var leased = state == TaskState.LEASED;
         return TaskRecord.builder()
@@ -69,7 +70,7 @@ final class TaskHashes {
                 .created(instant(h, F_CREATED))
                 .due(instant(h, F_DUE))
                 .stateChanged(instant(h, F_STATE_CHANGED))
-                .data(data)
+                .encodedPayload(encodedPayload)
                 .workerId((leased || state.isTerminal()) && h.containsKey(F_WORKER) ? integer(h, F_WORKER) : null)
                 .leaseUntil(leased ? instant(h, F_LEASE) : null)
                 .claimedAt(instant(h, F_CLAIMED_AT))

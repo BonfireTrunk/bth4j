@@ -449,7 +449,7 @@ class TaskClientTest {
                 .getFirst();
         assertThat(store.ack(id, leased.revision(), true, false, null)).isTrue();
         assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
-        assertThat(store.getTask(id).orElseThrow().data()).isNull();
+        assertThat(store.getTask(id).orElseThrow().encodedPayload()).isNull();
         var retry = TaskRequest.of(TYPED, new Payload("different")).id(id).build();
 
         assertThat(client.enqueue(retry)).isEqualTo(new EnqueueResult.Accepted(id));
@@ -885,8 +885,8 @@ class TaskClientTest {
                     assertThat(results).allMatch(EnqueueResult::accepted);
                     assertThat(results.getFirst().id()).isEqualTo(1);
                     assertThat(results.get(1).id()).isNotIn(1L, 2L);
-                    assertThat(store.getTask(results.get(1).id()).orElseThrow().data())
-                            .isEqualTo(x.data());
+                    assertThat(store.getTask(results.get(1).id()).orElseThrow().encodedPayload())
+                            .isEqualTo(x.encodedPayload());
                     assertThat(store.getTask(1).orElseThrow()).isEqualTo(a);
                     assertThat(store.getTask(2).orElseThrow()).isEqualTo(x);
                     assertThat(healthy.counts().get("Q:DEF").queued()).isEqualTo(3);
@@ -971,8 +971,9 @@ class TaskClientTest {
             if (method.equals("enqueueAll")) {
                 @SuppressWarnings("unchecked")
                 var records = (List<TaskRecord>) args[0];
-                store.enqueue(
-                        records.getFirst().toBuilder().data("other payload").build());
+                store.enqueue(records.getFirst().toBuilder()
+                        .encodedPayload("other payload")
+                        .build());
                 store.enqueue(records.get(1));
             }
         }));
@@ -1023,7 +1024,7 @@ class TaskClientTest {
 
         assertThat(result).containsExactly(new EnqueueResult.Accepted(65));
         var task = store.getTask(result.getFirst().id()).orElseThrow();
-        assertThat(task.data()).isEqualTo("payload1");
+        assertThat(task.encodedPayload()).isEqualTo("payload1");
         assertThat(task.due()).isEqualTo(due);
         assertThat(encodes.get()).isEqualTo(1);
         assertThat(writes.get()).isEqualTo(2);
@@ -1036,8 +1037,9 @@ class TaskClientTest {
             if (method.equals("enqueueAll") && writes.incrementAndGet() == 2) {
                 @SuppressWarnings("unchecked")
                 var records = (List<TaskRecord>) args[0];
-                store.enqueue(
-                        records.getFirst().toBuilder().data("other payload").build());
+                store.enqueue(records.getFirst().toBuilder()
+                        .encodedPayload("other payload")
+                        .build());
             }
         }));
         long callerId = client.nextId();
@@ -1165,7 +1167,8 @@ class TaskClientTest {
 
         var result = client.enqueue(TaskRequest.of(TYPED, big).build());
 
-        assertThat(client.task(result.id()).orElseThrow().data()).hasSize(TaskRequest.MAX_PAYLOAD_BYTES - 100 + 11);
+        assertThat(client.task(result.id()).orElseThrow().encodedPayload())
+                .hasSize(TaskRequest.MAX_PAYLOAD_BYTES - 100 + 11);
     }
 
     @Test
@@ -1187,7 +1190,7 @@ class TaskClientTest {
         assertThat(view.maxAttempts()).isEqualTo(4);
         assertThat(view.attempts()).isZero();
         assertThat(view.payloadVersion()).isEqualTo(1);
-        assertThat(view.data()).contains("\"text\":\"v\"");
+        assertThat(view.encodedPayload()).contains("\"text\":\"v\"");
     }
 
     @Test

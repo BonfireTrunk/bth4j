@@ -655,7 +655,7 @@ public class PostgresTaskStore implements FullStore {
             maxAttempts[i] = t.maxAttempts();
             created[i] = text(t.created() == null ? Instant.now() : t.created());
             due[i] = text(t.due());
-            data[i] = t.data();
+            data[i] = t.encodedPayload();
             account[i] = t.account();
             headers[i] = RecordJson.encodeHeaders(t.headers());
             uniqueKey[i] = t.uniqueKey();
@@ -1108,7 +1108,7 @@ public class PostgresTaskStore implements FullStore {
                 if (d.fixedDelayMs() == null) ps.setNull(10, Types.BIGINT);
                 else ps.setLong(10, d.fixedDelayMs());
                 ps.setBoolean(11, d.overlapSkip());
-                ps.setString(12, d.data());
+                ps.setString(12, d.encodedPayload());
                 ps.setInt(13, d.maxAttempts());
                 if (d.maxRunTimeMs() == null) ps.setNull(14, Types.INTEGER);
                 else ps.setInt(14, Math.toIntExact(d.maxRunTimeMs()));
@@ -1185,7 +1185,7 @@ public class PostgresTaskStore implements FullStore {
                 ps.setInt(9, o.maxAttempts());
                 setInstant(ps, 10, o.created() == null ? Instant.now() : o.created());
                 setInstant(ps, 11, due.fireAt());
-                ps.setString(12, o.data());
+                ps.setString(12, o.encodedPayload());
                 ps.setString(13, o.account());
                 ps.setString(14, RecordJson.encodeHeaders(o.headers()));
                 ps.setString(15, o.retryPolicy());
@@ -1411,7 +1411,7 @@ public class PostgresTaskStore implements FullStore {
                 .created(getInstant(rs, "created"))
                 .due(getInstant(rs, "due"))
                 .stateChanged(getInstant(rs, "state_changed"))
-                .data(rs.getString("data"))
+                .encodedPayload(rs.getString("data"))
                 .workerId(getInteger(rs, "worker_id"))
                 .leaseUntil(getInstant(rs, "lease_until"))
                 .claimedAt(getInstant(rs, "claimed_at"))

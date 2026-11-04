@@ -63,7 +63,7 @@ class PostgresTaskStoreIT {
                 .typeId(type)
                 .maxAttempts(3)
                 .created(Instant.now())
-                .data("payload-" + id);
+                .encodedPayload("payload-" + id);
     }
 
     private long newId() {
@@ -266,7 +266,7 @@ class PostgresTaskStoreIT {
         assertThat(r.payloadVersion()).isEqualTo(2);
         assertThat(r.due()).isAfter(before).isEqualTo(r.stateChanged());
         assertThat(r.created()).isEqualTo(t.created().truncatedTo(ChronoUnit.MICROS));
-        assertThat(r.data()).isEqualTo("payload-" + id);
+        assertThat(r.encodedPayload()).isEqualTo("payload-" + id);
         assertThat(r.account()).isEqualTo("acme");
         assertThat(r.headers()).isEqualTo(Map.of("trace", "abc"));
         assertThat(r.uniqueKey()).isEqualTo("k1");
@@ -301,8 +301,8 @@ class PostgresTaskStoreIT {
     void reinsertingAnExistingIdReportsExistsAndChangesNothing() {
         long id = newId();
         store.enqueue(task(id).build());
-        assertThat(store.enqueue(task(id).data("other").build())).isEqualTo(EnqueueOutcome.EXISTS);
-        assertThat(get(id).data()).isEqualTo("payload-" + id);
+        assertThat(store.enqueue(task(id).encodedPayload("other").build())).isEqualTo(EnqueueOutcome.EXISTS);
+        assertThat(get(id).encodedPayload()).isEqualTo("payload-" + id);
     }
 
     @Test
@@ -545,11 +545,11 @@ class PostgresTaskStoreIT {
         var a = get(kept.id());
         assertThat(a.state()).isEqualTo(TaskState.SUCCEEDED);
         assertThat(a.revision()).isEqualTo(kept.revision() + 1);
-        assertThat(a.data()).isEqualTo(kept.data());
+        assertThat(a.encodedPayload()).isEqualTo(kept.encodedPayload());
         assertThat(a.leaseUntil()).isNull();
         assertThat(a.workerId()).isEqualTo(worker);
         var b = get(dropped.id());
-        assertThat(b.data()).isNull();
+        assertThat(b.encodedPayload()).isNull();
         assertThat(b.steps()).isEqualTo(steps);
         assertThat(store.ack(kept.id(), a.revision(), true, true, null)).isFalse();
     }
@@ -564,7 +564,7 @@ class PostgresTaskStoreIT {
         assertThat(store.ack(keyed.id(), keyed.revision(), false, true, null)).isTrue();
         var row = get(keyed.id());
         assertThat(row.state()).isEqualTo(TaskState.SUCCEEDED);
-        assertThat(row.data()).isNull();
+        assertThat(row.encodedPayload()).isNull();
         assertThat(row.uniqueKey()).isEqualTo("k");
     }
 
@@ -594,7 +594,7 @@ class PostgresTaskStoreIT {
                 .isEqualTo(FailOutcome.DEAD);
         var dead = get(exhausted.id());
         assertThat(dead.state()).isEqualTo(TaskState.DEAD);
-        assertThat(dead.data()).isEqualTo(exhausted.data());
+        assertThat(dead.encodedPayload()).isEqualTo(exhausted.encodedPayload());
         assertThat(dead.workerId()).isEqualTo(worker);
 
         var refused = enqueueAndClaim(task(newId()));
@@ -855,7 +855,7 @@ class PostgresTaskStoreIT {
 
         long id = newId();
         var occurrence = task(id).scheduleId("hourly")
-                .data(d.definition().data())
+                .encodedPayload(d.definition().encodedPayload())
                 .maxAttempts(4)
                 .build();
         assertThat(store.commitRecurring(d, nextFire, occurrence)).isTrue();
@@ -920,7 +920,7 @@ class PostgresTaskStoreIT {
         assertThat(r.cancelReason()).isEqualTo("stop");
         assertThat(r.cancelRequestedAt()).isNotNull();
         assertThat(r.stateChanged()).isEqualTo(r.cancelRequestedAt());
-        assertThat(r.data()).isNull();
+        assertThat(r.encodedPayload()).isNull();
         assertThat(r.workerId()).isEqualTo(worker);
         assertThat(r.leaseUntil()).isNull();
         assertThat(r.uniqueKey()).isNull();
@@ -941,7 +941,7 @@ class PostgresTaskStoreIT {
 
         var r = get(t.id());
         assertThat(r.cancelRequestedAt()).isEqualTo(requested);
-        assertThat(r.data()).isEqualTo(t.data());
+        assertThat(r.encodedPayload()).isEqualTo(t.encodedPayload());
         assertThat(r.uniqueKey()).isEqualTo("c2");
         assertThat(r.keyUntil()).isAfter(r.stateChanged());
     }
@@ -961,7 +961,7 @@ class PostgresTaskStoreIT {
         assertThat(c.revision()).isEqualTo(1);
         assertThat(c.cancelReason()).isEqualTo("not needed");
         assertThat(c.cancelRequestedAt()).isEqualTo(c.stateChanged());
-        assertThat(c.data()).isEqualTo("payload-" + queued);
+        assertThat(c.encodedPayload()).isEqualTo("payload-" + queued);
         assertThat(c.uniqueKey()).isNull();
         assertThat(get(scheduled).state()).isEqualTo(TaskState.CANCELLED);
         assertThat(store.cancel(queued, 1, "again", null)).isEqualTo(CancelOutcome.STALE);
@@ -1047,7 +1047,7 @@ class PostgresTaskStoreIT {
         assertThat(r.keyUntil()).isNull();
         assertThat(r.failures()).hasSize(1);
         assertThat(r.steps()).isEqualTo(steps);
-        assertThat(r.data()).isEqualTo(t.data());
+        assertThat(r.encodedPayload()).isEqualTo(t.encodedPayload());
         assertThat(store.retry(t.id(), r.revision())).isEqualTo(RetryOutcome.STALE);
         assertThat(claim(1)).extracting(TaskRecord::id).containsExactly(t.id());
     }

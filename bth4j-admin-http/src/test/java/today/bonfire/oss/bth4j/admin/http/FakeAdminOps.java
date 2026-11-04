@@ -38,7 +38,7 @@ final class FakeAdminOps implements AdminOps {
     volatile RunnerHealth health;
     volatile RuntimeException failure;
 
-    static TaskView task(long id, int revision, TaskState state, String queue, String data) {
+    static TaskView task(long id, int revision, TaskState state, String queue, String encodedPayload) {
         var record = TaskRecord.builder()
                 .id(id)
                 .revision(revision)
@@ -48,7 +48,7 @@ final class FakeAdminOps implements AdminOps {
                 .created(Instant.parse("2026-01-01T00:00:00Z"))
                 .due(Instant.parse("2026-01-01T00:00:01Z"))
                 .stateChanged(Instant.parse("2026-01-01T00:00:02Z"))
-                .data(data)
+                .encodedPayload(encodedPayload)
                 .maxRunTime(Duration.ofMinutes(5))
                 .build();
         return new TaskView(record, queue, "send-mail");

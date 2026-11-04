@@ -223,7 +223,7 @@ public final class TaskExecution implements Runnable, TaskContext {
     @SuppressWarnings("unchecked")
     private <T> void process(TaskProcessorRegistry.Registration<?> registration) throws Exception {
         var reg = (TaskProcessorRegistry.Registration<T>) registration;
-        T payload = s.codecs().decode(reg.type(), record.data());
+        T payload = s.codecs().decode(reg.type(), record.encodedPayload());
         TaskProcessor<T> processor = reg.processor();
         processor.process(this, payload);
     }

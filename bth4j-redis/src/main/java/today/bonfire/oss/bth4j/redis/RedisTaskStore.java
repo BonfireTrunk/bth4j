@@ -247,8 +247,8 @@ public class RedisTaskStore implements FullStore {
         var args = new ArrayList<String>();
         args.add(String.valueOf(t.queueId()));
         args.add(t.startBy() == null ? "" : ms(t.startBy()));
-        args.add(t.data() == null ? "" : "1");
-        args.add(t.data() == null ? "" : t.data());
+        args.add(t.encodedPayload() == null ? "" : "1");
+        args.add(t.encodedPayload() == null ? "" : t.encodedPayload());
         args.addAll(TaskHashes.fields(t));
         return args;
     }
@@ -544,8 +544,8 @@ public class RedisTaskStore implements FullStore {
         if (d.account() != null) {
             args.addAll(List.of(F_ACCOUNT, d.account()));
         }
-        if (d.data() != null) {
-            args.addAll(List.of(F_DATA, d.data()));
+        if (d.encodedPayload() != null) {
+            args.addAll(List.of(F_DATA, d.encodedPayload()));
         }
         return PutRecurringOutcome.valueOf((String) guard(() -> scripts.run(RedisScripts.CRON_PUT, args)));
     }

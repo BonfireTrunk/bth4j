@@ -72,8 +72,8 @@ public final class TaskView {
     }
 
     /** @return the encoded payload, or null */
-    public String data() {
-        return record.data();
+    public String encodedPayload() {
+        return record.encodedPayload();
     }
 
     public Integer workerId() {

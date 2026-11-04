@@ -285,7 +285,7 @@ public final class TaskClient {
         if (stored == null) return false;
         if (stored.typeId() != sent.typeId()) throw new TaskIdReusedException(sent.id(), "another task type");
         if (stored.queueId() != sent.queueId()) throw new TaskIdReusedException(sent.id(), "another queue");
-        if (stored.data() != null && !stored.data().equals(sent.data())) {
+        if (stored.encodedPayload() != null && !stored.encodedPayload().equals(sent.encodedPayload())) {
             throw new TaskIdReusedException(sent.id(), "another payload");
         }
         var heldKey = stored.uniqueKey();
@@ -316,7 +316,7 @@ public final class TaskClient {
                 .maxAttempts(request.maxAttempts() != null ? request.maxAttempts() : defaultMaxAttempts)
                 .created(now)
                 .due(due)
-                .data(codecs.encode(type, request.payload()))
+                .encodedPayload(codecs.encode(type, request.payload()))
                 .account(request.account())
                 .headers(validHeaders(request.headers()))
                 .uniqueKey(request.uniqueKey())

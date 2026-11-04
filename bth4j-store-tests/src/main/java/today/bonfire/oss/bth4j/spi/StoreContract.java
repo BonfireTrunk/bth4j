@@ -95,7 +95,7 @@ public abstract class StoreContract {
                 .typeId(typeId)
                 .maxAttempts(3)
                 .created(now())
-                .data("payload");
+                .encodedPayload("payload");
     }
 
     private long put(TaskRecord.Builder builder) {
@@ -274,7 +274,7 @@ public abstract class StoreContract {
         assertThat(t.attempts()).isZero();
         assertThat(t.queueId()).isEqualTo(queue);
         assertThat(t.typeId()).isEqualTo(type);
-        assertThat(t.data()).isEqualTo("payload");
+        assertThat(t.encodedPayload()).isEqualTo("payload");
     }
 
     @Test
@@ -309,10 +309,11 @@ public abstract class StoreContract {
 
     @Test
     void enqueueOfAnExistingIdReturnsExistsAndChangesNothing() {
-        TaskRecord original = task().data("first").build();
+        TaskRecord original = task().encodedPayload("first").build();
         assertThat(store.enqueue(original)).isEqualTo(EnqueueOutcome.STORED);
-        assertThat(store.enqueue(original.toBuilder().data("second").build())).isEqualTo(EnqueueOutcome.EXISTS);
-        assertThat(get(original.id()).data()).isEqualTo("first");
+        assertThat(store.enqueue(original.toBuilder().encodedPayload("second").build()))
+                .isEqualTo(EnqueueOutcome.EXISTS);
+        assertThat(get(original.id()).encodedPayload()).isEqualTo("first");
     }
 
     @Test
@@ -628,7 +629,7 @@ public abstract class StoreContract {
         TaskRecord done = get(t.id());
         assertThat(done.state()).isEqualTo(TaskState.SUCCEEDED);
         assertThat(done.revision()).isEqualTo(t.revision() + 1);
-        assertThat(done.data()).isNull();
+        assertThat(done.encodedPayload()).isNull();
         assertThat(done.leaseUntil()).isNull();
         assertThat(done.workerId()).isEqualTo(worker);
         assertThat(done.stateChanged()).isAfterOrEqualTo(get(t.id()).claimedAt());
@@ -641,7 +642,7 @@ public abstract class StoreContract {
         assertThat(store.saveSteps(t.id(), t.revision(), steps)).isTrue();
         assertThat(store.ack(t.id(), t.revision(), true, true, null)).isTrue();
         TaskRecord done = get(t.id());
-        assertThat(done.data()).isEqualTo("payload");
+        assertThat(done.encodedPayload()).isEqualTo("payload");
         assertThat(done.steps()).isEqualTo(steps);
     }
 
@@ -652,7 +653,7 @@ public abstract class StoreContract {
         assertThat(store.saveSteps(t.id(), t.revision(), steps)).isTrue();
         assertThat(store.ack(t.id(), t.revision(), true, false, null)).isTrue();
         assertThat(get(t.id()).steps()).isEqualTo(steps);
-        assertThat(get(t.id()).data()).isNull();
+        assertThat(get(t.id()).encodedPayload()).isNull();
     }
 
     @Test
@@ -668,7 +669,7 @@ public abstract class StoreContract {
         assertThat(store.ack(t.id(), t.revision(), false, false, null)).isTrue();
         TaskRecord done = get(t.id());
         assertThat(done.state()).isEqualTo(TaskState.SUCCEEDED);
-        assertThat(done.data()).isNull();
+        assertThat(done.encodedPayload()).isNull();
         assertThat(done.keyUntil()).isNotNull();
         assertThat(store.enqueue(task().uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(t.id()));
         assertThat(store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10)).isZero();
@@ -1339,7 +1340,7 @@ public abstract class StoreContract {
         assertThat(stored.typeId()).isEqualTo(type);
         assertThat(stored.queueId()).isEqualTo(queue);
         assertThat(stored.account()).isEqualTo("acme");
-        assertThat(stored.data()).isEqualTo("{}");
+        assertThat(stored.encodedPayload()).isEqualTo("{}");
         assertThat(stored.maxAttempts()).isEqualTo(3);
         assertThat(due.get(0).fireAt()).isEqualTo(fire);
     }
@@ -1353,7 +1354,8 @@ public abstract class StoreContract {
                 .isEqualTo(PutRecurringOutcome.CHANGED);
         long second = store.dueRecurring(fire, 10).get(0).definition().revision();
         assertThat(second).isNotEqualTo(first);
-        assertThat(store.dueRecurring(fire, 10).get(0).definition().data()).isEqualTo("{\"v\":2}");
+        assertThat(store.dueRecurring(fire, 10).get(0).definition().encodedPayload())
+                .isEqualTo("{\"v\":2}");
     }
 
     @Test
@@ -1415,7 +1417,7 @@ public abstract class StoreContract {
                 base.catchUpMax(),
                 base.fixedDelayMs(),
                 base.overlapSkip(),
-                base.data(),
+                base.encodedPayload(),
                 base.maxAttempts(),
                 base.maxRunTimeMs() * 2,
                 base.paused(),
@@ -1586,7 +1588,7 @@ public abstract class StoreContract {
         assertThat(done.cancelRequestedAt()).isNotNull();
         assertThat(done.leaseUntil()).isNull();
         assertThat(done.workerId()).isEqualTo(worker);
-        assertThat(done.data()).isEqualTo("payload");
+        assertThat(done.encodedPayload()).isEqualTo("payload");
         assertThat(done.stateChanged()).isAfterOrEqualTo(millis(before));
         assertThat(done.uniqueKey()).isNull();
         assertThat(counts().cancelled()).isEqualTo(1);
@@ -1604,7 +1606,7 @@ public abstract class StoreContract {
         TaskRecord done = get(t.id());
         assertThat(done.cancelRequestedAt()).isEqualTo(requested);
         assertThat(done.cancelReason()).isEqualTo("done");
-        assertThat(done.data()).isNull();
+        assertThat(done.encodedPayload()).isNull();
     }
 
     @Test
@@ -2032,7 +2034,7 @@ public abstract class StoreContract {
         assertThat(d.fixedDelayMs()).isEqualTo(90_000L);
         assertThat(d.isFixedDelay()).isTrue();
         assertThat(d.overlapSkip()).isTrue();
-        assertThat(d.data()).isEqualTo("{\"a\":1}");
+        assertThat(d.encodedPayload()).isEqualTo("{\"a\":1}");
         assertThat(d.maxAttempts()).isEqualTo(4);
         assertThat(d.paused()).isFalse();
         RecurringDefinition c = all.get(0).definition();
@@ -2041,7 +2043,7 @@ public abstract class StoreContract {
         assertThat(c.misfire()).isNull();
         assertThat(c.fixedDelayMs()).isNull();
         assertThat(c.account()).isNull();
-        assertThat(c.data()).isNull();
+        assertThat(c.encodedPayload()).isNull();
         assertThat(c.overlapSkip()).isFalse();
         assertThat(store.dueRecurring(fire, 10).get(0).definition()).isEqualTo(d);
     }
@@ -2256,7 +2258,7 @@ public abstract class StoreContract {
                 d.catchUpMax(),
                 delayMs,
                 d.overlapSkip(),
-                d.data(),
+                d.encodedPayload(),
                 d.maxAttempts(),
                 d.maxRunTimeMs(),
                 d.paused(),

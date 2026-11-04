@@ -340,7 +340,7 @@ public final class InMemoryStore implements FullStore {
                     .stateChanged(now)
                     .leaseUntil(null);
             if (!keep || !keepPayload) {
-                b.data(null);
+                b.encodedPayload(null);
             }
             finish(t, b, now);
             return true;
@@ -834,7 +834,7 @@ public final class InMemoryStore implements FullStore {
                     .cancelRequestedAt(t.cancelRequestedAt() != null ? t.cancelRequestedAt() : now)
                     .leaseUntil(null);
             if (!keepPayload) {
-                b.data(null);
+                b.encodedPayload(null);
             }
             finish(t, b, now);
             return true;

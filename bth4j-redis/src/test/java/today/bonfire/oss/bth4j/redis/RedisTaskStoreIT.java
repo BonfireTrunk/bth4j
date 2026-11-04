@@ -236,7 +236,7 @@ class RedisTaskStoreIT {
 
     @Test
     void enqueueRoundTripsEveryField() {
-        var t = task(7).data("{\"a\":1}")
+        var t = task(7).encodedPayload("{\"a\":1}")
                 .account("acme")
                 .headers(Map.of("h", "v"))
                 .retryPolicy("slow")
@@ -250,7 +250,7 @@ class RedisTaskStoreIT {
         store.enqueue(t);
         var back = store.getTask(7).orElseThrow();
 
-        assertThat(back.data()).isEqualTo("{\"a\":1}");
+        assertThat(back.encodedPayload()).isEqualTo("{\"a\":1}");
         assertThat(back.account()).isEqualTo("acme");
         assertThat(back.headers()).containsEntry("h", "v");
         assertThat(back.retryPolicy()).isEqualTo("slow");
@@ -316,8 +316,10 @@ class RedisTaskStoreIT {
     @Test
     void keyKeepWindowHoldsTheKeyViaPexpireAndKeepsTheHashEvenWithoutKeep() {
         store.enqueue(task(1).uniqueKey("k").keyKeep(Duration.ofMillis(600)).build());
-        store.enqueue(
-                task(2).data("p").uniqueKey("j").keyKeep(Duration.ofMillis(600)).build());
+        store.enqueue(task(2).encodedPayload("p")
+                .uniqueKey("j")
+                .keyKeep(Duration.ofMillis(600))
+                .build());
         var claimed = claim(2);
 
         store.ack(1, claimed.get(0).revision(), true, true, null);
@@ -328,7 +330,7 @@ class RedisTaskStoreIT {
         assertThat(store.getTask(1).orElseThrow().keyUntil()).isNotNull();
         var kept = store.getTask(2).orElseThrow();
         assertThat(kept.state()).isEqualTo(TaskState.SUCCEEDED);
-        assertThat(kept.data()).isNull();
+        assertThat(kept.encodedPayload()).isNull();
         assertThat(kept.keyUntil()).isNotNull();
         assertThat(store.enqueue(task(3).uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(1));
         assertThat(store.enqueue(task(4).uniqueKey("j").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(2));
@@ -568,8 +570,8 @@ class RedisTaskStoreIT {
 
     @Test
     void ackWithKeepSucceedsAndDropsDataUnlessKept() {
-        store.enqueue(task(1).data("payload").build());
-        store.enqueue(task(2).data("payload").build());
+        store.enqueue(task(1).encodedPayload("payload").build());
+        store.enqueue(task(2).encodedPayload("payload").build());
         var claimed = claim(2);
         store.saveSteps(1, claimed.get(0).revision(), Map.of("s", new StepResult(Instant.ofEpochMilli(5), "r")));
 
@@ -578,12 +580,12 @@ class RedisTaskStoreIT {
 
         var dropped = store.getTask(1).orElseThrow();
         assertThat(dropped.state()).isEqualTo(TaskState.SUCCEEDED);
-        assertThat(dropped.data()).isNull();
+        assertThat(dropped.encodedPayload()).isNull();
         assertThat(dropped.steps()).containsKey("s");
         assertThat(dropped.leaseUntil()).isNull();
         assertThat(dropped.workerId()).isEqualTo(1);
         assertThat(dropped.revision()).isEqualTo(claimed.get(0).revision() + 1);
-        assertThat(store.getTask(2).orElseThrow().data()).isEqualTo("payload");
+        assertThat(store.getTask(2).orElseThrow().encodedPayload()).isEqualTo("payload");
         assertThat(jedis.zscore(keys.index(3, queue), "1"))
                 .isEqualTo((double) dropped.stateChanged().toEpochMilli());
         assertThat(counts().succeeded()).isEqualTo(2);
@@ -1023,7 +1025,7 @@ class RedisTaskStoreIT {
         assertThat(d.payloadVersion()).isEqualTo(2);
         assertThat(d.account()).isEqualTo("acme");
         assertThat(d.cron()).isEqualTo("* * * * *");
-        assertThat(d.data()).isEqualTo("{\"d\":1}");
+        assertThat(d.encodedPayload()).isEqualTo("{\"d\":1}");
         assertThat(d.maxAttempts()).isEqualTo(5);
         assertThat(d.revision()).isPositive();
         assertThat(store.deleteRecurring("s")).isTrue();

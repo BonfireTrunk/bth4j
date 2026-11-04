@@ -13,7 +13,7 @@ import java.util.Map;
  * @param revision          +1 on every state change; never on renew, step or progress writes; the fence every
  *                          transition checks
  * @param queueId           see {@link TaskStore#queueId}
- * @param typeId           see {@link TaskStore#typeId}
+ * @param typeId            see {@link TaskStore#typeId}
  * @param payloadVersion    the task type's payload version when the task was enqueued
  * @param state             current state
  * @param attempts          how often the task was claimed
@@ -22,7 +22,7 @@ import java.util.Map;
  * @param due               when the task may run: the enqueue time for an immediate task, the due time for a
  *                          scheduled one, the retry time after a failure (store clock); never null once stored
  * @param stateChanged      when the current state was entered (store clock); the finish time of a terminal task
- * @param data              encoded payload; null when there is none or it was dropped on success
+ * @param encodedPayload    encoded payload; null when there is none or it was dropped on success
  * @param workerId          the worker that claimed the task; kept after it finished
  * @param leaseUntil        when the lease expires unless renewed; LEASED only
  * @param claimedAt         when the last attempt started
@@ -55,7 +55,7 @@ public record TaskRecord(
         Instant created,
         Instant due,
         Instant stateChanged,
-        String data,
+        String encodedPayload,
         Integer workerId,
         Instant leaseUntil,
         Instant claimedAt,
@@ -98,7 +98,7 @@ public record TaskRecord(
         b.created = created;
         b.due = due;
         b.stateChanged = stateChanged;
-        b.data = data;
+        b.encodedPayload = encodedPayload;
         b.workerId = workerId;
         b.leaseUntil = leaseUntil;
         b.claimedAt = claimedAt;
@@ -137,7 +137,7 @@ public record TaskRecord(
         private Instant created;
         private Instant due;
         private Instant stateChanged;
-        private String data;
+        private String encodedPayload;
         private Integer workerId;
         private Instant leaseUntil;
         private Instant claimedAt;
@@ -214,8 +214,8 @@ public record TaskRecord(
             return this;
         }
 
-        public Builder data(String v) {
-            data = v;
+        public Builder encodedPayload(String v) {
+            encodedPayload = v;
             return this;
         }
 
@@ -322,7 +322,7 @@ public record TaskRecord(
                     created,
                     due,
                     stateChanged,
-                    data,
+                    encodedPayload,
                     workerId,
                     leaseUntil,
                     claimedAt,

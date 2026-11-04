@@ -198,7 +198,7 @@ public abstract class RunnerContract {
         long id = enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("gone", 1)).build());
 
         var done = awaitState(id, TaskState.SUCCEEDED);
-        assertThat(done.data()).isNull();
+        assertThat(done.encodedPayload()).isNull();
         assertThat(done.leaseUntil()).isNull();
     }
 
@@ -226,7 +226,7 @@ public abstract class RunnerContract {
 
         startRunner(r -> r.register(PAYLOAD_TYPE, (ctx, payload) -> {}));
         var done = awaitState(id, TaskState.SUCCEEDED);
-        assertThat(done.data()).isNull();
+        assertThat(done.encodedPayload()).isNull();
         assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
         assertThat(client.enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("two", 1))
                         .id(id)
@@ -293,7 +293,7 @@ public abstract class RunnerContract {
         long id = enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("kept", 2)).build());
 
         var done = awaitState(id, TaskState.SUCCEEDED);
-        assertThat(done.data()).contains("kept");
+        assertThat(done.encodedPayload()).contains("kept");
     }
 
     @Test
@@ -686,7 +686,7 @@ public abstract class RunnerContract {
         var done = awaitState(id, TaskState.CANCELLED);
         assertThat(done.cancelReason()).isEqualTo("operator says stop");
         assertThat(done.revision()).isEqualTo(running.revision() + 1);
-        assertThat(done.data()).isNull();
+        assertThat(done.encodedPayload()).isNull();
         await("the cancelled event", () -> eventNames(events, id).contains("Cancelled"));
         assertThat(eventNames(events, id)).containsExactly("Started", "Cancelled");
     }

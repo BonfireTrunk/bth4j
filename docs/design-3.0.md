@@ -71,7 +71,7 @@ Always present:
 | `created` | client time |
 | `due` | store time; never null once stored |
 | `stateChanged` | store time; when the current state was entered |
-| `data` | encoded payload, at most 256 KiB; null when none or dropped on success |
+| `encodedPayload` | encoded payload, at most 256 KiB; null when none or dropped on success |
 | `workerId` | set while LEASED, kept on terminal rows, cleared on retry, reschedule and unclaim |
 | `leaseUntil` | LEASED only |
 
@@ -249,7 +249,7 @@ a separate zset until the window has passed; PostgreSQL filters them in the quer
 A retention of ZERO removes the record at the transition itself: the runner passes `keep = false` to `ack`
 and `keepDead = false` to `fail`, and the row is deleted in the same atomic call. The exception is a task
 holding a keep window, which is kept (its payload dropped for SUCCEEDED) until the window ends and the
-purge removes it. A succeeded task also drops its payload (`data`) unless `keepSucceededPayload` is set;
+purge removes it. A succeeded task also drops its payload (`encodedPayload`) unless `keepSucceededPayload` is set;
 its `steps` are kept.
 
 Redis task hashes never get a TTL; the purge is the only remover, and it removes the hash together with

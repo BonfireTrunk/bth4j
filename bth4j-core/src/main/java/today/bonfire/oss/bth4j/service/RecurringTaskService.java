@@ -233,7 +233,7 @@ public class RecurringTaskService extends CustomThread {
                 .maxRunTime(def.maxRunTimeMs() == null ? null : Duration.ofMillis(def.maxRunTimeMs()))
                 .created(clock.instant())
                 .due(due)
-                .data(def.data())
+                .encodedPayload(def.encodedPayload())
                 .account(def.account())
                 .scheduleId(d.scheduleId());
         if (def.isFixedDelay()) {

@@ -57,7 +57,7 @@ public interface ExecutionStore extends TaskStore {
      * Completes a LEASED task: state SUCCEEDED, or the record is removed when {@code keep} is false. The
      * unique key is released or scheduled for release per {@link TaskRecord#keyKeep()}.
      *
-     * @param keepPayload false drops {@link TaskRecord#data()}; steps are kept
+     * @param keepPayload false drops {@link TaskRecord#encodedPayload()}; steps are kept
      * @param effect applied to a recurring definition in the same atomic step when the ack applies; may be null
      * @return false when the revision did not match
      */
@@ -114,7 +114,7 @@ public interface ExecutionStore extends TaskStore {
      * Ends a LEASED task whose worker stopped it on a cancel request: state CANCELLED, {@code cancelReason}
      * set, {@code cancelRequestedAt} kept or set now, lease cleared, unique key handled like {@link #ack}.
      *
-     * @param keepPayload false drops {@link TaskRecord#data()}
+     * @param keepPayload false drops {@link TaskRecord#encodedPayload()}
      * @param effect applied to a recurring definition in the same atomic step when the task ends; may be null
      * @return false when the revision did not match
      */
