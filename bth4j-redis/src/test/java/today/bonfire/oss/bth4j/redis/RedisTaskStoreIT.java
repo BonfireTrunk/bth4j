@@ -140,6 +140,15 @@ class RedisTaskStoreIT {
     }
 
     @Test
+    void initRefusesTheLayout2NamespaceOfA40Snapshot() {
+        jedis.hset(keys.meta, "schema", "2");
+
+        assertThatThrownBy(store::init)
+                .isInstanceOf(TaskStoreException.class)
+                .hasMessageContaining("layout version 2, expected 3");
+    }
+
+    @Test
     void idsAreReservedInBlocks() {
         assertThat(store.allocateIds(10)).isEqualTo(1);
         assertThat(store.allocateIds(5)).isEqualTo(11);

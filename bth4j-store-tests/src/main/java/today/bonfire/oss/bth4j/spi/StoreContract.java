@@ -1388,6 +1388,17 @@ public abstract class StoreContract {
     }
 
     @Test
+    void putRecurringWithAKeepBoundBeforeTheStoredFireIsAChangeEvenWhenTheNewFireIsTheSame() {
+        Instant fire = millis(now().plusSeconds(60));
+        store.putRecurring(fullDefinition("a"), fire, fire);
+        long revision = store.dueRecurring(fire, 10).get(0).definition().revision();
+
+        assertThat(store.putRecurring(fullDefinition("a"), fire, fire.minusSeconds(1)))
+                .isEqualTo(PutRecurringOutcome.CHANGED);
+        assertThat(store.dueRecurring(fire, 10).get(0).definition().revision()).isNotEqualTo(revision);
+    }
+
+    @Test
     void putRecurringComparesTheMaxRun() {
         Instant fire = millis(now().plusSeconds(60));
         var base = fullDefinition("a");

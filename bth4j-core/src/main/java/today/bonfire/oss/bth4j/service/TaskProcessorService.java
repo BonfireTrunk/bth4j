@@ -258,7 +258,11 @@ public class TaskProcessorService extends CustomThread {
     private void renewLeases() {
         while (renewalRunning) {
             sleepQuietly(renewInterval);
-            renewOnce();
+            try {
+                renewOnce();
+            } catch (RuntimeException e) {
+                log.error("Lease renewal round failed, retrying in {}", renewInterval, e);
+            }
         }
     }
 

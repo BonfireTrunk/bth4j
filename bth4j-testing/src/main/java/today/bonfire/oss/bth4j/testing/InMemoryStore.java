@@ -615,15 +615,14 @@ public final class InMemoryStore implements FullStore {
                     && Objects.equals(old.definition().fixedDelayMs(), definition.fixedDelayMs());
             TaskRecord running = sameTiming && old.occurrence() != null ? tasks.get(old.occurrence()) : null;
             boolean occurrenceRunning = running != null && !running.state().isTerminal();
-            Instant fire =
-                    sameTiming && (occurrenceRunning || !old.nextFire().isAfter(keepUntil)) ? old.nextFire() : nextFire;
+            boolean keep = sameTiming && (occurrenceRunning || !old.nextFire().isAfter(keepUntil));
+            Instant fire = keep ? old.nextFire() : nextFire;
             Long occurrence = occurrenceRunning ? old.occurrence() : null;
-            if (old != null
+            if (keep
                     && old.definition()
                             .equals(definition
                                     .withPaused(old.definition().paused())
                                     .withRevision(old.definition().revision()))
-                    && fire.equals(old.nextFire())
                     && Objects.equals(occurrence, old.occurrence())) {
                 return PutRecurringOutcome.UNCHANGED;
             }

@@ -61,9 +61,10 @@ import today.bonfire.oss.bth4j.spi.WorkerInfo;
 public class RedisTaskStore implements FullStore {
     /**
      * The key layout this class writes, stored in the namespace's {@code meta} hash. {@link #init} refuses a
-     * namespace written with another one; there is no migration between layouts.
+     * namespace written with another one; there is no migration between layouts. 3.0 wrote layout 1; layout 2
+     * was only in 4.0.0 snapshots, whose namespaces lack fields that this layout relies on.
      */
-    public static final int LAYOUT_VERSION = 2;
+    public static final int LAYOUT_VERSION = 3;
 
     private static final int PAGE_CHUNK = 500;
 

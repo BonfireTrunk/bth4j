@@ -672,10 +672,14 @@ public final class BackgroundRunner {
          * requests cancellation (and interrupts the processor when its type opted in with
          * {@code interruptOnCancel}); an attempt still running one renewal period later is abandoned: its lease
          * is no longer renewed, so maintenance retries or ends the task, while the stuck thread keeps its slots
-         * until it returns and is reported as the issue {@code attempt-abandoned}. Default one hour.
+         * until it returns and is reported as the issue {@code attempt-abandoned}. Default one hour, at most
+         * {@link TaskRequest#MAX_RUN}.
          */
         public Builder defaultMaxRun(Duration maxRun) {
             requirePositive(maxRun, "defaultMaxRun");
+            if (maxRun.compareTo(TaskRequest.MAX_RUN) > 0) {
+                throw new TaskConfigurationError("defaultMaxRun must be at most " + TaskRequest.MAX_RUN);
+            }
             this.defaultMaxRun = maxRun;
             return this;
         }
