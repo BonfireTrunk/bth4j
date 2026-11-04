@@ -161,11 +161,15 @@ class TaskRequestTest {
     }
 
     @Test
-    void maxRunMustBePositive() {
+    void maxRunMustBePositiveAndAtMostMaxRun() {
         var builder = TaskRequest.of(VOID);
 
         assertThatThrownBy(() -> builder.maxRun(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> builder.maxRun(Duration.ofSeconds(-1))).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> builder.maxRun(TaskRequest.MAX_RUN.plusMillis(1)))
+                .isInstanceOf(TaskValidationException.class);
+        assertThat(TaskRequest.of(VOID).maxRun(TaskRequest.MAX_RUN).build().maxRun())
+                .isEqualTo(TaskRequest.MAX_RUN);
         assertThat(TaskRequest.of(VOID).maxRun(Duration.ofSeconds(1)).build().maxRun())
                 .isEqualTo(Duration.ofSeconds(1));
     }

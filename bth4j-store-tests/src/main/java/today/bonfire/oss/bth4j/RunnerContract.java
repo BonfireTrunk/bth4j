@@ -955,6 +955,29 @@ public abstract class RunnerContract {
     }
 
     @Test
+    void aScheduleMaxRunCancelsAnOverrunningOccurrenceAndPausesTheFixedDelaySchedule() {
+        var occurrence = new AtomicLong();
+        var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {
+            occurrence.set(ctx.id());
+            while (true) {
+                ctx.checkCancelled();
+                pause(10);
+            }
+        }));
+
+        client.putSchedule(ScheduleDefinition.every("slow", VOID_TYPE, Duration.ofSeconds(1))
+                .maxRun(Duration.ofMillis(300)));
+
+        await(
+                "the overrunning occurrence to pause its schedule",
+                () -> runner.admin().schedules().stream().anyMatch(s -> s.id().equals("slow") && s.paused()));
+        var task = client.task(occurrence.get()).orElseThrow();
+        assertThat(task.maxRun()).isEqualTo(Duration.ofMillis(300));
+        assertThat(task.state()).isEqualTo(TaskState.CANCELLED);
+        assertThat(runner.admin().schedules().getFirst().maxRun()).isEqualTo(Duration.ofMillis(300));
+    }
+
+    @Test
     void reRegisteringAFixedDelayScheduleThatWasPushedFarAheadBringsItBack() {
         var runs = new AtomicInteger();
         startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));
@@ -1136,6 +1159,7 @@ public abstract class RunnerContract {
                 false,
                 null,
                 3,
+                null,
                 false,
                 0);
         store.putRecurring(def, Instant.now().minus(late), Instant.now().minus(late));

@@ -661,6 +661,7 @@ class AdminHttpServerTest {
         assertThat(schedules.get(0))
                 .containsEntry("id", "nightly")
                 .containsEntry("fixedDelay", "PT1H")
+                .containsEntry("maxRun", "PT10M")
                 .containsEntry("nextFire", "2026-02-01T00:00:00Z");
         assertThat(jsonList(get("/api/v1/workers", login)).get(0))
                 .containsEntry("id", 2L)
@@ -824,6 +825,7 @@ class AdminHttpServerTest {
                 true,
                 false,
                 Instant.parse("2026-02-01T00:00:00Z"),
-                3);
+                3,
+                Duration.ofMinutes(10));
     }
 }

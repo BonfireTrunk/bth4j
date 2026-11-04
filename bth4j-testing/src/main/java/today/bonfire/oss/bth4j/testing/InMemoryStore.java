@@ -26,6 +26,7 @@ import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
+import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
@@ -604,26 +605,10 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public void putRecurring(RecurringDefinition definition, Instant nextFire, Instant keepUntil) {
+    public PutRecurringOutcome putRecurring(RecurringDefinition definition, Instant nextFire, Instant keepUntil) {
         lock.lock();
         try {
             Recurring old = recurring.get(definition.scheduleId());
-            RecurringDefinition stored = new RecurringDefinition(
-                    definition.scheduleId(),
-                    definition.eventId(),
-                    definition.payloadVersion(),
-                    definition.queueId(),
-                    definition.account(),
-                    definition.cron(),
-                    definition.zone(),
-                    definition.misfire(),
-                    definition.catchUpMax(),
-                    definition.fixedDelayMs(),
-                    definition.overlapSkip(),
-                    definition.data(),
-                    definition.maxAttempts(),
-                    old != null ? old.definition().paused() : definition.paused(),
-                    ++recurringRevision);
             boolean sameTiming = old != null
                     && Objects.equals(old.definition().cron(), definition.cron())
                     && Objects.equals(old.definition().zone(), definition.zone())
@@ -632,8 +617,21 @@ public final class InMemoryStore implements FullStore {
             boolean occurrenceRunning = running != null && !running.state().isTerminal();
             Instant fire =
                     sameTiming && (occurrenceRunning || !old.nextFire().isAfter(keepUntil)) ? old.nextFire() : nextFire;
-            recurring.put(
-                    definition.scheduleId(), new Recurring(stored, fire, occurrenceRunning ? old.occurrence() : null));
+            Long occurrence = occurrenceRunning ? old.occurrence() : null;
+            if (old != null
+                    && old.definition()
+                            .equals(definition
+                                    .withPaused(old.definition().paused())
+                                    .withRevision(old.definition().revision()))
+                    && fire.equals(old.nextFire())
+                    && Objects.equals(occurrence, old.occurrence())) {
+                return PutRecurringOutcome.UNCHANGED;
+            }
+            RecurringDefinition stored = definition
+                    .withPaused(old != null ? old.definition().paused() : definition.paused())
+                    .withRevision(++recurringRevision);
+            recurring.put(definition.scheduleId(), new Recurring(stored, fire, occurrence));
+            return old == null ? PutRecurringOutcome.CREATED : PutRecurringOutcome.CHANGED;
         } finally {
             lock.unlock();
         }

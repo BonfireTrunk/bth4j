@@ -31,6 +31,7 @@ import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
+import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
 import today.bonfire.oss.bth4j.spi.RecordJson;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.StateCounts;
@@ -992,6 +993,10 @@ class RedisTaskStoreIT {
         return new RecurringDefinition(id, event, 2, queue, "acme", cron, "{\"d\":1}", 5, 0);
     }
 
+    private RecurringDefinition otherData(String id, String cron) {
+        return new RecurringDefinition(id, event, 2, queue, "acme", cron, "{\"d\":2}", 5, 0);
+    }
+
     @Test
     void recurringDefinitionsAreStoredListedAndDeleted() {
         var fire = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
@@ -1025,10 +1030,17 @@ class RedisTaskStoreIT {
         store.putRecurring(definition("s", "* * * * *"), first, first);
         var rev1 = store.dueRecurring(first, 1).getFirst().definition().revision();
 
-        store.putRecurring(definition("s", "* * * * *"), second, second);
+        assertThat(store.putRecurring(definition("s", "* * * * *"), second, second))
+                .isEqualTo(PutRecurringOutcome.UNCHANGED);
+        assertThat(store.recurringSchedules()).containsEntry("s", first);
+        assertThat(store.dueRecurring(first, 1).getFirst().definition().revision())
+                .isEqualTo(rev1);
+        assertThat(store.putRecurring(otherData("s", "* * * * *"), second, second))
+                .isEqualTo(PutRecurringOutcome.CHANGED);
         assertThat(store.recurringSchedules()).containsEntry("s", first);
         var rev2 = store.dueRecurring(first, 1).getFirst().definition().revision();
-        store.putRecurring(definition("s", "0 * * * *"), second, second);
+        assertThat(store.putRecurring(definition("s", "0 * * * *"), second, second))
+                .isEqualTo(PutRecurringOutcome.CHANGED);
 
         assertThat(rev2).isGreaterThan(rev1);
         assertThat(store.recurringSchedules()).containsEntry("s", second);
@@ -1061,7 +1073,7 @@ class RedisTaskStoreIT {
         var fire = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MILLIS);
         store.putRecurring(definition("s", "* * * * *"), fire, fire);
         var due = store.dueRecurring(Instant.now(), 10).getFirst();
-        store.putRecurring(definition("s", "* * * * *"), fire, fire);
+        store.putRecurring(otherData("s", "* * * * *"), fire, fire);
 
         assertThat(store.commitRecurring(due, fire.plusSeconds(60), task(60).build()))
                 .isFalse();

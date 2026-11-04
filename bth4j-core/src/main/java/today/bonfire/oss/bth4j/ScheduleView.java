@@ -16,4 +16,5 @@ public record ScheduleView(
         boolean overlapSkip,
         boolean paused,
         Instant nextFire,
-        int maxAttempts) {}
+        int maxAttempts,
+        Duration maxRun) {}

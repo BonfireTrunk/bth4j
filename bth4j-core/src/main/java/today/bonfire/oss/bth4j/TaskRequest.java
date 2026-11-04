@@ -20,10 +20,20 @@ public final class TaskRequest<T> {
      */
     public static final int MAX_ATTEMPTS = Short.MAX_VALUE;
 
+    /** The longest {@code maxRun} of a task or schedule, about 24.8 days: stores keep it as an int of milliseconds. */
+    public static final Duration MAX_RUN = Duration.ofMillis(Integer.MAX_VALUE);
+
     public static final int MAX_UNIQUE_KEY_LENGTH = 256;
     public static final int MAX_ACCOUNT_LENGTH = 128;
     public static final int MAX_HEADERS_BYTES = 8 * 1024;
     public static final int MAX_PAYLOAD_BYTES = 256 * 1024;
+
+    /** The rule for a maximum run time of a task or schedule; null means none. */
+    public static void requireMaxRun(Duration maxRun) {
+        if (maxRun != null && (maxRun.isNegative() || maxRun.isZero() || maxRun.compareTo(MAX_RUN) > 0)) {
+            throw new TaskValidationException("maxRun must be positive and at most " + MAX_RUN);
+        }
+    }
 
     /** The rule for a unique key, for enqueueing and for looking one up. */
     public static void requireUniqueKey(String key) {
@@ -266,9 +276,7 @@ public final class TaskRequest<T> {
 
         /** An attempt running longer than this is cancelled; the task ends CANCELLED. */
         public Builder<T> maxRun(Duration maxRun) {
-            if (maxRun != null && (maxRun.isNegative() || maxRun.isZero())) {
-                throw new TaskValidationException("maxRun must be positive");
-            }
+            requireMaxRun(maxRun);
             this.maxRun = maxRun;
             return this;
         }

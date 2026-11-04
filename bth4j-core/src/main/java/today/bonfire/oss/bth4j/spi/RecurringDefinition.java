@@ -2,7 +2,7 @@ package today.bonfire.oss.bth4j.spi;
 
 /**
  * A recurring definition as the store keeps it. Each occurrence becomes a task with the definition's event,
- * queue, account, payload and maximum attempts.
+ * queue, account, payload, maximum attempts and maximum run time.
  *
  * @param cron         five-field expression, or null for a fixed-delay definition
  * @param zone         zone id the cron expression is evaluated in; null means UTC
@@ -12,7 +12,9 @@ package today.bonfire.oss.bth4j.spi;
  * @param overlapSkip  true gives each occurrence the unique key {@code sched:<scheduleId>} so that one is
  *                     skipped while the previous one is not finished
  * @param paused       a paused definition is left out of {@link ScheduleStore#dueRecurring}
- * @param revision     changes on every {@link ScheduleStore#putRecurring}; a commit for an older revision is rejected
+ * @param maxRunMs     maximum run time of each occurrence's attempts, or null for the runner's default
+ * @param revision     assigned by {@link ScheduleStore#putRecurring}, kept when the put changes nothing; a commit
+ *                     for an older revision is rejected
  */
 public record RecurringDefinition(
         String scheduleId,
@@ -28,6 +30,7 @@ public record RecurringDefinition(
         boolean overlapSkip,
         String data,
         int maxAttempts,
+        Long maxRunMs,
         boolean paused,
         long revision) {
 
@@ -60,6 +63,7 @@ public record RecurringDefinition(
                 false,
                 data,
                 maxAttempts,
+                null,
                 false,
                 revision);
     }
@@ -79,6 +83,7 @@ public record RecurringDefinition(
                 overlapSkip,
                 data,
                 maxAttempts,
+                maxRunMs,
                 paused,
                 revision);
     }
@@ -98,6 +103,7 @@ public record RecurringDefinition(
                 overlapSkip,
                 data,
                 maxAttempts,
+                maxRunMs,
                 paused,
                 revision);
     }

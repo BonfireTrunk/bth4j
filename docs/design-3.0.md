@@ -327,7 +327,7 @@ with the attempt given back and emits `Deferred`.
 
 `TaskClient.putSchedule(ScheduleDefinition)` stores a definition: id, task type, payload, a 5-field Unix
 cron expression evaluated in a zone (UTC by default) or a fixed delay, misfire policy, overlap mode, queue,
-account and max attempts. A definition is not a task; each
+account, max attempts and max run time. A definition is not a task; each
 occurrence becomes a task of its own with `scheduleId` set.
 
 The recurring service reads definitions whose next fire time is within one check interval
@@ -342,13 +342,16 @@ computed from `max(fireAt, now)`. A later one is a misfire, handled by the defin
 Schedules). A definition whose expression never fires again keeps its last occurrence and its next fire time
 is parked 100 years ahead.
 
-`putRecurring` assigns a new revision on every put, taken from a counter that never resets (Redis
+`putRecurring` assigns a new revision on every put that writes, taken from a counter that never resets (Redis
 `cronrev`, PostgreSQL sequence `<prefix>_schedule_rev`), also after a delete, so a runner holding a stale
-definition can never commit against its replacement. Registering again with the same cron expression
+definition can never commit against its replacement. A put that would write nothing (every field stored
+already, the next fire time kept, no finished occurrence recorded) keeps the revision and returns
+`PutRecurringOutcome.UNCHANGED`; otherwise it returns `CREATED` or `CHANGED`. Runners re-registering their
+schedules at start therefore do not make each other's commits fail the revision check. Registering again with the same cron expression
 keeps the stored next fire time as long as the timing (expression, zone, fixed delay) is unchanged and the
 the occurrence recorded for it is still running or the stored time is not later than the `keepUntil` the caller
 passes; changed timing resets it and forgets the recorded occurrence. A recorded occurrence that is finished or
-gone (a lost re-arm, an occurrence created by 3.0.0, which never recorded one) lets the `keepUntil` rule decide. `TaskClient` passes
+gone (a lost re-arm) lets the `keepUntil` rule decide. `TaskClient` passes
 the second fire after now for a cron definition and `now + delay` for a fixed delay, so a definition left
 parked or pushed far out by a lost re-arm or a stale write recovers on the next registration, while the margin
 of one fire keeps a healthy definition from firing twice when the clocks of the client and the runner differ. A re-put keeps the paused flag the definition has; a new definition takes the flag as given.
@@ -417,8 +420,8 @@ and `ku` fields of a finished task expire with its key (hash field expiry, Redis
 are epoch milliseconds.
 
 Definition hash `cron:<sid>`: `ev`, `q`, `pv`, `max`, `rev`, `next` (the next fire, kept also while
-paused) and the optional `acc`, `data`, `cron`, `zone`, `mf` (misfire), `cum` (catch-up max), `fd` (fixed delay ms), `os` (overlap skip, `1`) and
-`paused` (`1`).
+paused) and the optional `acc`, `data`, `cron`, `zone`, `mf` (misfire), `cum` (catch-up max), `fd` (fixed delay ms), `mr` (max run ms), `os` (overlap skip, `1`), `occ`
+(the fixed-delay occurrence in flight) and `paused` (`1`).
 
 One script per transition. `RedisScripts` has one script for each call that changes state under the fence
 (ENQUEUE, CLAIM, RENEW, ACK, FAIL, RESCHEDULE, UNCLAIM, WRITE, PROMOTE, PURGE, REGISTER,
@@ -471,7 +474,7 @@ or by running `schemaStatements()` from a migration tool:
 | `<prefix>_meta` | `schema_version` (2; 3.0 wrote 1) |
 | `<prefix>_queue`, `<prefix>_event`, `<prefix>_worker` | registries (above); `_queue.paused` and `_worker.running` (`integer NOT NULL DEFAULT 0`) belong to the admin SPI |
 | `<prefix>_task` | one row per task |
-| `<prefix>_schedule` | recurring definitions: `id`, `event_id`, `payload_version`, `queue_id`, `account`, `cron`, `zone`, `misfire`, `catch_up_max`, `fixed_delay_ms`, `overlap_skip`, `data`, `max_attempts`, `paused`, `rev`, `occurrence_id`, `next_fire` |
+| `<prefix>_schedule` | recurring definitions: `id`, `event_id`, `payload_version`, `queue_id`, `account`, `cron`, `zone`, `misfire`, `catch_up_max`, `fixed_delay_ms`, `overlap_skip`, `data`, `max_attempts`, `max_run_ms`, `paused`, `rev`, `occurrence_id`, `next_fire` |
 
 Task columns: `id bigint PK`, `revision integer`, `queue_id smallint`, `event_id smallint`,
 `payload_version smallint`, `state smallint`, `attempts smallint`, `max_attempts smallint`, `created`,
@@ -663,12 +666,20 @@ does not expire again.
 
 `TaskClient` rejects a `startBy` before the requested run time.
 
-`maxRun` is enforced in the renewal loop, not in the store. Each pass compares `startedAt + maxRun` of
-every running execution with the runner clock; an execution past it gets `requestCancel("max run time <d>
-exceeded")`, the same path as an operator's request, including the interrupt for types that opted in. The
-task then ends CANCELLED with that reason. The check runs once per renewal period, so a limit is honoured
-within a third of `leaseDuration`. `startedAt` is the time the processor started on this runner, not
-`claimedAt`.
+`maxRun` is enforced in the renewal loop, not in the store. An execution whose task has no `maxRun` uses the
+runner's `defaultMaxRun` (one hour by default), so every attempt has a limit. Each pass compares
+`startedAt + maxRun` of every running execution with the runner clock; an execution past it gets
+`requestCancel("max run time <d> exceeded")`, the same path as an operator's request, including the interrupt
+for types that opted in. The task then ends CANCELLED with that reason. The check runs once per renewal period,
+so a limit is honoured within a third of `leaseDuration`. `startedAt` is the time the processor started on this
+runner, not `claimedAt`.
+
+An execution still running one renewal period after that request is abandoned (`QueueReservations.abandon`):
+its lease is no longer renewed, so it expires and maintenance retries the task or ends it as for a dead
+worker, and the runner raises `attempt-abandoned` once with the number of abandoned attempts that hold slots.
+The thread cannot be stopped, so it keeps its executor slot and its queue slot until the processor returns;
+`RunnerHealth.abandoned` counts those attempts. If it returns, its completion meets a lost lease or a newer
+revision and changes nothing. A schedule's `maxRun` is copied into each occurrence.
 
 ## Queue policies and pausing
 
@@ -741,11 +752,9 @@ paused; resuming makes it due. `AdminOps.pauseSchedule(id, false)` re-arms a fix
 `now + delay` first, while it is still paused, and then resumes it, so the runner cannot commit an occurrence in
 between. A new fixed-delay definition first fires one delay after `putSchedule`.
 
-Two ways to end an occurrence carry no effect: the start-by `expire()` (occurrences set no start-by) and an
-occurrence created by 3.0.0 that was running at the upgrade, which recorded nothing. The definition then stays
-parked until the next `putSchedule`; there is no sweep that raises an issue for it. A 3.0.0 occurrence still
-running at the upgrade is recovered under `SKIP` by the first commit that finds its key held. Without overlap
-protection the first `putSchedule` after the upgrade may start one extra occurrence while the old one runs.
+One way to end an occurrence carries no effect: the start-by `expire()`, and occurrences set no start-by. An
+occurrence whose definition forgot it (a re-put with changed timing while it ran) is recovered under `SKIP` by
+the first commit that finds its key held.
 
 **Overlap.** An occurrence of a definition with `overlapSkip` carries the unique key `sched:<id>` with
 `UNTIL_DONE`. If the previous occurrence still holds the key, the store does not store the new one but the
@@ -793,10 +802,10 @@ definitions. `TaskClient.admin()` returns one without health and issues; `Backgr
 that also supplies `health()` and `issues()` of that runner. The reason of a cancel is limited to 512
 characters.
 
-Runner state for operators is local to a runner. `RunnerHealth(status, workerId, running, lastClaimAt,
-lastMaintenanceAt, lastStoreErrorAt, lastStoreError, issueCount)` is a snapshot, with status NEW, RUNNING,
+Runner state for operators is local to a runner. `RunnerHealth(status, workerId, running, abandoned,
+lastClaimAt, lastMaintenanceAt, lastStoreErrorAt, lastStoreError, issueCount)` is a snapshot, with status NEW, RUNNING,
 QUIET or STOPPED. Issues are a bounded ring of 100 `Issue(at, kind, detail, taskId)` kept by `RunnerStatus`;
-the kinds are `unknown-event`, `store-error`, `lease-lost`, `retry-policy`, `executor-rejected`,
+the kinds are `unknown-event`, `store-error`, `lease-lost`, `attempt-abandoned`, `retry-policy`, `executor-rejected`,
 `schedule-misfire`, `schedule-overlap` and `schedule-paused`. They are in memory and lost on restart.
 
 ## Metrics, logging and the HTTP API

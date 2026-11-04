@@ -554,43 +554,52 @@ final class RedisScripts {
     /**
      * ARGV: schedule id, next fire ms, keep-until ms, then field/value pairs. The fire time is kept when the
      * schedule shape (cron expression, zone and fixed delay) is unchanged and either the task named by the occ
-     * field is not finished or the stored time is not later than keep-until; otherwise occ is dropped. The revision comes from the counter, so no two
-     * definitions under the same id share one. The fire time is also stored in the hash as {@code next}; a
-     * paused definition is left out of the {@code cron} zset and keeps it there. Replacing an existing definition
-     * keeps its paused flag and ignores the given one; a new definition stores the flag as given.
+     * field is not finished or the stored time is not later than keep-until; otherwise occ is dropped. A put that
+     * finds every definition field stored already, keeps the fire time and keeps occ writes nothing and returns
+     * UNCHANGED. Otherwise the revision comes from the counter, so no two definitions under the same id share one,
+     * and it returns CREATED or CHANGED. The fire time is also stored in the hash as {@code next}; a paused
+     * definition is left out of the {@code cron} zset and keeps it there. Replacing an existing definition keeps
+     * its paused flag and ignores the given one; a new definition stores the flag as given.
      */
     static final String CRON_PUT = PRELUDE + """
             local ckey = P .. 'cron:' .. ARGV[2]
-            local function shape()
-              return (redis.call('HGET', ckey, 'cron') or '') .. '|' .. (redis.call('HGET', ckey, 'zone') or '')
-                  .. '|' .. (redis.call('HGET', ckey, 'fd') or '')
+            local raw = redis.call('HGETALL', ckey)
+            local existed = #raw > 0
+            local old, new, fields = {}, {}, {}
+            for i = 1, #raw, 2 do old[raw[i]] = raw[i + 1] end
+            for i = 5, #ARGV, 2 do
+              new[ARGV[i]] = ARGV[i + 1]
+              fields[#fields + 1] = ARGV[i]
+              fields[#fields + 1] = ARGV[i + 1]
             end
-            local existed = redis.call('EXISTS', ckey) == 1
-            local before = existed and shape() or nil
-            local kept = redis.call('HGET', ckey, 'next')
-            local occ = redis.call('HGET', ckey, 'occ')
-            local wasPaused = redis.call('HGET', ckey, 'paused')
-            local fields = {}
-            for i = 5, #ARGV do fields[#fields + 1] = ARGV[i] end
+            local own = {rev = true, next = true, occ = true, paused = true}
+            local same = existed
+            for k, v in pairs(new) do
+              if same and not own[k] and old[k] ~= v then same = false end
+            end
+            for k in pairs(old) do
+              if same and not own[k] and new[k] == nil then same = false end
+            end
+            local kept, occ = old.next, old.occ
+            local running = false
+            local keep = false
+            if kept and old.cron == new.cron and old.zone == new.zone and old.fd == new.fd then
+              local st = occ and redis.call('HGET', P .. 't:' .. occ, 'state')
+              running = st and tonumber(st) < 3 or false
+              keep = running or tonumber(kept) <= tonumber(ARGV[4])
+            end
+            if same and keep and (running or not occ) then return 'UNCHANGED' end
             -- counter first, so a counter failure leaves the old definition intact; read back as a string
             -- because the INCR reply would pass through a Lua double
             redis.call('INCR', P .. 'cronrev')
             local rev = redis.call('GET', P .. 'cronrev')
             redis.call('DEL', ckey)
             redis.call('HSET', ckey, unpack(fields))
-            local nextFire = ARGV[3]
-            if kept and before == shape() then
-              local st = occ and redis.call('HGET', P .. 't:' .. occ, 'state')
-              if st and tonumber(st) < 3 then
-                nextFire = kept
-                redis.call('HSET', ckey, 'occ', occ)
-              elseif tonumber(kept) <= tonumber(ARGV[4]) then
-                nextFire = kept
-              end
-            end
+            local nextFire = keep and kept or ARGV[3]
+            if running then redis.call('HSET', ckey, 'occ', occ) end
             redis.call('HSET', ckey, 'rev', rev, 'next', nextFire)
             if existed then
-              if wasPaused then redis.call('HSET', ckey, 'paused', wasPaused) else redis.call('HDEL', ckey, 'paused') end
+              if old.paused then redis.call('HSET', ckey, 'paused', old.paused) else redis.call('HDEL', ckey, 'paused') end
             end
             redis.call('SADD', P .. 'crondefs', ARGV[2])
             if redis.call('HGET', ckey, 'paused') == '1' then
@@ -598,7 +607,7 @@ final class RedisScripts {
             else
               redis.call('ZADD', P .. 'cron', nextFire, ARGV[2])
             end
-            return rev
+            return existed and 'CHANGED' or 'CREATED'
             """;
 
     /** ARGV: schedule id. Returns 1 when a definition was removed. */

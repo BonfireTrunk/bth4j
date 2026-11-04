@@ -147,7 +147,8 @@ public final class DefaultAdminOps implements AdminOps {
                 d.overlapSkip(),
                 d.paused(),
                 s.nextFire(),
-                d.maxAttempts());
+                d.maxAttempts(),
+                d.maxRunMs() == null ? null : Duration.ofMillis(d.maxRunMs()));
     }
 
     @Override

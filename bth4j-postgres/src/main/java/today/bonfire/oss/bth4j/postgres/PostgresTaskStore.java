@@ -36,6 +36,7 @@ import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
+import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecordJson;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
@@ -204,27 +205,51 @@ public class PostgresTaskStore implements FullStore {
                 + task + "   WHERE key_until <= now() ORDER BY key_until LIMIT ? FOR UPDATE SKIP LOCKED)";
         // the stored next fire time survives a re-put that keeps the timing (cron, zone, fixed delay) unchanged
         // and is not past the caller's keep-until bound;
-        // paused is only taken from a new definition, so a runner re-putting at start cannot undo an operator's pause
+        // paused is only taken from a new definition, so a runner re-putting at start cannot undo an operator's pause;
+        // a re-put that would change nothing skips the update, so it returns no row and keeps the revision
         var sameTiming = schedule + ".cron IS NOT DISTINCT FROM EXCLUDED.cron"
                 + " AND " + schedule + ".zone IS NOT DISTINCT FROM EXCLUDED.zone"
                 + " AND " + schedule + ".fixed_delay_ms IS NOT DISTINCT FROM EXCLUDED.fixed_delay_ms";
+        var sameDefinition = new StringBuilder(sameTiming);
+        for (var column : List.of(
+                "event_id",
+                "payload_version",
+                "queue_id",
+                "account",
+                "misfire",
+                "catch_up_max",
+                "overlap_skip",
+                "data",
+                "max_attempts",
+                "max_run_ms")) {
+            sameDefinition
+                    .append(" AND ")
+                    .append(schedule)
+                    .append('.')
+                    .append(column)
+                    .append(" IS NOT DISTINCT FROM EXCLUDED.")
+                    .append(column);
+        }
         var occurrenceRunning =
                 "EXISTS (SELECT 1 FROM " + task + " o WHERE o.id = " + schedule + ".occurrence_id AND o.state < 3)";
+        var keepFire = sameTiming + " AND (" + occurrenceRunning + " OR " + schedule + ".next_fire <= ?)";
         putScheduleSql = "INSERT INTO " + schedule
                 + " (id, event_id, payload_version, queue_id, account, cron, zone, misfire, catch_up_max,"
-                + " fixed_delay_ms, overlap_skip, data, max_attempts, paused, rev, next_fire)"
-                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, nextval('" + scheduleSeq + "'), ?)"
+                + " fixed_delay_ms, overlap_skip, data, max_attempts, max_run_ms, paused, rev, next_fire)"
+                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, nextval('" + scheduleSeq + "'), ?)"
                 + " ON CONFLICT (id) DO UPDATE SET event_id = EXCLUDED.event_id,"
                 + " payload_version = EXCLUDED.payload_version, queue_id = EXCLUDED.queue_id,"
                 + " account = EXCLUDED.account, cron = EXCLUDED.cron, zone = EXCLUDED.zone,"
                 + " misfire = EXCLUDED.misfire, catch_up_max = EXCLUDED.catch_up_max,"
                 + " fixed_delay_ms = EXCLUDED.fixed_delay_ms, overlap_skip = EXCLUDED.overlap_skip,"
-                + " data = EXCLUDED.data, max_attempts = EXCLUDED.max_attempts,"
+                + " data = EXCLUDED.data, max_attempts = EXCLUDED.max_attempts, max_run_ms = EXCLUDED.max_run_ms,"
                 + " rev = nextval('" + scheduleSeq + "'),"
                 + " occurrence_id = CASE WHEN " + sameTiming + " AND " + occurrenceRunning + " THEN " + schedule
                 + ".occurrence_id ELSE NULL END,"
-                + " next_fire = CASE WHEN " + sameTiming + " AND (" + occurrenceRunning + " OR " + schedule
-                + ".next_fire <= ?) THEN " + schedule + ".next_fire ELSE EXCLUDED.next_fire END";
+                + " next_fire = CASE WHEN " + keepFire + " THEN " + schedule + ".next_fire ELSE EXCLUDED.next_fire END"
+                + " WHERE NOT (" + sameDefinition + " AND " + keepFire + " AND (" + schedule
+                + ".occurrence_id IS NULL OR " + occurrenceRunning + "))"
+                + " RETURNING xmax = 0";
         dueScheduleSql =
                 "SELECT * FROM " + schedule + " WHERE NOT paused AND next_fire <= ? ORDER BY next_fire LIMIT ?";
         // a definition paused between dueRecurring and the commit does not fire
@@ -338,6 +363,7 @@ public class PostgresTaskStore implements FullStore {
                         + " overlap_skip boolean NOT NULL DEFAULT false,"
                         + " data text,"
                         + " max_attempts smallint NOT NULL,"
+                        + " max_run_ms integer,"
                         + " paused boolean NOT NULL DEFAULT false,"
                         + " rev bigint NOT NULL,"
                         + " occurrence_id bigint,"
@@ -1066,8 +1092,8 @@ public class PostgresTaskStore implements FullStore {
     // ---- recurring definitions -----------------------------------------------------------------------
 
     @Override
-    public void putRecurring(RecurringDefinition d, Instant nextFire, Instant keepUntil) {
-        withConnection(c -> {
+    public PutRecurringOutcome putRecurring(RecurringDefinition d, Instant nextFire, Instant keepUntil) {
+        return withConnection(c -> {
             try (var ps = c.prepareStatement(putScheduleSql)) {
                 ps.setString(1, d.scheduleId());
                 ps.setInt(2, d.eventId());
@@ -1083,12 +1109,17 @@ public class PostgresTaskStore implements FullStore {
                 ps.setBoolean(11, d.overlapSkip());
                 ps.setString(12, d.data());
                 ps.setInt(13, d.maxAttempts());
-                ps.setBoolean(14, d.paused());
-                setInstant(ps, 15, nextFire);
-                setInstant(ps, 16, keepUntil);
-                ps.executeUpdate();
+                if (d.maxRunMs() == null) ps.setNull(14, Types.INTEGER);
+                else ps.setInt(14, Math.toIntExact(d.maxRunMs()));
+                ps.setBoolean(15, d.paused());
+                setInstant(ps, 16, nextFire);
+                setInstant(ps, 17, keepUntil);
+                setInstant(ps, 18, keepUntil);
+                try (var rs = ps.executeQuery()) {
+                    if (!rs.next()) return PutRecurringOutcome.UNCHANGED;
+                    return rs.getBoolean(1) ? PutRecurringOutcome.CREATED : PutRecurringOutcome.CHANGED;
+                }
             }
-            return null;
         });
     }
 
@@ -1684,6 +1715,7 @@ public class PostgresTaskStore implements FullStore {
                 rs.getBoolean("overlap_skip"),
                 rs.getString("data"),
                 rs.getInt("max_attempts"),
+                getLong(rs, "max_run_ms"),
                 rs.getBoolean("paused"),
                 rs.getLong("rev"));
     }

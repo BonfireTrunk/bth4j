@@ -1314,6 +1314,11 @@ public abstract class StoreContract {
         return new RecurringDefinition(id, event, 1, queue, "acme", cron, "{}", 3, 0);
     }
 
+    /** {@link #definition} with other data, so that a put of it replaces the definition. */
+    private RecurringDefinition changedData(String id, String cron) {
+        return new RecurringDefinition(id, event, 1, queue, "acme", cron, "{\"v\":2}", 3, 0);
+    }
+
     private TaskRecord occurrence(Instant fireAt) {
         return task().scheduleId("nightly")
                 .due(fireAt)
@@ -1340,13 +1345,73 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringAssignsANewRevisionEachTime() {
+    void putRecurringAssignsANewRevisionToEveryChange() {
         Instant fire = millis(now().plusSeconds(60));
-        store.putRecurring(definition("a", "* * * * *"), fire, fire);
+        assertThat(store.putRecurring(definition("a", "* * * * *"), fire, fire)).isEqualTo(PutRecurringOutcome.CREATED);
         long first = store.dueRecurring(fire, 10).get(0).definition().revision();
-        store.putRecurring(definition("a", "* * * * *"), fire, fire);
+        assertThat(store.putRecurring(changedData("a", "* * * * *"), fire, fire))
+                .isEqualTo(PutRecurringOutcome.CHANGED);
         long second = store.dueRecurring(fire, 10).get(0).definition().revision();
         assertThat(second).isNotEqualTo(first);
+        assertThat(store.dueRecurring(fire, 10).get(0).definition().data()).isEqualTo("{\"v\":2}");
+    }
+
+    @Test
+    void putRecurringOfTheStoredDefinitionIsUnchangedAndKeepsTheRevision() {
+        Instant fire = millis(now().plusSeconds(60));
+        store.putRecurring(fullDefinition("a"), fire, fire);
+        long revision = store.dueRecurring(fire, 10).get(0).definition().revision();
+
+        assertThat(store.putRecurring(fullDefinition("a"), fire.plusSeconds(5), fire))
+                .isEqualTo(PutRecurringOutcome.UNCHANGED);
+        assertThat(store.putRecurring(fullDefinition("a").withPaused(true), fire, fire))
+                .isEqualTo(PutRecurringOutcome.UNCHANGED);
+
+        var due = store.dueRecurring(fire, 10).get(0);
+        assertThat(due.definition().revision()).isEqualTo(revision);
+        assertThat(due.definition().paused()).isFalse();
+        assertThat(due.fireAt()).isEqualTo(fire);
+    }
+
+    @Test
+    void putRecurringThatResetsTheNextFireIsAChange() {
+        Instant fire = millis(now().plusSeconds(600));
+        Instant sooner = millis(now().plusSeconds(60));
+        store.putRecurring(fullDefinition("a"), fire, fire);
+        long revision = store.dueRecurring(fire, 10).get(0).definition().revision();
+
+        assertThat(store.putRecurring(fullDefinition("a"), sooner, sooner)).isEqualTo(PutRecurringOutcome.CHANGED);
+
+        var due = store.dueRecurring(fire, 10).get(0);
+        assertThat(due.fireAt()).isEqualTo(sooner);
+        assertThat(due.definition().revision()).isNotEqualTo(revision);
+    }
+
+    @Test
+    void putRecurringComparesTheMaxRun() {
+        Instant fire = millis(now().plusSeconds(60));
+        var base = fullDefinition("a");
+        store.putRecurring(base, fire, fire);
+        var longer = new RecurringDefinition(
+                base.scheduleId(),
+                base.eventId(),
+                base.payloadVersion(),
+                base.queueId(),
+                base.account(),
+                base.cron(),
+                base.zone(),
+                base.misfire(),
+                base.catchUpMax(),
+                base.fixedDelayMs(),
+                base.overlapSkip(),
+                base.data(),
+                base.maxAttempts(),
+                base.maxRunMs() * 2,
+                base.paused(),
+                0);
+
+        assertThat(store.putRecurring(longer, fire, fire)).isEqualTo(PutRecurringOutcome.CHANGED);
+        assertThat(store.dueRecurring(fire, 10).get(0).definition().maxRunMs()).isEqualTo(base.maxRunMs() * 2);
     }
 
     @Test
@@ -1370,11 +1435,11 @@ public abstract class StoreContract {
         assertThat(store.recurringSchedules()).containsOnly(Map.entry("a", first));
         RecurringDefinition base = fullDefinition("a");
         RecurringDefinition otherZone = new RecurringDefinition(
-                "a", event, 2, queue, "acme", null, "UTC", "CATCH_UP", 5, 90_000L, true, "{}", 4, false, 0);
+                "a", event, 2, queue, "acme", null, "UTC", "CATCH_UP", 5, 90_000L, true, "{}", 4, null, false, 0);
         store.putRecurring(otherZone, second, second);
         assertThat(store.recurringSchedules()).containsOnly(Map.entry("a", second));
         RecurringDefinition otherDelay = new RecurringDefinition(
-                "a", event, 2, queue, "acme", null, "UTC", "CATCH_UP", 5, 60_000L, true, "{}", 4, false, 0);
+                "a", event, 2, queue, "acme", null, "UTC", "CATCH_UP", 5, 60_000L, true, "{}", 4, null, false, 0);
         store.putRecurring(otherDelay, third, third);
         assertThat(store.recurringSchedules()).containsOnly(Map.entry("a", third));
         store.putRecurring(base, first, first);
@@ -1439,7 +1504,7 @@ public abstract class StoreContract {
         Instant fire = millis(now().plusSeconds(1));
         store.putRecurring(definition("nightly", "* * * * *"), fire, fire);
         DueSchedule due = store.dueRecurring(fire, 10).get(0);
-        store.putRecurring(definition("nightly", "* * * * *"), fire, fire);
+        store.putRecurring(changedData("nightly", "* * * * *"), fire, fire);
         TaskRecord occurrence = occurrence(fire);
         assertThat(store.commitRecurring(due, fire.plusSeconds(60), occurrence)).isFalse();
         assertThat(store.getTask(occurrence.id())).isEmpty();
@@ -1925,6 +1990,7 @@ public abstract class StoreContract {
                 true,
                 "{\"a\":1}",
                 4,
+                600_000L,
                 false,
                 0);
     }
@@ -1935,7 +2001,22 @@ public abstract class StoreContract {
         store.putRecurring(fullDefinition("fixed"), fire, fire);
         store.putRecurring(
                 new RecurringDefinition(
-                        "cron", event, 1, queue, null, "0 3 * * *", null, null, 0, null, false, null, 3, false, 0),
+                        "cron",
+                        event,
+                        1,
+                        queue,
+                        null,
+                        "0 3 * * *",
+                        null,
+                        null,
+                        0,
+                        null,
+                        false,
+                        null,
+                        3,
+                        null,
+                        false,
+                        0),
                 fire.plusSeconds(5),
                 fire.plusSeconds(5));
         List<RecurringSchedule> all = store.recurringDefinitions();
@@ -2104,7 +2185,7 @@ public abstract class StoreContract {
         Instant fire = millis(now().plusSeconds(60));
         store.putRecurring(definition("a", "* * * * *"), fire, fire);
         long stale = revisionOf("a");
-        store.putRecurring(definition("a", "* * * * *"), fire, fire);
+        store.putRecurring(changedData("a", "* * * * *"), fire, fire);
         assertThat(store.setNextFire("a", stale, fire, fire.plusSeconds(500))).isFalse();
         assertThat(nextFireOf("a")).isEqualTo(fire);
 
@@ -2180,6 +2261,7 @@ public abstract class StoreContract {
                 d.overlapSkip(),
                 d.data(),
                 d.maxAttempts(),
+                d.maxRunMs(),
                 d.paused(),
                 d.revision());
     }

@@ -34,6 +34,7 @@ import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
+import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecordJson;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
@@ -501,7 +502,7 @@ public class RedisTaskStore implements FullStore {
     // ---- schedules -----------------------------------------------------------------------------------
 
     @Override
-    public void putRecurring(RecurringDefinition d, Instant nextFire, Instant keepUntil) {
+    public PutRecurringOutcome putRecurring(RecurringDefinition d, Instant nextFire, Instant keepUntil) {
         var args = new ArrayList<String>();
         args.add(d.scheduleId());
         args.add(ms(nextFire));
@@ -530,6 +531,9 @@ public class RedisTaskStore implements FullStore {
         if (d.fixedDelayMs() != null) {
             args.addAll(List.of(F_FIXED_DELAY, String.valueOf(d.fixedDelayMs())));
         }
+        if (d.maxRunMs() != null) {
+            args.addAll(List.of(F_MAX_RUN, String.valueOf(d.maxRunMs())));
+        }
         if (d.overlapSkip()) {
             args.addAll(List.of(F_OVERLAP_SKIP, "1"));
         }
@@ -542,7 +546,7 @@ public class RedisTaskStore implements FullStore {
         if (d.data() != null) {
             args.addAll(List.of(F_DATA, d.data()));
         }
-        guard(() -> scripts.run(RedisScripts.CRON_PUT, args));
+        return PutRecurringOutcome.valueOf((String) guard(() -> scripts.run(RedisScripts.CRON_PUT, args)));
     }
 
     @Override
@@ -595,6 +599,7 @@ public class RedisTaskStore implements FullStore {
                 "1".equals(d.get(F_OVERLAP_SKIP)),
                 d.get(F_DATA),
                 Integer.parseInt(d.get(F_MAX_ATTEMPTS)),
+                d.containsKey(F_MAX_RUN) ? Long.parseLong(d.get(F_MAX_RUN)) : null,
                 "1".equals(d.get(F_PAUSED)),
                 Long.parseLong(d.get(F_REVISION)));
     }

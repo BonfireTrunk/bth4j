@@ -16,6 +16,8 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
  *
  * @param cron       five-field unix expression; null for a fixed-delay definition
  * @param fixedDelay delay between the end of an occurrence and the next; null for a cron definition
+ * @param maxRun     maximum run time of each occurrence's attempts; null for the runner's
+ *                   {@code defaultMaxRun}
  */
 public record ScheduleDefinition<T>(
         String id,
@@ -28,7 +30,8 @@ public record ScheduleDefinition<T>(
         Overlap overlap,
         String queue,
         String account,
-        Integer maxAttempts) {
+        Integer maxAttempts,
+        Duration maxRun) {
 
     public static final Duration MIN_FIXED_DELAY = Duration.ofSeconds(1);
 
@@ -49,12 +52,13 @@ public record ScheduleDefinition<T>(
         if (maxAttempts != null && (maxAttempts < 1 || maxAttempts > TaskRequest.MAX_ATTEMPTS)) {
             throw new TaskValidationException("maxAttempts must be between 1 and " + TaskRequest.MAX_ATTEMPTS);
         }
+        TaskRequest.requireMaxRun(maxRun);
         if (misfire == null) misfire = Misfire.FIRE_ONCE_NOW;
         if (overlap == null) overlap = Overlap.ALLOW;
     }
 
     public static <T> ScheduleDefinition<T> of(String id, TaskType<T> type, T payload, String cron) {
-        return new ScheduleDefinition<>(id, type, payload, cron, null, null, null, null, null, null, null);
+        return new ScheduleDefinition<>(id, type, payload, cron, null, null, null, null, null, null, null, null);
     }
 
     public static ScheduleDefinition<Void> of(String id, TaskType<Void> type, String cron) {
@@ -63,7 +67,7 @@ public record ScheduleDefinition<T>(
 
     /** A definition that fires {@code delay} after each occurrence ends, starting {@code delay} from now. */
     public static <T> ScheduleDefinition<T> every(String id, TaskType<T> type, T payload, Duration delay) {
-        return new ScheduleDefinition<>(id, type, payload, null, delay, null, null, null, null, null, null);
+        return new ScheduleDefinition<>(id, type, payload, null, delay, null, null, null, null, null, null, null);
     }
 
     public static ScheduleDefinition<Void> every(String id, TaskType<Void> type, Duration delay) {
@@ -76,32 +80,38 @@ public record ScheduleDefinition<T>(
 
     public ScheduleDefinition<T> queue(String queue) {
         return new ScheduleDefinition<>(
-                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts);
+                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRun);
     }
 
     public ScheduleDefinition<T> account(String account) {
         return new ScheduleDefinition<>(
-                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts);
+                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRun);
     }
 
     public ScheduleDefinition<T> maxAttempts(int maxAttempts) {
         return new ScheduleDefinition<>(
-                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts);
+                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRun);
+    }
+
+    /** An occurrence's attempt running longer than this is cancelled, like {@link TaskRequest.Builder#maxRun}. */
+    public ScheduleDefinition<T> maxRun(Duration maxRun) {
+        return new ScheduleDefinition<>(
+                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRun);
     }
 
     /** The zone the cron expression is evaluated in. Ignored by fixed-delay definitions. */
     public ScheduleDefinition<T> zone(ZoneId zone) {
         return new ScheduleDefinition<>(
-                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts);
+                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRun);
     }
 
     public ScheduleDefinition<T> misfire(Misfire misfire) {
         return new ScheduleDefinition<>(
-                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts);
+                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRun);
     }
 
     public ScheduleDefinition<T> overlap(Overlap overlap) {
         return new ScheduleDefinition<>(
-                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts);
+                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRun);
     }
 }

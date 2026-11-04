@@ -27,6 +27,7 @@ import today.bonfire.oss.bth4j.service.IdAllocator;
 import today.bonfire.oss.bth4j.service.Names;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
+import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
@@ -385,14 +386,21 @@ public final class TaskClient {
                 definition.overlap() == Overlap.SKIP,
                 codecs.encode(type, definition.payload()),
                 definition.maxAttempts() != null ? definition.maxAttempts() : defaultMaxAttempts,
+                definition.maxRun() == null ? null : definition.maxRun().toMillis(),
                 false,
                 0);
-        store.putRecurring(stored, next, keepUntil);
-        log.info(
-                "Registered schedule {} ({}) next at {}",
-                definition.id(),
-                definition.isFixedDelay() ? "every " + definition.fixedDelay() : definition.cron(),
-                next);
+        var outcome = store.putRecurring(stored, next, keepUntil);
+        var timing = definition.isFixedDelay() ? "every " + definition.fixedDelay() : definition.cron();
+        if (outcome == PutRecurringOutcome.UNCHANGED) {
+            log.debug("Schedule {} ({}) is registered already", definition.id(), timing);
+        } else {
+            log.info(
+                    "{} schedule {} ({}) next at {}",
+                    outcome == PutRecurringOutcome.CREATED ? "Registered" : "Changed",
+                    definition.id(),
+                    timing,
+                    next);
+        }
         return next;
     }
 

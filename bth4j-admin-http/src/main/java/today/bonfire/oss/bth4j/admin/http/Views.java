@@ -133,7 +133,8 @@ final class Views {
                 "overlapSkip", s.overlapSkip(),
                 "paused", s.paused(),
                 "nextFire", s.nextFire(),
-                "maxAttempts", s.maxAttempts());
+                "maxAttempts", s.maxAttempts(),
+                "maxRun", text(s.maxRun()));
     }
 
     static Map<String, Object> worker(WorkerInfo w) {

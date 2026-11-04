@@ -130,7 +130,18 @@ class ScheduleDefinitionTest {
     @Test
     void bothCronAndFixedDelayAreRejected() {
         assertThatThrownBy(() -> new ScheduleDefinition<>(
-                        "id", NO_PAYLOAD, null, "0 2 * * *", Duration.ofMinutes(1), null, null, null, null, null, null))
+                        "id",
+                        NO_PAYLOAD,
+                        null,
+                        "0 2 * * *",
+                        Duration.ofMinutes(1),
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("exactly one");
     }
@@ -151,6 +162,18 @@ class ScheduleDefinitionTest {
         assertThatThrownBy(() -> d.maxAttempts(Short.MAX_VALUE + 1)).isInstanceOf(TaskValidationException.class);
         assertThat(d.maxAttempts(1).maxAttempts()).isEqualTo(1);
         assertThat(d.maxAttempts(Short.MAX_VALUE).maxAttempts()).isEqualTo((int) Short.MAX_VALUE);
+    }
+
+    @Test
+    void maxRunFollowsTheTaskRule() {
+        var d = ScheduleDefinition.of("id", NO_PAYLOAD, "0 2 * * *");
+
+        assertThat(d.maxRun()).isNull();
+        assertThatThrownBy(() -> d.maxRun(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> d.maxRun(TaskRequest.MAX_RUN.plusMillis(1)))
+                .isInstanceOf(TaskValidationException.class);
+        assertThat(d.maxRun(Duration.ofMinutes(5)).maxRun()).isEqualTo(Duration.ofMinutes(5));
+        assertThat(d.maxRun(Duration.ofMinutes(5)).maxAttempts(2).maxRun()).isEqualTo(Duration.ofMinutes(5));
     }
 
     @Test
@@ -235,6 +258,7 @@ class ScheduleDefinitionTest {
                 overlap != null ? overlap : base.overlap(),
                 queue != null ? queue : base.queue(),
                 account != null ? account : base.account(),
-                maxAttempts != null ? maxAttempts : base.maxAttempts());
+                maxAttempts != null ? maxAttempts : base.maxAttempts(),
+                base.maxRun());
     }
 }

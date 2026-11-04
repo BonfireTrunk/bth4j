@@ -26,6 +26,7 @@ import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
+import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
@@ -870,12 +871,21 @@ class PostgresTaskStoreIT {
     }
 
     @Test
-    void putRecurringKeepsTheFireTimeForAnUnchangedCronAndBumpsTheRevision() {
+    void putRecurringKeepsTheFireTimeForAnUnchangedCronAndTheRevisionForAnUnchangedDefinition() {
         var first = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MICROS);
-        store.putRecurring(definition("job", "0 * * * *"), first, first);
+        assertThat(store.putRecurring(definition("job", "0 * * * *"), first, first))
+                .isEqualTo(PutRecurringOutcome.CREATED);
         long revision = store.dueRecurring(first, 10).getFirst().definition().revision();
 
-        store.putRecurring(definition("job", "0 * * * *"), first.plusSeconds(600), first.plusSeconds(600));
+        assertThat(store.putRecurring(definition("job", "0 * * * *"), first.plusSeconds(600), first.plusSeconds(600)))
+                .isEqualTo(PutRecurringOutcome.UNCHANGED);
+        assertThat(store.recurringSchedules()).containsEntry("job", first);
+        assertThat(store.dueRecurring(first, 10).getFirst().definition().revision())
+                .isEqualTo(revision);
+
+        var otherData = new RecurringDefinition("job", event, 1, queue, "acme", "0 * * * *", "{\"x\":2}", 4, 0);
+        assertThat(store.putRecurring(otherData, first.plusSeconds(600), first.plusSeconds(600)))
+                .isEqualTo(PutRecurringOutcome.CHANGED);
         assertThat(store.recurringSchedules()).containsEntry("job", first);
         var d = store.dueRecurring(first, 10).getFirst();
         assertThat(d.definition().revision()).isGreaterThan(revision);
@@ -1136,13 +1146,14 @@ class PostgresTaskStoreIT {
                 true,
                 "{}",
                 5,
+                null,
                 false,
                 0);
     }
 
     private RecurringDefinition fixedDelay(String id, long delayMs) {
         return new RecurringDefinition(
-                id, event, 1, queue, null, null, null, null, 0, delayMs, false, null, 1, false, 0);
+                id, event, 1, queue, null, null, null, null, 0, delayMs, false, null, 1, null, false, 0);
     }
 
     @Test
@@ -1164,7 +1175,7 @@ class PostgresTaskStoreIT {
         store.putRecurring(fixedDelay("a-delay", 30_000), at.plusSeconds(500), at.plusSeconds(500));
         assertThat(store.recurringSchedules()).containsEntry("a-delay", at.plusSeconds(500));
         var zoneChanged = new RecurringDefinition(
-                "b-cron", event, 2, queue, "acme", "0 9 * * *", "UTC", null, 0, null, false, "{}", 5, false, 0);
+                "b-cron", event, 2, queue, "acme", "0 9 * * *", "UTC", null, 0, null, false, "{}", 5, null, false, 0);
         store.putRecurring(zoneChanged, at.plusSeconds(700), at.plusSeconds(700));
         assertThat(store.recurringSchedules()).containsEntry("b-cron", at.plusSeconds(700));
     }

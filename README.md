@@ -372,7 +372,14 @@ and returns normally ends the task SUCCEEDED; the request is not applied after a
 ends the task CANCELLED when its lease expires instead of retrying it.
 
 `maxRun(duration)` uses the same path: when an attempt has run longer, the lease renewal asks it to stop with
-the reason "max run time ... exceeded". `startBy(instant)` expires a task that did not start in time:
+the reason "max run time ... exceeded". A task without its own `maxRun` gets the runner's
+`defaultMaxRun(duration)`, one hour unless the builder sets another; a task that legitimately runs longer
+needs its own `maxRun` (at most `TaskRequest.MAX_RUN`, about 24.8 days). An attempt that is still running one
+renewal period after the request is abandoned: the runner stops renewing its lease, so the lease expires and
+maintenance retries or ends the task, and raises the issue `attempt-abandoned`. The abandoned thread keeps its
+executor and queue slots until the processor returns, which `RunnerHealth.abandoned` and the gauge
+`bth4j.runner.abandoned` count. A processor that blocks without a timeout therefore costs a slot, not the
+task. `startBy(instant)` expires a task that did not start in time:
 claims skip it, maintenance moves it to EXPIRED and the observer receives `TaskEvent.Expired`.
 
 ```java
@@ -385,11 +392,13 @@ client.enqueue(TaskRequest.of(EXPORT, export)
 ### Recurring tasks
 
 `client.putSchedule(ScheduleDefinition.of(id, type, payload, cron))` creates or replaces a definition and
-returns the next fire time; `.queue(...)`, `.account(...)` and `.maxAttempts(...)` refine it. The cron
+returns the next fire time; `.queue(...)`, `.account(...)`, `.maxAttempts(...)` and `.maxRun(...)` refine it. The cron
 expression has 5 fields (Unix format). Each fire time creates one task, exactly once across all instances.
 Registering the same id with the same timing (expression, zone and delay) keeps the next fire time while a
 fixed-delay occurrence is still running, or while it is not beyond the second fire after now; changed timing, or a
-next fire time beyond that with no occurrence running (a parked or pushed-out definition), resets it. `client.deleteSchedule(id)` and `client.schedules()` remove and list definitions.
+next fire time beyond that with no occurrence running (a parked or pushed-out definition), resets it. Registering a
+definition that is stored already, with its next fire time kept, writes nothing and logs at DEBUG; a new or
+changed one logs at INFO. `client.deleteSchedule(id)` and `client.schedules()` remove and list definitions.
 
 More options on `ScheduleDefinition`:
 
@@ -523,14 +532,15 @@ A `TaskView` carries state, attempts, due time, the last failures, completed ste
 
 ```java
 RunnerHealth health = runner.health();     // status NEW, RUNNING, QUIET or STOPPED; workerId, running tasks,
-                                           // lastClaimAt, lastMaintenanceAt, lastStoreErrorAt, lastStoreError, issueCount
+                                           // abandoned attempts, lastClaimAt, lastMaintenanceAt, lastStoreErrorAt,
+                                           // lastStoreError, issueCount
 List<Issue> issues = runner.issues();      // the last 100 things an operator should look at, oldest first
 boolean drained = runner.drain(Duration.ofSeconds(30));   // quiet, then wait for the running tasks
 ```
 
 An `Issue` has a time, a kind, a detail and the task id when there is one. The kinds are `unknown-event`,
-`store-error`, `lease-lost`, `retry-policy`, `executor-rejected`, `schedule-misfire`, `schedule-overlap` and
-`schedule-paused`. Issues live in the memory of the runner that saw them. `drain` leaves the runner quiet
+`store-error`, `lease-lost`, `attempt-abandoned`, `retry-policy`, `executor-rejected`, `schedule-misfire`,
+`schedule-overlap` and `schedule-paused`. Issues live in the memory of the runner that saw them. `drain` leaves the runner quiet
 (call `resume()` to claim again, or `stop()`), and returns whether every running task finished in time; use it
 before a rolling restart.
 
@@ -605,6 +615,7 @@ MicrometerRunnerMetrics metrics = MicrometerRunnerMetrics.bind(runner, registry,
 | `bth4j.schedule.fired` | counter | none |
 | `bth4j.purged` | counter | `state` |
 | `bth4j.runner.running` | gauge | none |
+| `bth4j.runner.abandoned` | gauge | none; attempts past their maximum run time that still hold a slot |
 | `bth4j.runner.up` | gauge | none; 1 while the runner is RUNNING |
 | `bth4j.tasks.state` | gauge | `state`, `queue` |
 
