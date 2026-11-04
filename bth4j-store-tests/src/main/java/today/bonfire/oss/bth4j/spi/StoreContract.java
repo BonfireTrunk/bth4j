@@ -1414,7 +1414,7 @@ public abstract class StoreContract {
                 base.cron(),
                 base.zone(),
                 base.misfire(),
-                base.catchUpMax(),
+                base.catchUpMaxFires(),
                 base.fixedDelayMs(),
                 base.overlapSkip(),
                 base.encodedPayload(),
@@ -2030,7 +2030,7 @@ public abstract class StoreContract {
         assertThat(d.cron()).isNull();
         assertThat(d.zone()).isEqualTo("Europe/Berlin");
         assertThat(d.misfire()).isEqualTo("CATCH_UP");
-        assertThat(d.catchUpMax()).isEqualTo(5);
+        assertThat(d.catchUpMaxFires()).isEqualTo(5);
         assertThat(d.fixedDelayMs()).isEqualTo(90_000L);
         assertThat(d.isFixedDelay()).isTrue();
         assertThat(d.overlapSkip()).isTrue();
@@ -2255,7 +2255,7 @@ public abstract class StoreContract {
                 d.cron(),
                 d.zone(),
                 d.misfire(),
-                d.catchUpMax(),
+                d.catchUpMaxFires(),
                 delayMs,
                 d.overlapSkip(),
                 d.encodedPayload(),

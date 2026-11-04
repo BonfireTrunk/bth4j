@@ -7,7 +7,7 @@ package today.bonfire.oss.bth4j.spi;
  * @param cron         five-field expression, or null for a fixed-delay definition
  * @param zone         zone id the cron expression is evaluated in; null means UTC
  * @param misfire      {@code SKIP}, {@code FIRE_ONCE_NOW} or {@code CATCH_UP}; null means FIRE_ONCE_NOW
- * @param catchUpMax   most occurrences a CATCH_UP misfire may create
+ * @param catchUpMaxFires most occurrences a CATCH_UP misfire may create
  * @param fixedDelayMs delay between the end of one occurrence and the next, or null for cron
  * @param overlapSkip  true gives each occurrence the unique key {@code sched:<scheduleId>} so that one is
  *                     skipped while the previous one is not finished
@@ -25,7 +25,7 @@ public record RecurringDefinition(
         String cron,
         String zone,
         String misfire,
-        int catchUpMax,
+        int catchUpMaxFires,
         Long fixedDelayMs,
         boolean overlapSkip,
         String encodedPayload,
@@ -78,7 +78,7 @@ public record RecurringDefinition(
                 cron,
                 zone,
                 misfire,
-                catchUpMax,
+                catchUpMaxFires,
                 fixedDelayMs,
                 overlapSkip,
                 encodedPayload,
@@ -98,7 +98,7 @@ public record RecurringDefinition(
                 cron,
                 zone,
                 misfire,
-                catchUpMax,
+                catchUpMaxFires,
                 fixedDelayMs,
                 overlapSkip,
                 encodedPayload,

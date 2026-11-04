@@ -183,14 +183,15 @@ public class RecurringTaskService extends CustomThread {
             case RecurringDefinition.MISFIRE_CATCH_UP -> {
                 var fires = new ArrayList<Instant>();
                 var fire = d.fireAt();
-                while (fire != null && !fire.isAfter(now) && fires.size() <= def.catchUpMax()) {
+                while (fire != null && !fire.isAfter(now) && fires.size() <= def.catchUpMaxFires()) {
                     fires.add(fire);
                     fire = Cron.next(def.cron(), fire, zone).orElse(null);
                 }
-                if (fires.size() > def.catchUpMax()) {
-                    var resume = fires.get(fires.size() - def.catchUpMax());
+                if (fires.size() > def.catchUpMaxFires()) {
+                    var resume = fires.get(fires.size() - def.catchUpMaxFires());
                     if (store.setNextFire(d.scheduleId(), def.revision(), d.fireAt(), resume)) {
-                        misfireIssue(d, late, "catching up the last " + def.catchUpMax() + " fires from " + resume);
+                        misfireIssue(
+                                d, late, "catching up the last " + def.catchUpMaxFires() + " fires from " + resume);
                     }
                     return false;
                 }

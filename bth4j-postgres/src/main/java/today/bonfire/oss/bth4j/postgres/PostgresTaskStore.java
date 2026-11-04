@@ -1104,7 +1104,7 @@ public class PostgresTaskStore implements FullStore {
                 ps.setString(6, d.cron());
                 ps.setString(7, d.zone());
                 ps.setString(8, d.misfire());
-                ps.setInt(9, d.catchUpMax());
+                ps.setInt(9, d.catchUpMaxFires());
                 if (d.fixedDelayMs() == null) ps.setNull(10, Types.BIGINT);
                 else ps.setLong(10, d.fixedDelayMs());
                 ps.setBoolean(11, d.overlapSkip());

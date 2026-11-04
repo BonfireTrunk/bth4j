@@ -719,11 +719,11 @@ the definition's policy decides:
 
 - `SKIP`: no task; `setNextFire` to the next fire time computed from now.
 - `FIRE_ONCE_NOW` (default): one occurrence with `due = now`, committed with the next fire computed from now.
-- `CATCH_UP(max)`: the fire times from the stored one up to now are enumerated. If there are no more than
-  `max`, one occurrence is committed for the stored fire time (keeping `fireAt` as its `due`) and the next fire
+- `CATCH_UP(maxFires)`: the fire times from the stored one up to now are enumerated. If there are no more than
+  `maxFires`, one occurrence is committed for the stored fire time (keeping `fireAt` as its `due`) and the next fire
   is the following fire time, so each later round picks up the next missed one, one per round, until the
-  definition has caught up. If there are more than `max`, `setNextFire` moves the definition to the
-  `max`-th last missed fire time and an issue is recorded, so only the latest `max` run.
+  definition has caught up. If there are more than `maxFires`, `setNextFire` moves the definition to the
+  `maxFires`-th last missed fire time and an issue is recorded, so only the latest `maxFires` run.
 
 **Fixed delay.** The occurrence is committed with `due = fireAt` and the next fire time parked 100 years ahead
 (the same parking as a never-fires cron), and carries the header `bth4j.fixed-delay` holding the delay as an

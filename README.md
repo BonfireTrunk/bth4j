@@ -410,7 +410,7 @@ client.putSchedule(ScheduleDefinition.of("daily-digest", DIGEST, "0 8 * * *")
 
 // misfire: what happens when a fire time was missed by more than the threshold (below)
 client.putSchedule(ScheduleDefinition.of("hourly-sync", SYNC, "0 * * * *")
-        .misfire(Misfire.catchUp(3)));          // Misfire.SKIP, Misfire.FIRE_ONCE_NOW (default), Misfire.catchUp(max)
+        .misfire(Misfire.catchUp(3)));          // Misfire.SKIP, Misfire.FIRE_ONCE_NOW (default), Misfire.catchUp(maxFires)
 
 // overlap: no new occurrence while the previous one has not finished
 client.putSchedule(ScheduleDefinition.of("nightly-report", NIGHTLY_REPORT, "30 2 * * *")
@@ -422,7 +422,7 @@ client.putSchedule(ScheduleDefinition.every("poll-feed", POLL_FEED, Duration.ofM
 
 The misfire threshold is twice `recurringTasksCheckInterval`, at least one minute. `SKIP` creates nothing and
 continues from now, `FIRE_ONCE_NOW` creates one task now, `CATCH_UP` creates one task per missed fire time up
-to `max` (the most recent ones when more were missed) and continues from now. Every misfire is recorded as an
+to `maxFires` (the most recent ones when more were missed) and continues from now. Every misfire is recorded as an
 issue. With `Overlap.SKIP`, an occurrence is skipped (and an issue `schedule-overlap` recorded) while the task
 of the previous one is not finished. This keys only the occurrence (`sched:<id>`); tasks its processor
 enqueues are unique only if the application gives them keys. A fixed-delay definition (at least 1 second)

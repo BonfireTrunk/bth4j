@@ -1144,7 +1144,7 @@ public abstract class RunnerContract {
         return (java.time.ZonedDateTime.now(java.time.ZoneOffset.UTC).getMinute() + 30) % 60 + " * * * *";
     }
 
-    private void registerLate(String id, String cron, String misfire, int catchUpMax, Duration late) {
+    private void registerLate(String id, String cron, String misfire, int catchUpMaxFires, Duration late) {
         var def = new today.bonfire.oss.bth4j.spi.RecurringDefinition(
                 id,
                 store.typeId(VOID_TYPE.name()),
@@ -1154,7 +1154,7 @@ public abstract class RunnerContract {
                 cron,
                 null,
                 misfire,
-                catchUpMax,
+                catchUpMaxFires,
                 null,
                 false,
                 null,

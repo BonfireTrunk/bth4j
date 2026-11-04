@@ -526,8 +526,8 @@ public class RedisTaskStore implements FullStore {
         if (d.misfire() != null) {
             args.addAll(List.of(F_MISFIRE, d.misfire()));
         }
-        if (d.catchUpMax() != 0) {
-            args.addAll(List.of(F_CATCH_UP, String.valueOf(d.catchUpMax())));
+        if (d.catchUpMaxFires() != 0) {
+            args.addAll(List.of(F_CATCH_UP, String.valueOf(d.catchUpMaxFires())));
         }
         if (d.fixedDelayMs() != null) {
             args.addAll(List.of(F_FIXED_DELAY, String.valueOf(d.fixedDelayMs())));

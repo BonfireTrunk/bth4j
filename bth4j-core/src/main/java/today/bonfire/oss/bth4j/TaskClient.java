@@ -381,7 +381,7 @@ public final class TaskClient {
                 definition.cron(),
                 definition.zone() == null ? null : definition.zone().getId(),
                 misfire,
-                definition.misfire() instanceof Misfire.CatchUp c ? c.max() : 0,
+                definition.misfire() instanceof Misfire.CatchUp c ? c.maxFires() : 0,
                 definition.fixedDelay() == null ? null : definition.fixedDelay().toMillis(),
                 definition.overlap() == Overlap.SKIP,
                 codecs.encode(type, definition.payload()),
