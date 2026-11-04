@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.IntSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import today.bonfire.oss.bth4j.FailureDetail;
 import today.bonfire.oss.bth4j.RetryPolicy;
 import today.bonfire.oss.bth4j.TaskEvent;
 import today.bonfire.oss.bth4j.TaskEvent.Outcome;
@@ -19,6 +20,7 @@ import today.bonfire.oss.bth4j.spi.ExpiredLease;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
+import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 
@@ -43,6 +45,7 @@ public class MaintenanceService extends CustomThread {
     private final Duration purgeInterval;
     private final Map<TaskState, Duration> retention;
     private final boolean keepDead;
+    private final FailureDetail failureDetail;
     private final int batchSize;
     private final int purgeBatchSize;
     private final int workerId;
@@ -61,6 +64,7 @@ public class MaintenanceService extends CustomThread {
         this.purgeInterval = b.purgeInterval;
         this.retention = Map.copyOf(b.retention);
         this.keepDead = b.keepDead;
+        this.failureDetail = b.failureDetail;
         this.batchSize = b.batchSize;
         this.purgeBatchSize = b.purgeBatchSize;
         this.workerId = b.workerId;
@@ -120,53 +124,57 @@ public class MaintenanceService extends CustomThread {
         }
         var failure = new FailureInfo(
                 e.attempts(), clock.instant(), "lease-expired", "lease expired after attempt " + e.attempts(), null);
-        var outcome = store.failExpired(e.id(), e.revision(), failure, retryAt, keepDead);
+        var pause = RecurringTaskService.pauseEffect(record);
+        var outcome = store.failExpired(e.id(), e.revision(), failure, retryAt, keepDead, pause);
         log.warn("Lease of task {} expired after attempt {}: {}", e.id(), e.attempts(), outcome);
         if (outcome != FailOutcome.LOST) {
             observer.emit(
                     new TaskEvent.LeaseExpired(e.id(), e.attempts(), e.maxAttempts(), outcome == FailOutcome.DEAD));
         }
-        if (outcome == FailOutcome.DEAD) pauseParkedSchedule(record, TaskState.DEAD);
+        if (outcome == FailOutcome.DEAD) pauseParkedSchedule(record, TaskState.DEAD, pause);
     }
 
     /**
-     * A fixed-delay definition is re-armed by its occurrence's own execution, so an occurrence that ends here
-     * would leave it parked forever; pausing makes that visible and lets an operator resume it.
+     * The store paused the definition of a fixed-delay occurrence that ended here, in the same step as the
+     * transition, because nothing would re-arm it; this makes that visible so an operator can resume it.
      */
-    private void pauseParkedSchedule(TaskRecord record, TaskState ended) {
-        if (!RecurringTaskService.isFixedDelayOccurrence(record)) return;
-        try {
-            store.pauseRecurring(record.scheduleId(), true);
-            var detail = "schedule " + record.scheduleId() + " paused: occurrence ended " + ended;
-            status.issue("schedule-paused", detail, record.id());
-            log.warn(detail);
-        } catch (RuntimeException e) {
-            status.storeError(e);
-            log.error("Could not pause schedule {} after task {}", record.scheduleId(), record.id(), e);
-        }
+    private void pauseParkedSchedule(TaskRecord record, TaskState ended, ScheduleEffect pause) {
+        if (pause == null || !pause.applied()) return;
+        var detail = "schedule " + record.scheduleId() + " paused: occurrence ended " + ended;
+        status.issue("schedule-paused", detail, record.id());
+        log.warn(detail);
     }
 
     /** A cancelled task whose worker died must not run again. */
     private void cancelExpired(ExpiredLease e) {
         var record = store.getTask(e.id()).orElse(null);
         var reason = record != null && record.cancelReason() != null ? record.cancelReason() : "cancel requested";
-        var applied = store.finishCancelled(e.id(), e.revision(), reason, true);
+        var pause = RecurringTaskService.pauseEffect(record);
+        var applied = store.finishCancelledExpired(e.id(), e.revision(), reason, true, pause);
         log.warn("Lease of cancelled task {} expired, task ended as cancelled: {}", e.id(), applied);
         if (applied && record != null) {
             observer.emit(new TaskEvent.Cancelled(names.view(record), reason, Outcome.APPLIED));
-            pauseParkedSchedule(record, TaskState.CANCELLED);
+            pauseParkedSchedule(record, TaskState.CANCELLED, pause);
         }
     }
 
+    /** An Error from the policy, fatal or not, is logged and answered with an immediate retry; it never ends the maintenance thread. */
     private RetryPolicy.Decision decide(TaskRecord record) {
         var policy = retryPolicies.named(record.retryPolicy());
         if (policy == null) policy = retryPolicies.defaultPolicy();
         try {
             var d = policy.decide(names.view(record), null);
             return d != null ? d : RetryPolicy.Decision.retryAfter(Duration.ZERO);
-        } catch (RuntimeException policyError) {
-            log.error("Retry policy failed for expired task {}, retrying at once", record.id(), policyError);
-            status.issue("retry-policy", policyError.toString(), record.id());
+        } catch (RuntimeException | Error policyError) {
+            if (failureDetail == FailureDetail.FULL) {
+                log.error("Retry policy failed for expired task {}, retrying at once", record.id(), policyError);
+            } else {
+                log.error(
+                        "Retry policy failed for expired task {}, retrying at once: {}",
+                        record.id(),
+                        Failures.describe(failureDetail, policyError));
+            }
+            status.issue("retry-policy", Failures.describe(failureDetail, policyError), record.id());
             return RetryPolicy.Decision.retryAfter(Duration.ZERO);
         }
     }
@@ -264,6 +272,7 @@ public class MaintenanceService extends CustomThread {
         private Duration purgeInterval = Duration.ofMinutes(1);
         private Map<TaskState, Duration> retention = Map.of();
         private boolean keepDead = true;
+        private FailureDetail failureDetail = FailureDetail.FULL;
         private int batchSize = 100;
         private int purgeBatchSize = 500;
         private int workerId;
@@ -328,6 +337,11 @@ public class MaintenanceService extends CustomThread {
 
         public Builder keepDead(boolean keepDead) {
             this.keepDead = keepDead;
+            return this;
+        }
+
+        public Builder failureDetail(FailureDetail failureDetail) {
+            this.failureDetail = failureDetail;
             return this;
         }
 

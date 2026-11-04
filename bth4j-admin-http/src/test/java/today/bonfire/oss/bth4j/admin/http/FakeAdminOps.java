@@ -14,8 +14,10 @@ import today.bonfire.oss.bth4j.Issue;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.TaskView;
+import today.bonfire.oss.bth4j.TaskViewPage;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
+import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
@@ -24,12 +26,15 @@ import today.bonfire.oss.bth4j.spi.WorkerInfo;
 final class FakeAdminOps implements AdminOps {
 
     final TreeMap<Long, TaskView> tasks = new TreeMap<>();
+    final Map<String, Long> keyHolders = new ConcurrentHashMap<>();
+    final java.util.Set<String> staleKeys = ConcurrentHashMap.newKeySet();
     final Map<String, StateCounts> counts = new ConcurrentHashMap<>();
     final List<QueueInfo> queues = new CopyOnWriteArrayList<>();
     final List<ScheduleView> schedules = new CopyOnWriteArrayList<>();
     final List<WorkerInfo> workers = new CopyOnWriteArrayList<>();
     final List<Issue> issues = new CopyOnWriteArrayList<>();
     final List<String> calls = new CopyOnWriteArrayList<>();
+    final java.util.Set<Long> heldKeys = ConcurrentHashMap.newKeySet();
     volatile RunnerHealth health;
     volatile RuntimeException failure;
 
@@ -73,6 +78,23 @@ final class FakeAdminOps implements AdminOps {
     }
 
     @Override
+    public Optional<TaskView> taskByKey(String key) {
+        if (failure != null) {
+            throw failure;
+        }
+        return Optional.ofNullable(keyHolders.get(key)).map(tasks::get);
+    }
+
+    @Override
+    public CancelOutcome cancelByKey(String key, String reason) {
+        calls.add("cancelByKey " + key + ' ' + reason);
+        var holder = taskByKey(key);
+        if (holder.isEmpty()) return CancelOutcome.NOT_FOUND;
+        if (holder.get().state().isTerminal()) return CancelOutcome.FINISHED;
+        return staleKeys.contains(key) ? CancelOutcome.STALE : CancelOutcome.REQUESTED;
+    }
+
+    @Override
     public List<TaskView> tasks(TaskState state, String queue, long afterId, int limit) {
         calls.add("tasks " + state + ' ' + queue + ' ' + afterId + ' ' + limit);
         var out = new ArrayList<TaskView>();
@@ -85,10 +107,33 @@ final class FakeAdminOps implements AdminOps {
     }
 
     @Override
-    public boolean retry(long id, int revision) {
+    public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
+        calls.add("tasks " + state + ' ' + queue + " cursor=" + cursor + ' ' + limit);
+        long afterId;
+        try {
+            afterId = cursor == null ? 0 : Long.parseLong(cursor);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("malformed cursor");
+        }
+        var out = new ArrayList<TaskView>();
+        for (var t : tasks.tailMap(afterId, false).values()) {
+            if (t.state() == state && (queue == null || queue.equals(t.queue())) && out.size() < limit) {
+                out.add(t);
+            }
+        }
+        return new TaskViewPage(
+                out, out.size() < limit ? null : String.valueOf(out.getLast().id()));
+    }
+
+    @Override
+    public RetryOutcome retry(long id, int revision) {
         calls.add("retry " + id + ' ' + revision);
         var t = tasks.get(id);
-        return t != null && t.revision() == revision;
+        if (t == null || t.revision() != revision) return RetryOutcome.STALE;
+        if (t.state() != TaskState.DEAD && t.state() != TaskState.CANCELLED && t.state() != TaskState.EXPIRED) {
+            return RetryOutcome.STALE;
+        }
+        return heldKeys.contains(id) ? RetryOutcome.DUPLICATE : RetryOutcome.RETRIED;
     }
 
     @Override

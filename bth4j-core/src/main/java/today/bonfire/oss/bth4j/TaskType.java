@@ -60,9 +60,12 @@ public final class TaskType<T> {
     }
 
     /**
-     * Interrupts the processor's thread when a cancel request arrives or the task's maximum run time passes,
-     * so blocking calls and sleeps wake up. Off by default: the processor must then poll
-     * {@link TaskContext#checkCancelled()}.
+     * Interrupts the processor's thread when a cancel request arrives, the task's maximum run time passes,
+     * or lease renewal reports that the lease was lost. Interruptible blocking calls and sleeps wake up.
+     * Off by default: interrupts can close sockets and NIO channels used by the body, including pooled
+     * database or Redis connections. Processors may run on virtual threads, where blocking socket I/O is
+     * interruptible. Opt in only when the processor can handle this; otherwise poll
+     * {@link TaskContext#checkCancelled()}. An interrupt does not guarantee the body stops.
      */
     public TaskType<T> interruptOnCancel() {
         return new TaskType<>(name, payloadClass, codec, payloadVersion, true);

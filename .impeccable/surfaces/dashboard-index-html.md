@@ -9,7 +9,7 @@ related_targets: ["dashboard/app.css","dashboard/app.js","dashboard/pages/task.j
 
 Scope: the whole static dashboard served by the admin HTTP server: shell, login, overview, queues, tasks, task, dead, schedules, workers, issues. Visitor mode: Operate.
 
-Audience and job: developers of the host application diagnosing a task that did not run (primary); on-call operators glancing at health, workers and counts. Task: find a task, read its history, retry or cancel it with the revision seen; pause or resume queues; pause, trigger or delete schedules. Proof/content: live API data only; nothing invented. Constraints: no build step, Vue 3 global build from pinned CDN, plain CSS, system fonts only, light and dark themes, CSP forbids external styles and fonts, inline SVG only.
+Audience and job: developers of the host application diagnosing a task that did not run (primary); on-call operators glancing at health, workers and counts. Task: find a task, read its history, retry or cancel it with the revision seen; pause or resume queues; pause, trigger or delete schedules. Proof/content: live API data only; nothing invented. Constraints: no build step, Vue 3 global build vendored in dashboard/vendor, plain CSS, system fonts only, light and dark themes, CSP forbids external styles and fonts, inline SVG only.
 
 Memorable moment: the departure board. Everything that waits on time (due, next fire, lease, heartbeat) reads like a departure: a live countdown in tabular figures, amber reserved for "waiting on time", and rows that keep their identity and hold a highlight when a poll changes them.
 

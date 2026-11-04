@@ -209,6 +209,7 @@ public final class BackgroundRunner {
                     !config.succeededRetention.isZero(),
                     config.keepSucceededPayload,
                     !config.deadRetention.isZero(),
+                    config.failureDetail,
                     List.copyOf(queueIds),
                     policies,
                     Set.copyOf(eventIds),
@@ -446,6 +447,7 @@ public final class BackgroundRunner {
                 .purgeInterval(config.purgeInterval)
                 .retention(retention)
                 .keepDead(!config.deadRetention.isZero())
+                .failureDetail(config.failureDetail)
                 .batchSize(config.claimBatchSize * 4)
                 .purgeBatchSize(config.purgeBatchSize)
                 .worker(workerId, runningTasks::size)
@@ -473,6 +475,7 @@ public final class BackgroundRunner {
         private Duration deadRetention = Duration.ofDays(90);
         private Duration cancelledRetention = Duration.ofHours(48);
         private boolean keepSucceededPayload;
+        private FailureDetail failureDetail = FailureDetail.FULL;
         private Duration purgeInterval = Duration.ofMinutes(1);
         private int purgeBatchSize = 500;
         private Duration leaseDuration = Duration.ofSeconds(60);
@@ -616,6 +619,16 @@ public final class BackgroundRunner {
         /** Keeps the payload of succeeded tasks; by default it is dropped on success to save space. */
         public Builder keepSucceededPayload(boolean keep) {
             this.keepSucceededPayload = keep;
+            return this;
+        }
+
+        /**
+         * How much of a failure is recorded and reported: {@link FailureDetail#FULL} (default) or
+         * {@link FailureDetail#CLASS_NAME_ONLY} for hosts whose exception messages may carry customer data.
+         */
+        public Builder failureDetail(FailureDetail detail) {
+            if (detail == null) throw new TaskConfigurationError("failureDetail must not be null");
+            this.failureDetail = detail;
             return this;
         }
 

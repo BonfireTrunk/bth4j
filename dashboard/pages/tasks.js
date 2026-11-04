@@ -18,36 +18,52 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
       const error = ref('');
       const hasMore = ref(false);
       const bulkBusy = ref(false);
+      const keyText = ref('');
+      const keyMissing = ref(false);
+      const finding = ref(false);
       const admin = isAdmin;
 
-      async function fetchPage(after) {
-        return api.tasks({ state: state.value, queue: queue.value, after, limit: LIMIT });
+      let nextCursor = null;
+      let requestId = 0;
+
+      async function fetchPage(cursor, id) {
+        const page = await api.tasks({ state: state.value, queue: queue.value, cursor: cursor ?? '', limit: LIMIT });
+        if (id !== requestId) return null;
+        nextCursor = page.next;
+        return page.items;
       }
 
       async function load() {
+        const id = ++requestId;
+        nextCursor = null;
+        hasMore.value = false;
         loading.value = true;
         error.value = '';
         try {
-          const page = await fetchPage(undefined);
+          const page = await fetchPage(undefined, id);
+          if (page === null) return;
           rows.value = page;
-          hasMore.value = page.length >= LIMIT;
+          hasMore.value = nextCursor !== null;
         } catch (e) {
+          if (id !== requestId) return;
           error.value = e.message;
           toastError(e);
         } finally {
-          loading.value = false;
+          if (id === requestId) loading.value = false;
         }
       }
 
       async function more() {
-        if (!rows.value.length) return;
+        if (nextCursor === null) return;
+        const id = requestId;
         loadingMore.value = true;
         try {
-          const page = await fetchPage(rows.value[rows.value.length - 1].id);
+          const page = await fetchPage(nextCursor, id);
+          if (page === null) return;
           rows.value = rows.value.concat(page);
-          hasMore.value = page.length >= LIMIT;
+          hasMore.value = nextCursor !== null;
         } catch (e) {
-          toastError(e);
+          if (id === requestId) toastError(e);
         } finally {
           loadingMore.value = false;
         }
@@ -68,7 +84,9 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
         const res = await confirmDialog({
           title: 'Retry ' + targets.length + ' dead task' + (targets.length === 1 ? '' : 's'),
           message:
-            'Each visible task is retried with the revision shown here. Tasks that changed meanwhile are skipped.',
+            'Each visible task is retried with the revision shown here. Tasks that changed meanwhile are skipped. ' +
+            'Keys still inside their keep windows are retained; retries with a key held by another task are refused. ' +
+            'Released keys are not restored, so a same-key enqueue can start a second task.',
           confirmLabel: 'Retry all visible',
           danger: true,
         });
@@ -76,6 +94,7 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
         bulkBusy.value = true;
         let ok = 0;
         let stale = 0;
+        let duplicate = 0;
         let failed = 0;
         for (const t of targets) {
           try {
@@ -84,14 +103,16 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
           } catch (e) {
             if (e.status === 401) break;
             if (e.conflict) stale++;
+            else if (e.duplicate) duplicate++;
             else failed++;
           }
         }
         bulkBusy.value = false;
         let msg = ok + ' retried';
         if (stale) msg += ', ' + stale + ' changed meanwhile (skipped)';
+        if (duplicate) msg += ', ' + duplicate + ' refused: the unique key is held by another task';
         if (failed) msg += ', ' + failed + ' failed';
-        toast(msg, failed || stale ? 'error' : 'ok');
+        toast(msg, failed || stale || duplicate ? 'error' : 'ok');
         await load();
       }
 
@@ -104,6 +125,22 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
         }
       });
 
+      async function findByKey() {
+        const key = keyText.value.trim();
+        keyMissing.value = false;
+        if (!key || finding.value) return;
+        finding.value = true;
+        try {
+          const task = await api.taskByKey(key);
+          open(task.id);
+        } catch (e) {
+          if (e.status === 404) keyMissing.value = true;
+          else toastError(e);
+        } finally {
+          finding.value = false;
+        }
+      }
+
       function open(id) {
         location.hash = '#/task/' + encodeURIComponent(id);
       }
@@ -114,7 +151,7 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
         return f.message ? type + ': ' + f.message : type;
       }
       return {
-        state, queue, rows, queues, loading, loadingMore, error, hasMore, bulkBusy, admin,
+        state, queue, rows, queues, loading, loadingMore, error, hasMore, bulkBusy, admin, keyText, keyMissing, finding, findByKey,
         load, more, apply, retryAll, open, STATES, fixedState, title, bulkRetry, LIMIT, failureText,
       };
     },
@@ -136,6 +173,11 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
           <input v-else v-model="queue" type="text" placeholder="any">
         </label>
         <button type="submit" class="primary">Show</button>
+        <label>Find by key
+          <input v-model="keyText" type="text" placeholder="unique key" @input="keyMissing = false" @keydown.enter.prevent="findByKey">
+        </label>
+        <button type="button" :disabled="finding" @click="findByKey">Find</button>
+        <span v-if="keyMissing" class="muted" role="status">No task holds this key</span>
       </form>
       <status-msg :loading="loading" :error="error" :empty="!rows.length" empty-text="No tasks match these filters." :empty-hint="fixedState ? 'Nothing is dead. Good.' : 'Pick another state, or clear the queue filter.'"></status-msg>
       <div class="table-wrap" v-if="!loading && rows.length">

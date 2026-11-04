@@ -36,16 +36,12 @@ The admin server must then allow the dashboard's origin (`.corsOrigin("https://d
 Requests use `credentials: 'include'`. Note the session cookie is `SameSite=Strict`, so the dashboard host
 and the API host must be the same site (same registrable domain), otherwise the browser will not send it.
 
-### Pinned Vue version and air-gapped deployments
+### Vue runtime
 
-`index.html` loads Vue from a CDN at an exact version:
-
-```
-https://cdn.jsdelivr.net/npm/vue@3.5.13/dist/vue.global.prod.js
-```
-
-For a deployment without internet access, download that file, put it next to `index.html`, and change the
-one `<script src="...">` line to `vue.global.prod.js`. Nothing else loads from the network.
+`index.html` loads Vue from `vendor/vue.global.prod.js`, a copy of Vue 3.5.13 kept in this repository (source, hashes and
+update steps in `vendor/README.md`). Nothing loads from the network, so the dashboard works without internet access.
+The server's Content-Security-Policy therefore allows scripts from the server itself only, plus `'unsafe-eval'`: the Vue
+global build compiles the `template:` strings of the pages in the browser with `new Function`, which needs it.
 
 ## Sign-in and roles
 

@@ -248,6 +248,7 @@ class AdminHttpServerTest {
                 mutate("POST", "/api/v1/queues/default/resume", login, null),
                 mutate("POST", "/api/v1/tasks/1/retry", login, revisionBody),
                 mutate("POST", "/api/v1/tasks/1/cancel", login, revisionBody),
+                mutate("POST", "/api/v1/tasks/by-key/order-1/cancel", login, "{}"),
                 mutate("DELETE", "/api/v1/tasks/1?revision=7", login, null),
                 mutate("POST", "/api/v1/schedules/nightly/pause", login, null),
                 mutate("POST", "/api/v1/schedules/nightly/resume", login, null),
@@ -319,6 +320,109 @@ class AdminHttpServerTest {
         assertThat(mutate("DELETE", "/api/v1/tasks/99?revision=1", login, null).statusCode())
                 .isEqualTo(404);
         assertThat(get("/api/v1/tasks/99", login).statusCode()).isEqualTo(404);
+    }
+
+    @Test
+    void taskByKeyIsReadableByViewersAndDecodesTheKey() throws Exception {
+        ops.keyHolders.put("order 1/a+b", 1L);
+        start();
+        var login = viewer();
+
+        var found = get("/api/v1/tasks/by-key/order%201%2Fa%2Bb", login);
+
+        assertThat(found.statusCode()).isEqualTo(200);
+        assertThat(json(found)).containsEntry("id", "1");
+        assertThat(get("/api/v1/tasks/by-key/missing", login).statusCode()).isEqualTo(404);
+    }
+
+    @Test
+    void cancelByKeyReachesTheOperations() throws Exception {
+        ops.keyHolders.put("order-1", 3L);
+        start();
+        var login = admin();
+
+        var cancel = mutate("POST", "/api/v1/tasks/by-key/order-1/cancel", login, "{\"reason\":\"why\"}");
+
+        assertThat(cancel.statusCode()).isEqualTo(200);
+        assertThat(json(cancel)).containsEntry("outcome", "REQUESTED");
+        assertThat(ops.calls).containsExactly("cancelByKey order-1 why");
+        assertThat(mutate("POST", "/api/v1/tasks/by-key/order-1/cancel", login, "{\"reason\":5}")
+                        .statusCode())
+                .isEqualTo(400);
+        assertThat(get("/api/v1/tasks/by-key/order-1/cancel", login).statusCode())
+                .isEqualTo(404);
+    }
+
+    @Test
+    void cancelByKeyAnswersEachOutcomeWithItsOwnStatusAndText() throws Exception {
+        ops.keyHolders.put("done", 1L);
+        ops.keyHolders.put("racy", 3L);
+        start();
+        var login = admin();
+
+        var missing = mutate("POST", "/api/v1/tasks/by-key/missing/cancel", login, "{}");
+        var finished = mutate("POST", "/api/v1/tasks/by-key/done/cancel", login, "{}");
+        ops.staleKeys.add("racy");
+        var stale = mutate("POST", "/api/v1/tasks/by-key/racy/cancel", login, "{}");
+
+        assertThat(missing.statusCode()).isEqualTo(404);
+        assertThat(json(missing)).containsEntry("error", "no task holds this key");
+        assertThat(finished.statusCode()).isEqualTo(409);
+        assertThat(json(finished)).containsEntry("error", "the task holding this key is already finished");
+        assertThat(stale.statusCode()).isEqualTo(409);
+        assertThat(json(stale)).containsEntry("error", "the task changed meanwhile, retry");
+    }
+
+    @Test
+    void cancelByKeyNeedsTheCsrfTokenAndANumericKeyIsAKey() throws Exception {
+        ops.keyHolders.put("42", 3L);
+        start();
+        var login = admin();
+
+        var noToken = send("POST", "/api/v1/tasks/by-key/42/cancel", login, "{}");
+
+        assertThat(noToken.statusCode()).isEqualTo(403);
+        assertThat(get("/api/v1/tasks/by-key/42", login).statusCode()).isEqualTo(200);
+        assertThat(mutate("POST", "/api/v1/tasks/by-key/42/cancel", login, "{}").statusCode())
+                .isEqualTo(200);
+        assertThat(ops.calls).containsExactly("cancelByKey 42 null");
+    }
+
+    @Test
+    void byKeyRoutesRejectAnInvalidKey() throws Exception {
+        start();
+        var login = admin();
+        var tooLong = "k".repeat(257);
+
+        assertThat(get("/api/v1/tasks/by-key/" + tooLong, login).statusCode()).isEqualTo(400);
+        assertThat(get("/api/v1/tasks/by-key/%20", login).statusCode()).isEqualTo(400);
+        assertThat(mutate("POST", "/api/v1/tasks/by-key/" + tooLong + "/cancel", login, "{}")
+                        .statusCode())
+                .isEqualTo(400);
+    }
+
+    @Test
+    void retryOfATaskWhoseUniqueKeyIsHeldIs409WithTheReason() throws Exception {
+        ops.heldKeys.add(1L);
+        start();
+        var login = admin();
+
+        var res = mutate("POST", "/api/v1/tasks/1/retry", login, "{\"revision\":\"7\"}");
+
+        assertThat(res.statusCode()).isEqualTo(409);
+        assertThat(json(res))
+                .containsExactlyInAnyOrderEntriesOf(
+                        Map.of("error", "the unique key is held by another task", "code", "KEY_HELD"));
+        var stale = mutate("POST", "/api/v1/tasks/1/retry", login, "{\"revision\":\"6\"}");
+        assertThat(stale.statusCode()).isEqualTo(409);
+        assertThat(json(stale))
+                .containsEntry("error", "the task changed since you loaded it")
+                .doesNotContainKey("code");
+        var queued = mutate("POST", "/api/v1/tasks/3/retry", login, "{\"revision\":\"1\"}");
+        assertThat(queued.statusCode()).isEqualTo(409);
+        assertThat(json(queued))
+                .containsEntry("error", "the task changed since you loaded it")
+                .doesNotContainKey("code");
     }
 
     @Test
@@ -409,6 +513,32 @@ class AdminHttpServerTest {
         get("/api/v1/tasks?state=DEAD", login);
         get("/api/v1/tasks?state=DEAD&limit=100000", login);
         assertThat(ops.calls).contains("tasks DEAD null 0 50", "tasks DEAD null 0 200", "tasks DEAD null 2 2");
+    }
+
+    @Test
+    void taskListWithCursorReturnsItemsAndNextAndWalks() throws Exception {
+        start();
+        var login = admin();
+
+        var first = json(get("/api/v1/tasks?state=DEAD&limit=2&cursor=", login));
+        assertThat(items(first)).extracting(t -> t.get("id")).containsExactly("1", "2");
+        assertThat(first).containsEntry("next", "2");
+
+        var second = json(get("/api/v1/tasks?state=DEAD&limit=2&cursor=2", login));
+        assertThat(items(second)).extracting(t -> t.get("id")).containsExactly("4");
+        assertThat(second).containsKey("next").containsEntry("next", null);
+
+        var blank = json(get("/api/v1/tasks?state=DEAD&limit=50&cursor=", login));
+        assertThat(items(blank)).hasSize(3);
+
+        assertThat(jsonList(get("/api/v1/tasks?state=DEAD", login))).hasSize(3);
+        assertThat(ops.calls).contains("tasks DEAD null cursor=null 2", "tasks DEAD null cursor=2 2");
+        assertThat(get("/api/v1/tasks?state=DEAD&cursor=x", login).statusCode()).isEqualTo(400);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> items(Map<String, Object> page) {
+        return (List<Map<String, Object>>) page.get("items");
     }
 
     @Test
@@ -563,7 +693,8 @@ class AdminHttpServerTest {
         assertThat(index.headers().firstValue("Content-Type")).contains("text/html; charset=utf-8");
         assertThat(index.headers().firstValue("Cache-Control")).contains("no-cache");
         assertThat(index.headers().firstValue("Content-Security-Policy").orElseThrow())
-                .contains("script-src 'self' https://cdn.jsdelivr.net", "frame-ancestors 'none'");
+                .contains("script-src 'self' 'unsafe-eval';", "frame-ancestors 'none'")
+                .doesNotContain("jsdelivr");
         assertThat(index.headers().firstValue("X-Content-Type-Options")).contains("nosniff");
 
         var js = get("/app.js", null);

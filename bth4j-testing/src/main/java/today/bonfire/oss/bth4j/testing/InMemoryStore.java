@@ -31,9 +31,12 @@ import today.bonfire.oss.bth4j.spi.PromoteResult;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
+import today.bonfire.oss.bth4j.spi.RetryOutcome;
+import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
+import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
@@ -49,7 +52,16 @@ public final class InMemoryStore implements FullStore {
     private static final Comparator<TaskRecord> BY_DUE =
             Comparator.comparing(TaskRecord::due).thenComparingLong(TaskRecord::id);
 
-    private record Recurring(RecurringDefinition definition, Instant nextFire) {}
+    /** @param occurrence the id of the in-flight fixed-delay occurrence, or null */
+    private record Recurring(RecurringDefinition definition, Instant nextFire, Long occurrence) {
+        Recurring(RecurringDefinition definition, Instant nextFire) {
+            this(definition, nextFire, null);
+        }
+
+        Recurring withNext(Instant next) {
+            return new Recurring(definition, next, occurrence);
+        }
+    }
 
     private final Clock clock;
     private final int registryBound;
@@ -86,6 +98,16 @@ public final class InMemoryStore implements FullStore {
 
     @Override
     public void init() {}
+
+    @Override
+    public long idHighWaterMark() {
+        lock.lock();
+        try {
+            return nextTaskId;
+        } finally {
+            lock.unlock();
+        }
+    }
 
     @Override
     public long allocateIds(int count) {
@@ -282,8 +304,8 @@ public final class InMemoryStore implements FullStore {
                 TaskRecord t = tasks.get(ref.id());
                 if (t == null) {
                     result.add(new LeaseStatus(ref.id(), false, false));
-                } else if (!fenced(t, ref.revision())) {
-                    result.add(new LeaseStatus(ref.id(), false, t.cancelRequestedAt() != null));
+                } else if (!fenced(t, ref.revision()) || !t.leaseUntil().isAfter(clock.instant())) {
+                    result.add(new LeaseStatus(ref.id(), false, false));
                 } else {
                     tasks.put(t.id(), t.toBuilder().leaseUntil(until).build());
                     result.add(new LeaseStatus(ref.id(), true, t.cancelRequestedAt() != null));
@@ -300,7 +322,7 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public boolean ack(long id, int revision, boolean keep, boolean keepPayload) {
+    public boolean ack(long id, int revision, boolean keep, boolean keepPayload, ScheduleEffect effect) {
         lock.lock();
         try {
             TaskRecord t = tasks.get(id);
@@ -308,6 +330,7 @@ public final class InMemoryStore implements FullStore {
                 return false;
             }
             Instant now = clock.instant();
+            applyEffect(effect);
             if (!keep && t.keyKeep() == null) {
                 remove(t);
                 return true;
@@ -325,6 +348,18 @@ public final class InMemoryStore implements FullStore {
         } finally {
             lock.unlock();
         }
+    }
+
+    private void applyEffect(ScheduleEffect effect) {
+        if (effect == null) return;
+        Recurring r = recurring.get(effect.scheduleId());
+        if (r == null || r.occurrence() == null || r.occurrence() != effect.occurrenceId()) return;
+        if (effect.pauses()) {
+            recurring.put(effect.scheduleId(), new Recurring(r.definition().withPaused(true), r.nextFire(), null));
+        } else {
+            recurring.put(effect.scheduleId(), new Recurring(r.definition(), effect.nextFire(), null));
+        }
+        effect.markApplied();
     }
 
     /** Applies the unique key rule of a task that just reached a terminal state, then stores it. */
@@ -348,34 +383,37 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public FailOutcome fail(long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead) {
+    public FailOutcome fail(
+            long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead, ScheduleEffect effect) {
         lock.lock();
         try {
             TaskRecord t = tasks.get(id);
             if (t == null || !fenced(t, revision)) {
                 return FailOutcome.LOST;
             }
-            return failLocked(t, failure, retryAt, keepDead);
+            return failLocked(t, failure, retryAt, keepDead, effect);
         } finally {
             lock.unlock();
         }
     }
 
     @Override
-    public FailOutcome failExpired(long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead) {
+    public FailOutcome failExpired(
+            long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead, ScheduleEffect effect) {
         lock.lock();
         try {
             TaskRecord t = tasks.get(id);
             if (t == null || !fenced(t, revision) || t.leaseUntil().isAfter(clock.instant())) {
                 return FailOutcome.LOST;
             }
-            return failLocked(t, failure, retryAt, keepDead);
+            return failLocked(t, failure, retryAt, keepDead, effect);
         } finally {
             lock.unlock();
         }
     }
 
-    private FailOutcome failLocked(TaskRecord t, FailureInfo failure, Instant retryAt, boolean keepDead) {
+    private FailOutcome failLocked(
+            TaskRecord t, FailureInfo failure, Instant retryAt, boolean keepDead, ScheduleEffect effect) {
         Instant now = clock.instant();
         List<FailureInfo> failures = new ArrayList<>();
         if (t.failures() != null) {
@@ -396,6 +434,7 @@ public final class InMemoryStore implements FullStore {
                     b.state(TaskState.SCHEDULED).due(retryAt).workerId(null).build());
             return FailOutcome.RETRY;
         }
+        applyEffect(effect);
         if (!keepDead && t.keyKeep() == null) {
             remove(t);
             return FailOutcome.DEAD;
@@ -567,7 +606,7 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public void putRecurring(RecurringDefinition definition, Instant nextFire) {
+    public void putRecurring(RecurringDefinition definition, Instant nextFire, Instant keepUntil) {
         lock.lock();
         try {
             Recurring old = recurring.get(definition.scheduleId());
@@ -587,13 +626,16 @@ public final class InMemoryStore implements FullStore {
                     definition.maxAttempts(),
                     old != null ? old.definition().paused() : definition.paused(),
                     ++recurringRevision);
-            Instant fire = old != null
-                            && Objects.equals(old.definition().cron(), definition.cron())
-                            && Objects.equals(old.definition().zone(), definition.zone())
-                            && Objects.equals(old.definition().fixedDelayMs(), definition.fixedDelayMs())
-                    ? old.nextFire()
-                    : nextFire;
-            recurring.put(definition.scheduleId(), new Recurring(stored, fire));
+            boolean sameTiming = old != null
+                    && Objects.equals(old.definition().cron(), definition.cron())
+                    && Objects.equals(old.definition().zone(), definition.zone())
+                    && Objects.equals(old.definition().fixedDelayMs(), definition.fixedDelayMs());
+            TaskRecord running = sameTiming && old.occurrence() != null ? tasks.get(old.occurrence()) : null;
+            boolean occurrenceRunning = running != null && !running.state().isTerminal();
+            Instant fire =
+                    sameTiming && (occurrenceRunning || !old.nextFire().isAfter(keepUntil)) ? old.nextFire() : nextFire;
+            recurring.put(
+                    definition.scheduleId(), new Recurring(stored, fire, occurrenceRunning ? old.occurrence() : null));
         } finally {
             lock.unlock();
         }
@@ -655,7 +697,18 @@ public final class InMemoryStore implements FullStore {
             if (outcome == EnqueueOutcome.EXISTS) {
                 return false;
             }
-            recurring.put(due.scheduleId(), new Recurring(current.definition(), nextFire));
+            Long occurrenceId = current.occurrence();
+            if (current.definition().isFixedDelay()) {
+                if (outcome instanceof EnqueueOutcome.Stored) {
+                    occurrenceId = occurrence.id();
+                } else if (outcome instanceof EnqueueOutcome.DuplicateKey held && occurrenceId == null) {
+                    TaskRecord holder = tasks.get(held.existingId());
+                    if (holder != null && due.scheduleId().equals(holder.scheduleId())) {
+                        occurrenceId = held.existingId();
+                    }
+                }
+            }
+            recurring.put(due.scheduleId(), new Recurring(current.definition(), nextFire, occurrenceId));
             return true;
         } finally {
             lock.unlock();
@@ -667,6 +720,18 @@ public final class InMemoryStore implements FullStore {
         lock.lock();
         try {
             return Optional.ofNullable(tasks.get(id));
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public Optional<TaskRecord> taskByKey(String key) {
+        lock.lock();
+        try {
+            Long holderId = keyHolders.get(key);
+            TaskRecord holder = holderId == null ? null : tasks.get(holderId);
+            return holder != null && keyHeld(holder, clock.instant()) ? Optional.of(holder) : Optional.empty();
         } finally {
             lock.unlock();
         }
@@ -711,15 +776,83 @@ public final class InMemoryStore implements FullStore {
         }
     }
 
+    /** The cursor is {@code <stateChanged in epoch nanoseconds>:<id>} of the last task of the page. */
     @Override
-    public boolean finishCancelled(long id, int revision, String reason, boolean keepPayload) {
+    public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
+        var position = cursor == null ? null : decodeCursor(cursor);
+        lock.lock();
+        try {
+            Comparator<TaskRecord> order =
+                    Comparator.comparing(TaskRecord::stateChanged).thenComparingLong(TaskRecord::id);
+            List<TaskRecord> found = limit <= 0
+                    ? List.of()
+                    : tasks.values().stream()
+                            .filter(t -> t.state() == state)
+                            .filter(t -> queueId == null || t.queueId() == queueId)
+                            .filter(t -> position == null || isAfter(t, position))
+                            .sorted(order)
+                            .limit((long) limit + 1)
+                            .toList();
+            if (found.size() <= limit) return new TaskPage(found, null);
+            var items = found.subList(0, limit);
+            return new TaskPage(items, encodeCursor(items.getLast()));
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private static String encodeCursor(TaskRecord last) {
+        var at = last.stateChanged();
+        return (at.getEpochSecond() * 1_000_000_000L + at.getNano()) + ":" + last.id();
+    }
+
+    private record Position(Instant changed, long id) {}
+
+    private static boolean isAfter(TaskRecord t, Position p) {
+        int c = t.stateChanged().compareTo(p.changed());
+        return c > 0 || (c == 0 && t.id() > p.id());
+    }
+
+    private static Position decodeCursor(String cursor) {
+        var colon = cursor.indexOf(':');
+        try {
+            if (colon > 0) {
+                var nanos = Long.parseLong(cursor.substring(0, colon));
+                var id = Long.parseLong(cursor.substring(colon + 1));
+                return new Position(
+                        Instant.ofEpochSecond(
+                                Math.floorDiv(nanos, 1_000_000_000L), Math.floorMod(nanos, 1_000_000_000L)),
+                        id);
+            }
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("malformed cursor");
+        }
+        throw new IllegalArgumentException("malformed cursor");
+    }
+
+    @Override
+    public boolean finishCancelled(long id, int revision, String reason, boolean keepPayload, ScheduleEffect effect) {
+        return finishCancelled(id, revision, reason, keepPayload, effect, false);
+    }
+
+    @Override
+    public boolean finishCancelledExpired(
+            long id, int revision, String reason, boolean keepPayload, ScheduleEffect effect) {
+        return finishCancelled(id, revision, reason, keepPayload, effect, true);
+    }
+
+    private boolean finishCancelled(
+            long id, int revision, String reason, boolean keepPayload, ScheduleEffect effect, boolean expiredOnly) {
         lock.lock();
         try {
             TaskRecord t = tasks.get(id);
-            if (t == null || !fenced(t, revision)) {
+            if (t == null
+                    || !fenced(t, revision)
+                    || (expiredOnly && t.leaseUntil().isAfter(clock.instant()))) {
                 return false;
             }
             Instant now = clock.instant();
+            applyEffect(effect);
             TaskRecord.Builder b = t.toBuilder()
                     .state(TaskState.CANCELLED)
                     .revision(t.revision() + 1)
@@ -778,7 +911,7 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public CancelOutcome cancel(long id, int revision, String reason) {
+    public CancelOutcome cancel(long id, int revision, String reason, ScheduleEffect effect) {
         lock.lock();
         try {
             TaskRecord t = tasks.get(id);
@@ -796,6 +929,7 @@ public final class InMemoryStore implements FullStore {
                                 .cancelReason(reason)
                                 .cancelRequestedAt(now),
                         now);
+                applyEffect(effect);
                 return CancelOutcome.CANCELLED;
             }
             if (t.state() == TaskState.LEASED) {
@@ -814,7 +948,7 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public boolean retry(long id, int revision) {
+    public RetryOutcome retry(long id, int revision) {
         lock.lock();
         try {
             TaskRecord t = tasks.get(id);
@@ -823,11 +957,25 @@ public final class InMemoryStore implements FullStore {
                     || (t.state() != TaskState.DEAD
                             && t.state() != TaskState.CANCELLED
                             && t.state() != TaskState.EXPIRED)) {
-                return false;
+                return RetryOutcome.STALE;
             }
             Instant now = clock.instant();
-            if (t.uniqueKey() != null) {
-                keyHolders.remove(t.uniqueKey(), id);
+            String key = t.uniqueKey();
+            if (key != null && t.keyUntil() != null && !t.keyUntil().isAfter(now)) {
+                releaseKey(id);
+                t = tasks.get(id);
+                key = null;
+            }
+            if (key != null) {
+                Long holderId = keyHolders.get(key);
+                if (holderId != null && holderId != id) {
+                    TaskRecord holder = tasks.get(holderId);
+                    if (holder != null && keyHeld(holder, now)) {
+                        return RetryOutcome.DUPLICATE;
+                    }
+                    releaseKey(holderId);
+                }
+                keyHolders.put(key, id);
             }
             tasks.put(
                     id,
@@ -841,19 +989,18 @@ public final class InMemoryStore implements FullStore {
                             .cancelReason(null)
                             .workerId(null)
                             .leaseUntil(null)
-                            .keyKeep(null)
+                            .keyKeep(key != null ? t.keyKeep() : null)
                             .keyUntil(null)
-                            .uniqueKey(null)
                             .startBy(null)
                             .build());
-            return true;
+            return RetryOutcome.RETRIED;
         } finally {
             lock.unlock();
         }
     }
 
     @Override
-    public boolean delete(long id, int revision) {
+    public boolean delete(long id, int revision, ScheduleEffect effect) {
         lock.lock();
         try {
             TaskRecord t = tasks.get(id);
@@ -861,6 +1008,7 @@ public final class InMemoryStore implements FullStore {
                 return false;
             }
             remove(t);
+            applyEffect(effect);
             return true;
         } finally {
             lock.unlock();
@@ -939,7 +1087,7 @@ public final class InMemoryStore implements FullStore {
             if (r == null) {
                 return false;
             }
-            recurring.put(scheduleId, new Recurring(r.definition().withPaused(paused), r.nextFire()));
+            recurring.put(scheduleId, new Recurring(r.definition().withPaused(paused), r.nextFire(), r.occurrence()));
             return true;
         } finally {
             lock.unlock();
@@ -954,7 +1102,27 @@ public final class InMemoryStore implements FullStore {
             if (r == null) {
                 return false;
             }
-            recurring.put(scheduleId, new Recurring(r.definition(), nextFire));
+            recurring.put(
+                    scheduleId,
+                    new Recurring(r.definition().withRevision(++recurringRevision), nextFire, r.occurrence()));
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public boolean setNextFire(String scheduleId, long revision, Instant expectedFire, Instant nextFire) {
+        lock.lock();
+        try {
+            Recurring r = recurring.get(scheduleId);
+            if (r == null
+                    || r.definition().revision() != revision
+                    || !r.nextFire().equals(expectedFire)
+                    || r.definition().paused()) {
+                return false;
+            }
+            recurring.put(scheduleId, r.withNext(nextFire));
             return true;
         } finally {
             lock.unlock();
