@@ -899,14 +899,13 @@ class RedisTaskStoreIT {
             store.ack(t.id(), t.revision(), true, true, null);
         }
 
-        long after = 0;
-        List<TaskRecord> page;
+        String cursor = null;
         do {
-            page = store.tasks(TaskState.SUCCEEDED, null, after, 5);
-            assertThat(page.size()).isLessThanOrEqualTo(5);
-            page.forEach(t -> done.add(t.id()));
-            after = page.isEmpty() ? after : page.getLast().id();
-        } while (!page.isEmpty());
+            var page = store.tasks(TaskState.SUCCEEDED, null, cursor, 5);
+            assertThat(page.items().size()).isLessThanOrEqualTo(5);
+            page.items().forEach(t -> done.add(t.id()));
+            cursor = page.next();
+        } while (cursor != null);
 
         assertThat(done).hasSize(12).doesNotHaveDuplicates();
         var byTime = new ArrayList<TaskRecord>();
@@ -914,11 +913,11 @@ class RedisTaskStoreIT {
         assertThat(byTime)
                 .isSortedAccordingTo(
                         java.util.Comparator.comparing(TaskRecord::stateChanged).thenComparingLong(TaskRecord::id));
-        assertThat(store.tasks(TaskState.SUCCEEDED, other, 0, 100))
+        assertThat(store.tasks(TaskState.SUCCEEDED, other, null, 100).items())
                 .extracting(TaskRecord::id)
                 .containsExactlyInAnyOrder(3L, 6L, 9L, 12L);
-        assertThat(store.tasks(TaskState.DEAD, null, 0, 10)).isEmpty();
-        assertThat(store.tasks(TaskState.SUCCEEDED, null, 0, 0)).isEmpty();
+        assertThat(store.tasks(TaskState.DEAD, null, null, 10).items()).isEmpty();
+        assertThat(store.tasks(TaskState.SUCCEEDED, null, null, 0).items()).isEmpty();
     }
 
     @Test
@@ -931,13 +930,12 @@ class RedisTaskStoreIT {
         store.enqueueAll(tasks);
 
         var seen = new ArrayList<TaskRecord>();
-        long after = 0;
-        List<TaskRecord> page;
+        String cursor = null;
         do {
-            page = store.tasks(TaskState.QUEUED, queue, after, 400);
-            seen.addAll(page);
-            after = page.isEmpty() ? after : page.getLast().id();
-        } while (!page.isEmpty());
+            var page = store.tasks(TaskState.QUEUED, queue, cursor, 400);
+            seen.addAll(page.items());
+            cursor = page.next();
+        } while (cursor != null);
 
         assertThat(seen).hasSize(1100);
         assertThat(seen.stream().map(TaskRecord::id).distinct().count()).isEqualTo(1100);
@@ -954,10 +952,10 @@ class RedisTaskStoreIT {
             jedis.hset(keys.task(id), "due", "5000");
         }
 
-        var first = store.tasks(TaskState.QUEUED, queue, 0, 2);
-        var second = store.tasks(TaskState.QUEUED, queue, first.getLast().id(), 10);
+        var first = store.tasks(TaskState.QUEUED, queue, null, 2);
+        var second = store.tasks(TaskState.QUEUED, queue, first.next(), 10).items();
 
-        assertThat(first).extracting(TaskRecord::id).containsExactly(9L, 10L);
+        assertThat(first.items()).extracting(TaskRecord::id).containsExactly(9L, 10L);
         assertThat(second).extracting(TaskRecord::id).containsExactly(11L, 100L);
     }
 
@@ -970,19 +968,20 @@ class RedisTaskStoreIT {
         store.enqueue(task(4).build());
         claim(1);
 
-        assertThat(store.tasks(TaskState.QUEUED, null, 0, 10))
+        assertThat(store.tasks(TaskState.QUEUED, null, null, 10).items())
                 .extracting(TaskRecord::id)
                 .containsExactly(4L);
-        assertThat(store.tasks(TaskState.LEASED, queue, 0, 10))
+        assertThat(store.tasks(TaskState.LEASED, queue, null, 10).items())
                 .extracting(TaskRecord::id)
                 .containsExactly(1L);
-        assertThat(store.tasks(TaskState.SCHEDULED, null, 0, 10))
+        assertThat(store.tasks(TaskState.SCHEDULED, null, null, 10).items())
                 .extracting(TaskRecord::id)
                 .containsExactly(2L, 3L);
-        assertThat(store.tasks(TaskState.SCHEDULED, other, 0, 10))
+        assertThat(store.tasks(TaskState.SCHEDULED, other, null, 10).items())
                 .extracting(TaskRecord::id)
                 .containsExactly(3L);
-        assertThat(store.tasks(TaskState.SCHEDULED, null, 2, 10))
+        var afterTask2 = store.tasks(TaskState.SCHEDULED, null, null, 1).next();
+        assertThat(store.tasks(TaskState.SCHEDULED, null, afterTask2, 10).items())
                 .extracting(TaskRecord::id)
                 .containsExactly(3L);
     }

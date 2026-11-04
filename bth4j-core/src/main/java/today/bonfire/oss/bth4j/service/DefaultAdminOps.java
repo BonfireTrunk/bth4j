@@ -79,14 +79,6 @@ public final class DefaultAdminOps implements AdminOps {
     }
 
     @Override
-    public List<TaskView> tasks(TaskState state, String queue, long afterId, int limit) {
-        var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.getValidQueue(queue)));
-        var result = new ArrayList<TaskView>();
-        for (var r : store.tasks(state, queueId, afterId, limit)) result.add(names.view(r));
-        return result;
-    }
-
-    @Override
     public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
         var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.getValidQueue(queue)));
         var page = store.tasks(state, queueId, cursor, limit);

@@ -198,21 +198,21 @@ class DefaultAdminOpsTest {
 
     @Test
     void tasksWithoutQueueFilterAskTheStoreForAllQueues() {
-        handlers.put("tasks", a -> List.of(record(1, DEFAULT_QUEUE_ID), record(2, OTHER_QUEUE_ID)));
+        handlers.put("tasks", a -> new TaskPage(List.of(record(1, DEFAULT_QUEUE_ID), record(2, OTHER_QUEUE_ID)), null));
 
-        var views = ops.tasks(TaskState.DEAD, null, 10, 50);
+        var views = ops.tasks(TaskState.DEAD, null, null, 50).items();
 
-        assertThat(calls).contains("tasks[DEAD, null, 10, 50]");
+        assertThat(calls).contains("tasks[DEAD, null, null, 50]");
         assertThat(views).extracting("queue").containsExactly("Q:DEF", "Q:OTHER");
     }
 
     @Test
     void tasksWithQueueFilterPassTheQueueId() {
-        handlers.put("tasks", a -> List.of());
+        handlers.put("tasks", a -> new TaskPage(List.of(), null));
 
-        ops.tasks(TaskState.QUEUED, "Q:OTHER", 0, 5);
+        ops.tasks(TaskState.QUEUED, "Q:OTHER", null, 5);
 
-        assertThat(calls).contains("tasks[QUEUED, 2, 0, 5]");
+        assertThat(calls).contains("tasks[QUEUED, 2, null, 5]");
     }
 
     @Test
@@ -230,11 +230,6 @@ class DefaultAdminOpsTest {
     void cursorTasksRejectAQueueThatIsNotAvailable() {
         assertThatThrownBy(() -> ops.tasks(TaskState.QUEUED, "Q:MISSING", (String) null, 5))
                 .isInstanceOf(TaskErrorException.class);
-    }
-
-    @Test
-    void tasksRejectAQueueThatIsNotAvailable() {
-        assertThatThrownBy(() -> ops.tasks(TaskState.QUEUED, "Q:MISSING", 0, 5)).isInstanceOf(TaskErrorException.class);
     }
 
     @Test

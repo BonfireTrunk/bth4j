@@ -439,7 +439,7 @@ public abstract class StoreContract {
             putNew();
         }
         assertThat(claim(3)).hasSize(3);
-        assertThat(store.tasks(TaskState.QUEUED, queue, 0, 10)).hasSize(2);
+        assertThat(store.tasks(TaskState.QUEUED, queue, null, 10).items()).hasSize(2);
     }
 
     @Test
@@ -2816,41 +2816,13 @@ public abstract class StoreContract {
             advance(Duration.ofMillis(20));
         }
         List<Long> expected = ackOrder.stream().map(TaskRecord::id).toList();
-        List<TaskRecord> all = store.tasks(TaskState.SUCCEEDED, null, 0, 10);
+        List<TaskRecord> all = store.tasks(TaskState.SUCCEEDED, null, null, 10).items();
         assertThat(all).extracting(TaskRecord::id).containsExactlyElementsOf(expected);
-        List<TaskRecord> page1 = store.tasks(TaskState.SUCCEEDED, null, 0, 3);
-        assertThat(page1).extracting(TaskRecord::id).containsExactlyElementsOf(expected.subList(0, 3));
-        List<TaskRecord> page2 =
-                store.tasks(TaskState.SUCCEEDED, null, page1.get(2).id(), 3);
-        assertThat(page2).extracting(TaskRecord::id).containsExactly(expected.get(3));
-        assertThat(store.tasks(TaskState.SUCCEEDED, null, expected.get(3), 3)).isEmpty();
-    }
-
-    @Test
-    void tasksWalkTerminatesAndListsEachTaskOnceWhileATaskIsDeferred() {
-        int other = store.eventId("other");
-        List<Long> all = new ArrayList<>();
-        all.add(put(task(queue, other).due(millis(now().minusSeconds(60)))));
-        for (int i = 0; i < 9; i++) {
-            all.add(putNew());
-        }
-        List<TaskRecord> claimed = claim(3, LEASE, Set.of(event));
-        assertThat(claimed).hasSize(3);
-        List<Long> queued = new ArrayList<>(all);
-        claimed.forEach(t -> queued.remove(t.id()));
-        for (int limit : new int[] {1, 3, 4, 20}) {
-            List<Long> seen = new ArrayList<>();
-            long after = 0;
-            for (int page = 0; page < 30; page++) {
-                List<TaskRecord> got = store.tasks(TaskState.QUEUED, null, after, limit);
-                if (got.isEmpty()) {
-                    break;
-                }
-                got.forEach(t -> seen.add(t.id()));
-                after = got.get(got.size() - 1).id();
-            }
-            assertThat(seen).as("limit %d", limit).containsExactlyInAnyOrderElementsOf(queued);
-        }
+        TaskPage page1 = store.tasks(TaskState.SUCCEEDED, null, null, 3);
+        assertThat(page1.items()).extracting(TaskRecord::id).containsExactlyElementsOf(expected.subList(0, 3));
+        TaskPage page2 = store.tasks(TaskState.SUCCEEDED, null, page1.next(), 3);
+        assertThat(page2.items()).extracting(TaskRecord::id).containsExactly(expected.get(3));
+        assertThat(page2.next()).isNull();
     }
 
     @Test
@@ -3014,13 +2986,13 @@ public abstract class StoreContract {
         int second = store.queueId("second");
         long inMain = putNew();
         long inSecond = put(task(second, event));
-        assertThat(store.tasks(TaskState.QUEUED, null, 0, 10))
+        assertThat(store.tasks(TaskState.QUEUED, null, null, 10).items())
                 .extracting(TaskRecord::id)
                 .containsExactlyInAnyOrder(inMain, inSecond);
-        assertThat(store.tasks(TaskState.QUEUED, second, 0, 10))
+        assertThat(store.tasks(TaskState.QUEUED, second, null, 10).items())
                 .extracting(TaskRecord::id)
                 .containsExactly(inSecond);
-        assertThat(store.tasks(TaskState.DEAD, null, 0, 10)).isEmpty();
-        assertThat(store.tasks(TaskState.QUEUED, null, 0, 1)).hasSize(1);
+        assertThat(store.tasks(TaskState.DEAD, null, null, 10).items()).isEmpty();
+        assertThat(store.tasks(TaskState.QUEUED, null, null, 1).items()).hasSize(1);
     }
 }

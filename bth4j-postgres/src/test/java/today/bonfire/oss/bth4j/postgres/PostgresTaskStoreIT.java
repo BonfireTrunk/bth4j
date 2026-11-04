@@ -788,33 +788,23 @@ class PostgresTaskStoreIT {
             Thread.sleep(2);
         }
 
-        var page1 = store.tasks(TaskState.QUEUED, null, 0, 2);
-        assertThat(page1).extracting(TaskRecord::id).containsExactly(ids.get(0), ids.get(1));
-        var page2 = store.tasks(TaskState.QUEUED, null, page1.getLast().id(), 2);
-        assertThat(page2).extracting(TaskRecord::id).containsExactly(ids.get(2), ids.get(3));
-        var page3 = store.tasks(TaskState.QUEUED, null, page2.getLast().id(), 2);
-        assertThat(page3).extracting(TaskRecord::id).containsExactly(ids.get(4));
+        var page1 = store.tasks(TaskState.QUEUED, null, null, 2);
+        assertThat(page1.items()).extracting(TaskRecord::id).containsExactly(ids.get(0), ids.get(1));
+        var page2 = store.tasks(TaskState.QUEUED, null, page1.next(), 2);
+        assertThat(page2.items()).extracting(TaskRecord::id).containsExactly(ids.get(2), ids.get(3));
+        var page3 = store.tasks(TaskState.QUEUED, null, page2.next(), 2);
+        assertThat(page3.items()).extracting(TaskRecord::id).containsExactly(ids.get(4));
+        assertThat(page3.next()).isNull();
 
-        assertThat(store.tasks(TaskState.QUEUED, other, 0, 10))
+        assertThat(store.tasks(TaskState.QUEUED, other, null, 10).items())
                 .extracting(TaskRecord::id)
                 .containsExactly(ids.get(2));
-        assertThat(store.tasks(TaskState.QUEUED, queue, ids.get(0), 10))
+        var afterFirst = store.tasks(TaskState.QUEUED, queue, null, 1).next();
+        assertThat(store.tasks(TaskState.QUEUED, queue, afterFirst, 10).items())
                 .extracting(TaskRecord::id)
                 .containsExactly(ids.get(1), ids.get(3), ids.get(4));
-        assertThat(store.tasks(TaskState.SUCCEEDED, null, 0, 10)).isEmpty();
-        assertThat(store.tasks(TaskState.QUEUED, null, 0, 0)).isEmpty();
-    }
-
-    @Test
-    void listingAfterAMissingTaskContinuesById() {
-        long gone = newId();
-        long kept = newId();
-        store.enqueue(task(kept).build());
-
-        assertThat(store.tasks(TaskState.QUEUED, null, gone, 10))
-                .extracting(TaskRecord::id)
-                .containsExactly(kept);
-        assertThat(store.tasks(TaskState.QUEUED, null, kept + 1, 10)).isEmpty();
+        assertThat(store.tasks(TaskState.SUCCEEDED, null, null, 10).items()).isEmpty();
+        assertThat(store.tasks(TaskState.QUEUED, null, null, 0).items()).isEmpty();
     }
 
     // ---- recurring definitions -----------------------------------------------------------------------

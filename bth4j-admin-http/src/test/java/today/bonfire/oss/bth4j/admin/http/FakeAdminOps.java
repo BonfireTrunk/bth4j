@@ -95,18 +95,6 @@ final class FakeAdminOps implements AdminOps {
     }
 
     @Override
-    public List<TaskView> tasks(TaskState state, String queue, long afterId, int limit) {
-        calls.add("tasks " + state + ' ' + queue + ' ' + afterId + ' ' + limit);
-        var out = new ArrayList<TaskView>();
-        for (var t : tasks.tailMap(afterId, false).values()) {
-            if (t.state() == state && (queue == null || queue.equals(t.queue())) && out.size() < limit) {
-                out.add(t);
-            }
-        }
-        return out;
-    }
-
-    @Override
     public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
         calls.add("tasks " + state + ' ' + queue + " cursor=" + cursor + ' ' + limit);
         long afterId;
