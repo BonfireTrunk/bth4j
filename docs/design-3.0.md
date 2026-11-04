@@ -391,7 +391,7 @@ key only routes the call.
 | `workers` | zset | worker ids, score last heartbeat ms |
 | `paused` | set | queue ids that claims skip |
 | `startby` | zset | QUEUED and SCHEDULED ids that have a `sb`, score `sb` ms |
-| `t:<id>` | hash | the task; only non-null fields, every value short, so it stays a listpack; no TTL |
+| `t:<id>` | hash | the task; only non-null fields; a listpack while every value is at most `hash-max-listpack-value` bytes (see below); no TTL |
 | `d:<id>` | string | the payload |
 | `st:<id>` | string | the steps as JSON |
 | `f:<id>` | list | the failures, one JSON object each, the last 20 kept |
@@ -410,7 +410,9 @@ ZCARD each), so they cannot drift from the structures that hold the tasks.
 Task hash fields: `rev`, `q`, `ev`, `pv`, `state`, `att`, `max`, `created`, `due`, `sc` always; `wid`,
 `lease`, `ca` (claimedAt) from the first claim on, where `lease` only means something while LEASED and
 `wid` while LEASED or terminal (the transitions leave them in place and the reader ignores them); `acc`,
-`hdr`, `uk`, `kk`, `ku`, `rp`, `sid`, `rof`, `sb`, `mr`, `cra`, `crs`, `prg` only when set. The `uk`, `kk`
+`hdr`, `uk`, `kk`, `ku`, `rp`, `sid`, `rof`, `sb`, `mr`, `cra`, `crs`, `prg` only when set; `hs` (`1`) while
+`st:<id>` exists and `fc` (`1`) while `f:<id>` exists, kept in step with those keys by the scripts that write or
+remove them (WRITE, FAIL) so that CLAIM reads `st:` and `f:` only for tasks that have them. The `uk`, `kk`
 and `ku` fields of a finished task expire with its key (hash field expiry, Redis 7.4 or Valkey 9). Times
 are epoch milliseconds.
 
@@ -440,9 +442,24 @@ key reports its holder as a string. Because the zset writes are deferred, scans 
 offset: every id examined is still in place until the flush.
 
 A script is called by its SHA-1 with `EVALSHA`; on `NOSCRIPT` it is loaded once with `SCRIPT LOAD`,
-routed by the declared key. Queue order is by score `due`; equal scores tie by member bytes (the id as
+routed by the declared key. A pipelined batch (`runAll`) that meets `NOSCRIPT` loads the script once and
+sends only the rejected calls again, in order. Queue order is by score `due`; equal scores tie by member bytes (the id as
 text), which is accepted. A claim scans a queue for at most `count * 4` ids (cap 1000), so a block of
-unknown-event tasks cannot make one claim unbounded.
+unknown-event tasks cannot make one claim unbounded. A claim reads the payload `d:<id>` of every task it
+returns: the hash has no field that says whether a payload exists (a payload may also be dropped by ACK), so
+that read stays. PROMOTE reads the head of each `sched:<qid>` first and the due batch only for queues whose
+head is due, so an idle poll costs one command per queue plus two. RENEW is sent in chunks of 256 leases in
+one pipeline and PURGE_WORKERS removes at most 500 workers per call, so no single script call blocks Redis
+for long.
+
+Memory notes for operators. A zset is a listpack up to `zset-max-listpack-entries` entries (default 128) and
+a skiplist above that, which costs about 6 times more per entry (measured: 15 bytes against 99 bytes). A queue
+or index zset with more than 128 entries, and `leased` with more than 128 running tasks, therefore use the
+skiplist; raising the setting trades CPU (listpack writes are linear in the size) for memory. The task hash
+is a listpack only while every value is at most `hash-max-listpack-value` bytes (default 64); a header map,
+account, unique key, progress or cancel reason longer than that turns the hash into a hashtable for good
+(measured: about 830 bytes against 170 bytes for a small task). Operators who care about memory and expect
+longer values can raise `hash-max-listpack-value`.
 
 ## PostgreSQL schema
 
