@@ -377,7 +377,7 @@ the reason "max run time ... exceeded". A task without its own `maxRunTime` gets
 needs its own `maxRunTime` (at most `TaskRequest.MAX_RUN_TIME`, about 24.8 days). An attempt that is still running one
 renewal period after the request is abandoned: the runner stops renewing its lease, so the lease expires and
 maintenance retries or ends the task, and raises the issue `attempt-abandoned`. The abandoned thread keeps its
-executor and queue slots until the processor returns, which `RunnerHealth.abandoned` and the gauge
+executor and queue slots until the processor returns, which `RunnerHealth.abandonedAttempts` and the gauge
 `bth4j.runner.abandoned` count. A processor that blocks without a timeout therefore costs a slot, not the
 task. `startBy(instant)` expires a task that did not start in time:
 claims skip it, maintenance moves it to EXPIRED and the observer receives `TaskEvent.Expired`.
@@ -531,8 +531,8 @@ A `TaskView` carries state, attempts, due time, the last failures, completed ste
 ### Health and issues
 
 ```java
-RunnerHealth health = runner.health();     // status NEW, RUNNING, QUIET or STOPPED; workerId, running tasks,
-                                           // abandoned attempts, lastClaimAt, lastMaintenanceAt, lastStoreErrorAt,
+RunnerHealth health = runner.health();     // status NEW, RUNNING, QUIET or STOPPED; workerId, runningTasks,
+                                           // abandonedAttempts, lastClaimAt, lastMaintenanceAt, lastStoreErrorAt,
                                            // lastStoreError, issueCount
 List<Issue> issues = runner.issues();      // the last 100 things an operator should look at, oldest first
 boolean drained = runner.drain(Duration.ofSeconds(30));   // quiet, then wait for the running tasks

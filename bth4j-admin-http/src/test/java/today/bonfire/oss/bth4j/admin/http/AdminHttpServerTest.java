@@ -621,7 +621,7 @@ class AdminHttpServerTest {
         assertThat(overview).containsEntry("workers", 1L).containsEntry("issues", 2L);
         @SuppressWarnings("unchecked")
         var health = (Map<String, Object>) overview.get("health");
-        assertThat(health).containsEntry("status", "RUNNING").containsEntry("running", 2L);
+        assertThat(health).containsEntry("status", "RUNNING").containsEntry("runningTasks", 2L);
     }
 
     @Test

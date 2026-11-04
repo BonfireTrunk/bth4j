@@ -909,7 +909,7 @@ public abstract class RunnerContract {
 
         long id = enqueue(TaskRequest.of(VOID_TYPE).build());
         assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
-        assertThat(runner.health().running()).isEqualTo(1);
+        assertThat(runner.health().runningTasks()).isEqualTo(1);
 
         assertThat(runner.drain(Duration.ofSeconds(10))).isTrue();
 

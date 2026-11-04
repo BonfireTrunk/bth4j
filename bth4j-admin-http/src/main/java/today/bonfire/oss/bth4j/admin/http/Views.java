@@ -113,8 +113,8 @@ final class Views {
         return obj(
                 "status", h.status().name(),
                 "workerId", h.workerId(),
-                "running", h.running(),
-                "abandoned", h.abandoned(),
+                "runningTasks", h.runningTasks(),
+                "abandonedAttempts", h.abandonedAttempts(),
                 "lastClaimAt", h.lastClaimAt(),
                 "lastMaintenanceAt", h.lastMaintenanceAt(),
                 "lastStoreErrorAt", h.lastStoreErrorAt(),

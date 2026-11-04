@@ -678,7 +678,7 @@ An execution still running one renewal period after that request is abandoned (`
 its lease is no longer renewed, so it expires and maintenance retries the task or ends it as for a dead
 worker, and the runner raises `attempt-abandoned` once with the number of abandoned attempts that hold slots.
 The thread cannot be stopped, so it keeps its executor slot and its queue slot until the processor returns;
-`RunnerHealth.abandoned` counts those attempts. If it returns, its completion meets a lost lease or a newer
+`RunnerHealth.abandonedAttempts` counts those attempts. If it returns, its completion meets a lost lease or a newer
 revision and changes nothing. A schedule's `maxRunTime` is copied into each occurrence.
 
 ## Queue policies and pausing
@@ -802,7 +802,7 @@ definitions. `TaskClient.admin()` returns one without health and issues; `Backgr
 that also supplies `health()` and `issues()` of that runner. The reason of a cancel is limited to 512
 characters.
 
-Runner state for operators is local to a runner. `RunnerHealth(status, workerId, running, abandoned,
+Runner state for operators is local to a runner. `RunnerHealth(status, workerId, runningTasks, abandonedAttempts,
 lastClaimAt, lastMaintenanceAt, lastStoreErrorAt, lastStoreError, issueCount)` is a snapshot, with status NEW, RUNNING,
 QUIET or STOPPED. Issues are a bounded ring of 100 `Issue(at, kind, detail, taskId)` kept by `RunnerStatus`;
 the kinds are `unknown-type`, `store-error`, `lease-lost`, `attempt-abandoned`, `retry-policy`, `executor-rejected`,

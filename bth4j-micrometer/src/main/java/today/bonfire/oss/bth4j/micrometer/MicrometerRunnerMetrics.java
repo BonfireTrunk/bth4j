@@ -112,7 +112,7 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
                                     .isPresent()
                             ? 1
                             : 0);
-            this.abandoned.set(health.map(RunnerHealth::abandoned).orElse(0));
+            this.abandoned.set(health.map(RunnerHealth::abandonedAttempts).orElse(0));
         } catch (RuntimeException e) {
             this.up.set(0);
         }

@@ -107,7 +107,7 @@ export default {
             <p v-if="!health" class="muted">No runner in this process; the server only reads the store.</p>
             <dl v-else class="kv">
               <dt>Status</dt><dd>{{ health.status }}</dd>
-              <dt>Worker</dt><dd>{{ health.workerId }}, {{ health.running }} running</dd>
+              <dt>Worker</dt><dd>{{ health.workerId }}, {{ health.runningTasks }} running</dd>
               <dt>Last claim</dt><dd><time-ago :at="health.lastClaimAt"></time-ago></dd>
               <dt>Last maintenance</dt><dd><time-ago :at="health.lastMaintenanceAt"></time-ago></dd>
               <dt>Last store error</dt>

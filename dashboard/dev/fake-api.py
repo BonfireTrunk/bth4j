@@ -82,7 +82,7 @@ issues = [
     {"at": iso(-60), "kind": "store-error", "detail": "Connection refused (retrying)", "taskId": None},
     {"at": iso(-5000), "kind": "lease-lost", "detail": "Lease expired while running", "taskId": str(BASE_ID + 9)},
 ]
-health = {"status": "RUNNING", "workerId": 7, "running": 3, "lastClaimAt": iso(-2), "lastMaintenanceAt": iso(-15),
+health = {"status": "RUNNING", "workerId": 7, "runningTasks": 3, "abandonedAttempts": 0, "lastClaimAt": iso(-2), "lastMaintenanceAt": iso(-15),
           "lastStoreErrorAt": iso(-60), "lastStoreError": "Connection refused", "issueCount": len(issues)}
 
 
