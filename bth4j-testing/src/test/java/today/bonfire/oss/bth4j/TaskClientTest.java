@@ -447,7 +447,7 @@ class TaskClientTest {
                         store.allocateWorkerId("test"),
                         null))
                 .getFirst();
-        assertThat(store.ack(id, leased.revision(), true, false)).isTrue();
+        assertThat(store.ack(id, leased.revision(), true, false, null)).isTrue();
         assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
         assertThat(store.getTask(id).orElseThrow().data()).isNull();
         var retry = TaskRequest.of(TYPED, new Payload("different")).id(id).build();

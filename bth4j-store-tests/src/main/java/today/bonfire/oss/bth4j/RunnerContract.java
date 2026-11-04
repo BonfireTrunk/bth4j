@@ -1138,7 +1138,7 @@ public abstract class RunnerContract {
                 3,
                 false,
                 0);
-        store.putRecurring(def, Instant.now().minus(late));
+        store.putRecurring(def, Instant.now().minus(late), Instant.now().minus(late));
     }
 
     private static List<String> eventNames(List<TaskEvent> events, long id) {

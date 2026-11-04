@@ -63,10 +63,6 @@ public interface ExecutionStore extends TaskStore {
      */
     boolean ack(long id, int revision, boolean keep, boolean keepPayload, ScheduleEffect effect);
 
-    default boolean ack(long id, int revision, boolean keep, boolean keepPayload) {
-        return ack(id, revision, keep, keepPayload, null);
-    }
-
     /**
      * Records a failed attempt of a LEASED task. The task is SCHEDULED for {@code retryAt}, or DEAD when
      * {@code retryAt} is null or the attempts are exhausted. The failure is appended to
@@ -79,20 +75,12 @@ public interface ExecutionStore extends TaskStore {
     FailOutcome fail(
             long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead, ScheduleEffect effect);
 
-    default FailOutcome fail(long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead) {
-        return fail(id, revision, failure, retryAt, keepDead, null);
-    }
-
     /**
      * Same as {@link #fail} for a task whose lease {@link MaintenanceStore#reclaim} found expired; also
      * {@link FailOutcome#LOST} when the lease is no longer expired, because its worker renewed it meanwhile.
      */
     FailOutcome failExpired(
             long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead, ScheduleEffect effect);
-
-    default FailOutcome failExpired(long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead) {
-        return failExpired(id, revision, failure, retryAt, keepDead, null);
-    }
 
     /**
      * Moves a LEASED task to SCHEDULED for {@code due} and gives the attempt back.
@@ -132,10 +120,6 @@ public interface ExecutionStore extends TaskStore {
      */
     boolean finishCancelled(long id, int revision, String reason, boolean keepPayload, ScheduleEffect effect);
 
-    default boolean finishCancelled(long id, int revision, String reason, boolean keepPayload) {
-        return finishCancelled(id, revision, reason, keepPayload, null);
-    }
-
     /**
      * Same as {@link #finishCancelled} for a task whose lease {@link MaintenanceStore#reclaim} found expired;
      * also false when the lease is no longer expired, because its worker renewed it meanwhile.
@@ -143,8 +127,4 @@ public interface ExecutionStore extends TaskStore {
      * @param effect applied to a recurring definition in the same atomic step when the task ends; may be null
      */
     boolean finishCancelledExpired(long id, int revision, String reason, boolean keepPayload, ScheduleEffect effect);
-
-    default boolean finishCancelledExpired(long id, int revision, String reason, boolean keepPayload) {
-        return finishCancelledExpired(id, revision, reason, keepPayload, null);
-    }
 }

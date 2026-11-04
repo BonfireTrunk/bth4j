@@ -19,10 +19,6 @@ public interface AdminStore extends TaskStore {
      */
     CancelOutcome cancel(long id, int revision, String reason, ScheduleEffect effect);
 
-    default CancelOutcome cancel(long id, int revision, String reason) {
-        return cancel(id, revision, reason, null);
-    }
-
     /**
      * Returns a DEAD, CANCELLED or EXPIRED task to its queue: QUEUED, due now, attempts 0, revision +1;
      * cancel fields, worker, lease and {@code startBy} cleared; failures and steps kept. A task that still
@@ -44,10 +40,6 @@ public interface AdminStore extends TaskStore {
      * @return false when the revision did not match or the task is LEASED
      */
     boolean delete(long id, int revision, ScheduleEffect effect);
-
-    default boolean delete(long id, int revision) {
-        return delete(id, revision, null);
-    }
 
     /** Paused queues are skipped by {@link ExecutionStore#claim} on every runner. */
     void pauseQueue(int queueId, boolean paused);
