@@ -147,18 +147,67 @@ class MicrometerTaskObserverTest {
     }
 
     @Test
-    void registryFailureDoesNotPropagate() {
-        var failing = new SimpleMeterRegistry() {
-            @Override
-            public Counter counter(String name, Iterable<Tag> tags) {
-                throw new IllegalStateException("registry down");
-            }
+    void expiredHasUnknownTypeAndQueue() {
+        observer.onEvent(new TaskEvent.Expired(9));
 
-            @Override
-            public Timer timer(String name, Iterable<Tag> tags) {
+        var counter = registry.get(MicrometerTaskObserver.TASKS)
+                .tags("type", "unknown", "queue", "unknown", "result", "expired", "outcome", "applied")
+                .counter();
+        assertThat(counter.count()).isEqualTo(1);
+    }
+
+    @Test
+    void everyResultKindIsTaggedWithEveryOutcome() {
+        for (var outcome : Outcome.values()) {
+            observer.onEvent(new TaskEvent.Succeeded(task(), Duration.ofMillis(1), outcome));
+            observer.onEvent(new TaskEvent.Retrying(task(), new RuntimeException("x"), Instant.now(), outcome));
+            observer.onEvent(new TaskEvent.Died(task(), new RuntimeException("x"), "r", outcome));
+            observer.onEvent(new TaskEvent.Rescheduled(task(), Instant.now(), outcome));
+            observer.onEvent(new TaskEvent.Cancelled(task(), "why", outcome));
+        }
+
+        assertThat(Outcome.values()).containsExactlyInAnyOrder(Outcome.APPLIED, Outcome.LOST, Outcome.UNKNOWN);
+        for (var result : new String[] {"succeeded", "retried", "died", "rescheduled", "cancelled"}) {
+            for (var outcome : new String[] {"applied", "lost", "unknown"}) {
+                assertThat(count(result, outcome)).as(result + "/" + outcome).isEqualTo(1);
+            }
+        }
+        assertThat(registry.find(MicrometerTaskObserver.TASKS).counters()).hasSize(15);
+    }
+
+    private static final class FailingRegistry extends SimpleMeterRegistry {
+        private final boolean failCounters;
+        private final boolean failTimers;
+        int counterCalls;
+        int timerCalls;
+
+        FailingRegistry(boolean failCounters, boolean failTimers) {
+            this.failCounters = failCounters;
+            this.failTimers = failTimers;
+        }
+
+        @Override
+        public Counter counter(String name, Iterable<Tag> tags) {
+            counterCalls++;
+            if (failCounters) {
                 throw new IllegalStateException("registry down");
             }
-        };
+            return super.counter(name, tags);
+        }
+
+        @Override
+        public Timer timer(String name, Iterable<Tag> tags) {
+            timerCalls++;
+            if (failTimers) {
+                throw new IllegalStateException("registry down");
+            }
+            return super.timer(name, tags);
+        }
+    }
+
+    @Test
+    void counterFailureDoesNotPropagate() {
+        var failing = new FailingRegistry(true, false);
         var safe = new MicrometerTaskObserver(failing);
 
         assertThatCode(() -> {
@@ -166,5 +215,18 @@ class MicrometerTaskObserverTest {
                     safe.onEvent(new TaskEvent.Purged(TaskState.DEAD, 1));
                 })
                 .doesNotThrowAnyException();
+        assertThat(failing.counterCalls).isEqualTo(2);
+    }
+
+    @Test
+    void timerFailureDoesNotPropagateAndTheCountStillLands() {
+        var failing = new FailingRegistry(false, true);
+        var safe = new MicrometerTaskObserver(failing);
+
+        assertThatCode(() -> safe.onEvent(new TaskEvent.Succeeded(task(), Duration.ofMillis(1), Outcome.APPLIED)))
+                .doesNotThrowAnyException();
+
+        assertThat(failing.timerCalls).isEqualTo(1);
+        assertThat(failing.get(MicrometerTaskObserver.TASKS).counter().count()).isEqualTo(1);
     }
 }
