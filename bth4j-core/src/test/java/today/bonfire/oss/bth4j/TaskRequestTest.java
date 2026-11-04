@@ -176,6 +176,37 @@ class TaskRequestTest {
     }
 
     @Test
+    void withIdPreservesEveryOtherFieldAndTheOriginalRequest() {
+        var request = TaskRequest.of(TYPED, new Payload("copy"))
+                .queue("other")
+                .account("account")
+                .at(Instant.parse("2031-01-01T00:00:00Z"))
+                .uniqueKey("key", Uniqueness.keepFor(Duration.ofMinutes(5)))
+                .maxAttempts(7)
+                .header("a", "b")
+                .startBy(Instant.parse("2031-01-02T00:00:00Z"))
+                .maxRun(Duration.ofSeconds(3))
+                .retryPolicy("policy")
+                .build();
+
+        var copy = request.withId(42);
+
+        assertThat(copy).usingRecursiveComparison().ignoringFields("id").isEqualTo(request);
+        assertThat(copy.id()).isEqualTo(42L);
+        assertThat(copy.payload()).isSameAs(request.payload());
+        assertThat(request.id()).isNull();
+        assertThat(copy.withId(43).id()).isEqualTo(43L);
+        assertThat(copy.id()).isEqualTo(42L);
+        var delayed = TaskRequest.of(VOID).delay(Duration.ofMinutes(1)).build();
+        assertThat(delayed.withId(44))
+                .usingRecursiveComparison()
+                .ignoringFields("id")
+                .isEqualTo(delayed);
+        assertThatThrownBy(() -> request.withId(0)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> request.withId(-1)).isInstanceOf(TaskValidationException.class);
+    }
+
+    @Test
     void uniquenessKeepForMustBePositive() {
         assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ZERO)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ofSeconds(-1)))
