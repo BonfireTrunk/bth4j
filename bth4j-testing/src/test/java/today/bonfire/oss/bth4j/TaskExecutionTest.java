@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -25,9 +27,14 @@ import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.exceptions.TaskCancelledException;
 import today.bonfire.oss.bth4j.exceptions.TaskLeaseLostException;
 import today.bonfire.oss.bth4j.exceptions.TaskRescheduleException;
+import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
+import today.bonfire.oss.bth4j.spi.FailOutcome;
+import today.bonfire.oss.bth4j.spi.FailureInfo;
+import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.TaskState;
+import today.bonfire.oss.bth4j.spi.TaskStoreException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
 import today.bonfire.oss.bth4j.testing.MutableClock;
 
@@ -44,7 +51,9 @@ class TaskExecutionTest {
     private final List<TaskEvent> events = new ArrayList<>();
     private final AtomicBoolean interruptedAtFinish = new AtomicBoolean();
     private final ListAppender<ILoggingEvent> logs = new ListAppender<>();
+    private final List<String> storeCalls = new ArrayList<>();
     private RetryPolicy retryPolicy = RetryPolicy.fixed(Duration.ZERO);
+    private FullStore executionStore = store;
 
     @BeforeEach
     void captureLogs() {
@@ -351,15 +360,196 @@ class TaskExecutionTest {
         }
     }
 
+    enum Transition {
+        ACK("ack", TaskState.SUCCEEDED),
+        RETRY("fail", TaskState.SCHEDULED),
+        DIE("fail", TaskState.DEAD),
+        RESCHEDULE("reschedule", TaskState.SCHEDULED),
+        CANCEL("finishCancelled", TaskState.CANCELLED);
+
+        final String storeMethod;
+        final TaskState committedState;
+
+        Transition(String storeMethod, TaskState committedState) {
+            this.storeMethod = storeMethod;
+            this.committedState = committedState;
+        }
+
+        void exit() throws Exception {
+            switch (this) {
+                case ACK -> {}
+                case RETRY -> throw new IllegalStateException("body failed");
+                case DIE -> throw new TaskUnrecoverableException("never again");
+                case RESCHEDULE -> throw new TaskRescheduleException(Duration.ofSeconds(30));
+                case CANCEL -> throw new TaskCancelledException("stop");
+            }
+        }
+    }
+
+    enum Fault {
+        BEFORE_COMMIT,
+        AFTER_COMMIT
+    }
+
+    @ParameterizedTest
+    @EnumSource(Transition.class)
+    void aTransitionTheStoreRefusesIsLostAndChangesNothingMore(Transition transition) {
+        var execution = execution(TaskType.of("refused"), (ctx, payload) -> {
+            assertThat(store.unclaim(ctx.id(), ctx.task().revision())).isTrue();
+            transition.exit();
+        });
+
+        execution.run();
+
+        assertThat(lastOutcome()).isEqualTo(TaskEvent.Outcome.LOST);
+        var task = store.getTask(execution.taskId()).orElseThrow();
+        assertThat(task.state()).isEqualTo(TaskState.QUEUED);
+        assertThat(task.failures()).isNull();
+    }
+
+    @ParameterizedTest
+    @EnumSource(Transition.class)
+    void aTransitionThatFailsBeforeItCommitsIsUnknownAndExpiryRecoversTheTask(Transition transition) {
+        executionStore = faulty(transition.storeMethod, Fault.BEFORE_COMMIT);
+        var execution = execution(TaskType.of("lost-before"), (ctx, payload) -> transition.exit());
+
+        execution.run();
+
+        assertThat(lastOutcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN);
+        var task = store.getTask(execution.taskId()).orElseThrow();
+        assertThat(task.state()).isEqualTo(TaskState.LEASED);
+        assertThat(task.revision()).isEqualTo(execution.revision());
+        assertThat(task.failures()).isNull();
+        assertThat(storeCalls).doesNotContain(transition.storeMethod);
+
+        clock.advance(LEASE.plusSeconds(1));
+        var expired = store.reclaim(10);
+        assertThat(expired).singleElement().satisfies(e -> {
+            assertThat(e.id()).isEqualTo(execution.taskId());
+            assertThat(e.revision()).isEqualTo(execution.revision());
+        });
+        var failure = new FailureInfo(1, clock.instant(), "lease-expired", "lease expired", null);
+        assertThat(store.failExpired(execution.taskId(), execution.revision(), failure, clock.instant(), true, null))
+                .isEqualTo(FailOutcome.RETRY);
+        store.promote(10);
+        assertThat(store.claim(new ClaimRequest(List.of(store.queueId("Q:DEF")), 1, LEASE, 1, null)))
+                .singleElement()
+                .satisfies(r -> assertThat(r.id()).isEqualTo(execution.taskId()));
+    }
+
+    @ParameterizedTest
+    @EnumSource(Transition.class)
+    void aTransitionCommittedWithALostResponseIsUnknownAndKeepsItsStateWithoutACompensatingWrite(
+            Transition transition) {
+        executionStore = faulty(transition.storeMethod, Fault.AFTER_COMMIT);
+        var execution = execution(TaskType.of("lost-after"), (ctx, payload) -> transition.exit());
+
+        execution.run();
+
+        assertThat(lastOutcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN);
+        var task = store.getTask(execution.taskId()).orElseThrow();
+        assertThat(task.state()).isEqualTo(transition.committedState);
+        assertThat(task.revision()).isEqualTo(execution.revision() + 1);
+        assertThat(storeCalls).filteredOn(c -> !c.equals("getTask")).containsExactly(transition.storeMethod);
+        if (transition == Transition.RETRY || transition == Transition.DIE)
+            assertThat(task.failures()).hasSize(1);
+        if (transition == Transition.RESCHEDULE) {
+            assertThat(task.due()).isEqualTo(clock.instant().plusSeconds(30));
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(
+            value = Transition.class,
+            names = {"ACK", "DIE", "CANCEL"})
+    void aFixedDelayOccurrenceStaysParkedWhenItsTransitionFailedBeforeCommitting(Transition transition) {
+        executionStore = faulty(transition.storeMethod, Fault.BEFORE_COMMIT);
+        var execution = fixedDelayExecution(TaskType.of("parked"), (ctx, payload) -> transition.exit());
+
+        execution.run();
+
+        assertThat(lastOutcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN);
+        var schedule = store.recurringDefinitions().getFirst();
+        assertThat(schedule.definition().paused()).isFalse();
+        assertThat(schedule.nextFire()).isAfter(clock.instant().plus(Duration.ofDays(365)));
+        assertThat(storeCalls).filteredOn(c -> !c.equals("getTask")).isEmpty();
+    }
+
+    @ParameterizedTest
+    @EnumSource(
+            value = Transition.class,
+            names = {"ACK", "DIE", "CANCEL"})
+    void aFixedDelayOccurrenceKeepsItsScheduleEffectWhenTheResponseWasLost(Transition transition) {
+        executionStore = faulty(transition.storeMethod, Fault.AFTER_COMMIT);
+        var execution = fixedDelayExecution(TaskType.of("effect-kept"), (ctx, payload) -> transition.exit());
+
+        execution.run();
+
+        assertThat(lastOutcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN);
+        var schedule = store.recurringDefinitions().getFirst();
+        if (transition == Transition.ACK) {
+            assertThat(schedule.definition().paused()).isFalse();
+            assertThat(schedule.nextFire()).isEqualTo(clock.instant().plus(Duration.ofMinutes(1)));
+        } else {
+            assertThat(schedule.definition().paused()).isTrue();
+        }
+        assertThat(storeCalls).filteredOn(c -> !c.equals("getTask")).containsExactly(transition.storeMethod);
+        assertThat(store.getTask(execution.taskId()).orElseThrow().state()).isEqualTo(transition.committedState);
+    }
+
+    private TaskEvent.Outcome lastOutcome() {
+        return switch (events.getLast()) {
+            case TaskEvent.Succeeded e -> e.outcome();
+            case TaskEvent.Retrying e -> e.outcome();
+            case TaskEvent.Died e -> e.outcome();
+            case TaskEvent.Rescheduled e -> e.outcome();
+            case TaskEvent.Cancelled e -> e.outcome();
+            default -> throw new AssertionError("no outcome on " + events.getLast());
+        };
+    }
+
+    /** A store that fails the named call before it reaches the real store, or after the real store applied it. */
+    private FullStore faulty(String method, Fault fault) {
+        return (FullStore) Proxy.newProxyInstance(
+                FullStore.class.getClassLoader(), new Class<?>[] {FullStore.class}, (proxy, m, args) -> {
+                    boolean target = m.getName().equals(method);
+                    if (target && fault == Fault.BEFORE_COMMIT) throw new TaskStoreException("lost before commit");
+                    Object result;
+                    try {
+                        result = m.invoke(store, args);
+                    } catch (InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                    storeCalls.add(m.getName());
+                    if (target) throw new TaskStoreException("reply lost");
+                    return result;
+                });
+    }
+
+    private TaskExecution fixedDelayExecution(TaskType<Void> type, TaskProcessor<Void> processor) {
+        registry.register(type, processor);
+        ScheduleFixtures.fixedDelayOccurrence(
+                store, client, clock.instant(), store.typeId(type.name()), store.queueId("Q:DEF"), 3);
+        var record = store.claim(new ClaimRequest(List.of(store.queueId("Q:DEF")), 1, LEASE, 1, null))
+                .getFirst();
+        return new TaskExecution(record, settings(), e -> {});
+    }
+
     private TaskExecution execution(TaskType<Void> type, TaskProcessor<Void> processor) {
         registry.register(type, processor);
         long id = client.enqueue(TaskRequest.of(type).build()).id();
         var record = store.claim(new ClaimRequest(List.of(store.queueId("Q:DEF")), 1, LEASE, 1, null))
                 .getFirst();
         assertThat(record.id()).isEqualTo(id);
-        var settings = new TaskExecution.Settings(
-                store,
-                store,
+        return new TaskExecution(record, settings(), e -> {
+            if (Thread.currentThread().isInterrupted()) interruptedAtFinish.set(true);
+        });
+    }
+
+    private TaskExecution.Settings settings() {
+        return new TaskExecution.Settings(
+                executionStore,
+                executionStore,
                 new Names(store),
                 new Codecs(null),
                 registry,
@@ -371,8 +561,5 @@ class TaskExecutionTest {
                 false,
                 true,
                 FailureDetail.FULL);
-        return new TaskExecution(record, settings, e -> {
-            if (Thread.currentThread().isInterrupted()) interruptedAtFinish.set(true);
-        });
     }
 }

@@ -447,7 +447,9 @@ class FailureDetailTest {
 
         run(FailureDetail.FULL, null);
 
-        assertThat(events.get(1)).isInstanceOf(TaskEvent.Succeeded.class);
+        assertThat(events.get(1))
+                .isInstanceOfSatisfying(
+                        TaskEvent.Succeeded.class, e -> assertThat(e.outcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN));
         assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
         assertThat(finishedCalls).isEqualTo(1);
     }

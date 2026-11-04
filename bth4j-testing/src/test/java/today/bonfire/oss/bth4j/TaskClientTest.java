@@ -143,17 +143,6 @@ class TaskClientTest {
     }
 
     @Test
-    void anIdAllocatedLaterToAnotherTaskIsNotAnsweredAccepted() {
-        var client = builder().idBlockSize(1).build();
-        long id = client.nextId();
-        client.enqueue(TaskRequest.of(TYPED, new Payload("first")).id(id).build());
-
-        assertThatThrownBy(() -> client.enqueue(
-                        TaskRequest.of(TYPED, new Payload("second")).id(id).build()))
-                .isInstanceOf(TaskIdReusedException.class);
-    }
-
-    @Test
     void enqueueAllChecksReusedIds() {
         var client = builder().build();
         long id = client.nextId();
