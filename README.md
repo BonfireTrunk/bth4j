@@ -711,7 +711,7 @@ var store = new RedisTaskStore(jedis, "my-app");   // UnifiedJedis (for example 
 The namespace prefixes every key and carries the Redis Cluster hash tag, so all keys of a store share one
 slot. The store does not close the Jedis client. Redis 7.4 or newer, or Valkey 9 or newer, is required (the
 store expires the key fields of finished tasks with hash field expiry). A namespace written by bth4j 3.0 has
-another layout and is refused by `init`; start 3.1 with a new namespace. Enqueue writes a random per-record
+another layout and is refused by `init`; start 4.0 with a new namespace. Enqueue writes a random per-record
 token in task hash field `wt` with the other fields. A transport resend with that token returns stored again;
 a different token under the same id returns exists, before checking the unique key. The token only helps while
 the task exists: with a zero succeeded retention a task that already ran and was removed is stored again by a
