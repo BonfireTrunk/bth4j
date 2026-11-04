@@ -144,23 +144,23 @@ A and baseline design for B can proceed independently. Fixes follow evidence. D 
 
 ## 8. Immediate next work
 
-The first audit and corrected batch baseline are complete. Begin targeted fixes with queue reservation ownership across processor generations and overlapping attempts (R1 below). Follow with reviewed atomic expired-cancellation and fixed-delay-completion designs. These are existing job-runner guarantees; keep workflow features outside this work. Settle material SPI/storage compatibility choices before their implementation.
+The six audit findings below are resolved. Next: deterministic fault injection around store boundaries (lost enqueue and claim replies, before/after-commit faults, process death, renewal outages) on both production stores, then the durability benchmark workload of section 4 and resource profiling. Keep workflow features outside this work. Settle material SPI/storage compatibility choices before their implementation.
 
 Read the smallest relevant files, preserve unrelated changes, review each diff before validation and use shared contracts for production-store semantics. Source areas: core execution/client/SPI, Redis/PostgreSQL transitions, shared store/runner/throughput tests, and metric/inspection paths only as evidence requires.
 
 ## 9. Status and evidence
 
-Production execution/storage code remains unchanged. The shared benchmark was corrected and four focused measurement tests were added.
+The shared benchmark was corrected and four focused measurement tests were added.
 
-The 2026-11-04 audit of the existing execution paths left six open findings, four Important and two Minor. R1, R2, R4 and R6 were reproduced by deterministic probes; R3 and R5 are confirmed from source, with fault-injection coverage still outstanding. Each fix lands with its probe turned into a regression test.
+The 2026-11-04 audit of the existing execution paths found six defects, four Important and two Minor. All six are resolved for 4.0.0; deterministic probes confirmed R1, R2 and R4 before and after their fixes.
 
-| Finding | Severity | Defect |
-|---|---|---|
-| R1 | Important | Per-queue capacity counters (used only for queues with `maxConcurrent`) leak a slot when a replacement processor inherits running attempts, or when the same worker reclaims a task whose old attempt is still running after lease takeover; the queue stops claiming after `maxConcurrent` leaks |
-| R2 | Important | Maintenance's expired-lease cancellation fences on revision only, so it cancels an attempt that renewed in between; a successful processor is then recorded as cancelled |
-| R3 | Important | A fixed-delay occurrence is acknowledged and its schedule re-armed in two separate writes; a lost reply, a failed re-arm or a crash between them leaves the schedule parked about 100 years ahead |
-| R4 | Important | Redis purge restarts at offset zero with one scan budget for all queues, so a queue holding a budget's worth of records inside their uniqueness windows starves every queue after it |
-| R5 | Minor | Store exceptions and rejected transitions both become `LOST`, so a committed acknowledgment with a lost reply is reported as lease loss |
-| R6 | Minor | Redis claims break equal-due ties by comparing IDs as text, contrary to the `(due, id)` order in the SPI |
+| Finding | Severity | Defect | Resolution |
+|---|---|---|---|
+| R1 | Important | Per-queue capacity counters (used only for queues with `maxConcurrent`) leaked a slot when a replacement processor inherited running attempts, or when the same worker reclaimed a task whose old attempt was still running after lease takeover | One `QueueReservations` per runner, shared across processor generations; each attempt releases its slot once |
+| R2 | Important | Maintenance's expired-lease cancellation fenced on revision only, so it could cancel an attempt that renewed in between | `renew` no longer revives an expired lease; maintenance uses `finishCancelledExpired`, which requires the lease to still be expired |
+| R3 | Important | A fixed-delay occurrence was acknowledged and its schedule re-armed in two separate writes, so a lost reply or crash between them left the schedule parked | The re-arm or pause (`ScheduleEffect`) is applied atomically with the occurrence's terminal transition, fenced on the recorded occurrence |
+| R4 | Important | Redis purge restarted at offset zero behind records holding open uniqueness windows | Records with a key window wait in `hold:` zsets scored by `keyUntil`; purge reads only eligible records |
+| R5 | Minor | Store exceptions and rejected transitions both became `LOST` | A failed store call is reported as `Outcome.UNKNOWN` (metric outcome `unknown`); `LOST` means the store rejected the transition |
+| R6 | Minor | Redis claims order equal-due ties by the id's decimal text | Documented in the SPI and the design: it differs from numeric order only around a power-of-ten id crossing, and fixed-width members would cost every zset entry its integer encoding |
 
-Initial repeated measurements cover InMemoryStore, Redis and PostgreSQL. They measure confirmed acknowledgments, not crash-durable throughput, because of the store settings noted in section 4. No production optimization, dependency, schema or API change was made. Resource profiling, stable capacity measurements and the broader fault campaign remain future work.
+Initial repeated measurements cover InMemoryStore, Redis and PostgreSQL. They measure confirmed acknowledgments, not crash-durable throughput, because of the store settings noted in section 4. Resource profiling, stable capacity measurements and the broader fault campaign remain future work.

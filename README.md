@@ -487,7 +487,10 @@ A task that names a policy the runner does not have uses the default policy, and
 
 A `TaskObserver` receives `TaskEvent`s (`Started`, `Succeeded`, `Retrying`, `Died`, `Rescheduled`,
 `Cancelled`, `Expired`, `LeaseExpired`, `Deferred`, `ScheduleFired`, `Purged`). It runs on the thread that produced the event,
-after the outcome was applied, and an exception in it never changes a task:
+after the outcome was applied, and an exception in it never changes a task. Events that end an attempt carry an
+`outcome`: `APPLIED` (the store made the change), `LOST` (the store rejected it because the lease had moved on) or
+`UNKNOWN` (the store call failed, so the change may or may not have been made; if it was not, the lease expires and
+the task runs again):
 
 ```java
 BackgroundRunner.builder()
@@ -602,7 +605,7 @@ MicrometerRunnerMetrics metrics = MicrometerRunnerMetrics.bind(runner, registry,
 
 | Meter | Type | Tags |
 |---|---|---|
-| `bth4j.tasks` | counter | `event`, `queue`, `result` (`succeeded`, `retried`, `died`, `rescheduled`, `cancelled`, `expired`, `lease_lost`), `outcome` (`applied`, `lost`) |
+| `bth4j.tasks` | counter | `event`, `queue`, `result` (`succeeded`, `retried`, `died`, `rescheduled`, `cancelled`, `expired`, `lease_lost`), `outcome` (`applied`, `lost`, `unknown`) |
 | `bth4j.task.duration` | timer | `event`, `queue` |
 | `bth4j.deferred` | counter | `event` |
 | `bth4j.schedule.fired` | counter | none |

@@ -176,9 +176,10 @@ There are no locks between instances. Every transition is atomic and safe to ret
 and the loser's call reports `false`, `LOST` or `EXISTS`.
 
 Every call a worker makes on a LEASED task (renew, ack, fail, reschedule, unclaim, saveSteps, progress)
-carries the fence; the outcome of ack, fail and reschedule is reported to the observer as `APPLIED` or
-`LOST`. If the store is unreachable when the outcome should be applied, the lease expires and maintenance
-retries the task.
+carries the fence; the outcome of ack, fail and reschedule is reported to the observer as `APPLIED`, `LOST`
+(the store rejected the transition) or `UNKNOWN` (the store call failed, for example a timeout or a lost
+reply, so the transition may or may not have been committed). When it was not committed, the lease expires
+and maintenance retries the task.
 
 ## Ids
 
