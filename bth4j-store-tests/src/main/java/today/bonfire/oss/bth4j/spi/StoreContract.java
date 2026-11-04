@@ -94,7 +94,7 @@ public abstract class StoreContract {
                 .queueId(queueId)
                 .typeId(typeId)
                 .maxAttempts(3)
-                .created(now())
+                .createdAt(now())
                 .encodedPayload("payload");
     }
 
@@ -270,7 +270,7 @@ public abstract class StoreContract {
         TaskRecord t = get(id);
         assertThat(t.state()).isEqualTo(TaskState.QUEUED);
         assertThat(t.due()).isBetween(millis(before), after.plusMillis(1));
-        assertThat(t.stateChanged()).isBetween(millis(before), after.plusMillis(1));
+        assertThat(t.stateChangedAt()).isBetween(millis(before), after.plusMillis(1));
         assertThat(t.attempts()).isZero();
         assertThat(t.queueId()).isEqualTo(queue);
         assertThat(t.typeId()).isEqualTo(type);
@@ -367,8 +367,8 @@ public abstract class StoreContract {
         TaskRecord done = get(t.id());
         assertThat(done.keyUntil())
                 .isBetween(
-                        done.stateChanged().plus(SHORT).minusMillis(5),
-                        done.stateChanged().plus(SHORT).plusMillis(5));
+                        done.stateChangedAt().plus(SHORT).minusMillis(5),
+                        done.stateChangedAt().plus(SHORT).plusMillis(5));
         assertThat(store.enqueue(task().uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(t.id()));
         advance(PAST_SHORT);
         put(task().uniqueKey("k"));
@@ -632,7 +632,7 @@ public abstract class StoreContract {
         assertThat(done.encodedPayload()).isNull();
         assertThat(done.leaseUntil()).isNull();
         assertThat(done.workerId()).isEqualTo(worker);
-        assertThat(done.stateChanged()).isAfterOrEqualTo(get(t.id()).claimedAt());
+        assertThat(done.stateChangedAt()).isAfterOrEqualTo(get(t.id()).claimedAt());
     }
 
     @Test
@@ -767,7 +767,7 @@ public abstract class StoreContract {
         assertThat(finished.keyKeep()).isEqualTo(MID);
         assertThat(finished.keyUntil())
                 .isAfter(oldUntil)
-                .isEqualTo(finished.stateChanged().plus(MID));
+                .isEqualTo(finished.stateChangedAt().plus(MID));
         assertThat(store.enqueue(task().uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(t.id()));
         assertThat(store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10)).isZero();
 
@@ -1589,7 +1589,7 @@ public abstract class StoreContract {
         assertThat(done.leaseUntil()).isNull();
         assertThat(done.workerId()).isEqualTo(worker);
         assertThat(done.encodedPayload()).isEqualTo("payload");
-        assertThat(done.stateChanged()).isAfterOrEqualTo(millis(before));
+        assertThat(done.stateChangedAt()).isAfterOrEqualTo(millis(before));
         assertThat(done.uniqueKey()).isNull();
         assertThat(counts().cancelled()).isEqualTo(1);
         assertThat(counts().leased()).isZero();
@@ -1762,7 +1762,7 @@ public abstract class StoreContract {
         assertThat(r.cancelReason()).isNull();
         assertThat(r.uniqueKey()).isNull();
         assertThat(r.keyUntil()).isNull();
-        assertThat(r.due()).isAfterOrEqualTo(millis(t.stateChanged()));
+        assertThat(r.due()).isAfterOrEqualTo(millis(t.stateChangedAt()));
         assertThat(counts().dead()).isZero();
         assertThat(counts().queued()).isEqualTo(1);
         assertThat(claimOne().id()).isEqualTo(t.id());
@@ -2979,7 +2979,7 @@ public abstract class StoreContract {
         }
         List<TaskRecord> group = claim(7);
         assertThat(group).hasSize(7);
-        assertThat(group.stream().map(t -> t.stateChanged().toEpochMilli()).distinct())
+        assertThat(group.stream().map(t -> t.stateChangedAt().toEpochMilli()).distinct())
                 .as("one claim gives the group a single sort value")
                 .hasSize(1);
         List<Long> byId = group.stream().map(TaskRecord::id).sorted().toList();

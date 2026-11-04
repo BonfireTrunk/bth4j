@@ -28,7 +28,7 @@ final class TaskHashes {
         put(f, F_PAYLOAD_VERSION, t.payloadVersion());
         put(f, F_ATTEMPTS, t.attempts());
         put(f, F_MAX_ATTEMPTS, t.maxAttempts());
-        put(f, F_CREATED, t.created());
+        put(f, F_CREATED, t.createdAt());
         put(f, F_WORKER, t.workerId());
         put(f, F_LEASE, t.leaseUntil());
         put(f, F_CLAIMED_AT, t.claimedAt());
@@ -67,9 +67,9 @@ final class TaskHashes {
                 .state(state)
                 .attempts(integer(h, F_ATTEMPTS))
                 .maxAttempts(integer(h, F_MAX_ATTEMPTS))
-                .created(instant(h, F_CREATED))
+                .createdAt(instant(h, F_CREATED))
                 .due(instant(h, F_DUE))
-                .stateChanged(instant(h, F_STATE_CHANGED))
+                .stateChangedAt(instant(h, F_STATE_CHANGED))
                 .encodedPayload(encodedPayload)
                 .workerId((leased || state.isTerminal()) && h.containsKey(F_WORKER) ? integer(h, F_WORKER) : null)
                 .leaseUntil(leased ? instant(h, F_LEASE) : null)

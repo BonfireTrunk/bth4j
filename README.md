@@ -692,7 +692,7 @@ All settings are on `BackgroundRunner.builder()`.
 | `store` | required | `new RedisTaskStore(jedis, "namespace")`, `new PostgresTaskStore(dataSource, "prefix")` or `new InMemoryStore()` |
 | `registry` | new registry | the processor registry; by default created by the runner and reached with `runner.registry()` |
 | `jsonMapper` | none | payloads and step results as JSON; needed unless every task type has its own codec |
-| `clock` | `Clock.systemUTC()` | clock for client-side instants (`created`, delays, retry times) |
+| `clock` | `Clock.systemUTC()` | clock for client-side instants (`createdAt`, delays, retry times) |
 | `concurrency` | `Concurrency.fixed(max(2, 2 x processors))` | how many tasks run at once; `fixed(n)` or `adaptive(min, max)` |
 | `taskExecutor` | built from `concurrency` | a custom `BackgroundExecutor`; the runner shuts it down |
 | `retryPolicy` | exponential, 1 s doubling, capped at 1 h, 20 % jitter | delay after a failed attempt |

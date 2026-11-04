@@ -96,7 +96,7 @@ class RedisScriptsIT {
                 .queueId(queue)
                 .typeId(type)
                 .maxAttempts(30)
-                .created(Instant.now().truncatedTo(ChronoUnit.MILLIS));
+                .createdAt(Instant.now().truncatedTo(ChronoUnit.MILLIS));
     }
 
     private List<TaskRecord> claim(int count) {

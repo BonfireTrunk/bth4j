@@ -653,7 +653,7 @@ public class PostgresTaskStore implements FullStore {
             payloadVersions[i] = t.payloadVersion();
             attempts[i] = t.attempts();
             maxAttempts[i] = t.maxAttempts();
-            created[i] = text(t.created() == null ? Instant.now() : t.created());
+            created[i] = text(t.createdAt() == null ? Instant.now() : t.createdAt());
             due[i] = text(t.due());
             data[i] = t.encodedPayload();
             account[i] = t.account();
@@ -1183,7 +1183,7 @@ public class PostgresTaskStore implements FullStore {
                 ps.setInt(7, o.typeId());
                 ps.setInt(8, o.payloadVersion());
                 ps.setInt(9, o.maxAttempts());
-                setInstant(ps, 10, o.created() == null ? Instant.now() : o.created());
+                setInstant(ps, 10, o.createdAt() == null ? Instant.now() : o.createdAt());
                 setInstant(ps, 11, due.fireAt());
                 ps.setString(12, o.encodedPayload());
                 ps.setString(13, o.account());
@@ -1304,7 +1304,7 @@ public class PostgresTaskStore implements FullStore {
     private record Position(Instant changed, long id) {}
 
     private static String encodeCursor(TaskRecord last) {
-        var at = micros(last.stateChanged());
+        var at = micros(last.stateChangedAt());
         return (at.getEpochSecond() * 1_000_000L + at.getNano() / 1000) + ":" + last.id();
     }
 
@@ -1408,9 +1408,9 @@ public class PostgresTaskStore implements FullStore {
                 .state(TaskState.fromCode(rs.getInt("state")))
                 .attempts(rs.getInt("attempts"))
                 .maxAttempts(rs.getInt("max_attempts"))
-                .created(getInstant(rs, "created"))
+                .createdAt(getInstant(rs, "created"))
                 .due(getInstant(rs, "due"))
-                .stateChanged(getInstant(rs, "state_changed"))
+                .stateChangedAt(getInstant(rs, "state_changed"))
                 .encodedPayload(rs.getString("data"))
                 .workerId(getInteger(rs, "worker_id"))
                 .leaseUntil(getInstant(rs, "lease_until"))

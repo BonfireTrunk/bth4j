@@ -40,7 +40,7 @@ def make_tasks():
         t = {
             "id": tid, "revision": str(1 + i % 5), "queue": qnames[i % 3], "type": ["send-mail", "build-report", "sync-account"][i % 3],
             "payloadVersion": 1, "state": state, "attempts": 1 if state != "QUEUED" else 0, "maxAttempts": 5,
-            "created": iso(-86400 + i * 600), "due": iso(-86000 + i * 600), "stateChanged": iso(-3600 + i * 20),
+            "createdAt": iso(-86400 + i * 600), "due": iso(-86000 + i * 600), "stateChangedAt": iso(-3600 + i * 20),
             "workerId": 7 if state == "LEASED" else None, "leaseUntil": iso(30) if state == "LEASED" else None,
             "claimedAt": iso(-40) if state in ("LEASED", "SUCCEEDED", "DEAD") else None,
             "account": "acme" if i % 2 else None, "headers": {"trace": "t-%d" % i} if i % 4 == 0 else {},
@@ -246,7 +246,7 @@ class Handler(BaseHTTPRequestHandler):
                 if holder["state"] in ("SUCCEEDED", "DEAD", "CANCELLED", "EXPIRED"):
                     return self.send_json(409, {"error": "the task holding this key is already finished"})
                 holder.update(state="CANCELLED", cancelReason=self.body().get("reason"), cancelRequestedAt=iso(0),
-                              revision=str(int(holder["revision"]) + 1), stateChanged=iso(0))
+                              revision=str(int(holder["revision"]) + 1), stateChangedAt=iso(0))
                 return self.send_json(200, {"ok": True, "outcome": "CANCELLED"})
             return self.send_json(404, {"error": "not found"})
         t = tasks[segs[1]]
@@ -261,10 +261,10 @@ class Handler(BaseHTTPRequestHandler):
             del tasks[t["id"]]
             return self.send_json(204, None)
         if segs[2] == "retry":
-            t.update(state="QUEUED", attempts=0, revision=str(int(t["revision"]) + 1), stateChanged=iso(0))
+            t.update(state="QUEUED", attempts=0, revision=str(int(t["revision"]) + 1), stateChangedAt=iso(0))
         elif segs[2] == "cancel":
             t.update(state="CANCELLED", cancelReason=self.body().get("reason"), cancelRequestedAt=iso(0),
-                     revision=str(int(t["revision"]) + 1), stateChanged=iso(0))
+                     revision=str(int(t["revision"]) + 1), stateChangedAt=iso(0))
         return self.send_json(200, t)
 
 

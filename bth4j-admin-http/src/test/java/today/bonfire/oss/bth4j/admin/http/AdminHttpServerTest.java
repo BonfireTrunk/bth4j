@@ -556,14 +556,14 @@ class AdminHttpServerTest {
                 .containsEntry("state", "DEAD")
                 .containsEntry("queue", "default")
                 .containsEntry("type", "send-mail")
-                .containsEntry("created", "2026-01-01T00:00:00Z")
+                .containsEntry("createdAt", "2026-01-01T00:00:00Z")
                 .containsEntry("maxRunTime", "PT5M")
                 .containsEntry("attempts", 1L)
                 .containsEntry("maxAttempts", 3L)
                 .containsKeys(
                         "payloadVersion",
                         "due",
-                        "stateChanged",
+                        "stateChangedAt",
                         "claimedAt",
                         "leaseUntil",
                         "workerId",

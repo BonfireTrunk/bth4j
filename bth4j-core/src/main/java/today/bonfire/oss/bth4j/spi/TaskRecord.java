@@ -18,10 +18,10 @@ import java.util.Map;
  * @param state             current state
  * @param attempts          how often the task was claimed
  * @param maxAttempts       after this many failed attempts the task is dead
- * @param created           when the client built the task (client clock)
+ * @param createdAt         when the client built the task (client clock)
  * @param due               when the task may run: the enqueue time for an immediate task, the due time for a
  *                          scheduled one, the retry time after a failure (store clock); never null once stored
- * @param stateChanged      when the current state was entered (store clock); the finish time of a terminal task
+ * @param stateChangedAt    when the current state was entered (store clock); the finish time of a terminal task
  * @param encodedPayload    encoded payload; null when there is none or it was dropped on success
  * @param workerId          the worker that claimed the task; kept after it finished
  * @param leaseUntil        when the lease expires unless renewed; LEASED only
@@ -52,9 +52,9 @@ public record TaskRecord(
         TaskState state,
         int attempts,
         int maxAttempts,
-        Instant created,
+        Instant createdAt,
         Instant due,
-        Instant stateChanged,
+        Instant stateChangedAt,
         String encodedPayload,
         Integer workerId,
         Instant leaseUntil,
@@ -95,9 +95,9 @@ public record TaskRecord(
         b.state = state;
         b.attempts = attempts;
         b.maxAttempts = maxAttempts;
-        b.created = created;
+        b.createdAt = createdAt;
         b.due = due;
-        b.stateChanged = stateChanged;
+        b.stateChangedAt = stateChangedAt;
         b.encodedPayload = encodedPayload;
         b.workerId = workerId;
         b.leaseUntil = leaseUntil;
@@ -134,9 +134,9 @@ public record TaskRecord(
         private TaskState state = TaskState.QUEUED;
         private int attempts;
         private int maxAttempts = 1;
-        private Instant created;
+        private Instant createdAt;
         private Instant due;
-        private Instant stateChanged;
+        private Instant stateChangedAt;
         private String encodedPayload;
         private Integer workerId;
         private Instant leaseUntil;
@@ -199,8 +199,8 @@ public record TaskRecord(
             return this;
         }
 
-        public Builder created(Instant v) {
-            created = v;
+        public Builder createdAt(Instant v) {
+            createdAt = v;
             return this;
         }
 
@@ -209,8 +209,8 @@ public record TaskRecord(
             return this;
         }
 
-        public Builder stateChanged(Instant v) {
-            stateChanged = v;
+        public Builder stateChangedAt(Instant v) {
+            stateChangedAt = v;
             return this;
         }
 
@@ -319,9 +319,9 @@ public record TaskRecord(
                     state,
                     attempts,
                     maxAttempts,
-                    created,
+                    createdAt,
                     due,
-                    stateChanged,
+                    stateChangedAt,
                     encodedPayload,
                     workerId,
                     leaseUntil,

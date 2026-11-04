@@ -97,7 +97,7 @@ class RedisWave2IT {
                 .queueId(queue)
                 .typeId(type)
                 .maxAttempts(3)
-                .created(Instant.now().truncatedTo(ChronoUnit.MILLIS));
+                .createdAt(Instant.now().truncatedTo(ChronoUnit.MILLIS));
     }
 
     private TaskRecord enqueued(TaskRecord.Builder b) {

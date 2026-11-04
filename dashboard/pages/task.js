@@ -119,12 +119,12 @@ export default {
       const t = task.value;
       if (!t) return [];
       const stops = [
-        { label: 'Created', at: t.created, reached: true },
+        { label: 'Created', at: t.createdAt, reached: true },
         { label: 'Due', at: t.due, reached: Date.parse(t.due) <= Date.now() || t.state !== 'SCHEDULED' },
         { label: 'Claimed', at: t.claimedAt, reached: !!t.claimedAt },
       ];
-      if (FINISHED[t.state]) stops.push({ label: FINISHED[t.state], at: t.stateChanged, reached: true });
-      else if (t.state === 'LEASED') stops.push({ label: 'Running', at: t.stateChanged, reached: true });
+      if (FINISHED[t.state]) stops.push({ label: FINISHED[t.state], at: t.stateChangedAt, reached: true });
+      else if (t.state === 'LEASED') stops.push({ label: 'Running', at: t.stateChangedAt, reached: true });
       else stops.push({ label: 'Finished', at: null, reached: false });
       return stops;
     });

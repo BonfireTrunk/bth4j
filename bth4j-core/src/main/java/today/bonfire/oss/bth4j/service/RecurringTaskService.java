@@ -231,7 +231,7 @@ public class RecurringTaskService extends CustomThread {
                 .state(due.isAfter(clock.instant()) ? TaskState.SCHEDULED : TaskState.QUEUED)
                 .maxAttempts(def.maxAttempts())
                 .maxRunTime(def.maxRunTimeMs() == null ? null : Duration.ofMillis(def.maxRunTimeMs()))
-                .created(clock.instant())
+                .createdAt(clock.instant())
                 .due(due)
                 .encodedPayload(def.encodedPayload())
                 .account(def.account())

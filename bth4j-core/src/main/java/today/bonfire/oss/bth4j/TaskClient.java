@@ -314,7 +314,7 @@ public final class TaskClient {
                 .payloadVersion(type.payloadVersion())
                 .state(due != null && due.isAfter(now) ? TaskState.SCHEDULED : TaskState.QUEUED)
                 .maxAttempts(request.maxAttempts() != null ? request.maxAttempts() : defaultMaxAttempts)
-                .created(now)
+                .createdAt(now)
                 .due(due)
                 .encodedPayload(codecs.encode(type, request.payload()))
                 .account(request.account())

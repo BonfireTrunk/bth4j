@@ -59,16 +59,16 @@ public final class TaskView {
         return record.maxAttempts();
     }
 
-    public Instant created() {
-        return record.created();
+    public Instant createdAt() {
+        return record.createdAt();
     }
 
     public Instant due() {
         return record.due();
     }
 
-    public Instant stateChanged() {
-        return record.stateChanged();
+    public Instant stateChangedAt() {
+        return record.stateChangedAt();
     }
 
     /** @return the encoded payload, or null */

@@ -191,7 +191,7 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
               <td>{{ t.type }}</td>
               <td class="num">{{ t.attempts }} / {{ t.maxAttempts }}</td>
               <td><time-ago :at="t.due" :late="t.state === 'QUEUED' || t.state === 'SCHEDULED'"></time-ago></td>
-              <td><time-ago :at="t.stateChanged"></time-ago></td>
+              <td><time-ago :at="t.stateChangedAt"></time-ago></td>
               <td class="trunc mono small" :title="failureText(t, true)">{{ failureText(t, false) }}</td>
             </tr>
           </tbody>

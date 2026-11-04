@@ -100,7 +100,7 @@ class RedisTaskStoreIT {
                 .queueId(queue)
                 .typeId(type)
                 .maxAttempts(3)
-                .created(Instant.now().truncatedTo(ChronoUnit.MILLIS));
+                .createdAt(Instant.now().truncatedTo(ChronoUnit.MILLIS));
     }
 
     private TaskRecord enqueued(long id) {
@@ -259,9 +259,9 @@ class RedisTaskStoreIT {
         assertThat(back.startBy()).isEqualTo(t.startBy());
         assertThat(back.maxRunTime()).isEqualTo(Duration.ofMinutes(2));
         assertThat(back.payloadVersion()).isEqualTo(4);
-        assertThat(back.created()).isEqualTo(t.created());
+        assertThat(back.createdAt()).isEqualTo(t.createdAt());
         assertThat(back.state()).isEqualTo(TaskState.QUEUED);
-        assertThat(back.due()).isEqualTo(back.stateChanged());
+        assertThat(back.due()).isEqualTo(back.stateChangedAt());
     }
 
     @Test
@@ -587,7 +587,7 @@ class RedisTaskStoreIT {
         assertThat(dropped.revision()).isEqualTo(claimed.get(0).revision() + 1);
         assertThat(store.getTask(2).orElseThrow().encodedPayload()).isEqualTo("payload");
         assertThat(jedis.zscore(keys.index(3, queue), "1"))
-                .isEqualTo((double) dropped.stateChanged().toEpochMilli());
+                .isEqualTo((double) dropped.stateChangedAt().toEpochMilli());
         assertThat(counts().succeeded()).isEqualTo(2);
         assertThat(jedis.ttl(keys.task(1))).isEqualTo(-1);
     }
@@ -923,8 +923,8 @@ class RedisTaskStoreIT {
         var byTime = new ArrayList<TaskRecord>();
         done.forEach(id -> byTime.add(store.getTask(id).orElseThrow()));
         assertThat(byTime)
-                .isSortedAccordingTo(
-                        java.util.Comparator.comparing(TaskRecord::stateChanged).thenComparingLong(TaskRecord::id));
+                .isSortedAccordingTo(java.util.Comparator.comparing(TaskRecord::stateChangedAt)
+                        .thenComparingLong(TaskRecord::id));
         assertThat(store.tasks(TaskState.SUCCEEDED, other, null, 100).items())
                 .extracting(TaskRecord::id)
                 .containsExactlyInAnyOrder(3L, 6L, 9L, 12L);

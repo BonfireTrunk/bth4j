@@ -68,9 +68,9 @@ Always present:
 | `state` | code 0 to 6, see States |
 | `attempts` | how often the task was claimed, minus attempts given back |
 | `maxAttempts` | the task is dead after this many failed attempts |
-| `created` | client time |
+| `createdAt` | client time |
 | `due` | store time; never null once stored |
-| `stateChanged` | store time; when the current state was entered |
+| `stateChangedAt` | store time; when the current state was entered |
 | `encodedPayload` | encoded payload, at most 256 KiB; null when none or dropped on success |
 | `workerId` | set while LEASED, kept on terminal rows, cleared on retry, reschedule and unclaim |
 | `leaseUntil` | LEASED only |
@@ -79,7 +79,7 @@ Present only when set (a store never writes a null field):
 
 | Field | Meaning |
 |---|---|
-| `claimedAt` | start of the last attempt; the run time of a finished task is `stateChanged - claimedAt` |
+| `claimedAt` | start of the last attempt; the run time of a finished task is `stateChangedAt - claimedAt` |
 | `account` | application-defined owner label, at most 128 characters |
 | `headers` | string map, at most 8 KiB |
 | `uniqueKey`, `keyKeep`, `keyUntil` | unique key, its keep window, and when a held key of a finished task is released |
@@ -92,7 +92,7 @@ Present only when set (a store never writes a null field):
 | `steps` | completed steps by name (see Steps) |
 | `failures` | the last 20 failed attempts, oldest first |
 
-### due, stateChanged and revision
+### due, stateChangedAt and revision
 
 `due` has one meaning in every state: the time from which the task may run. For an immediate task it is
 the enqueue time; for a scheduled task the requested time; after a failure the retry time. Promote and
@@ -104,7 +104,7 @@ around a power of ten (999999 and 1000000); padding the members to a fixed width
 entry its compact integer encoding for a difference no ordinary workload sees. The earlier variants of this idea
 (eligible, queued, fire time) are all `due`.
 
-`stateChanged` is when the current state was entered. For terminal states it is the finish time, which is
+`stateChangedAt` is when the current state was entered. For terminal states it is the finish time, which is
 what retention is measured from. It also orders the terminal and LEASED listings.
 
 `revision` is the fence. Claim, promote, every terminal transition, reschedule and unclaim add one. Renew,
@@ -220,7 +220,7 @@ A key is held while the task is not terminal. What happens afterwards is the `Un
 - `UNTIL_DONE` (default): the key is released at the transition to a terminal state.
 - `keepFor(duration)`: the key stays held for the duration after the task became terminal (the keep
   window). `keyKeep` is stored on the task at enqueue; at the terminal transition `keyUntil =
-  stateChanged + keyKeep` is set. Redis keeps `k:<key>` alive with `PEXPIREAT` and gives the `uk`, `kk`
+  stateChangedAt + keyKeep` is set. Redis keeps `k:<key>` alive with `PEXPIREAT` and gives the `uk`, `kk`
   and `ku` fields of the kept hash the same expiry with `HPEXPIREAT`; PostgreSQL keeps the key column
   until `key_until`.
 
@@ -240,7 +240,7 @@ retention per state:
 | `deadRetention` | 90 days | DEAD |
 | `cancelledRetention` | 48 hours | CANCELLED and EXPIRED |
 
-`MaintenanceStore.purge(state, retention, limit)` removes tasks of that state whose `stateChanged` is older
+`MaintenanceStore.purge(state, retention, limit)` removes tasks of that state whose `stateChangedAt` is older
 than `now - retention`, oldest first, using store time. The retention is not stored on the row: it is the
 current setting of whichever runner purges, so changing it applies to existing rows. A task whose
 `keyUntil` is still in the future is skipped, and the skipped rows do not starve the purge (Redis keeps them in
@@ -401,8 +401,8 @@ key only routes the call.
 | `q:<qid>` | zset | QUEUED ids, score `due` ms; equal scores in id text order |
 | `sched:<qid>` | zset | SCHEDULED ids, score `due` ms |
 | `leased` | zset | LEASED ids, score lease expiry ms |
-| `idx:<state>:<qid>` | zset | ids in LEASED and the terminal states, score `stateChanged` ms |
-| `rm:<state>:<qid>` | zset | terminal ids that purge may remove, score `stateChanged` ms |
+| `idx:<state>:<qid>` | zset | ids in LEASED and the terminal states, score `stateChangedAt` ms |
+| `rm:<state>:<qid>` | zset | terminal ids that purge may remove, score `stateChangedAt` ms |
 | `hold:<state>:<qid>` | zset | terminal ids whose key window is open, score `keyUntil` ms; purge moves them to `rm` or removes them once the window has passed |
 | `k:<key>` | string | id of the task that holds a unique key; `PEXPIREAT` while a keep window runs |
 | `cron`, `cron:<sid>`, `crondefs`, `cronrev` | zset, hash, set, string | next fire times of definitions that are not paused, definitions, ids of all definitions, revision counter |
@@ -583,7 +583,7 @@ the leases of all running tasks every third of that duration in one call, passes
 running executions and requests the cancellation of tasks past their `maxRunTime`. Maintenance (`maintenanceCheckInterval`, default 5 s) finds expired leases with
 `reclaim` and fails them with `failExpired` (or ends them with `finishCancelled` when a cancel was
 requested), expires tasks past their `startBy` and writes the worker heartbeat. Clock skew between instances only matters for the client-side
-instants (`created`, request `at`/`delay`, retry times); leases, due times and retention use the store
+instants (`createdAt`, request `at`/`delay`, retry times); leases, due times and retention use the store
 clock.
 
 ## Lifecycle
@@ -611,7 +611,7 @@ A cancel has two shapes, decided by the state the task is in when `AdminStore.ca
 runs. The call checks the revision first; a mismatch answers `STALE` and changes nothing.
 
 - QUEUED or SCHEDULED: no worker holds the task, so it becomes CANCELLED at once (revision +1,
-  `stateChanged`, `cancelRequestedAt = now`, `cancelReason`, unique key handled like any terminal transition,
+  `stateChangedAt`, `cancelRequestedAt = now`, `cancelReason`, unique key handled like any terminal transition,
   the start-by index entry removed). Answer `CANCELLED`.
 - LEASED: only the request is stored (`cancelRequestedAt = now`, `cancelReason`); the revision does not
   change, because the worker's fence must stay valid. Answer `REQUESTED`.
@@ -626,7 +626,7 @@ it cannot leak into the executor thread's next task. Latency from the operator's
 noticing is up to one renewal period, a third of `leaseDuration`.
 
 The task ends in `ExecutionStore.finishCancelled(id, revision, reason, keepPayload)`: LEASED with a matching
-revision becomes CANCELLED (revision +1, `stateChanged`, `cancelReason` set when given, `cancelRequestedAt`
+revision becomes CANCELLED (revision +1, `stateChangedAt`, `cancelReason` set when given, `cancelRequestedAt`
 kept or set to now, `workerId` kept, `leaseUntil` cleared, payload dropped unless kept, unique key handled
 like `ack`). A mismatch returns false and is reported to the observer as `Outcome.LOST`, like every fenced
 transition. The runner calls it when the processor throws `TaskCancelledException`, and also when it throws
@@ -657,7 +657,7 @@ does not expire again.
   performs the EXPIRED transition inline (state 6, revision +1, index, key release) and continues
   with the next member.
 - `MaintenanceStore.expire(limit)` moves QUEUED and SCHEDULED tasks with `startBy <= now` to EXPIRED (revision
-  +1, `stateChanged`, unique key handled like a terminal transition) and returns their ids. PostgreSQL uses
+  +1, `stateChangedAt`, unique key handled like a terminal transition) and returns their ids. PostgreSQL uses
   the partial `_start_by` index; Redis keeps the `startby` zset (QUEUED and SCHEDULED ids with an `sb`, scored
   by it), maintained on every transition into and out of a waiting state, so expiry never scans.
 - Maintenance runs `expire(limit)` every cycle until a call returns fewer than the limit and emits
@@ -842,7 +842,7 @@ through `FullStore`:
 | `ExecutionStore` | `enqueue`, `enqueueAll`, `claim`, `renew`, `ack`, `fail`, `failExpired`, `finishCancelled`, `reschedule`, `unclaim`, `saveSteps`, `progress` |
 | `MaintenanceStore` | `promote`, `reclaim`, `expire`, `purge`, `purgeWorkers`, `releaseKeys`, `nextDue` |
 | `ScheduleStore` | `putRecurring`, `deleteRecurring`, `recurringSchedules`, `recurringDefinitions`, `dueRecurring`, `commitRecurring`, `pauseRecurring`, `setNextFire` |
-| `InspectionStore` | `getTask`, `counts`, `tasks` (by state, paged by an opaque cursor on `(stateChanged, id)`) |
+| `InspectionStore` | `getTask`, `counts`, `tasks` (by state, paged by an opaque cursor on `(stateChangedAt, id)`) |
 | `AdminStore` | `cancel`, `retry`, `delete`, `pauseQueue`, `queues`, `heartbeat`, `workers` |
 
 The contract is small because the services never read and then write in two steps: each method is one
