@@ -9,6 +9,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -22,14 +24,26 @@ class MicrometerRunnerMetricsTest {
     private final AtomicReference<Map<String, StateCounts>> counts = new AtomicReference<>(Map.of());
     private final AtomicReference<RunnerHealth.Status> status = new AtomicReference<>(RunnerHealth.Status.RUNNING);
     private final AtomicInteger abandoned = new AtomicInteger();
+    private final AtomicInteger storeCalls = new AtomicInteger();
+    private final AtomicReference<RuntimeException> countsFailure = new AtomicReference<>();
+    private final AtomicReference<RuntimeException> healthFailure = new AtomicReference<>();
+    private volatile Runnable beforeCountsReturn = () -> {};
 
     private final AdminOps admin = (AdminOps) Proxy.newProxyInstance(
             AdminOps.class.getClassLoader(), new Class<?>[] {AdminOps.class}, (proxy, method, args) -> {
+                storeCalls.incrementAndGet();
                 return switch (method.getName()) {
-                    case "counts" -> counts.get();
-                    case "health" ->
-                        Optional.of(new RunnerHealth(
+                    case "counts" -> {
+                        if (countsFailure.get() != null) throw countsFailure.get();
+                        var snapshot = counts.get();
+                        beforeCountsReturn.run();
+                        yield snapshot;
+                    }
+                    case "health" -> {
+                        if (healthFailure.get() != null) throw healthFailure.get();
+                        yield Optional.of(new RunnerHealth(
                                 status.get(), 1, 0, abandoned.get(), Instant.now(), null, null, null, 0));
+                    }
                     default -> throw new UnsupportedOperationException(method.getName());
                 };
             });
@@ -127,6 +141,87 @@ class MicrometerRunnerMetricsTest {
 
         metrics.close();
 
+        assertThat(registry.getMeters()).isEmpty();
+    }
+
+    @Test
+    void countsFailureKeepsTheLastValuesThenRecovers() {
+        counts.set(Map.of("q", new StateCounts(5, 0, 0, 0, 0, 0, 0)));
+        try (var metrics = MicrometerRunnerMetrics.bind(admin, () -> 0, registry, Duration.ofHours(1))) {
+            countsFailure.set(new IllegalStateException("store down"));
+            abandoned.set(3);
+            metrics.refresh();
+
+            assertThat(state("q", "queued")).isEqualTo(5);
+            assertThat(gauge("bth4j.runner.up")).isEqualTo(1);
+            assertThat(gauge("bth4j.runner.abandoned")).isEqualTo(3);
+
+            countsFailure.set(null);
+            counts.set(Map.of("q", new StateCounts(9, 0, 0, 0, 0, 0, 0)));
+            metrics.refresh();
+
+            assertThat(state("q", "queued")).isEqualTo(9);
+        }
+    }
+
+    @Test
+    void healthFailureSetsUpToZeroThenRecovers() {
+        counts.set(Map.of("q", new StateCounts(5, 0, 0, 0, 0, 0, 0)));
+        try (var metrics = MicrometerRunnerMetrics.bind(admin, () -> 0, registry, Duration.ofHours(1))) {
+            assertThat(gauge("bth4j.runner.up")).isEqualTo(1);
+
+            healthFailure.set(new IllegalStateException("store down"));
+            metrics.refresh();
+
+            assertThat(gauge("bth4j.runner.up")).isEqualTo(0);
+            assertThat(state("q", "queued")).isEqualTo(5);
+
+            healthFailure.set(null);
+            metrics.refresh();
+
+            assertThat(gauge("bth4j.runner.up")).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void scrapingTheGaugesMakesNoStoreCalls() {
+        counts.set(Map.of("q", new StateCounts(5, 0, 0, 0, 0, 0, 0)));
+        try (var metrics = MicrometerRunnerMetrics.bind(admin, () -> 0, registry, Duration.ofHours(1))) {
+            var before = storeCalls.get();
+
+            registry.getMeters().forEach(m -> m.measure().forEach(measurement -> measurement.getValue()));
+            gauge("bth4j.runner.up");
+            state("q", "queued");
+
+            assertThat(before).isPositive();
+            assertThat(storeCalls.get()).isEqualTo(before);
+        }
+    }
+
+    @Test
+    void aRefreshInFlightWhenCloseIsCalledDoesNotRecreateMeters() throws Exception {
+        counts.set(Map.of("q", new StateCounts(5, 0, 0, 0, 0, 0, 0)));
+        var metrics = MicrometerRunnerMetrics.bind(admin, () -> 0, registry, Duration.ofHours(1));
+        var inFlight = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        beforeCountsReturn = () -> {
+            inFlight.countDown();
+            try {
+                release.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+        counts.set(Map.of("q", new StateCounts(5, 0, 0, 0, 0, 0, 0), "other", new StateCounts(1, 0, 0, 0, 0, 0, 0)));
+        var refresh = new Thread(metrics::refresh);
+        refresh.start();
+        assertThat(inFlight.await(10, TimeUnit.SECONDS)).isTrue();
+
+        metrics.close();
+        release.countDown();
+        refresh.join(10_000);
+
+        assertThat(refresh.isAlive()).isFalse();
         assertThat(registry.getMeters()).isEmpty();
     }
 
