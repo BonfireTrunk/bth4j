@@ -52,7 +52,7 @@ public class TaskProcessorService extends CustomThread {
     /** shared with the runner so that a restarted processor keeps renewing the tasks its predecessor started */
     private final Map<Long, TaskExecution> running;
 
-    private final Map<Integer, AtomicInteger> runningPerQueue = new ConcurrentHashMap<>();
+    private final QueueReservations reservations;
 
     private final Thread renewer;
     private volatile boolean renewalRunning = true;
@@ -69,11 +69,11 @@ public class TaskProcessorService extends CustomThread {
         this.knownEventIds = Set.copyOf(b.knownEventIds);
         this.workerId = b.workerId;
         this.running = b.running;
+        this.reservations = b.reservations;
         this.lease = b.lease;
         this.idlePollInterval = b.idlePollInterval;
         this.claimBatchSize = b.claimBatchSize;
         this.quiet = b.quiet;
-        for (var e : running.values()) runningInQueue(e.queueId()).incrementAndGet();
         this.renewer = new Thread(b.group, this::renewLeases, b.threadName + "-lease");
         this.renewer.setDaemon(true);
     }
@@ -136,7 +136,7 @@ public class TaskProcessorService extends CustomThread {
         for (var record : tasks) {
             var execution = new TaskExecution(record, settings, this::finished);
             running.put(record.id(), execution);
-            runningInQueue(record.queueId()).incrementAndGet();
+            reservations.reserve(execution);
             try {
                 executor.execute(execution);
             } catch (RuntimeException e) {
@@ -166,10 +166,7 @@ public class TaskProcessorService extends CustomThread {
             var policy = policies.getOrDefault(order.get(i), QueuePolicy.DEFAULT);
             int cap = policy.maxConcurrent() == 0
                     ? slots
-                    : Math.max(
-                            0,
-                            policy.maxConcurrent()
-                                    - runningInQueue(order.get(i)).get());
+                    : Math.max(0, policy.maxConcurrent() - reservations.running(order.get(i)));
             caps[i] = Math.min(cap, slots);
             if (caps[i] > 0) totalWeight += policy.weight();
         }
@@ -208,10 +205,6 @@ public class TaskProcessorService extends CustomThread {
         return claimed;
     }
 
-    private AtomicInteger runningInQueue(int queueId) {
-        return runningPerQueue.computeIfAbsent(queueId, q -> new AtomicInteger());
-    }
-
     private void returnToQueue(TaskExecution execution, RuntimeException cause) {
         try {
             if (!settings.store().unclaim(execution.taskId(), execution.revision())) {
@@ -229,13 +222,13 @@ public class TaskProcessorService extends CustomThread {
     }
 
     /**
-     * Removes this attempt from the running tasks. Only this attempt: the same id may already be running again
-     * when a retry was claimed while this attempt was finishing.
+     * Removes this attempt from the running tasks and releases its queue slot. Only this attempt is removed:
+     * the same id may already be running again when a retry was claimed while this attempt was finishing,
+     * and the slot is released either way.
      */
     private void finished(TaskExecution execution) {
-        if (running.remove(execution.taskId(), execution)) {
-            runningInQueue(execution.queueId()).decrementAndGet();
-        }
+        running.remove(execution.taskId(), execution);
+        reservations.release(execution);
     }
 
     /** The queues to process, starting one position later on every call. */
@@ -345,6 +338,7 @@ public class TaskProcessorService extends CustomThread {
         private int claimBatchSize = 32;
         private boolean quiet;
         private Map<Long, TaskExecution> running = new ConcurrentHashMap<>();
+        private QueueReservations reservations = new QueueReservations();
 
         public Builder group(ThreadGroup group) {
             this.group = group;
@@ -410,6 +404,12 @@ public class TaskProcessorService extends CustomThread {
         /** The tasks being executed, to hand over from a processor that died to its replacement. */
         public Builder running(Map<Long, TaskExecution> running) {
             this.running = running;
+            return this;
+        }
+
+        /** The queue slots held by the running tasks, shared with the replacement of a processor that died. */
+        public Builder reservations(QueueReservations reservations) {
+            this.reservations = reservations;
             return this;
         }
 

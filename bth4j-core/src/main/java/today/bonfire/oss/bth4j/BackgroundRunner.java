@@ -32,6 +32,7 @@ import today.bonfire.oss.bth4j.service.DefaultAdminOps;
 import today.bonfire.oss.bth4j.service.MaintenanceService;
 import today.bonfire.oss.bth4j.service.Names;
 import today.bonfire.oss.bth4j.service.Observers;
+import today.bonfire.oss.bth4j.service.QueueReservations;
 import today.bonfire.oss.bth4j.service.RecurringTaskService;
 import today.bonfire.oss.bth4j.service.RetryPolicies;
 import today.bonfire.oss.bth4j.service.RunnerServices;
@@ -71,6 +72,7 @@ public final class BackgroundRunner {
     private final AtomicBoolean stopped = new AtomicBoolean(false);
     private final ReentrantLock lifecycleLock = new ReentrantLock();
     private final Map<Long, TaskExecution> runningTasks = new ConcurrentHashMap<>();
+    private final QueueReservations queueReservations = new QueueReservations();
 
     private volatile boolean stopRequested;
     private volatile boolean quiet;
@@ -386,6 +388,7 @@ public final class BackgroundRunner {
                 .threadName("taskProcessor")
                 .executor(taskExecutor)
                 .running(runningTasks)
+                .reservations(queueReservations)
                 .lease(config.leaseDuration)
                 .idlePollInterval(config.idlePollInterval)
                 .claimBatchSize(config.claimBatchSize)
