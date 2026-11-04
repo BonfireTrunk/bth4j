@@ -354,6 +354,7 @@ public final class TaskExecution implements Runnable, TaskContext {
                 afterTerminal(TaskState.DEAD, Outcome.APPLIED, pause);
             }
             case LOST -> emit(new TaskEvent.Retrying(view, event(e), retryAt, Outcome.LOST));
+            case null -> emit(new TaskEvent.Retrying(view, event(e), retryAt, Outcome.UNKNOWN));
         }
     }
 
@@ -370,7 +371,8 @@ public final class TaskExecution implements Runnable, TaskContext {
             }
         }
         var pause = RecurringTaskService.pauseEffect(record);
-        var outcome = applyFail(failure(e), null, pause) == FailOutcome.LOST ? Outcome.LOST : Outcome.APPLIED;
+        var result = applyFail(failure(e), null, pause);
+        var outcome = result == null ? Outcome.UNKNOWN : result == FailOutcome.LOST ? Outcome.LOST : Outcome.APPLIED;
         emit(new TaskEvent.Died(view, event(e), reason, outcome));
         afterTerminal(TaskState.DEAD, outcome, pause);
     }
@@ -387,6 +389,7 @@ public final class TaskExecution implements Runnable, TaskContext {
         log.warn(detail);
     }
 
+    /** @return the store's outcome, or null when the store call failed and the outcome is unknown */
     private FailOutcome applyFail(FailureInfo info, Instant retryAt, ScheduleEffect pause) {
         try {
             var r = s.store().fail(record.id(), record.revision(), info, retryAt, s.keepDead(), pause);
@@ -395,7 +398,7 @@ public final class TaskExecution implements Runnable, TaskContext {
         } catch (RuntimeException | Error storeError) {
             remember(storeError);
             logStoreError(storeError);
-            return FailOutcome.LOST;
+            return null;
         }
     }
 
@@ -407,14 +410,17 @@ public final class TaskExecution implements Runnable, TaskContext {
         } catch (RuntimeException | Error storeError) {
             remember(storeError);
             logStoreError(storeError);
-            return Outcome.LOST;
+            return Outcome.UNKNOWN;
         }
     }
 
     private void logStoreError(Throwable e) {
         s.status().storeError(e);
         log.error(
-                "Unable to update the state of task {}. Its lease expires and maintenance retries it", record.id(), e);
+                "Unable to update the state of task {}, the outcome is unknown. If it was not applied, the lease"
+                        + " expires and maintenance retries the task",
+                record.id(),
+                e);
     }
 
     private FailureInfo failure(Throwable e) {

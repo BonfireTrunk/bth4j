@@ -2,6 +2,7 @@ package today.bonfire.oss.bth4j.micrometer;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tags;
+import java.util.Locale;
 import today.bonfire.oss.bth4j.TaskEvent;
 import today.bonfire.oss.bth4j.TaskObserver;
 import today.bonfire.oss.bth4j.TaskView;
@@ -91,7 +92,7 @@ public final class MicrometerTaskObserver implements TaskObserver {
                 "event", event,
                 "queue", queue,
                 "result", result,
-                "outcome", outcome == TaskEvent.Outcome.LOST ? "lost" : "applied");
+                "outcome", outcome.name().toLowerCase(Locale.ROOT));
         registry.counter(TASKS, tags).increment();
     }
 }

@@ -74,6 +74,19 @@ class MicrometerTaskObserverTest {
     }
 
     @Test
+    void unknownOutcomeIsTaggedUnknown() {
+        observer.onEvent(new TaskEvent.Succeeded(task(), Duration.ofMillis(1), Outcome.UNKNOWN));
+        observer.onEvent(new TaskEvent.Retrying(task(), new RuntimeException(), Instant.now(), Outcome.UNKNOWN));
+
+        assertThat(count("succeeded", "unknown")).isEqualTo(1);
+        assertThat(count("retried", "unknown")).isEqualTo(1);
+        assertThat(registry.find(MicrometerTaskObserver.TASKS)
+                        .tags("outcome", "lost")
+                        .counter())
+                .isNull();
+    }
+
+    @Test
     void leaseExpiredHasUnknownEventAndQueue() {
         observer.onEvent(new TaskEvent.LeaseExpired(9, 1, 3, false));
 

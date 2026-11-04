@@ -306,6 +306,43 @@ class FailureDetailTest {
     }
 
     @Test
+    void aStoreErrorOnFailReportsTheRetryAsUnknownNotLost() {
+        storeFailError = new AssertionError("reply lost");
+
+        run(FailureDetail.FULL, new IllegalStateException("x"));
+
+        assertThat(events.getLast())
+                .isInstanceOfSatisfying(
+                        TaskEvent.Retrying.class, e -> assertThat(e.outcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN));
+        assertThat(status.issues()).noneMatch(i -> i.kind().equals("lease-lost"));
+        assertThat(logText()).contains("the outcome is unknown");
+    }
+
+    @Test
+    void aStoreErrorOnFailOfADyingTaskReportsDiedUnknown() {
+        storeFailError = new AssertionError("reply lost");
+        policy = (task, error) -> RetryPolicy.Decision.dead("no more");
+
+        run(FailureDetail.FULL, new IllegalStateException("x"));
+
+        assertThat(events.getLast())
+                .isInstanceOfSatisfying(
+                        TaskEvent.Died.class, e -> assertThat(e.outcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN));
+    }
+
+    @Test
+    void aStoreErrorOnAckReportsSucceededUnknownNotLost() {
+        scheduleError = new AssertionError("reply lost");
+
+        run(FailureDetail.FULL, null);
+
+        assertThat(events.getLast())
+                .isInstanceOfSatisfying(
+                        TaskEvent.Succeeded.class, e -> assertThat(e.outcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN));
+        assertThat(status.issues()).noneMatch(i -> i.kind().equals("lease-lost"));
+    }
+
+    @Test
     void anErrorTheRetryPolicyKillsTheTaskWithIsRecordedAsDied() {
         policy = (task, error) -> RetryPolicy.Decision.dead("no more");
 
@@ -343,7 +380,7 @@ class FailureDetailTest {
     }
 
     @Test
-    void aFatalErrorFromTheStoreFailStillEmitsRetryingLostOnceAndIsRethrown() {
+    void aFatalErrorFromTheStoreFailStillEmitsRetryingUnknownOnceAndIsRethrown() {
         var error = new OutOfMemoryError("store");
         storeFailError = error;
 
@@ -352,7 +389,7 @@ class FailureDetailTest {
 
         assertThat(events.stream().filter(TaskEvent.Retrying.class::isInstance))
                 .singleElement()
-                .satisfies(e -> assertThat(((TaskEvent.Retrying) e).outcome()).isEqualTo(TaskEvent.Outcome.LOST));
+                .satisfies(e -> assertThat(((TaskEvent.Retrying) e).outcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN));
         assertThat(finishedCalls).isEqualTo(1);
     }
 
