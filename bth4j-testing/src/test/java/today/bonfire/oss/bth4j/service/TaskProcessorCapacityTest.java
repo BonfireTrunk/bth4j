@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import today.bonfire.oss.bth4j.FailureDetail;
 import today.bonfire.oss.bth4j.QueuePolicy;
 import today.bonfire.oss.bth4j.RetryPolicy;
 import today.bonfire.oss.bth4j.TaskClient;
@@ -46,7 +47,6 @@ class TaskProcessorCapacityTest {
     private final TaskExecution.Settings settings = new TaskExecution.Settings(
             store,
             store,
-            store,
             names,
             new Codecs(null),
             new TaskProcessorRegistry().register(TYPE, (context, payload) -> {}),
@@ -56,7 +56,8 @@ class TaskProcessorCapacityTest {
             new RunnerStatus(clock),
             true,
             true,
-            true);
+            true,
+            FailureDetail.FULL);
 
     @Test
     void replacementProcessorClaimsAfterInheritedExecutionFinishes() throws Exception {
