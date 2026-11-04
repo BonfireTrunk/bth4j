@@ -728,12 +728,12 @@ class RedisTaskStoreIT {
     @Test
     void failExpiredIsLostWhileTheLeaseHoldsAndWorksOnceItExpired() {
         enqueued(1);
-        var t = store.claim(new ClaimRequest(List.of(queue), 1, Duration.ofMillis(300), 1, null))
+        var t = store.claim(new ClaimRequest(List.of(queue), 1, Duration.ofMinutes(5), 1, null))
                 .getFirst();
         assertThat(store.failExpired(1, t.revision(), failure(1), null, true, null))
                 .isEqualTo(FailOutcome.LOST);
         assertThat(store.reclaim(10)).isEmpty();
-        sleep(400);
+        expireLease(1);
 
         var expired = store.reclaim(10);
 
