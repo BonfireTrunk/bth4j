@@ -8,9 +8,9 @@ Written by `MicrometerTaskObserver` (one per runner, driven by task events):
 
 | Meter | Type | Tags | Notes |
 |---|---|---|---|
-| `bth4j.tasks` | counter | `event`, `queue`, `result`, `outcome` | `result` is `succeeded`, `retried`, `died`, `cancelled`, `rescheduled` or `lease_lost`. `outcome` is `applied`, or `lost` when the lease was lost before the store applied the transition. `lease_lost` comes from maintenance and carries only ids, so its `event` and `queue` are `unknown`. |
-| `bth4j.task.duration` | timer | `event`, `queue` | Run time of succeeded tasks. |
-| `bth4j.deferred` | counter | `event` | Claimed tasks that could not run (no processor, undecodable payload) and were put back. |
+| `bth4j.tasks` | counter | `type`, `queue`, `result`, `outcome` | `result` is `succeeded`, `retried`, `died`, `cancelled`, `rescheduled` or `lease_lost`. `outcome` is `applied`, or `lost` when the lease was lost before the store applied the transition. `lease_lost` comes from maintenance and carries only ids, so its `type` and `queue` are `unknown`. |
+| `bth4j.task.duration` | timer | `type`, `queue` | Run time of succeeded tasks. |
+| `bth4j.deferred` | counter | `type` | Claimed tasks that could not run (no processor, undecodable payload) and were put back. |
 | `bth4j.schedule.fired` | counter | none | Occurrences created from recurring definitions. |
 | `bth4j.purged` | counter | `state` | Finished tasks removed after their retention, by state. |
 

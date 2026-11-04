@@ -70,7 +70,7 @@ public final class InMemoryStore implements FullStore {
     private final Map<String, Long> keyHolders = new HashMap<>();
     private final Map<String, Recurring> recurring = new HashMap<>();
     private final Map<String, Integer> queueIds = new LinkedHashMap<>();
-    private final Map<String, Integer> eventIds = new LinkedHashMap<>();
+    private final Map<String, Integer> typeIds = new LinkedHashMap<>();
     private final Set<Integer> pausedQueues = new HashSet<>();
     private final Map<Integer, WorkerInfo> workers = new TreeMap<>();
     private long nextTaskId = 1;
@@ -142,8 +142,8 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public int eventId(String name) {
-        return register(eventIds, name, "event");
+    public int typeId(String name) {
+        return register(typeIds, name, "type");
     }
 
     private int register(Map<String, Integer> registry, String name, String kind) {
@@ -170,8 +170,8 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public Map<Integer, String> eventNames() {
-        return names(eventIds);
+    public Map<Integer, String> typeNames() {
+        return names(typeIds);
     }
 
     private Map<Integer, String> names(Map<String, Integer> registry) {
@@ -230,7 +230,7 @@ public final class InMemoryStore implements FullStore {
         TaskState state = forcedDue != null || due.isAfter(now) ? TaskState.SCHEDULED : TaskState.QUEUED;
         tasks.put(
                 task.id(),
-                task.toBuilder().state(state).due(due).stateChanged(now).build());
+                task.toBuilder().state(state).due(due).stateChangedAt(now).build());
         if (key != null) {
             keyHolders.put(key, task.id());
         }
@@ -256,7 +256,7 @@ public final class InMemoryStore implements FullStore {
         lock.lock();
         try {
             Instant now = clock.instant();
-            Set<Integer> known = request.knownEventIds();
+            Set<Integer> known = request.knownTypeIds();
             List<TaskRecord> claimed = new ArrayList<>();
             for (int queueId : request.queueIds()) {
                 if (pausedQueues.contains(queueId)) {
@@ -269,7 +269,7 @@ public final class InMemoryStore implements FullStore {
                 List<TaskRecord> candidates = tasks.values().stream()
                         .filter(t -> t.state() == TaskState.QUEUED && t.queueId() == queueId)
                         .filter(t -> t.startBy() == null || t.startBy().isAfter(now))
-                        .filter(t -> known == null || known.contains(t.eventId()))
+                        .filter(t -> known == null || known.contains(t.typeId()))
                         .sorted(BY_DUE)
                         .limit(missing)
                         .toList();
@@ -279,7 +279,7 @@ public final class InMemoryStore implements FullStore {
                             .attempts(t.attempts() + 1)
                             .revision(t.revision() + 1)
                             .claimedAt(now)
-                            .stateChanged(now)
+                            .stateChangedAt(now)
                             .leaseUntil(now.plus(request.lease()))
                             .workerId(request.workerId())
                             .build();
@@ -337,10 +337,10 @@ public final class InMemoryStore implements FullStore {
             TaskRecord.Builder b = t.toBuilder()
                     .state(TaskState.SUCCEEDED)
                     .revision(t.revision() + 1)
-                    .stateChanged(now)
+                    .stateChangedAt(now)
                     .leaseUntil(null);
             if (!keep || !keepPayload) {
-                b.data(null);
+                b.encodedPayload(null);
             }
             finish(t, b, now);
             return true;
@@ -425,7 +425,7 @@ public final class InMemoryStore implements FullStore {
         TaskRecord.Builder b = t.toBuilder()
                 .failures(failures)
                 .revision(t.revision() + 1)
-                .stateChanged(now)
+                .stateChangedAt(now)
                 .leaseUntil(null);
         if (retryAt != null && t.attempts() < t.maxAttempts()) {
             tasks.put(
@@ -462,7 +462,7 @@ public final class InMemoryStore implements FullStore {
             TaskRecord.Builder b = t.toBuilder()
                     .attempts(t.attempts() - 1)
                     .revision(t.revision() + 1)
-                    .stateChanged(clock.instant())
+                    .stateChangedAt(clock.instant())
                     .leaseUntil(null)
                     .workerId(null);
             target.accept(b);
@@ -515,7 +515,7 @@ public final class InMemoryStore implements FullStore {
                         t.toBuilder()
                                 .state(TaskState.QUEUED)
                                 .revision(t.revision() + 1)
-                                .stateChanged(now)
+                                .stateChangedAt(now)
                                 .build());
             }
             return new PromoteResult(due.size(), nextDueLocked());
@@ -539,7 +539,7 @@ public final class InMemoryStore implements FullStore {
                             t.revision(),
                             t.attempts(),
                             t.maxAttempts(),
-                            t.eventId(),
+                            t.typeId(),
                             t.cancelRequestedAt() != null))
                     .toList();
         } finally {
@@ -554,9 +554,9 @@ public final class InMemoryStore implements FullStore {
             Instant now = clock.instant();
             Instant cutoff = now.minus(retention);
             List<TaskRecord> old = tasks.values().stream()
-                    .filter(t -> t.state() == state && t.stateChanged().isBefore(cutoff))
+                    .filter(t -> t.state() == state && t.stateChangedAt().isBefore(cutoff))
                     .filter(t -> t.keyUntil() == null || !t.keyUntil().isAfter(now))
-                    .sorted(Comparator.comparing(TaskRecord::stateChanged).thenComparingLong(TaskRecord::id))
+                    .sorted(Comparator.comparing(TaskRecord::stateChangedAt).thenComparingLong(TaskRecord::id))
                     .limit(limit)
                     .toList();
             old.forEach(this::remove);
@@ -756,7 +756,7 @@ public final class InMemoryStore implements FullStore {
         lock.lock();
         try {
             Comparator<TaskRecord> order =
-                    Comparator.comparing(TaskRecord::stateChanged).thenComparingLong(TaskRecord::id);
+                    Comparator.comparing(TaskRecord::stateChangedAt).thenComparingLong(TaskRecord::id);
             List<TaskRecord> found = limit <= 0
                     ? List.of()
                     : tasks.values().stream()
@@ -775,14 +775,14 @@ public final class InMemoryStore implements FullStore {
     }
 
     private static String encodeCursor(TaskRecord last) {
-        var at = last.stateChanged();
+        var at = last.stateChangedAt();
         return (at.getEpochSecond() * 1_000_000_000L + at.getNano()) + ":" + last.id();
     }
 
     private record Position(Instant changed, long id) {}
 
     private static boolean isAfter(TaskRecord t, Position p) {
-        int c = t.stateChanged().compareTo(p.changed());
+        int c = t.stateChangedAt().compareTo(p.changed());
         return c > 0 || (c == 0 && t.id() > p.id());
     }
 
@@ -829,12 +829,12 @@ public final class InMemoryStore implements FullStore {
             TaskRecord.Builder b = t.toBuilder()
                     .state(TaskState.CANCELLED)
                     .revision(t.revision() + 1)
-                    .stateChanged(now)
+                    .stateChangedAt(now)
                     .cancelReason(reason)
                     .cancelRequestedAt(t.cancelRequestedAt() != null ? t.cancelRequestedAt() : now)
                     .leaseUntil(null);
             if (!keepPayload) {
-                b.data(null);
+                b.encodedPayload(null);
             }
             finish(t, b, now);
             return true;
@@ -861,7 +861,7 @@ public final class InMemoryStore implements FullStore {
                         t.toBuilder()
                                 .state(TaskState.EXPIRED)
                                 .revision(t.revision() + 1)
-                                .stateChanged(now),
+                                .stateChangedAt(now),
                         now);
             }
             return overdue.stream().map(TaskRecord::id).toList();
@@ -898,7 +898,7 @@ public final class InMemoryStore implements FullStore {
                         t.toBuilder()
                                 .state(TaskState.CANCELLED)
                                 .revision(t.revision() + 1)
-                                .stateChanged(now)
+                                .stateChangedAt(now)
                                 .cancelReason(reason)
                                 .cancelRequestedAt(now),
                         now);
@@ -955,7 +955,7 @@ public final class InMemoryStore implements FullStore {
                     t.toBuilder()
                             .state(TaskState.QUEUED)
                             .due(now)
-                            .stateChanged(now)
+                            .stateChangedAt(now)
                             .attempts(0)
                             .revision(t.revision() + 1)
                             .cancelRequestedAt(null)

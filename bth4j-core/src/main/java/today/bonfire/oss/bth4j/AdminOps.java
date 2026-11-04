@@ -91,5 +91,5 @@ public interface AdminOps {
 
     Map<Integer, String> queueNames();
 
-    Map<Integer, String> eventNames();
+    Map<Integer, String> typeNames();
 }

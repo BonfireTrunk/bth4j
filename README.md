@@ -377,7 +377,7 @@ the reason "max run time ... exceeded". A task without its own `maxRunTime` gets
 needs its own `maxRunTime` (at most `TaskRequest.MAX_RUN_TIME`, about 24.8 days). An attempt that is still running one
 renewal period after the request is abandoned: the runner stops renewing its lease, so the lease expires and
 maintenance retries or ends the task, and raises the issue `attempt-abandoned`. The abandoned thread keeps its
-executor and queue slots until the processor returns, which `RunnerHealth.abandoned` and the gauge
+executor and queue slots until the processor returns, which `RunnerHealth.abandonedAttempts` and the gauge
 `bth4j.runner.abandoned` count. A processor that blocks without a timeout therefore costs a slot, not the
 task. `startBy(instant)` expires a task that did not start in time:
 claims skip it, maintenance moves it to EXPIRED and the observer receives `TaskEvent.Expired`.
@@ -410,7 +410,7 @@ client.putSchedule(ScheduleDefinition.of("daily-digest", DIGEST, "0 8 * * *")
 
 // misfire: what happens when a fire time was missed by more than the threshold (below)
 client.putSchedule(ScheduleDefinition.of("hourly-sync", SYNC, "0 * * * *")
-        .misfire(Misfire.catchUp(3)));          // Misfire.SKIP, Misfire.FIRE_ONCE_NOW (default), Misfire.catchUp(max)
+        .misfire(Misfire.catchUp(3)));          // Misfire.SKIP, Misfire.FIRE_ONCE_NOW (default), Misfire.catchUp(maxFires)
 
 // overlap: no new occurrence while the previous one has not finished
 client.putSchedule(ScheduleDefinition.of("nightly-report", NIGHTLY_REPORT, "30 2 * * *")
@@ -422,7 +422,7 @@ client.putSchedule(ScheduleDefinition.every("poll-feed", POLL_FEED, Duration.ofM
 
 The misfire threshold is twice `recurringTasksCheckInterval`, at least one minute. `SKIP` creates nothing and
 continues from now, `FIRE_ONCE_NOW` creates one task now, `CATCH_UP` creates one task per missed fire time up
-to `max` (the most recent ones when more were missed) and continues from now. Every misfire is recorded as an
+to `maxFires` (the most recent ones when more were missed) and continues from now. Every misfire is recorded as an
 issue. With `Overlap.SKIP`, an occurrence is skipped (and an issue `schedule-overlap` recorded) while the task
 of the previous one is not finished. This keys only the occurrence (`sched:<id>`); tasks its processor
 enqueues are unique only if the application gives them keys. A fixed-delay definition (at least 1 second)
@@ -511,7 +511,7 @@ BackgroundRunner.builder()
 ```
 
 `new LoggingTaskObserver()` is a ready observer that writes one SLF4J line per event (logger `bth4j.tasks`) and
-puts `bth4j.task`, `bth4j.event` and `bth4j.queue` in the MDC; pass your own `Logger` to use another name.
+puts `bth4j.task`, `bth4j.type` and `bth4j.queue` in the MDC; pass your own `Logger` to use another name.
 
 ### Inspection
 
@@ -531,14 +531,14 @@ A `TaskView` carries state, attempts, due time, the last failures, completed ste
 ### Health and issues
 
 ```java
-RunnerHealth health = runner.health();     // status NEW, RUNNING, QUIET or STOPPED; workerId, running tasks,
-                                           // abandoned attempts, lastClaimAt, lastMaintenanceAt, lastStoreErrorAt,
+RunnerHealth health = runner.health();     // status NEW, RUNNING, QUIET or STOPPED; workerId, runningTasks,
+                                           // abandonedAttempts, lastClaimAt, lastMaintenanceAt, lastStoreErrorAt,
                                            // lastStoreError, issueCount
 List<Issue> issues = runner.issues();      // the last 100 things an operator should look at, oldest first
 boolean drained = runner.drain(Duration.ofSeconds(30));   // quiet, then wait for the running tasks
 ```
 
-An `Issue` has a time, a kind, a detail and the task id when there is one. The kinds are `unknown-event`,
+An `Issue` has a time, a kind, a detail and the task id when there is one. The kinds are `unknown-type`,
 `store-error`, `lease-lost`, `attempt-abandoned`, `retry-policy`, `executor-rejected`, `schedule-misfire`,
 `schedule-overlap` and `schedule-paused`. Issues live in the memory of the runner that saw them. `drain` leaves the runner quiet
 (call `resume()` to claim again, or `stop()`), and returns whether every running task finished in time; use it
@@ -609,9 +609,9 @@ MicrometerRunnerMetrics metrics = MicrometerRunnerMetrics.bind(runner, registry,
 
 | Meter | Type | Tags |
 |---|---|---|
-| `bth4j.tasks` | counter | `event`, `queue`, `result` (`succeeded`, `retried`, `died`, `rescheduled`, `cancelled`, `expired`, `lease_lost`), `outcome` (`applied`, `lost`, `unknown`) |
-| `bth4j.task.duration` | timer | `event`, `queue` |
-| `bth4j.deferred` | counter | `event` |
+| `bth4j.tasks` | counter | `type`, `queue`, `result` (`succeeded`, `retried`, `died`, `rescheduled`, `cancelled`, `expired`, `lease_lost`), `outcome` (`applied`, `lost`, `unknown`) |
+| `bth4j.task.duration` | timer | `type`, `queue` |
+| `bth4j.deferred` | counter | `type` |
 | `bth4j.schedule.fired` | counter | none |
 | `bth4j.purged` | counter | `state` |
 | `bth4j.runner.running` | gauge | none |
@@ -620,7 +620,7 @@ MicrometerRunnerMetrics metrics = MicrometerRunnerMetrics.bind(runner, registry,
 | `bth4j.tasks.state` | gauge | `state`, `queue` |
 
 The observer's tags are only names and results, never ids or messages, so the number of meters stays bounded.
-`expired` and `lease_lost` are counted with `event` and `queue` set to `unknown`. The gauges are refreshed by
+`expired` and `lease_lost` are counted with `type` and `queue` set to `unknown`. The gauges are refreshed by
 one daemon thread every `refresh`, so a scrape never reads the store.
 
 ### Admin HTTP server and dashboard
@@ -692,7 +692,7 @@ All settings are on `BackgroundRunner.builder()`.
 | `store` | required | `new RedisTaskStore(jedis, "namespace")`, `new PostgresTaskStore(dataSource, "prefix")` or `new InMemoryStore()` |
 | `registry` | new registry | the processor registry; by default created by the runner and reached with `runner.registry()` |
 | `jsonMapper` | none | payloads and step results as JSON; needed unless every task type has its own codec |
-| `clock` | `Clock.systemUTC()` | clock for client-side instants (`created`, delays, retry times) |
+| `clock` | `Clock.systemUTC()` | clock for client-side instants (`createdAt`, delays, retry times) |
 | `concurrency` | `Concurrency.fixed(max(2, 2 x processors))` | how many tasks run at once; `fixed(n)` or `adaptive(min, max)` |
 | `taskExecutor` | built from `concurrency` | a custom `BackgroundExecutor`; the runner shuts it down |
 | `retryPolicy` | exponential, 1 s doubling, capped at 1 h, 20 % jitter | delay after a failed attempt |
@@ -726,7 +726,7 @@ lock that keeps block allocation contiguous, so busy producers serialise on it. 
 PostgreSQL, size 1 reached about one third of the enqueue rate of a larger block (10,743 against 32,379
 enqueues in 60 s).
 
-`start()` fails with `TaskConfigurationError` when no processor is registered. `quiet()` stops claiming while
+`start()` fails with `TaskConfigurationException` when no processor is registered. `quiet()` stops claiming while
 running tasks finish and `resume()` claims again. `stop()` stops the services, waits up to `shutdownTimeout`
 and keeps renewing leases of running tasks meanwhile; tasks still running afterwards are retried when their
 lease expires. A lease that has lapsed is not revived by a later renewal, so `leaseDuration` must sit well above the worst pause of a worker (GC, container freeze, slow store round trip). A process that only produces tasks can use `TaskClient.builder().store(store).jsonMapper(mapper).build()`.

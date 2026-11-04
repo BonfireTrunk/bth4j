@@ -24,7 +24,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
 import today.bonfire.oss.bth4j.exceptions.TaskLeaseLostException;
 import today.bonfire.oss.bth4j.exceptions.TaskRescheduleException;
@@ -171,7 +171,7 @@ public abstract class RunnerContract {
         var done = awaitState(id, TaskState.SUCCEEDED);
         assertThat(seen.get()).isEqualTo(new Payload("alpha", 7));
         assertThat(stateInside.get()).isEqualTo(TaskState.LEASED);
-        assertThat(viewInside.get().event()).isEqualTo("rc-payload");
+        assertThat(viewInside.get().type()).isEqualTo("rc-payload");
         assertThat(viewInside.get().queue()).isEqualTo("Q:DEF");
         assertThat(viewInside.get().headers()).containsEntry("trace", "t-1");
         assertThat(done.attempts()).isEqualTo(1);
@@ -198,7 +198,7 @@ public abstract class RunnerContract {
         long id = enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("gone", 1)).build());
 
         var done = awaitState(id, TaskState.SUCCEEDED);
-        assertThat(done.data()).isNull();
+        assertThat(done.encodedPayload()).isNull();
         assertThat(done.leaseUntil()).isNull();
     }
 
@@ -226,7 +226,7 @@ public abstract class RunnerContract {
 
         startRunner(r -> r.register(PAYLOAD_TYPE, (ctx, payload) -> {}));
         var done = awaitState(id, TaskState.SUCCEEDED);
-        assertThat(done.data()).isNull();
+        assertThat(done.encodedPayload()).isNull();
         assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
         assertThat(client.enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("two", 1))
                         .id(id)
@@ -293,7 +293,7 @@ public abstract class RunnerContract {
         long id = enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("kept", 2)).build());
 
         var done = awaitState(id, TaskState.SUCCEEDED);
-        assertThat(done.data()).contains("kept");
+        assertThat(done.encodedPayload()).contains("kept");
     }
 
     @Test
@@ -616,7 +616,7 @@ public abstract class RunnerContract {
     }
 
     @Test
-    void eventWithoutARegisteredProcessorIsNeverClaimedByThisRunner() {
+    void typeWithoutARegisteredProcessorIsNeverClaimedByThisRunner() {
         var ran = new CountDownLatch(1);
         startRunner(r -> r.register(OTHER_TYPE, (ctx, payload) -> ran.countDown()));
 
@@ -636,7 +636,7 @@ public abstract class RunnerContract {
         var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {}));
 
         assertThatThrownBy(() -> runner.registry().register(OTHER_TYPE, (ctx, payload) -> {}))
-                .isInstanceOf(TaskConfigurationError.class);
+                .isInstanceOf(TaskConfigurationException.class);
     }
 
     @Test
@@ -686,7 +686,7 @@ public abstract class RunnerContract {
         var done = awaitState(id, TaskState.CANCELLED);
         assertThat(done.cancelReason()).isEqualTo("operator says stop");
         assertThat(done.revision()).isEqualTo(running.revision() + 1);
-        assertThat(done.data()).isNull();
+        assertThat(done.encodedPayload()).isNull();
         await("the cancelled event", () -> eventNames(events, id).contains("Cancelled"));
         assertThat(eventNames(events, id)).containsExactly("Started", "Cancelled");
     }
@@ -909,7 +909,7 @@ public abstract class RunnerContract {
 
         long id = enqueue(TaskRequest.of(VOID_TYPE).build());
         assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
-        assertThat(runner.health().running()).isEqualTo(1);
+        assertThat(runner.health().runningTasks()).isEqualTo(1);
 
         assertThat(runner.drain(Duration.ofSeconds(10))).isTrue();
 
@@ -1095,7 +1095,7 @@ public abstract class RunnerContract {
                 .filter(s -> s.id().equals("guarded"))
                 .findFirst()
                 .orElseThrow();
-        assertThat(guarded.overlapSkip()).isTrue();
+        assertThat(guarded.overlap()).isEqualTo(Overlap.SKIP);
         assertThat(guarded.nextFire()).isAfter(Instant.now());
 
         release.countDown();
@@ -1117,8 +1117,8 @@ public abstract class RunnerContract {
                 .filter(s -> s.id().equals("kolkata"))
                 .findFirst()
                 .orElseThrow();
-        assertThat(view.zone()).isEqualTo("Asia/Kolkata");
-        assertThat(view.misfire()).isEqualTo("SKIP");
+        assertThat(view.zone()).isEqualTo(java.time.ZoneId.of("Asia/Kolkata"));
+        assertThat(view.misfire()).isEqualTo(Misfire.SKIP);
         assertThat(view.cron()).isEqualTo("30 9 * * *");
         assertThat(view.nextFire().atZone(java.time.ZoneId.of("Asia/Kolkata")).getHour())
                 .isEqualTo(9);
@@ -1144,17 +1144,17 @@ public abstract class RunnerContract {
         return (java.time.ZonedDateTime.now(java.time.ZoneOffset.UTC).getMinute() + 30) % 60 + " * * * *";
     }
 
-    private void registerLate(String id, String cron, String misfire, int catchUpMax, Duration late) {
+    private void registerLate(String id, String cron, String misfire, int catchUpMaxFires, Duration late) {
         var def = new today.bonfire.oss.bth4j.spi.RecurringDefinition(
                 id,
-                store.eventId(VOID_TYPE.name()),
+                store.typeId(VOID_TYPE.name()),
                 1,
                 store.queueId("Q:DEF"),
                 null,
                 cron,
                 null,
                 misfire,
-                catchUpMax,
+                catchUpMaxFires,
                 null,
                 false,
                 null,

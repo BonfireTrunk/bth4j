@@ -8,12 +8,12 @@ import today.bonfire.oss.bth4j.TaskObserver;
 import today.bonfire.oss.bth4j.TaskView;
 
 /**
- * Turns {@link TaskEvent}s into Micrometer meters. Tags are limited to the configured queue and event names, the
+ * Turns {@link TaskEvent}s into Micrometer meters. Tags are limited to the configured queue and type names, the
  * result and the outcome; task ids, messages and error texts are never used as tags, so the number of meters stays
  * bounded. Register it with {@code BackgroundRunner.builder().observer(...)}.
  * <p>
- * Meters: {@code bth4j.tasks} (event, queue, result, outcome), {@code bth4j.task.duration} (event, queue),
- * {@code bth4j.deferred} (event), {@code bth4j.schedule.fired} and {@code bth4j.purged} (state).
+ * Meters: {@code bth4j.tasks} (type, queue, result, outcome), {@code bth4j.task.duration} (type, queue),
+ * {@code bth4j.deferred} (type), {@code bth4j.schedule.fired} and {@code bth4j.purged} (state).
  */
 public final class MicrometerTaskObserver implements TaskObserver {
 
@@ -60,8 +60,8 @@ public final class MicrometerTaskObserver implements TaskObserver {
                 registry.timer(
                                 DURATION,
                                 commonTags.and(
-                                        "event",
-                                        e.task().event(),
+                                        "type",
+                                        e.task().type(),
                                         "queue",
                                         e.task().queue()))
                         .record(e.runTime());
@@ -73,7 +73,7 @@ public final class MicrometerTaskObserver implements TaskObserver {
             case TaskEvent.LeaseExpired e -> count(UNKNOWN, UNKNOWN, "lease_lost", TaskEvent.Outcome.APPLIED);
             case TaskEvent.Expired e -> count(UNKNOWN, UNKNOWN, "expired", TaskEvent.Outcome.APPLIED);
             case TaskEvent.Deferred e ->
-                registry.counter(DEFERRED, commonTags.and("event", e.event())).increment();
+                registry.counter(DEFERRED, commonTags.and("type", e.type())).increment();
             case TaskEvent.ScheduleFired e ->
                 registry.counter(SCHEDULE_FIRED, commonTags).increment();
             case TaskEvent.Purged e ->
@@ -84,12 +84,12 @@ public final class MicrometerTaskObserver implements TaskObserver {
     }
 
     private void countTask(TaskView task, String result, TaskEvent.Outcome outcome) {
-        count(task.event(), task.queue(), result, outcome);
+        count(task.type(), task.queue(), result, outcome);
     }
 
-    private void count(String event, String queue, String result, TaskEvent.Outcome outcome) {
+    private void count(String type, String queue, String result, TaskEvent.Outcome outcome) {
         var tags = commonTags.and(
-                "event", event,
+                "type", type,
                 "queue", queue,
                 "result", result,
                 "outcome", outcome.name().toLowerCase(Locale.ROOT));

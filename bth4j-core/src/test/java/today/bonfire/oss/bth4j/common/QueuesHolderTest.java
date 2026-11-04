@@ -8,7 +8,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
-import today.bonfire.oss.bth4j.exceptions.TaskErrorException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 class QueuesHolderTest {
 
@@ -20,20 +20,20 @@ class QueuesHolderTest {
     void blankQueueNameReturnsDefault() {
         var h = holder();
 
-        assertThat(h.getValidQueue(null)).isEqualTo("a");
-        assertThat(h.getValidQueue("")).isEqualTo("a");
-        assertThat(h.getValidQueue("  ")).isEqualTo("a");
+        assertThat(h.validQueue(null)).isEqualTo("a");
+        assertThat(h.validQueue("")).isEqualTo("a");
+        assertThat(h.validQueue("  ")).isEqualTo("a");
     }
 
     @Test
     void knownQueueNameIsReturnedAsIs() {
-        assertThat(holder().getValidQueue("b")).isEqualTo("b");
+        assertThat(holder().validQueue("b")).isEqualTo("b");
     }
 
     @Test
     void unknownQueueNameThrows() {
-        assertThatThrownBy(() -> holder().getValidQueue("zzz"))
-                .isInstanceOf(TaskErrorException.class)
+        assertThatThrownBy(() -> holder().validQueue("zzz"))
+                .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("zzz");
     }
 

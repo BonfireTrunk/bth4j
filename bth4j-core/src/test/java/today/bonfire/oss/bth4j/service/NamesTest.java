@@ -15,11 +15,11 @@ class NamesTest {
 
     private static final class RegistryStore implements TaskStore {
         final Map<Integer, String> queues = new LinkedHashMap<>();
-        final Map<Integer, String> events = new LinkedHashMap<>();
+        final Map<Integer, String> types = new LinkedHashMap<>();
         final AtomicInteger queueIdCalls = new AtomicInteger();
-        final AtomicInteger eventIdCalls = new AtomicInteger();
+        final AtomicInteger typeIdCalls = new AtomicInteger();
         final AtomicInteger queueNamesCalls = new AtomicInteger();
-        final AtomicInteger eventNamesCalls = new AtomicInteger();
+        final AtomicInteger typeNamesCalls = new AtomicInteger();
 
         @Override
         public synchronized int queueId(String name) {
@@ -28,9 +28,9 @@ class NamesTest {
         }
 
         @Override
-        public synchronized int eventId(String name) {
-            eventIdCalls.incrementAndGet();
-            return register(events, name);
+        public synchronized int typeId(String name) {
+            typeIdCalls.incrementAndGet();
+            return register(types, name);
         }
 
         synchronized int register(Map<Integer, String> registry, String name) {
@@ -47,9 +47,9 @@ class NamesTest {
         }
 
         @Override
-        public synchronized Map<Integer, String> eventNames() {
-            eventNamesCalls.incrementAndGet();
-            return Map.copyOf(events);
+        public synchronized Map<Integer, String> typeNames() {
+            typeNamesCalls.incrementAndGet();
+            return Map.copyOf(types);
         }
 
         @Override
@@ -78,12 +78,12 @@ class NamesTest {
 
         int first = names.queueId("Q:DEF");
         int second = names.queueId("Q:DEF");
-        names.eventId("e");
-        names.eventId("e");
+        names.typeId("e");
+        names.typeId("e");
 
         assertThat(second).isEqualTo(first);
         assertThat(store.queueIdCalls).hasValue(1);
-        assertThat(store.eventIdCalls).hasValue(1);
+        assertThat(store.typeIdCalls).hasValue(1);
     }
 
     @Test
@@ -92,28 +92,28 @@ class NamesTest {
         var names = new Names(store);
 
         int queue = names.queueId("Q:DEF");
-        int event = names.eventId("send");
+        int type = names.typeId("send");
 
         assertThat(names.queueName(queue)).isEqualTo("Q:DEF");
-        assertThat(names.eventName(event)).isEqualTo("send");
+        assertThat(names.typeName(type)).isEqualTo("send");
         assertThat(store.queueNamesCalls).hasValue(0);
-        assertThat(store.eventNamesCalls).hasValue(0);
+        assertThat(store.typeNamesCalls).hasValue(0);
     }
 
     @Test
     void idRegisteredByAnotherProcessIsLoadedOnceFromTheRegistry() {
         var store = new RegistryStore();
         int foreignQueue = store.queueId("Q:OTHER");
-        int foreignEvent = store.eventId("other-event");
+        int foreignType = store.typeId("other-type");
         var names = new Names(store);
 
         assertThat(names.queueName(foreignQueue)).isEqualTo("Q:OTHER");
         assertThat(names.queueName(foreignQueue)).isEqualTo("Q:OTHER");
-        assertThat(names.eventName(foreignEvent)).isEqualTo("other-event");
-        assertThat(names.eventName(foreignEvent)).isEqualTo("other-event");
+        assertThat(names.typeName(foreignType)).isEqualTo("other-type");
+        assertThat(names.typeName(foreignType)).isEqualTo("other-type");
 
         assertThat(store.queueNamesCalls).hasValue(1);
-        assertThat(store.eventNamesCalls).hasValue(1);
+        assertThat(store.typeNamesCalls).hasValue(1);
     }
 
     @Test
@@ -133,17 +133,17 @@ class NamesTest {
         var names = new Names(new RegistryStore());
 
         assertThat(names.queueName(77)).isEqualTo("#77");
-        assertThat(names.eventName(78)).isEqualTo("#78");
+        assertThat(names.typeName(78)).isEqualTo("#78");
     }
 
     @Test
-    void viewResolvesQueueAndEventNames() {
+    void viewResolvesQueueAndTypeNames() {
         var store = new RegistryStore();
         var names = new Names(store);
         var record = TaskRecord.builder()
                 .id(5)
                 .queueId(names.queueId("Q:HIGH"))
-                .eventId(names.eventId("report"))
+                .typeId(names.typeId("report"))
                 .state(TaskState.QUEUED)
                 .build();
 
@@ -151,7 +151,7 @@ class NamesTest {
 
         assertThat(view.id()).isEqualTo(5);
         assertThat(view.queue()).isEqualTo("Q:HIGH");
-        assertThat(view.event()).isEqualTo("report");
+        assertThat(view.type()).isEqualTo("report");
         assertThat(view.state()).isEqualTo(TaskState.QUEUED);
     }
 }

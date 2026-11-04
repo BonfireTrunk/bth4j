@@ -42,7 +42,7 @@ class TaskProcessorOverrunTest {
     private final TaskClient client =
             TaskClient.builder().store(store).clock(clock).build();
     private final int queueId = names.queueId("Q:DEF");
-    private final int eventId = names.eventId(TYPE.name());
+    private final int typeId = names.typeId(TYPE.name());
     private final Map<Long, TaskExecution> running = new ConcurrentHashMap<>();
     private final QueueReservations reservations = new QueueReservations();
     private final RunnerStatus status = new RunnerStatus(clock);
@@ -171,7 +171,7 @@ class TaskProcessorOverrunTest {
                 .reservations(reservations)
                 .executor(executor)
                 .queueIds(List.of(queueId))
-                .knownEventIds(Set.of(eventId))
+                .knownTypeIds(Set.of(typeId))
                 .claimBatchSize(1)
                 .idlePollInterval(Duration.ofMillis(1))
                 .lease(LEASE)

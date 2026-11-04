@@ -9,17 +9,17 @@ import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 
-/** A task as applications see it: the stored record with queue and event names resolved. */
+/** A task as applications see it: the stored record with queue and type names resolved. */
 public final class TaskView {
 
     private final TaskRecord record;
     private final String queue;
-    private final String event;
+    private final String type;
 
-    public TaskView(TaskRecord record, String queue, String event) {
+    public TaskView(TaskRecord record, String queue, String type) {
         this.record = record;
         this.queue = queue;
-        this.event = event;
+        this.type = type;
     }
 
     public TaskRecord record() {
@@ -39,8 +39,8 @@ public final class TaskView {
     }
 
     /** @return the task type name */
-    public String event() {
-        return event;
+    public String type() {
+        return type;
     }
 
     public int payloadVersion() {
@@ -59,21 +59,21 @@ public final class TaskView {
         return record.maxAttempts();
     }
 
-    public Instant created() {
-        return record.created();
+    public Instant createdAt() {
+        return record.createdAt();
     }
 
     public Instant due() {
         return record.due();
     }
 
-    public Instant stateChanged() {
-        return record.stateChanged();
+    public Instant stateChangedAt() {
+        return record.stateChangedAt();
     }
 
     /** @return the encoded payload, or null */
-    public String data() {
-        return record.data();
+    public String encodedPayload() {
+        return record.encodedPayload();
     }
 
     public Integer workerId() {
@@ -142,7 +142,7 @@ public final class TaskView {
 
     @Override
     public String toString() {
-        return "Task[#" + record.id() + ", " + event + ", queue=" + queue + ", " + record.state() + ", attempts="
+        return "Task[#" + record.id() + ", " + type + ", queue=" + queue + ", " + record.state() + ", attempts="
                 + record.attempts() + "/" + record.maxAttempts() + ']';
     }
 }

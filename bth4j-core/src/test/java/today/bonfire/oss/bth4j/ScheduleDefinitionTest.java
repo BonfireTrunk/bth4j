@@ -6,7 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.time.Duration;
 import java.time.ZoneId;
 import org.junit.jupiter.api.Test;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 class ScheduleDefinitionTest {
@@ -235,8 +235,8 @@ class ScheduleDefinitionTest {
 
     @Test
     void catchUpWithMaxBelowOneIsRejected() {
-        assertThatThrownBy(() -> Misfire.catchUp(0)).isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> new Misfire.CatchUp(-3)).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> Misfire.catchUp(0)).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> new Misfire.CatchUp(-3)).isInstanceOf(TaskConfigurationException.class);
         assertThat(Misfire.catchUp(1)).isEqualTo(new Misfire.CatchUp(1));
     }
 

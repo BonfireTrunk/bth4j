@@ -15,7 +15,7 @@ public final class RunnerServices {
     private final TaskExecution.Settings settings;
     private final List<Integer> queueIds;
     private final Map<Integer, QueuePolicy> queuePolicies;
-    private final Set<Integer> knownEventIds;
+    private final Set<Integer> knownTypeIds;
     private final int workerId;
 
     public RunnerServices(
@@ -34,7 +34,7 @@ public final class RunnerServices {
             FailureDetail failureDetail,
             List<Integer> queueIds,
             Map<Integer, QueuePolicy> queuePolicies,
-            Set<Integer> knownEventIds,
+            Set<Integer> knownTypeIds,
             int workerId) {
         this.settings = new TaskExecution.Settings(
                 store,
@@ -52,7 +52,7 @@ public final class RunnerServices {
                 failureDetail);
         this.queueIds = queueIds;
         this.queuePolicies = Map.copyOf(queuePolicies);
-        this.knownEventIds = knownEventIds;
+        this.knownTypeIds = knownTypeIds;
         this.workerId = workerId;
     }
 
@@ -61,7 +61,7 @@ public final class RunnerServices {
                 .settings(settings)
                 .queueIds(queueIds)
                 .queuePolicies(queuePolicies)
-                .knownEventIds(knownEventIds)
+                .knownTypeIds(knownTypeIds)
                 .workerId(workerId);
     }
 }

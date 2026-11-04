@@ -2,6 +2,7 @@ package today.bonfire.oss.bth4j.service;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -10,6 +11,7 @@ import java.util.Optional;
 import java.util.function.Supplier;
 import today.bonfire.oss.bth4j.AdminOps;
 import today.bonfire.oss.bth4j.Issue;
+import today.bonfire.oss.bth4j.Overlap;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.TaskView;
@@ -65,7 +67,7 @@ public final class DefaultAdminOps implements AdminOps {
 
     @Override
     public void pauseQueue(String queue, boolean paused) {
-        store.pauseQueue(names.queueId(queues.getValidQueue(queue)), paused);
+        store.pauseQueue(names.queueId(queues.validQueue(queue)), paused);
     }
 
     @Override
@@ -80,7 +82,7 @@ public final class DefaultAdminOps implements AdminOps {
 
     @Override
     public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
-        var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.getValidQueue(queue)));
+        var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.validQueue(queue)));
         var page = store.tasks(state, queueId, cursor, limit);
         var result = new ArrayList<TaskView>();
         for (var r : page.items()) result.add(names.view(r));
@@ -137,14 +139,14 @@ public final class DefaultAdminOps implements AdminOps {
         var d = s.definition();
         return new ScheduleView(
                 d.scheduleId(),
-                names.eventName(d.eventId()),
+                names.typeName(d.typeId()),
                 names.queueName(d.queueId()),
                 d.account(),
                 d.cron(),
-                d.zone(),
-                d.misfire(),
+                d.zone() == null ? null : ZoneId.of(d.zone()),
+                Misfires.fromCode(d.misfire(), d.catchUpMaxFires()),
                 d.fixedDelayMs() == null ? null : Duration.ofMillis(d.fixedDelayMs()),
-                d.overlapSkip(),
+                d.overlapSkip() ? Overlap.SKIP : Overlap.ALLOW,
                 d.paused(),
                 s.nextFire(),
                 d.maxAttempts(),
@@ -192,7 +194,7 @@ public final class DefaultAdminOps implements AdminOps {
     }
 
     @Override
-    public Map<Integer, String> eventNames() {
-        return store.eventNames();
+    public Map<Integer, String> typeNames() {
+        return store.typeNames();
     }
 }

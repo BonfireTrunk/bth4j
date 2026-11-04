@@ -37,8 +37,8 @@ public interface ExecutionStore extends TaskStore {
      * Moves up to {@code count} queued tasks to LEASED and returns them with their new revision, lease and
      * worker. Queues are read in the given order by {@code (due, id)}; a store may order tasks with the same
      * {@code due} by the id's decimal text instead of its value (the Redis store does), which differs only
-     * where ids of different digit counts share a due time. Tasks whose event is not in
-     * {@link ClaimRequest#knownEventIds()} are left alone; a store that cannot filter cheaply may instead
+     * where ids of different digit counts share a due time. Tasks whose type is not in
+     * {@link ClaimRequest#knownTypeIds()} are left alone; a store that cannot filter cheaply may instead
      * move their due time a few seconds ahead without counting an attempt. Each claim adds one to
      * {@code attempts}, sets {@code claimedAt} and keeps {@code due}.
      */
@@ -57,7 +57,7 @@ public interface ExecutionStore extends TaskStore {
      * Completes a LEASED task: state SUCCEEDED, or the record is removed when {@code keep} is false. The
      * unique key is released or scheduled for release per {@link TaskRecord#keyKeep()}.
      *
-     * @param keepPayload false drops {@link TaskRecord#data()}; steps are kept
+     * @param keepPayload false drops {@link TaskRecord#encodedPayload()}; steps are kept
      * @param effect applied to a recurring definition in the same atomic step when the ack applies; may be null
      * @return false when the revision did not match
      */
@@ -114,7 +114,7 @@ public interface ExecutionStore extends TaskStore {
      * Ends a LEASED task whose worker stopped it on a cancel request: state CANCELLED, {@code cancelReason}
      * set, {@code cancelRequestedAt} kept or set now, lease cleared, unique key handled like {@link #ack}.
      *
-     * @param keepPayload false drops {@link TaskRecord#data()}
+     * @param keepPayload false drops {@link TaskRecord#encodedPayload()}
      * @param effect applied to a recurring definition in the same atomic step when the task ends; may be null
      * @return false when the revision did not match
      */

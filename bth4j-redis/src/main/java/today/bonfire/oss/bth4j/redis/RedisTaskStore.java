@@ -75,7 +75,7 @@ public class RedisTaskStore implements FullStore {
     private final Keys keys;
     private final ScriptRunner scripts;
     private final Map<String, Integer> queueIds = new ConcurrentHashMap<>();
-    private final Map<String, Integer> eventIds = new ConcurrentHashMap<>();
+    private final Map<String, Integer> typeIds = new ConcurrentHashMap<>();
 
     /**
      * @param jedis     client used for all Redis operations, for example a {@code RedisClient}. The store does not
@@ -173,8 +173,8 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public int eventId(String name) {
-        return register("event", name, eventIds);
+    public int typeId(String name) {
+        return register("event", name, typeIds);
     }
 
     private int register(String kind, String name, Map<String, Integer> cache) {
@@ -193,7 +193,7 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public Map<Integer, String> eventNames() {
+    public Map<Integer, String> typeNames() {
         return names("event");
     }
 
@@ -247,8 +247,8 @@ public class RedisTaskStore implements FullStore {
         var args = new ArrayList<String>();
         args.add(String.valueOf(t.queueId()));
         args.add(t.startBy() == null ? "" : ms(t.startBy()));
-        args.add(t.data() == null ? "" : "1");
-        args.add(t.data() == null ? "" : t.data());
+        args.add(t.encodedPayload() == null ? "" : "1");
+        args.add(t.encodedPayload() == null ? "" : t.encodedPayload());
         args.addAll(TaskHashes.fields(t));
         return args;
     }
@@ -270,7 +270,7 @@ public class RedisTaskStore implements FullStore {
     @Override
     @SuppressWarnings("unchecked")
     public List<TaskRecord> claim(ClaimRequest request) {
-        var known = request.knownEventIds();
+        var known = request.knownTypeIds();
         if (request.count() < 1 || request.queueIds().isEmpty() || (known != null && known.isEmpty())) {
             return List.of();
         }
@@ -510,7 +510,7 @@ public class RedisTaskStore implements FullStore {
         args.add(ms(keepUntil));
         args.addAll(List.of(
                 F_EVENT,
-                String.valueOf(d.eventId()),
+                String.valueOf(d.typeId()),
                 F_QUEUE,
                 String.valueOf(d.queueId()),
                 F_PAYLOAD_VERSION,
@@ -526,8 +526,8 @@ public class RedisTaskStore implements FullStore {
         if (d.misfire() != null) {
             args.addAll(List.of(F_MISFIRE, d.misfire()));
         }
-        if (d.catchUpMax() != 0) {
-            args.addAll(List.of(F_CATCH_UP, String.valueOf(d.catchUpMax())));
+        if (d.catchUpMaxFires() != 0) {
+            args.addAll(List.of(F_CATCH_UP, String.valueOf(d.catchUpMaxFires())));
         }
         if (d.fixedDelayMs() != null) {
             args.addAll(List.of(F_FIXED_DELAY, String.valueOf(d.fixedDelayMs())));
@@ -544,8 +544,8 @@ public class RedisTaskStore implements FullStore {
         if (d.account() != null) {
             args.addAll(List.of(F_ACCOUNT, d.account()));
         }
-        if (d.data() != null) {
-            args.addAll(List.of(F_DATA, d.data()));
+        if (d.encodedPayload() != null) {
+            args.addAll(List.of(F_DATA, d.encodedPayload()));
         }
         return PutRecurringOutcome.valueOf((String) guard(() -> scripts.run(RedisScripts.CRON_PUT, args)));
     }

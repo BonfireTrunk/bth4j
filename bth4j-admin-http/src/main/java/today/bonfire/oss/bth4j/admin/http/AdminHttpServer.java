@@ -452,7 +452,7 @@ public final class AdminHttpServer {
     }
 
     private Map<String, Object> payload(long id) {
-        return Views.obj("payload", requireTask(id).data());
+        return Views.obj("payload", requireTask(id).encodedPayload());
     }
 
     private void retry(HttpExchange ex, long id) throws IOException {

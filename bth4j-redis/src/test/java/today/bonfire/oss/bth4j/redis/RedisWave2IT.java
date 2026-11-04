@@ -54,7 +54,7 @@ class RedisWave2IT {
     private RedisTaskStore store;
     private Keys keys;
     private int queue;
-    private int event;
+    private int type;
 
     @BeforeAll
     static void connect() {
@@ -88,16 +88,16 @@ class RedisWave2IT {
         keys = store.keys();
         store.init();
         queue = store.queueId("default");
-        event = store.eventId("send");
+        type = store.typeId("send");
     }
 
     private TaskRecord.Builder task(long id) {
         return TaskRecord.builder()
                 .id(id)
                 .queueId(queue)
-                .eventId(event)
+                .typeId(type)
                 .maxAttempts(3)
-                .created(Instant.now().truncatedTo(ChronoUnit.MILLIS));
+                .createdAt(Instant.now().truncatedTo(ChronoUnit.MILLIS));
     }
 
     private TaskRecord enqueued(TaskRecord.Builder b) {
@@ -132,7 +132,7 @@ class RedisWave2IT {
 
     @Test
     void finishCancelledMovesLeasedToCancelledAndDropsData() {
-        enqueued(task(1).data("payload").account("a"));
+        enqueued(task(1).encodedPayload("payload").account("a"));
         var t = store.claim(new ClaimRequest(List.of(queue), 1, LEASE, 7, null)).getFirst();
 
         assertThat(store.finishCancelled(1, t.revision(), "stop", false, null)).isTrue();
@@ -144,7 +144,7 @@ class RedisWave2IT {
         assertThat(done.cancelRequestedAt()).isNotNull();
         assertThat(done.workerId()).isEqualTo(7);
         assertThat(done.leaseUntil()).isNull();
-        assertThat(done.data()).isNull();
+        assertThat(done.encodedPayload()).isNull();
         assertThat(jedis.zscore(keys.leased, "1")).isNull();
         assertThat(jedis.zscore(keys.index(5, queue), "1")).isNotNull();
         assertThat(jedis.zscore(keys.index(2, queue), "1")).isNull();
@@ -154,7 +154,7 @@ class RedisWave2IT {
 
     @Test
     void finishCancelledKeepsPayloadAndTheEarlierRequestTime() {
-        enqueued(task(1).data("payload"));
+        enqueued(task(1).encodedPayload("payload"));
         var t = store.claim(new ClaimRequest(List.of(queue), 1, LEASE, 1, null)).getFirst();
         assertThat(store.cancel(1, t.revision(), "ops", null)).isEqualTo(CancelOutcome.REQUESTED);
         var requested = store.getTask(1).orElseThrow().cancelRequestedAt();
@@ -162,7 +162,7 @@ class RedisWave2IT {
         assertThat(store.finishCancelled(1, t.revision(), "ops", true, null)).isTrue();
 
         var done = store.getTask(1).orElseThrow();
-        assertThat(done.data()).isEqualTo("payload");
+        assertThat(done.encodedPayload()).isEqualTo("payload");
         assertThat(done.cancelRequestedAt()).isEqualTo(requested);
     }
 
@@ -368,7 +368,7 @@ class RedisWave2IT {
         var failure = new FailureInfo(1, Instant.now().truncatedTo(ChronoUnit.MILLIS), "E", "m", null);
         var dead = leased(1);
         assertThat(store.fail(1, dead.revision(), failure, null, true, null)).isEqualTo(FailOutcome.DEAD);
-        var cancelled = enqueued(task(2).data("d"));
+        var cancelled = enqueued(task(2).encodedPayload("d"));
         assertThat(store.cancel(2, cancelled.revision(), "r", null)).isEqualTo(CancelOutcome.CANCELLED);
         enqueued(task(3).startBy(past()));
         store.expire(10);
@@ -387,7 +387,7 @@ class RedisWave2IT {
             assertThat(jedis.zscore(keys.queue(queue), String.valueOf(id))).isNotNull();
         }
         assertThat(store.getTask(1).orElseThrow().failures()).hasSize(1);
-        assertThat(store.getTask(2).orElseThrow().data()).isEqualTo("d");
+        assertThat(store.getTask(2).orElseThrow().encodedPayload()).isEqualTo("d");
         var c = counts();
         assertThat(c.queued()).isEqualTo(3);
         assertThat(c.dead() + c.cancelled() + c.expired()).isZero();
@@ -550,7 +550,7 @@ class RedisWave2IT {
     // ---- recurring -----------------------------------------------------------------------------------
 
     private RecurringDefinition cron(String id) {
-        return new RecurringDefinition(id, event, 2, queue, "acme", "* * * * *", "{\"d\":1}", 5, 0);
+        return new RecurringDefinition(id, type, 2, queue, "acme", "* * * * *", "{\"d\":1}", 5, 0);
     }
 
     @Test
@@ -558,7 +558,7 @@ class RedisWave2IT {
         var fire = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
         var full = new RecurringDefinition(
                 "full",
-                event,
+                type,
                 3,
                 queue,
                 "acme",
@@ -574,7 +574,7 @@ class RedisWave2IT {
                 false,
                 0);
         var delay = new RecurringDefinition(
-                "delay", event, 1, queue, null, null, null, null, 0, 30_000L, false, null, 1, null, true, 0);
+                "delay", type, 1, queue, null, null, null, null, 0, 30_000L, false, null, 1, null, true, 0);
 
         store.putRecurring(delay, fire.plusSeconds(1), fire.plusSeconds(1));
         store.putRecurring(full, fire, fire);
@@ -652,12 +652,12 @@ class RedisWave2IT {
 
     private RecurringDefinition zoned(String id, String zone) {
         return new RecurringDefinition(
-                id, event, 2, queue, "acme", "* * * * *", zone, null, 0, null, false, null, 5, null, false, 0);
+                id, type, 2, queue, "acme", "* * * * *", zone, null, 0, null, false, null, 5, null, false, 0);
     }
 
     private RecurringDefinition fixedDelay(String id, long ms) {
         return new RecurringDefinition(
-                id, event, 2, queue, null, null, null, null, 0, ms, false, null, 5, null, false, 0);
+                id, type, 2, queue, null, null, null, null, 0, ms, false, null, 5, null, false, 0);
     }
 
     @Test
@@ -750,7 +750,7 @@ class RedisWave2IT {
     void commitWithAHeldUniqueKeyAdvancesTheDefinitionWithoutStoringTheOccurrence() {
         var fire = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MILLIS);
         var overlap = new RecurringDefinition(
-                "s", event, 2, queue, null, "* * * * *", null, null, 0, null, true, null, 5, null, false, 0);
+                "s", type, 2, queue, null, "* * * * *", null, null, 0, null, true, null, 5, null, false, 0);
         store.putRecurring(overlap, fire, fire);
         var first = store.dueRecurring(Instant.now(), 10).getFirst();
         var next1 = fire.plusSeconds(60);

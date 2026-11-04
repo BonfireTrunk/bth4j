@@ -43,7 +43,7 @@ class PostgresTaskStoreIT {
     private PostgresTaskStore store;
     private String prefix;
     private int queue;
-    private int event;
+    private int type;
     private int worker;
 
     @BeforeEach
@@ -52,7 +52,7 @@ class PostgresTaskStoreIT {
         prefix = PostgresTestSupport.prefix(namespace);
         store = PostgresTestSupport.store(namespace);
         queue = store.queueId("default");
-        event = store.eventId("send-mail");
+        type = store.typeId("send-mail");
         worker = store.allocateWorkerId("host:1");
     }
 
@@ -60,10 +60,10 @@ class PostgresTaskStoreIT {
         return TaskRecord.builder()
                 .id(id)
                 .queueId(queue)
-                .eventId(event)
+                .typeId(type)
                 .maxAttempts(3)
-                .created(Instant.now())
-                .data("payload-" + id);
+                .createdAt(Instant.now())
+                .encodedPayload("payload-" + id);
     }
 
     private long newId() {
@@ -221,19 +221,19 @@ class PostgresTaskStoreIT {
         for (int i = 0; i < 20; i++) assertThat(store.queueId("default")).isEqualTo(queue);
         int other = store.queueId("other");
         assertThat(other).isEqualTo(queue + 1);
-        assertThat(store.eventId("send-mail")).isEqualTo(event);
-        int report = store.eventId("report");
+        assertThat(store.typeId("send-mail")).isEqualTo(type);
+        int report = store.typeId("report");
         assertThat(store.queueNames()).containsExactly(Map.entry(queue, "default"), Map.entry(other, "other"));
-        assertThat(store.eventNames()).containsExactly(Map.entry(event, "send-mail"), Map.entry(report, "report"));
+        assertThat(store.typeNames()).containsExactly(Map.entry(type, "send-mail"), Map.entry(report, "report"));
         assertThatThrownBy(() -> store.queueId(" ")).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void fullRegistryIsReported() throws SQLException {
         sql("SELECT setval('" + prefix + "_event_id_seq', 32767)");
-        assertThatThrownBy(() -> store.eventId("one-too-many"))
+        assertThatThrownBy(() -> store.typeId("one-too-many"))
                 .isInstanceOf(TaskStoreException.class)
-                .hasMessageContaining("event registry is full");
+                .hasMessageContaining("type registry is full");
     }
 
     // ---- enqueue -------------------------------------------------------------------------------------
@@ -264,9 +264,9 @@ class PostgresTaskStoreIT {
         assertThat(r.revision()).isZero();
         assertThat(r.attempts()).isZero();
         assertThat(r.payloadVersion()).isEqualTo(2);
-        assertThat(r.due()).isAfter(before).isEqualTo(r.stateChanged());
-        assertThat(r.created()).isEqualTo(t.created().truncatedTo(ChronoUnit.MICROS));
-        assertThat(r.data()).isEqualTo("payload-" + id);
+        assertThat(r.due()).isAfter(before).isEqualTo(r.stateChangedAt());
+        assertThat(r.createdAt()).isEqualTo(t.createdAt().truncatedTo(ChronoUnit.MICROS));
+        assertThat(r.encodedPayload()).isEqualTo("payload-" + id);
         assertThat(r.account()).isEqualTo("acme");
         assertThat(r.headers()).isEqualTo(Map.of("trace", "abc"));
         assertThat(r.uniqueKey()).isEqualTo("k1");
@@ -301,8 +301,8 @@ class PostgresTaskStoreIT {
     void reinsertingAnExistingIdReportsExistsAndChangesNothing() {
         long id = newId();
         store.enqueue(task(id).build());
-        assertThat(store.enqueue(task(id).data("other").build())).isEqualTo(EnqueueOutcome.EXISTS);
-        assertThat(get(id).data()).isEqualTo("payload-" + id);
+        assertThat(store.enqueue(task(id).encodedPayload("other").build())).isEqualTo(EnqueueOutcome.EXISTS);
+        assertThat(get(id).encodedPayload()).isEqualTo("payload-" + id);
     }
 
     @Test
@@ -365,7 +365,7 @@ class PostgresTaskStoreIT {
 
         var done = get(t.id());
         assertThat(done.uniqueKey()).isEqualTo("window");
-        assertThat(done.keyUntil()).isAfter(done.stateChanged());
+        assertThat(done.keyUntil()).isAfter(done.stateChangedAt());
         assertThat(store.enqueue(task(newId()).uniqueKey("window").build()))
                 .isEqualTo(new EnqueueOutcome.DuplicateKey(t.id()));
 
@@ -408,7 +408,7 @@ class PostgresTaskStoreIT {
         assertThat(t.revision()).isEqualTo(1);
         assertThat(t.attempts()).isEqualTo(1);
         assertThat(t.workerId()).isEqualTo(worker);
-        assertThat(t.claimedAt()).isNotNull().isEqualTo(t.stateChanged());
+        assertThat(t.claimedAt()).isNotNull().isEqualTo(t.stateChangedAt());
         assertThat(t.leaseUntil()).isAfter(t.claimedAt().plus(LEASE).minusSeconds(1));
         assertThat(t.due()).isEqualTo(now.minusSeconds(30).truncatedTo(ChronoUnit.MICROS));
         assertThat(claim(5)).extracting(TaskRecord::id).containsExactly(base);
@@ -430,17 +430,17 @@ class PostgresTaskStoreIT {
     }
 
     @Test
-    void claimSkipsUnknownEvents() {
-        int unknown = store.eventId("from-a-newer-runner");
+    void claimSkipsUnknownTypes() {
+        int unknown = store.typeId("from-a-newer-runner");
         long known = newId();
         long other = newId();
         store.enqueue(
-                task(other).eventId(unknown).due(Instant.now().minusSeconds(60)).build());
+                task(other).typeId(unknown).due(Instant.now().minusSeconds(60)).build());
         store.enqueue(task(known).build());
 
         assertThat(store.claim(new ClaimRequest(List.of(queue), 5, LEASE, worker, Set.of())))
                 .isEmpty();
-        assertThat(store.claim(new ClaimRequest(List.of(queue), 5, LEASE, worker, Set.of(event))))
+        assertThat(store.claim(new ClaimRequest(List.of(queue), 5, LEASE, worker, Set.of(type))))
                 .extracting(TaskRecord::id)
                 .containsExactly(known);
         assertThat(get(other).state()).isEqualTo(TaskState.QUEUED);
@@ -545,11 +545,11 @@ class PostgresTaskStoreIT {
         var a = get(kept.id());
         assertThat(a.state()).isEqualTo(TaskState.SUCCEEDED);
         assertThat(a.revision()).isEqualTo(kept.revision() + 1);
-        assertThat(a.data()).isEqualTo(kept.data());
+        assertThat(a.encodedPayload()).isEqualTo(kept.encodedPayload());
         assertThat(a.leaseUntil()).isNull();
         assertThat(a.workerId()).isEqualTo(worker);
         var b = get(dropped.id());
-        assertThat(b.data()).isNull();
+        assertThat(b.encodedPayload()).isNull();
         assertThat(b.steps()).isEqualTo(steps);
         assertThat(store.ack(kept.id(), a.revision(), true, true, null)).isFalse();
     }
@@ -564,7 +564,7 @@ class PostgresTaskStoreIT {
         assertThat(store.ack(keyed.id(), keyed.revision(), false, true, null)).isTrue();
         var row = get(keyed.id());
         assertThat(row.state()).isEqualTo(TaskState.SUCCEEDED);
-        assertThat(row.data()).isNull();
+        assertThat(row.encodedPayload()).isNull();
         assertThat(row.uniqueKey()).isEqualTo("k");
     }
 
@@ -594,7 +594,7 @@ class PostgresTaskStoreIT {
                 .isEqualTo(FailOutcome.DEAD);
         var dead = get(exhausted.id());
         assertThat(dead.state()).isEqualTo(TaskState.DEAD);
-        assertThat(dead.data()).isEqualTo(exhausted.data());
+        assertThat(dead.encodedPayload()).isEqualTo(exhausted.encodedPayload());
         assertThat(dead.workerId()).isEqualTo(worker);
 
         var refused = enqueueAndClaim(task(newId()));
@@ -636,7 +636,7 @@ class PostgresTaskStoreIT {
         assertThat(e.revision()).isEqualTo(t.revision());
         assertThat(e.attempts()).isEqualTo(1);
         assertThat(e.maxAttempts()).isEqualTo(3);
-        assertThat(e.eventId()).isEqualTo(event);
+        assertThat(e.typeId()).isEqualTo(type);
         assertThat(e.cancelRequested()).isFalse();
 
         assertThat(store.renew(List.of(new LeaseRef(id, t.revision())), Duration.ofMinutes(1)))
@@ -833,7 +833,7 @@ class PostgresTaskStoreIT {
     // ---- recurring definitions -----------------------------------------------------------------------
 
     private RecurringDefinition definition(String id, String cron) {
-        return new RecurringDefinition(id, event, 1, queue, "acme", cron, "{\"x\":1}", 4, 0);
+        return new RecurringDefinition(id, type, 1, queue, "acme", cron, "{\"x\":1}", 4, 0);
     }
 
     @Test
@@ -847,7 +847,7 @@ class PostgresTaskStoreIT {
         assertThat(due).hasSize(1);
         DueSchedule d = due.getFirst();
         assertThat(d.fireAt()).isEqualTo(fireAt);
-        assertThat(d.definition().eventId()).isEqualTo(event);
+        assertThat(d.definition().typeId()).isEqualTo(type);
         assertThat(d.definition().queueId()).isEqualTo(queue);
         assertThat(d.definition().account()).isEqualTo("acme");
         assertThat(d.definition().maxAttempts()).isEqualTo(4);
@@ -855,7 +855,7 @@ class PostgresTaskStoreIT {
 
         long id = newId();
         var occurrence = task(id).scheduleId("hourly")
-                .data(d.definition().data())
+                .encodedPayload(d.definition().encodedPayload())
                 .maxAttempts(4)
                 .build();
         assertThat(store.commitRecurring(d, nextFire, occurrence)).isTrue();
@@ -883,7 +883,7 @@ class PostgresTaskStoreIT {
         assertThat(store.dueRecurring(first, 10).getFirst().definition().revision())
                 .isEqualTo(revision);
 
-        var otherData = new RecurringDefinition("job", event, 1, queue, "acme", "0 * * * *", "{\"x\":2}", 4, 0);
+        var otherData = new RecurringDefinition("job", type, 1, queue, "acme", "0 * * * *", "{\"x\":2}", 4, 0);
         assertThat(store.putRecurring(otherData, first.plusSeconds(600), first.plusSeconds(600)))
                 .isEqualTo(PutRecurringOutcome.CHANGED);
         assertThat(store.recurringSchedules()).containsEntry("job", first);
@@ -919,8 +919,8 @@ class PostgresTaskStoreIT {
         assertThat(r.revision()).isEqualTo(t.revision() + 1);
         assertThat(r.cancelReason()).isEqualTo("stop");
         assertThat(r.cancelRequestedAt()).isNotNull();
-        assertThat(r.stateChanged()).isEqualTo(r.cancelRequestedAt());
-        assertThat(r.data()).isNull();
+        assertThat(r.stateChangedAt()).isEqualTo(r.cancelRequestedAt());
+        assertThat(r.encodedPayload()).isNull();
         assertThat(r.workerId()).isEqualTo(worker);
         assertThat(r.leaseUntil()).isNull();
         assertThat(r.uniqueKey()).isNull();
@@ -941,9 +941,9 @@ class PostgresTaskStoreIT {
 
         var r = get(t.id());
         assertThat(r.cancelRequestedAt()).isEqualTo(requested);
-        assertThat(r.data()).isEqualTo(t.data());
+        assertThat(r.encodedPayload()).isEqualTo(t.encodedPayload());
         assertThat(r.uniqueKey()).isEqualTo("c2");
-        assertThat(r.keyUntil()).isAfter(r.stateChanged());
+        assertThat(r.keyUntil()).isAfter(r.stateChangedAt());
     }
 
     @Test
@@ -960,8 +960,8 @@ class PostgresTaskStoreIT {
         assertThat(c.state()).isEqualTo(TaskState.CANCELLED);
         assertThat(c.revision()).isEqualTo(1);
         assertThat(c.cancelReason()).isEqualTo("not needed");
-        assertThat(c.cancelRequestedAt()).isEqualTo(c.stateChanged());
-        assertThat(c.data()).isEqualTo("payload-" + queued);
+        assertThat(c.cancelRequestedAt()).isEqualTo(c.stateChangedAt());
+        assertThat(c.encodedPayload()).isEqualTo("payload-" + queued);
         assertThat(c.uniqueKey()).isNull();
         assertThat(get(scheduled).state()).isEqualTo(TaskState.CANCELLED);
         assertThat(store.cancel(queued, 1, "again", null)).isEqualTo(CancelOutcome.STALE);
@@ -1040,14 +1040,14 @@ class PostgresTaskStoreIT {
         assertThat(r.state()).isEqualTo(TaskState.QUEUED);
         assertThat(r.revision()).isEqualTo(dead.revision() + 1);
         assertThat(r.attempts()).isZero();
-        assertThat(r.due()).isAfterOrEqualTo(dead.stateChanged());
+        assertThat(r.due()).isAfterOrEqualTo(dead.stateChangedAt());
         assertThat(r.workerId()).isNull();
         assertThat(r.uniqueKey()).isEqualTo("r");
         assertThat(r.keyKeep()).isEqualTo(Duration.ofHours(1));
         assertThat(r.keyUntil()).isNull();
         assertThat(r.failures()).hasSize(1);
         assertThat(r.steps()).isEqualTo(steps);
-        assertThat(r.data()).isEqualTo(t.data());
+        assertThat(r.encodedPayload()).isEqualTo(t.encodedPayload());
         assertThat(store.retry(t.id(), r.revision())).isEqualTo(RetryOutcome.STALE);
         assertThat(claim(1)).extracting(TaskRecord::id).containsExactly(t.id());
     }
@@ -1134,7 +1134,7 @@ class PostgresTaskStoreIT {
     private RecurringDefinition fullDefinition(String id) {
         return new RecurringDefinition(
                 id,
-                event,
+                type,
                 2,
                 queue,
                 "acme",
@@ -1153,7 +1153,7 @@ class PostgresTaskStoreIT {
 
     private RecurringDefinition fixedDelay(String id, long delayMs) {
         return new RecurringDefinition(
-                id, event, 1, queue, null, null, null, null, 0, delayMs, false, null, 1, null, false, 0);
+                id, type, 1, queue, null, null, null, null, 0, delayMs, false, null, 1, null, false, 0);
     }
 
     @Test
@@ -1175,7 +1175,7 @@ class PostgresTaskStoreIT {
         store.putRecurring(fixedDelay("a-delay", 30_000), at.plusSeconds(500), at.plusSeconds(500));
         assertThat(store.recurringSchedules()).containsEntry("a-delay", at.plusSeconds(500));
         var zoneChanged = new RecurringDefinition(
-                "b-cron", event, 2, queue, "acme", "0 9 * * *", "UTC", null, 0, null, false, "{}", 5, null, false, 0);
+                "b-cron", type, 2, queue, "acme", "0 9 * * *", "UTC", null, 0, null, false, "{}", 5, null, false, 0);
         store.putRecurring(zoneChanged, at.plusSeconds(700), at.plusSeconds(700));
         assertThat(store.recurringSchedules()).containsEntry("b-cron", at.plusSeconds(700));
     }

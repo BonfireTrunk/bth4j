@@ -13,16 +13,16 @@ import java.util.Map;
  * @param revision          +1 on every state change; never on renew, step or progress writes; the fence every
  *                          transition checks
  * @param queueId           see {@link TaskStore#queueId}
- * @param eventId           see {@link TaskStore#eventId}
+ * @param typeId            see {@link TaskStore#typeId}
  * @param payloadVersion    the task type's payload version when the task was enqueued
  * @param state             current state
  * @param attempts          how often the task was claimed
  * @param maxAttempts       after this many failed attempts the task is dead
- * @param created           when the client built the task (client clock)
+ * @param createdAt         when the client built the task (client clock)
  * @param due               when the task may run: the enqueue time for an immediate task, the due time for a
  *                          scheduled one, the retry time after a failure (store clock); never null once stored
- * @param stateChanged      when the current state was entered (store clock); the finish time of a terminal task
- * @param data              encoded payload; null when there is none or it was dropped on success
+ * @param stateChangedAt    when the current state was entered (store clock); the finish time of a terminal task
+ * @param encodedPayload    encoded payload; null when there is none or it was dropped on success
  * @param workerId          the worker that claimed the task; kept after it finished
  * @param leaseUntil        when the lease expires unless renewed; LEASED only
  * @param claimedAt         when the last attempt started
@@ -47,15 +47,15 @@ public record TaskRecord(
         long id,
         int revision,
         int queueId,
-        int eventId,
+        int typeId,
         int payloadVersion,
         TaskState state,
         int attempts,
         int maxAttempts,
-        Instant created,
+        Instant createdAt,
         Instant due,
-        Instant stateChanged,
-        String data,
+        Instant stateChangedAt,
+        String encodedPayload,
         Integer workerId,
         Instant leaseUntil,
         Instant claimedAt,
@@ -90,15 +90,15 @@ public record TaskRecord(
         b.id = id;
         b.revision = revision;
         b.queueId = queueId;
-        b.eventId = eventId;
+        b.typeId = typeId;
         b.payloadVersion = payloadVersion;
         b.state = state;
         b.attempts = attempts;
         b.maxAttempts = maxAttempts;
-        b.created = created;
+        b.createdAt = createdAt;
         b.due = due;
-        b.stateChanged = stateChanged;
-        b.data = data;
+        b.stateChangedAt = stateChangedAt;
+        b.encodedPayload = encodedPayload;
         b.workerId = workerId;
         b.leaseUntil = leaseUntil;
         b.claimedAt = claimedAt;
@@ -129,15 +129,15 @@ public record TaskRecord(
         private long id;
         private int revision;
         private int queueId;
-        private int eventId;
+        private int typeId;
         private int payloadVersion = 1;
         private TaskState state = TaskState.QUEUED;
         private int attempts;
         private int maxAttempts = 1;
-        private Instant created;
+        private Instant createdAt;
         private Instant due;
-        private Instant stateChanged;
-        private String data;
+        private Instant stateChangedAt;
+        private String encodedPayload;
         private Integer workerId;
         private Instant leaseUntil;
         private Instant claimedAt;
@@ -174,8 +174,8 @@ public record TaskRecord(
             return this;
         }
 
-        public Builder eventId(int v) {
-            eventId = v;
+        public Builder typeId(int v) {
+            typeId = v;
             return this;
         }
 
@@ -199,8 +199,8 @@ public record TaskRecord(
             return this;
         }
 
-        public Builder created(Instant v) {
-            created = v;
+        public Builder createdAt(Instant v) {
+            createdAt = v;
             return this;
         }
 
@@ -209,13 +209,13 @@ public record TaskRecord(
             return this;
         }
 
-        public Builder stateChanged(Instant v) {
-            stateChanged = v;
+        public Builder stateChangedAt(Instant v) {
+            stateChangedAt = v;
             return this;
         }
 
-        public Builder data(String v) {
-            data = v;
+        public Builder encodedPayload(String v) {
+            encodedPayload = v;
             return this;
         }
 
@@ -314,15 +314,15 @@ public record TaskRecord(
                     id,
                     revision,
                     queueId,
-                    eventId,
+                    typeId,
                     payloadVersion,
                     state,
                     attempts,
                     maxAttempts,
-                    created,
+                    createdAt,
                     due,
-                    stateChanged,
-                    data,
+                    stateChangedAt,
+                    encodedPayload,
                     workerId,
                     leaseUntil,
                     claimedAt,

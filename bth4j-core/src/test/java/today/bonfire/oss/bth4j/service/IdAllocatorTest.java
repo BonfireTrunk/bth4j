@@ -49,7 +49,7 @@ class IdAllocatorTest {
         }
 
         @Override
-        public int eventId(String name) {
+        public int typeId(String name) {
             return 1;
         }
 
@@ -59,7 +59,7 @@ class IdAllocatorTest {
         }
 
         @Override
-        public Map<Integer, String> eventNames() {
+        public Map<Integer, String> typeNames() {
             return Map.of();
         }
     }

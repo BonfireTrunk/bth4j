@@ -7,7 +7,7 @@ import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskStore;
 
 /**
- * Resolves queue and event names to the ids the store keeps, and back. Ids are permanent, so both
+ * Resolves queue and type names to the ids the store keeps, and back. Ids are permanent, so both
  * directions are cached for the life of the process; a reverse miss (an id another process registered)
  * reloads the registry once.
  */
@@ -15,9 +15,9 @@ public final class Names {
 
     private final TaskStore store;
     private final Map<String, Integer> queueIds = new ConcurrentHashMap<>();
-    private final Map<String, Integer> eventIds = new ConcurrentHashMap<>();
+    private final Map<String, Integer> typeIds = new ConcurrentHashMap<>();
     private final Map<Integer, String> queueNames = new ConcurrentHashMap<>();
-    private final Map<Integer, String> eventNames = new ConcurrentHashMap<>();
+    private final Map<Integer, String> typeNames = new ConcurrentHashMap<>();
 
     public Names(TaskStore store) {
         this.store = store;
@@ -31,10 +31,10 @@ public final class Names {
         });
     }
 
-    public int eventId(String name) {
-        return eventIds.computeIfAbsent(name, n -> {
-            int id = store.eventId(n);
-            eventNames.put(id, n);
+    public int typeId(String name) {
+        return typeIds.computeIfAbsent(name, n -> {
+            int id = store.typeId(n);
+            typeNames.put(id, n);
             return id;
         });
     }
@@ -51,19 +51,19 @@ public final class Names {
         return name == null ? "#" + id : name;
     }
 
-    public String eventName(int id) {
-        var name = eventNames.get(id);
+    public String typeName(int id) {
+        var name = typeNames.get(id);
         if (name == null) {
-            store.eventNames().forEach((i, n) -> {
-                eventNames.put(i, n);
-                eventIds.put(n, i);
+            store.typeNames().forEach((i, n) -> {
+                typeNames.put(i, n);
+                typeIds.put(n, i);
             });
-            name = eventNames.get(id);
+            name = typeNames.get(id);
         }
         return name == null ? "#" + id : name;
     }
 
     public TaskView view(TaskRecord record) {
-        return new TaskView(record, queueName(record.queueId()), eventName(record.eventId()));
+        return new TaskView(record, queueName(record.queueId()), typeName(record.typeId()));
     }
 }

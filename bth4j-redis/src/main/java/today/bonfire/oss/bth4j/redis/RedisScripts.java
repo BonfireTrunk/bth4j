@@ -231,9 +231,9 @@ final class RedisScripts {
     };
 
     /**
-     * ARGV: count, lease ms, worker id, known event ids (comma separated, '' for any), queue ids in order.
+     * ARGV: count, lease ms, worker id, known type ids (comma separated, '' for any), queue ids in order.
      * A queue is scanned for at most count*4 ids (cap 1000). Paused queues are skipped. A popped task whose
-     * start-by time has passed is expired on the spot and never returned. Tasks of unknown events are deferred
+     * start-by time has passed is expired on the spot and never returned. Tasks of unknown types are deferred
      * by 5 s in the queue zset only, without an attempt. Zset writes are deferred to the end, so the scan pages
      * by offset: every id examined is still in place. Returns {at, entry...}, each entry {id, payload, steps,
      * {failure...}, then the CLAIM_FIELDS values as read before the claim}. Steps and failures are read only

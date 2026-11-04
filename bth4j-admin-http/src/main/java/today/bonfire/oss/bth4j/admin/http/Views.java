@@ -7,9 +7,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import today.bonfire.oss.bth4j.Issue;
+import today.bonfire.oss.bth4j.Misfire;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.TaskView;
+import today.bonfire.oss.bth4j.service.Misfires;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
@@ -57,13 +59,13 @@ final class Views {
                 "revision", text(t.revision()),
                 "state", t.state().name(),
                 "queue", t.queue(),
-                "event", t.event(),
+                "type", t.type(),
                 "payloadVersion", t.payloadVersion(),
                 "attempts", t.attempts(),
                 "maxAttempts", t.maxAttempts(),
-                "created", t.created(),
+                "createdAt", t.createdAt(),
                 "due", t.due(),
-                "stateChanged", t.stateChanged(),
+                "stateChangedAt", t.stateChangedAt(),
                 "claimedAt", t.claimedAt(),
                 "leaseUntil", t.leaseUntil(),
                 "workerId", t.workerId(),
@@ -111,8 +113,8 @@ final class Views {
         return obj(
                 "status", h.status().name(),
                 "workerId", h.workerId(),
-                "running", h.running(),
-                "abandoned", h.abandoned(),
+                "runningTasks", h.runningTasks(),
+                "abandonedAttempts", h.abandonedAttempts(),
                 "lastClaimAt", h.lastClaimAt(),
                 "lastMaintenanceAt", h.lastMaintenanceAt(),
                 "lastStoreErrorAt", h.lastStoreErrorAt(),
@@ -121,20 +123,22 @@ final class Views {
     }
 
     static Map<String, Object> schedule(ScheduleView s) {
-        return obj(
+        var view = obj(
                 "id", s.id(),
-                "event", s.event(),
+                "type", s.type(),
                 "queue", s.queue(),
                 "account", s.account(),
                 "cron", s.cron(),
-                "zone", s.zone(),
-                "misfire", s.misfire(),
+                "zone", s.zone() == null ? null : s.zone().getId(),
+                "misfire", Misfires.code(s.misfire()),
                 "fixedDelay", text(s.fixedDelay()),
-                "overlapSkip", s.overlapSkip(),
+                "overlap", s.overlap().name(),
                 "paused", s.paused(),
                 "nextFire", s.nextFire(),
                 "maxAttempts", s.maxAttempts(),
                 "maxRunTime", text(s.maxRunTime()));
+        if (s.misfire() instanceof Misfire.CatchUp c) view.put("catchUpMaxFires", c.maxFires());
+        return view;
     }
 
     static Map<String, Object> worker(WorkerInfo w) {

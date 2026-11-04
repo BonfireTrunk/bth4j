@@ -24,6 +24,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import today.bonfire.oss.bth4j.Issue;
+import today.bonfire.oss.bth4j.Misfire;
+import today.bonfire.oss.bth4j.Overlap;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.common.Json;
@@ -555,15 +557,15 @@ class AdminHttpServerTest {
                 .containsEntry("revision", "7")
                 .containsEntry("state", "DEAD")
                 .containsEntry("queue", "default")
-                .containsEntry("event", "send-mail")
-                .containsEntry("created", "2026-01-01T00:00:00Z")
+                .containsEntry("type", "send-mail")
+                .containsEntry("createdAt", "2026-01-01T00:00:00Z")
                 .containsEntry("maxRunTime", "PT5M")
                 .containsEntry("attempts", 1L)
                 .containsEntry("maxAttempts", 3L)
                 .containsKeys(
                         "payloadVersion",
                         "due",
-                        "stateChanged",
+                        "stateChangedAt",
                         "claimedAt",
                         "leaseUntil",
                         "workerId",
@@ -619,7 +621,7 @@ class AdminHttpServerTest {
         assertThat(overview).containsEntry("workers", 1L).containsEntry("issues", 2L);
         @SuppressWarnings("unchecked")
         var health = (Map<String, Object>) overview.get("health");
-        assertThat(health).containsEntry("status", "RUNNING").containsEntry("running", 2L);
+        assertThat(health).containsEntry("status", "RUNNING").containsEntry("runningTasks", 2L);
     }
 
     @Test
@@ -661,6 +663,9 @@ class AdminHttpServerTest {
         assertThat(schedules.get(0))
                 .containsEntry("id", "nightly")
                 .containsEntry("fixedDelay", "PT1H")
+                .containsEntry("misfire", "SKIP")
+                .containsEntry("overlap", "SKIP")
+                .doesNotContainKey("catchUpMaxFires")
                 .containsEntry("maxRunTime", "PT10M")
                 .containsEntry("nextFire", "2026-02-01T00:00:00Z");
         assertThat(jsonList(get("/api/v1/workers", login)).get(0))
@@ -820,9 +825,9 @@ class AdminHttpServerTest {
                 null,
                 null,
                 null,
-                "SKIP",
+                Misfire.SKIP,
                 Duration.ofHours(1),
-                true,
+                Overlap.SKIP,
                 false,
                 Instant.parse("2026-02-01T00:00:00Z"),
                 3,

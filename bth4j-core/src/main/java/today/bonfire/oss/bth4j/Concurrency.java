@@ -1,6 +1,6 @@
 package today.bonfire.oss.bth4j;
 
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 
 /** How many tasks a runner executes at once. */
 public sealed interface Concurrency {
@@ -8,7 +8,7 @@ public sealed interface Concurrency {
     /** A fixed number of tasks run at once. */
     record Fixed(int limit) implements Concurrency {
         public Fixed {
-            if (limit < 1 || limit > 100_000) throw new TaskConfigurationError("concurrency must be 1 to 100000");
+            if (limit < 1 || limit > 100_000) throw new TaskConfigurationException("concurrency must be 1 to 100000");
         }
     }
 
@@ -18,7 +18,8 @@ public sealed interface Concurrency {
      */
     record Adaptive(int min, int max) implements Concurrency {
         public Adaptive {
-            if (min < 1 || max < min) throw new TaskConfigurationError("adaptive concurrency needs 1 <= min <= max");
+            if (min < 1 || max < min)
+                throw new TaskConfigurationException("adaptive concurrency needs 1 <= min <= max");
         }
     }
 

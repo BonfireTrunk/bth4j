@@ -24,11 +24,11 @@ final class TaskHashes {
         var f = new ArrayList<String>();
         put(f, F_REVISION, t.revision());
         put(f, F_QUEUE, t.queueId());
-        put(f, F_EVENT, t.eventId());
+        put(f, F_EVENT, t.typeId());
         put(f, F_PAYLOAD_VERSION, t.payloadVersion());
         put(f, F_ATTEMPTS, t.attempts());
         put(f, F_MAX_ATTEMPTS, t.maxAttempts());
-        put(f, F_CREATED, t.created());
+        put(f, F_CREATED, t.createdAt());
         put(f, F_WORKER, t.workerId());
         put(f, F_LEASE, t.leaseUntil());
         put(f, F_CLAIMED_AT, t.claimedAt());
@@ -54,22 +54,23 @@ final class TaskHashes {
      * @param steps    the {@code st:<id>} string, or null
      * @param failures the {@code f:<id>} entries in order, empty when there are none
      */
-    static TaskRecord fromHash(long id, Map<String, String> h, String data, String steps, List<String> failures) {
+    static TaskRecord fromHash(
+            long id, Map<String, String> h, String encodedPayload, String steps, List<String> failures) {
         var state = TaskState.fromCode(integer(h, F_STATE));
         var leased = state == TaskState.LEASED;
         return TaskRecord.builder()
                 .id(id)
                 .revision(integer(h, F_REVISION))
                 .queueId(integer(h, F_QUEUE))
-                .eventId(integer(h, F_EVENT))
+                .typeId(integer(h, F_EVENT))
                 .payloadVersion(integer(h, F_PAYLOAD_VERSION))
                 .state(state)
                 .attempts(integer(h, F_ATTEMPTS))
                 .maxAttempts(integer(h, F_MAX_ATTEMPTS))
-                .created(instant(h, F_CREATED))
+                .createdAt(instant(h, F_CREATED))
                 .due(instant(h, F_DUE))
-                .stateChanged(instant(h, F_STATE_CHANGED))
-                .data(data)
+                .stateChangedAt(instant(h, F_STATE_CHANGED))
+                .encodedPayload(encodedPayload)
                 .workerId((leased || state.isTerminal()) && h.containsKey(F_WORKER) ? integer(h, F_WORKER) : null)
                 .leaseUntil(leased ? instant(h, F_LEASE) : null)
                 .claimedAt(instant(h, F_CLAIMED_AT))

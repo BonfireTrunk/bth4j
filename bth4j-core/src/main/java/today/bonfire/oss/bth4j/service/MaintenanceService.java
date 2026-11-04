@@ -14,7 +14,7 @@ import today.bonfire.oss.bth4j.FailureDetail;
 import today.bonfire.oss.bth4j.RetryPolicy;
 import today.bonfire.oss.bth4j.TaskEvent;
 import today.bonfire.oss.bth4j.TaskEvent.Outcome;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.executor.CustomThread;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
@@ -369,8 +369,8 @@ public class MaintenanceService extends CustomThread {
 
         public MaintenanceService create() {
             if (group == null || threadName == null)
-                throw new TaskConfigurationError("group and threadName are required");
-            if (store == null || names == null) throw new TaskConfigurationError("store and names are required");
+                throw new TaskConfigurationException("group and threadName are required");
+            if (store == null || names == null) throw new TaskConfigurationException("store and names are required");
             return new MaintenanceService(this);
         }
     }

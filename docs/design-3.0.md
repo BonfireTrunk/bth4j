@@ -63,15 +63,15 @@ Always present:
 | `id` | 64-bit, client-allocated in blocks (see Ids) |
 | `revision` | the fence: +1 on every state change, never on renew, step or progress writes |
 | `queueId` | queue registry id (smallint) |
-| `eventId` | task type registry id (smallint); "event" is the stored name of a `TaskType` |
+| `typeId` | task type registry id (smallint); the stored name of a `TaskType` is its type name |
 | `payloadVersion` | `TaskType.payloadVersion()` when the task was enqueued |
 | `state` | code 0 to 6, see States |
 | `attempts` | how often the task was claimed, minus attempts given back |
 | `maxAttempts` | the task is dead after this many failed attempts |
-| `created` | client time |
+| `createdAt` | client time |
 | `due` | store time; never null once stored |
-| `stateChanged` | store time; when the current state was entered |
-| `data` | encoded payload, at most 256 KiB; null when none or dropped on success |
+| `stateChangedAt` | store time; when the current state was entered |
+| `encodedPayload` | encoded payload, at most 256 KiB; null when none or dropped on success |
 | `workerId` | set while LEASED, kept on terminal rows, cleared on retry, reschedule and unclaim |
 | `leaseUntil` | LEASED only |
 
@@ -79,7 +79,7 @@ Present only when set (a store never writes a null field):
 
 | Field | Meaning |
 |---|---|
-| `claimedAt` | start of the last attempt; the run time of a finished task is `stateChanged - claimedAt` |
+| `claimedAt` | start of the last attempt; the run time of a finished task is `stateChangedAt - claimedAt` |
 | `account` | application-defined owner label, at most 128 characters |
 | `headers` | string map, at most 8 KiB |
 | `uniqueKey`, `keyKeep`, `keyUntil` | unique key, its keep window, and when a held key of a finished task is released |
@@ -92,7 +92,7 @@ Present only when set (a store never writes a null field):
 | `steps` | completed steps by name (see Steps) |
 | `failures` | the last 20 failed attempts, oldest first |
 
-### due, stateChanged and revision
+### due, stateChangedAt and revision
 
 `due` has one meaning in every state: the time from which the task may run. For an immediate task it is
 the enqueue time; for a scheduled task the requested time; after a failure the retry time. Promote and
@@ -104,7 +104,7 @@ around a power of ten (999999 and 1000000); padding the members to a fixed width
 entry its compact integer encoding for a difference no ordinary workload sees. The earlier variants of this idea
 (eligible, queued, fire time) are all `due`.
 
-`stateChanged` is when the current state was entered. For terminal states it is the finish time, which is
+`stateChangedAt` is when the current state was entered. For terminal states it is the finish time, which is
 what retention is measured from. It also orders the terminal and LEASED listings.
 
 `revision` is the fence. Claim, promote, every terminal transition, reschedule and unclaim add one. Renew,
@@ -220,7 +220,7 @@ A key is held while the task is not terminal. What happens afterwards is the `Un
 - `UNTIL_DONE` (default): the key is released at the transition to a terminal state.
 - `keepFor(duration)`: the key stays held for the duration after the task became terminal (the keep
   window). `keyKeep` is stored on the task at enqueue; at the terminal transition `keyUntil =
-  stateChanged + keyKeep` is set. Redis keeps `k:<key>` alive with `PEXPIREAT` and gives the `uk`, `kk`
+  stateChangedAt + keyKeep` is set. Redis keeps `k:<key>` alive with `PEXPIREAT` and gives the `uk`, `kk`
   and `ku` fields of the kept hash the same expiry with `HPEXPIREAT`; PostgreSQL keeps the key column
   until `key_until`.
 
@@ -240,7 +240,7 @@ retention per state:
 | `deadRetention` | 90 days | DEAD |
 | `cancelledRetention` | 48 hours | CANCELLED and EXPIRED |
 
-`MaintenanceStore.purge(state, retention, limit)` removes tasks of that state whose `stateChanged` is older
+`MaintenanceStore.purge(state, retention, limit)` removes tasks of that state whose `stateChangedAt` is older
 than `now - retention`, oldest first, using store time. The retention is not stored on the row: it is the
 current setting of whichever runner purges, so changing it applies to existing rows. A task whose
 `keyUntil` is still in the future is skipped, and the skipped rows do not starve the purge (Redis keeps them in
@@ -249,7 +249,7 @@ a separate zset until the window has passed; PostgreSQL filters them in the quer
 A retention of ZERO removes the record at the transition itself: the runner passes `keep = false` to `ack`
 and `keepDead = false` to `fail`, and the row is deleted in the same atomic call. The exception is a task
 holding a keep window, which is kept (its payload dropped for SUCCEEDED) until the window ends and the
-purge removes it. A succeeded task also drops its payload (`data`) unless `keepSucceededPayload` is set;
+purge removes it. A succeeded task also drops its payload (`encodedPayload`) unless `keepSucceededPayload` is set;
 its `steps` are kept.
 
 Redis task hashes never get a TTL; the purge is the only remover, and it removes the hash together with
@@ -308,10 +308,10 @@ store keeps to the last 20 (oldest dropped). The message is bounded to 2 KiB and
 When maintenance reclaims an expired lease it asks the policy with a null error; a `RetryAfter` becomes
 the retry time, anything else (or no attempts left) makes the task DEAD.
 
-## Unknown events
+## Unknown types
 
-A runner claims only the events it has processors for (`ClaimRequest.knownEventIds`). A task of another
-event can sit in a queue the runner reads, for example during a rolling deploy where only some instances
+A runner claims only the types it has processors for (`ClaimRequest.knownTypeIds`). A task of another
+task type can sit in a queue the runner reads, for example during a rolling deploy where only some instances
 know a new task type. Each store handles it in its cheapest way, and all three leave the task QUEUED and
 spend no attempt:
 
@@ -364,18 +364,18 @@ registries:
 | Registry | Id type | Redis | PostgreSQL |
 |---|---|---|---|
 | queue | smallint, 1 to 32767 | `reg:queue` (name to id; listings invert it, purge walks its values), `seq:queue` | `<prefix>_queue(id smallserial, name unique, paused)` |
-| event | smallint, 1 to 32767 | `reg:event` (name to id), `seq:event` | `<prefix>_event(id smallserial, name unique)` |
+| type | smallint, 1 to 32767 | `reg:event` (name to id), `seq:event` | `<prefix>_event(id smallserial, name unique)` |
 | worker | integer | `seq:worker`, `w:<id>` hash (label, started, seen, running), `workers` zset | `<prefix>_worker(id serial, label, started_at, last_seen, running)` |
 
 Ids are permanent and never reused, so `Names` caches both directions for the life of the process; a miss
 in the reverse direction reloads the registry once. Resolution reads first and registers only a new name,
 because on PostgreSQL an insert that loses a conflict still consumes a sequence value and would exhaust a
 smallint sequence. Both stores refuse beyond 32767 names. The runner registers all its queues and the
-events of its processors at start; the client registers lazily on the first use of a name. Every runner
+types of its processors at start; the client registers lazily on the first use of a name. Every runner
 start allocates a new worker id with its label (`workerLabel`, default the JVM name `pid@host`).
 
 There are no foreign keys in any table, and none in Redis by nature. The registries are written only
-through `queueId` and `eventId`; the services are the only writers of the task rows. Dashboards and ad hoc
+through `queueId` and `typeId`; the services are the only writers of the task rows. Dashboards and ad hoc
 SQL join the registry tables by id. The `paused` column of the queue table is written by `AdminStore.pauseQueue`; `last_seen` and `running`
 of the worker table by `heartbeat` (see Workers).
 
@@ -401,8 +401,8 @@ key only routes the call.
 | `q:<qid>` | zset | QUEUED ids, score `due` ms; equal scores in id text order |
 | `sched:<qid>` | zset | SCHEDULED ids, score `due` ms |
 | `leased` | zset | LEASED ids, score lease expiry ms |
-| `idx:<state>:<qid>` | zset | ids in LEASED and the terminal states, score `stateChanged` ms |
-| `rm:<state>:<qid>` | zset | terminal ids that purge may remove, score `stateChanged` ms |
+| `idx:<state>:<qid>` | zset | ids in LEASED and the terminal states, score `stateChangedAt` ms |
+| `rm:<state>:<qid>` | zset | terminal ids that purge may remove, score `stateChangedAt` ms |
 | `hold:<state>:<qid>` | zset | terminal ids whose key window is open, score `keyUntil` ms; purge moves them to `rm` or removes them once the window has passed |
 | `k:<key>` | string | id of the task that holds a unique key; `PEXPIREAT` while a keep window runs |
 | `cron`, `cron:<sid>`, `crondefs`, `cronrev` | zset, hash, set, string | next fire times of definitions that are not paused, definitions, ids of all definitions, revision counter |
@@ -448,7 +448,7 @@ A script is called by its SHA-1 with `EVALSHA`; on `NOSCRIPT` it is loaded once 
 routed by the declared key. A pipelined batch (`runAll`) that meets `NOSCRIPT` loads the script once and
 sends only the rejected calls again, in order. Queue order is by score `due`; equal scores tie by member bytes (the id as
 text), which is accepted. A claim scans a queue for at most `count * 4` ids (cap 1000), so a block of
-unknown-event tasks cannot make one claim unbounded. A claim reads the payload `d:<id>` of every task it
+unknown-type tasks cannot make one claim unbounded. A claim reads the payload `d:<id>` of every task it
 returns: the hash has no field that says whether a payload exists (a payload may also be dropped by ACK), so
 that read stays. PROMOTE reads the head of each `sched:<qid>` first and the due batch only for queues whose
 head is due, so an idle poll costs one command per queue plus two. RENEW is sent in chunks of 256 leases in
@@ -583,14 +583,14 @@ the leases of all running tasks every third of that duration in one call, passes
 running executions and requests the cancellation of tasks past their `maxRunTime`. Maintenance (`maintenanceCheckInterval`, default 5 s) finds expired leases with
 `reclaim` and fails them with `failExpired` (or ends them with `finishCancelled` when a cancel was
 requested), expires tasks past their `startBy` and writes the worker heartbeat. Clock skew between instances only matters for the client-side
-instants (`created`, request `at`/`delay`, retry times); leases, due times and retention use the store
+instants (`createdAt`, request `at`/`delay`, retry times); leases, due times and retention use the store
 clock.
 
 ## Lifecycle
 
 - `build()` creates the client and calls `store.init()`; nothing else touches the store.
-- `start()` fails with `TaskConfigurationError` when no processor is registered. It freezes the registry,
-  allocates the worker id, resolves queue and event ids (also those of the queue policies), starts the four services (processor, scheduled,
+- `start()` fails with `TaskConfigurationException` when no processor is registered. It freezes the registry,
+  allocates the worker id, resolves queue and type ids (also those of the queue policies), starts the four services (processor, scheduled,
   recurring, maintenance) and a monitor that restarts a service whose thread died every
   `serviceCheckInterval` (default 10 s). It returns after starting. A second call, or a call after
   `stop()`, logs a warning and does nothing.
@@ -611,7 +611,7 @@ A cancel has two shapes, decided by the state the task is in when `AdminStore.ca
 runs. The call checks the revision first; a mismatch answers `STALE` and changes nothing.
 
 - QUEUED or SCHEDULED: no worker holds the task, so it becomes CANCELLED at once (revision +1,
-  `stateChanged`, `cancelRequestedAt = now`, `cancelReason`, unique key handled like any terminal transition,
+  `stateChangedAt`, `cancelRequestedAt = now`, `cancelReason`, unique key handled like any terminal transition,
   the start-by index entry removed). Answer `CANCELLED`.
 - LEASED: only the request is stored (`cancelRequestedAt = now`, `cancelReason`); the revision does not
   change, because the worker's fence must stay valid. Answer `REQUESTED`.
@@ -626,7 +626,7 @@ it cannot leak into the executor thread's next task. Latency from the operator's
 noticing is up to one renewal period, a third of `leaseDuration`.
 
 The task ends in `ExecutionStore.finishCancelled(id, revision, reason, keepPayload)`: LEASED with a matching
-revision becomes CANCELLED (revision +1, `stateChanged`, `cancelReason` set when given, `cancelRequestedAt`
+revision becomes CANCELLED (revision +1, `stateChangedAt`, `cancelReason` set when given, `cancelRequestedAt`
 kept or set to now, `workerId` kept, `leaseUntil` cleared, payload dropped unless kept, unique key handled
 like `ack`). A mismatch returns false and is reported to the observer as `Outcome.LOST`, like every fenced
 transition. The runner calls it when the processor throws `TaskCancelledException`, and also when it throws
@@ -657,7 +657,7 @@ does not expire again.
   performs the EXPIRED transition inline (state 6, revision +1, index, key release) and continues
   with the next member.
 - `MaintenanceStore.expire(limit)` moves QUEUED and SCHEDULED tasks with `startBy <= now` to EXPIRED (revision
-  +1, `stateChanged`, unique key handled like a terminal transition) and returns their ids. PostgreSQL uses
+  +1, `stateChangedAt`, unique key handled like a terminal transition) and returns their ids. PostgreSQL uses
   the partial `_start_by` index; Redis keeps the `startby` zset (QUEUED and SCHEDULED ids with an `sb`, scored
   by it), maintained on every transition into and out of a waiting state, so expiry never scans.
 - Maintenance runs `expire(limit)` every cycle until a call returns fewer than the limit and emits
@@ -678,7 +678,7 @@ An execution still running one renewal period after that request is abandoned (`
 its lease is no longer renewed, so it expires and maintenance retries the task or ends it as for a dead
 worker, and the runner raises `attempt-abandoned` once with the number of abandoned attempts that hold slots.
 The thread cannot be stopped, so it keeps its executor slot and its queue slot until the processor returns;
-`RunnerHealth.abandoned` counts those attempts. If it returns, its completion meets a lost lease or a newer
+`RunnerHealth.abandonedAttempts` counts those attempts. If it returns, its completion meets a lost lease or a newer
 revision and changes nothing. A schedule's `maxRunTime` is copied into each occurrence.
 
 ## Queue policies and pausing
@@ -719,11 +719,11 @@ the definition's policy decides:
 
 - `SKIP`: no task; `setNextFire` to the next fire time computed from now.
 - `FIRE_ONCE_NOW` (default): one occurrence with `due = now`, committed with the next fire computed from now.
-- `CATCH_UP(max)`: the fire times from the stored one up to now are enumerated. If there are no more than
-  `max`, one occurrence is committed for the stored fire time (keeping `fireAt` as its `due`) and the next fire
+- `CATCH_UP(maxFires)`: the fire times from the stored one up to now are enumerated. If there are no more than
+  `maxFires`, one occurrence is committed for the stored fire time (keeping `fireAt` as its `due`) and the next fire
   is the following fire time, so each later round picks up the next missed one, one per round, until the
-  definition has caught up. If there are more than `max`, `setNextFire` moves the definition to the
-  `max`-th last missed fire time and an issue is recorded, so only the latest `max` run.
+  definition has caught up. If there are more than `maxFires`, `setNextFire` moves the definition to the
+  `maxFires`-th last missed fire time and an issue is recorded, so only the latest `maxFires` run.
 
 **Fixed delay.** The occurrence is committed with `due = fireAt` and the next fire time parked 100 years ahead
 (the same parking as a never-fires cron), and carries the header `bth4j.fixed-delay` holding the delay as an
@@ -802,19 +802,19 @@ definitions. `TaskClient.admin()` returns one without health and issues; `Backgr
 that also supplies `health()` and `issues()` of that runner. The reason of a cancel is limited to 512
 characters.
 
-Runner state for operators is local to a runner. `RunnerHealth(status, workerId, running, abandoned,
+Runner state for operators is local to a runner. `RunnerHealth(status, workerId, runningTasks, abandonedAttempts,
 lastClaimAt, lastMaintenanceAt, lastStoreErrorAt, lastStoreError, issueCount)` is a snapshot, with status NEW, RUNNING,
 QUIET or STOPPED. Issues are a bounded ring of 100 `Issue(at, kind, detail, taskId)` kept by `RunnerStatus`;
-the kinds are `unknown-event`, `store-error`, `lease-lost`, `attempt-abandoned`, `retry-policy`, `executor-rejected`,
+the kinds are `unknown-type`, `store-error`, `lease-lost`, `attempt-abandoned`, `retry-policy`, `executor-rejected`,
 `schedule-misfire`, `schedule-overlap` and `schedule-paused`. They are in memory and lost on restart.
 
 ## Metrics, logging and the HTTP API
 
 None of these change the protocol; they read `TaskEvent`s and `AdminOps`.
 
-`LoggingTaskObserver` (core) writes one SLF4J line per event with `bth4j.task`, `bth4j.event` and `bth4j.queue`
-in the MDC. `MicrometerTaskObserver` counts events (`bth4j.tasks` with `event`, `queue`, `result`, `outcome`),
-times successful runs and counts deferrals, fires and purges; its tags are queue and event names and results,
+`LoggingTaskObserver` (core) writes one SLF4J line per event with `bth4j.task`, `bth4j.type` and `bth4j.queue`
+in the MDC. `MicrometerTaskObserver` counts events (`bth4j.tasks` with `type`, `queue`, `result`, `outcome`),
+times successful runs and counts deferrals, fires and purges; its tags are queue and type names and results,
 never ids or messages, to bound the number of meters. `MicrometerRunnerMetrics.bind` registers gauges for
 running tasks, runner up and tasks per state and queue, refreshed by one daemon thread over `admin().counts()`
 and `health()`, so a scrape never reads the store.
@@ -838,11 +838,11 @@ through `FullStore`:
 
 | Interface | Content |
 |---|---|
-| `TaskStore` | `info`, `init`, `allocateIds`, `allocateWorkerId`, `queueId`, `eventId`, `queueNames`, `eventNames` |
+| `TaskStore` | `info`, `init`, `allocateIds`, `allocateWorkerId`, `queueId`, `typeId`, `queueNames`, `typeNames` |
 | `ExecutionStore` | `enqueue`, `enqueueAll`, `claim`, `renew`, `ack`, `fail`, `failExpired`, `finishCancelled`, `reschedule`, `unclaim`, `saveSteps`, `progress` |
 | `MaintenanceStore` | `promote`, `reclaim`, `expire`, `purge`, `purgeWorkers`, `releaseKeys`, `nextDue` |
 | `ScheduleStore` | `putRecurring`, `deleteRecurring`, `recurringSchedules`, `recurringDefinitions`, `dueRecurring`, `commitRecurring`, `pauseRecurring`, `setNextFire` |
-| `InspectionStore` | `getTask`, `counts`, `tasks` (by state, paged by an opaque cursor on `(stateChanged, id)`) |
+| `InspectionStore` | `getTask`, `counts`, `tasks` (by state, paged by an opaque cursor on `(stateChangedAt, id)`) |
 | `AdminStore` | `cancel`, `retry`, `delete`, `pauseQueue`, `queues`, `heartbeat`, `workers` |
 
 The contract is small because the services never read and then write in two steps: each method is one

@@ -4,7 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import org.junit.jupiter.api.Test;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 
 class TaskProcessorRegistryTest {
 
@@ -37,7 +37,7 @@ class TaskProcessorRegistryTest {
         var registry = new TaskProcessorRegistry().register(A, first);
 
         assertThatThrownBy(() -> registry.register(TaskType.of("a"), (ctx, payload) -> {}))
-                .isInstanceOf(TaskConfigurationError.class)
+                .isInstanceOf(TaskConfigurationException.class)
                 .hasMessageContaining("already registered");
         assertThat(registry.get("a").processor()).isSameAs(first);
     }
@@ -46,8 +46,9 @@ class TaskProcessorRegistryTest {
     void nullTypeOrProcessorIsRejected() {
         var registry = new TaskProcessorRegistry();
 
-        assertThatThrownBy(() -> registry.register(null, (ctx, p) -> {})).isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> registry.register(A, null)).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> registry.register(null, (ctx, p) -> {}))
+                .isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> registry.register(A, null)).isInstanceOf(TaskConfigurationException.class);
     }
 
     @Test
@@ -56,7 +57,7 @@ class TaskProcessorRegistryTest {
         registry.freeze();
 
         assertThatThrownBy(() -> registry.register(B, (ctx, payload) -> {}))
-                .isInstanceOf(TaskConfigurationError.class)
+                .isInstanceOf(TaskConfigurationException.class)
                 .hasMessageContaining("start()");
         assertThat(registry.typeNames()).containsExactly("a");
     }
