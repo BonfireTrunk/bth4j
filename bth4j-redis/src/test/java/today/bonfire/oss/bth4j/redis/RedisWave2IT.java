@@ -456,28 +456,39 @@ class RedisWave2IT {
 
     @Test
     void deleteRemovesATaskFromWhereverItIs() {
-        var done = leased(3);
+        var done = RedisFixtures.leasedWithHistory(store, queue, leased(task(3).encodedPayload("p")));
         store.ack(3, done.revision(), true, true, null);
-        var ended = leased(task(4).uniqueKey("w").keyKeep(Duration.ofMinutes(5)));
+        var ended = RedisFixtures.leasedWithHistory(
+                store,
+                queue,
+                leased(task(4).uniqueKey("w").keyKeep(Duration.ofMinutes(5)).encodedPayload("p")));
         store.ack(4, ended.revision(), true, true, null);
-        var queued = enqueued(task(1).startBy(Instant.now().plusSeconds(600)).uniqueKey("k"));
-        var scheduled = enqueued(task(2).due(Instant.now().plusSeconds(600)));
-
-        assertThat(store.delete(1, queued.revision(), null)).isTrue();
-        assertThat(store.delete(2, scheduled.revision(), null)).isTrue();
-        assertThat(store.delete(3, store.getTask(3).orElseThrow().revision(), null))
-                .isTrue();
-        assertThat(store.delete(4, store.getTask(4).orElseThrow().revision(), null))
-                .isTrue();
+        var waiting = leased(
+                task(1).startBy(Instant.now().plusSeconds(600)).uniqueKey("k").encodedPayload("p"));
+        RedisFixtures.addHistory(store, waiting, Instant.now().minusSeconds(5));
+        var later = leased(task(2).encodedPayload("p"));
+        RedisFixtures.addHistory(store, later, Instant.now().plusSeconds(600));
+        assertThat(store.promote(10).moved()).isEqualTo(1);
+        for (var id = 1; id <= 4; id++) {
+            RedisFixtures.assertPopulated(jedis, keys, id);
+        }
+        assertThat(store.getTask(1).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
+        assertThat(store.getTask(2).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
+        assertThat(store.getTask(3).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(store.getTask(4).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(jedis.zscore(keys.startBy, "1")).isNotNull();
+        assertThat(jedis.exists(keys.uniqueKey("k"), keys.uniqueKey("w"))).isEqualTo(2);
 
         for (var id = 1; id <= 4; id++) {
-            assertThat(jedis.exists(keys.task(id), keys.data(id), keys.steps(id), keys.failures(id)))
-                    .isZero();
+            assertThat(store.delete(id, store.getTask(id).orElseThrow().revision(), null))
+                    .as("delete %d", id)
+                    .isTrue();
         }
-        assertThat(jedis.exists(keys.uniqueKey("k"))).isFalse();
-        assertThat(jedis.exists(keys.uniqueKey("w"))).isFalse();
-        assertThat(jedis.zcard(keys.startBy)).isZero();
-        assertThat(jedis.zcard(keys.index(3, queue))).isZero();
+
+        for (var id = 1; id <= 4; id++) {
+            RedisFixtures.assertGone(jedis, keys, id);
+        }
+        assertThat(jedis.exists(keys.uniqueKey("k"), keys.uniqueKey("w"))).isZero();
         assertThat(counts()).isEqualTo(StateCounts.ZERO);
     }
 
