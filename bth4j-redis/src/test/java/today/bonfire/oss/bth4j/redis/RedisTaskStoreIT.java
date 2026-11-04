@@ -316,18 +316,20 @@ class RedisTaskStoreIT {
 
     @Test
     void keyKeepWindowHoldsTheKeyViaPexpireAndKeepsTheHashEvenWithoutKeep() {
-        store.enqueue(task(1).uniqueKey("k").keyKeep(Duration.ofMillis(600)).build());
+        store.enqueue(task(1).uniqueKey("k").keyKeep(Duration.ofMinutes(5)).build());
         store.enqueue(task(2).encodedPayload("p")
                 .uniqueKey("j")
-                .keyKeep(Duration.ofMillis(600))
+                .keyKeep(Duration.ofMinutes(5))
                 .build());
         var claimed = claim(2);
 
         store.ack(1, claimed.get(0).revision(), true, true, null);
         store.ack(2, claimed.get(1).revision(), false, false, null);
 
-        assertThat(jedis.pttl(keys.uniqueKey("k"))).isBetween(1L, 600L);
-        assertThat(jedis.pttl(keys.uniqueKey("j"))).isBetween(1L, 600L);
+        assertThat(jedis.pttl(keys.uniqueKey("k")))
+                .isBetween(1L, Duration.ofMinutes(5).toMillis());
+        assertThat(jedis.pttl(keys.uniqueKey("j")))
+                .isBetween(1L, Duration.ofMinutes(5).toMillis());
         assertThat(store.getTask(1).orElseThrow().keyUntil()).isNotNull();
         var kept = store.getTask(2).orElseThrow();
         assertThat(kept.state()).isEqualTo(TaskState.SUCCEEDED);
@@ -335,7 +337,8 @@ class RedisTaskStoreIT {
         assertThat(kept.keyUntil()).isNotNull();
         assertThat(store.enqueue(task(3).uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(1));
         assertThat(store.enqueue(task(4).uniqueKey("j").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(2));
-        sleep(700);
+        jedis.pexpire(keys.uniqueKey("k"), 1);
+        awaitExpiry(() -> !jedis.exists(keys.uniqueKey("k")));
         assertThat(store.enqueue(task(3).uniqueKey("k").build())).isEqualTo(EnqueueOutcome.STORED);
     }
 
