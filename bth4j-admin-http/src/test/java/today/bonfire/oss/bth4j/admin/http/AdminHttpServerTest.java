@@ -12,6 +12,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.KeyStore;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -19,6 +20,9 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -301,6 +305,132 @@ class AdminHttpServerTest {
         clock.advance(Duration.ofMinutes(10));
 
         assertThat(get("/api/v1/me", login).statusCode()).isEqualTo(401);
+    }
+
+    @Test
+    void anExpiredSessionCannotMutateWithItsFormerCsrfToken() throws Exception {
+        start(builder().sessionTtl(Duration.ofMinutes(10)));
+        var login = admin();
+        clock.advance(Duration.ofMinutes(11));
+
+        var responses = List.of(
+                mutate("POST", "/api/v1/tasks/1/retry", login, "{\"revision\":\"7\"}"),
+                mutate("POST", "/api/v1/queues/default/pause", login, null),
+                mutate("DELETE", "/api/v1/tasks/1?revision=7", login, null));
+
+        assertThat(responses).extracting(HttpResponse::statusCode).containsOnly(401);
+        assertThat(ops.calls).isEmpty();
+    }
+
+    @Test
+    void aLoggedOutSessionCannotMutateWithItsFormerCsrfToken() throws Exception {
+        start();
+        var login = admin();
+        assertThat(mutate("DELETE", "/api/v1/session", login, null).statusCode())
+                .isEqualTo(200);
+
+        var responses = List.of(
+                mutate("POST", "/api/v1/tasks/1/retry", login, "{\"revision\":\"7\"}"),
+                mutate("POST", "/api/v1/queues/default/pause", login, null),
+                mutate("DELETE", "/api/v1/tasks/1?revision=7", login, null));
+
+        assertThat(responses).extracting(HttpResponse::statusCode).containsOnly(401);
+        assertThat(ops.calls).isEmpty();
+    }
+
+    @Test
+    void cookiesAreSecureWhenTheServerSpeaksHttps(@TempDir Path keys) throws Exception {
+        var keystore = keys.resolve("server.p12");
+        var keytool = Path.of(System.getProperty("java.home"), "bin", "keytool").toString();
+        var process = new ProcessBuilder(
+                        keytool,
+                        "-genkeypair",
+                        "-alias",
+                        "admin",
+                        "-keyalg",
+                        "RSA",
+                        "-keysize",
+                        "2048",
+                        "-dname",
+                        "CN=127.0.0.1",
+                        "-ext",
+                        "san=ip:127.0.0.1",
+                        "-validity",
+                        "2",
+                        "-storetype",
+                        "PKCS12",
+                        "-keystore",
+                        keystore.toString(),
+                        "-storepass",
+                        "changeit")
+                .redirectErrorStream(true)
+                .start();
+        var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertThat(process.waitFor()).as(output).isZero();
+        var store = KeyStore.getInstance("PKCS12");
+        try (var in = Files.newInputStream(keystore)) {
+            store.load(in, "changeit".toCharArray());
+        }
+        var keyManagers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+        keyManagers.init(store, "changeit".toCharArray());
+        var serverSsl = SSLContext.getInstance("TLS");
+        serverSsl.init(keyManagers.getKeyManagers(), null, null);
+        var trust = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        trust.init(store);
+        var clientSsl = SSLContext.getInstance("TLS");
+        clientSsl.init(null, trust.getTrustManagers(), null);
+        start(builder().https(serverSsl));
+        var https = HttpClient.newBuilder().sslContext(clientSsl).build();
+        var base = "https://127.0.0.1:" + server.port() + "/api/v1/session";
+
+        var login = https.send(
+                HttpRequest.newBuilder(URI.create(base))
+                        .POST(HttpRequest.BodyPublishers.ofString(
+                                Json.write(Map.of("user", "alice", "password", "s3cret"))))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        assertThat(login.statusCode()).isEqualTo(200);
+        var cookie = login.headers().firstValue("Set-Cookie").orElseThrow();
+        assertThat(cookie).contains("HttpOnly", "SameSite=Strict", "Path=/", "Secure");
+        var logout = https.send(
+                HttpRequest.newBuilder(URI.create(base))
+                        .method("DELETE", HttpRequest.BodyPublishers.noBody())
+                        .header("Cookie", cookie.substring(0, cookie.indexOf(';')))
+                        .header("X-CSRF-Token", (String) json(login).get("csrf"))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(logout.statusCode()).isEqualTo(200);
+        assertThat(logout.headers().firstValue("Set-Cookie").orElseThrow()).contains("Max-Age=0", "Secure");
+    }
+
+    @Test
+    void taskIdsAbove2Pow53RoundTripExactlyThroughReadsAndMutations() throws Exception {
+        var big = (1L << 53) + 1;
+        var max = Long.MAX_VALUE;
+        ops.tasks.put(big, FakeAdminOps.task(big, 7, TaskState.DEAD, "default", "p"));
+        ops.tasks.put(max, FakeAdminOps.task(max, 7, TaskState.DEAD, "default", "q"));
+        start();
+        var login = admin();
+
+        assertThat(json(get("/api/v1/tasks/" + big, login))).containsEntry("id", String.valueOf(big));
+        assertThat(json(get("/api/v1/tasks/" + max, login))).containsEntry("id", String.valueOf(max));
+        var page = json(get("/api/v1/tasks?state=DEAD&limit=1&cursor=4", login));
+        assertThat(items(page)).extracting(t -> t.get("id")).containsExactly(String.valueOf(big));
+        assertThat(page).containsEntry("next", String.valueOf(big));
+        var next = json(get("/api/v1/tasks?state=DEAD&limit=1&cursor=" + page.get("next"), login));
+        assertThat(items(next)).extracting(t -> t.get("id")).containsExactly(String.valueOf(max));
+        assertThat(mutate("POST", "/api/v1/tasks/" + big + "/retry", login, "{\"revision\":\"7\"}")
+                        .statusCode())
+                .isEqualTo(200);
+        assertThat(mutate("POST", "/api/v1/tasks/" + max + "/cancel", login, "{\"revision\":7,\"reason\":\"r\"}")
+                        .statusCode())
+                .isEqualTo(200);
+        assertThat(mutate("DELETE", "/api/v1/tasks/" + big + "?revision=7", login, null)
+                        .statusCode())
+                .isEqualTo(200);
+
+        assertThat(ops.calls).contains("retry " + big + " 7", "cancel " + max + " 7 r", "delete " + big + " 7");
     }
 
     @Test
