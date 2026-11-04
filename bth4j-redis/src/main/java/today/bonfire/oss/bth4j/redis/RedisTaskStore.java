@@ -66,6 +66,9 @@ public class RedisTaskStore implements FullStore {
 
     private static final int PAGE_CHUNK = 500;
 
+    /** Leases per RENEW call, so that one call blocks Redis for well under a millisecond or two. */
+    private static final int RENEW_CHUNK = 256;
+
     private final UnifiedJedis jedis;
     private final Keys keys;
     private final ScriptRunner scripts;
@@ -307,17 +310,25 @@ public class RedisTaskStore implements FullStore {
         if (leases.isEmpty()) {
             return List.of();
         }
-        var args = new ArrayList<String>();
-        args.add(String.valueOf(lease.toMillis()));
-        for (var l : leases) {
-            args.add(String.valueOf(l.id()));
-            args.add(String.valueOf(l.revision()));
+        var calls = new ArrayList<List<String>>();
+        for (var from = 0; from < leases.size(); from += RENEW_CHUNK) {
+            var args = new ArrayList<String>();
+            args.add(String.valueOf(lease.toMillis()));
+            for (var l : leases.subList(from, Math.min(from + RENEW_CHUNK, leases.size()))) {
+                args.add(String.valueOf(l.id()));
+                args.add(String.valueOf(l.revision()));
+            }
+            calls.add(args);
         }
-        var r = (List<Object>) guard(() -> scripts.run(RedisScripts.RENEW, args));
+        var replies = guard(() -> scripts.runAll(RedisScripts.RENEW, calls));
         var out = new ArrayList<LeaseStatus>(leases.size());
-        for (var i = 0; i < leases.size(); i++) {
-            var code = num(r.get(i));
-            out.add(new LeaseStatus(leases.get(i).id(), code > 0, code == 2));
+        for (var c = 0; c < replies.size(); c++) {
+            var r = (List<Object>) replies.get(c);
+            for (var i = 0; i < r.size(); i++) {
+                var ref = leases.get(c * RENEW_CHUNK + i);
+                var code = num(r.get(i));
+                out.add(new LeaseStatus(ref.id(), code > 0, code == 2));
+            }
         }
         return out;
     }
@@ -870,8 +881,14 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public int purgeWorkers(Duration staleAfter) {
-        var args = List.of(String.valueOf(staleAfter.toMillis()));
-        return (int) num(guard(() -> scripts.run(RedisScripts.PURGE_WORKERS, args)));
+        var args = List.of(String.valueOf(staleAfter.toMillis()), String.valueOf(RedisScripts.PURGE_WORKERS_PAGE));
+        var total = 0;
+        int page;
+        do {
+            page = (int) num(guard(() -> scripts.run(RedisScripts.PURGE_WORKERS, args)));
+            total += page;
+        } while (page == RedisScripts.PURGE_WORKERS_PAGE);
+        return total;
     }
 
     @Override
