@@ -44,7 +44,7 @@ public class TaskProcessorService extends CustomThread {
     private final List<Integer> distinctQueueIds;
     private final Map<Integer, QueuePolicy> policies;
     private final boolean policed;
-    private final Set<Integer> knownEventIds;
+    private final Set<Integer> knownTypeIds;
     private final int workerId;
     private final Duration lease;
     private final Duration renewInterval;
@@ -69,7 +69,7 @@ public class TaskProcessorService extends CustomThread {
         this.distinctQueueIds = List.copyOf(new LinkedHashSet<>(b.queueIds));
         this.policies = Map.copyOf(b.queuePolicies);
         this.policed = policies.values().stream().anyMatch(p -> !p.equals(QueuePolicy.DEFAULT));
-        this.knownEventIds = Set.copyOf(b.knownEventIds);
+        this.knownTypeIds = Set.copyOf(b.knownTypeIds);
         this.workerId = b.workerId;
         this.running = b.running;
         this.reservations = b.reservations;
@@ -155,7 +155,7 @@ public class TaskProcessorService extends CustomThread {
     }
 
     private List<TaskRecord> claim(List<Integer> queues, int count) {
-        return settings.store().claim(new ClaimRequest(queues, count, lease, workerId, knownEventIds));
+        return settings.store().claim(new ClaimRequest(queues, count, lease, workerId, knownTypeIds));
     }
 
     /**
@@ -373,7 +373,7 @@ public class TaskProcessorService extends CustomThread {
         private TaskExecution.Settings settings;
         private List<Integer> queueIds;
         private Map<Integer, QueuePolicy> queuePolicies = Map.of();
-        private Set<Integer> knownEventIds;
+        private Set<Integer> knownTypeIds;
         private int workerId;
         private Duration lease = Duration.ofSeconds(60);
         private Duration defaultMaxRunTime = Duration.ofHours(1);
@@ -414,8 +414,8 @@ public class TaskProcessorService extends CustomThread {
             return this;
         }
 
-        public Builder knownEventIds(Set<Integer> knownEventIds) {
-            this.knownEventIds = knownEventIds;
+        public Builder knownTypeIds(Set<Integer> knownTypeIds) {
+            this.knownTypeIds = knownTypeIds;
             return this;
         }
 
@@ -466,7 +466,7 @@ public class TaskProcessorService extends CustomThread {
             if (settings == null) throw new TaskConfigurationError("settings are required");
             if (executor == null) throw new TaskConfigurationError("executor is required");
             if (queueIds == null || queueIds.isEmpty()) throw new TaskConfigurationError("queueIds are required");
-            if (knownEventIds == null) throw new TaskConfigurationError("knownEventIds are required");
+            if (knownTypeIds == null) throw new TaskConfigurationError("knownTypeIds are required");
             if (group == null || threadName == null) {
                 throw new TaskConfigurationError("Thread group and name are required");
             }

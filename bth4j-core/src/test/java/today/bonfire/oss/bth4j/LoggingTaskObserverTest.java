@@ -26,7 +26,7 @@ class LoggingTaskObserverTest {
             var record = TaskRecord.builder()
                     .id(5)
                     .queueId(1)
-                    .eventId(1)
+                    .typeId(1)
                     .state(TaskState.SCHEDULED)
                     .attempts(1)
                     .maxAttempts(3)

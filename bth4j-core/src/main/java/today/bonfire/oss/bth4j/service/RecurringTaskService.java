@@ -226,7 +226,7 @@ public class RecurringTaskService extends CustomThread {
         var builder = TaskRecord.builder()
                 .id(ids.nextId())
                 .queueId(def.queueId())
-                .eventId(def.eventId())
+                .typeId(def.typeId())
                 .payloadVersion(def.payloadVersion())
                 .state(due.isAfter(clock.instant()) ? TaskState.SCHEDULED : TaskState.QUEUED)
                 .maxAttempts(def.maxAttempts())

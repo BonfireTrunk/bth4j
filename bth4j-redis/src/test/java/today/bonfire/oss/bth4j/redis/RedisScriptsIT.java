@@ -54,7 +54,7 @@ class RedisScriptsIT {
     private RedisTaskStore store;
     private Keys keys;
     private int queue;
-    private int event;
+    private int type;
 
     @BeforeAll
     static void connect() {
@@ -87,14 +87,14 @@ class RedisScriptsIT {
         keys = store.keys();
         store.init();
         queue = store.queueId("default");
-        event = store.eventId("send");
+        type = store.typeId("send");
     }
 
     private TaskRecord.Builder task(long id) {
         return TaskRecord.builder()
                 .id(id)
                 .queueId(queue)
-                .eventId(event)
+                .typeId(type)
                 .maxAttempts(30)
                 .created(Instant.now().truncatedTo(ChronoUnit.MILLIS));
     }

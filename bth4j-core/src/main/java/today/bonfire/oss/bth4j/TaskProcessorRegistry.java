@@ -7,7 +7,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 
 /**
  * Maps task types to their processors. Register everything before the runner starts; the registry is
- * frozen then, so the set of events a runner claims is fixed for its life.
+ * frozen then, so the set of types a runner claims is fixed for its life.
  */
 public final class TaskProcessorRegistry {
 

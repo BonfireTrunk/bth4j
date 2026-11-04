@@ -180,7 +180,7 @@ export default {
           <h2>Routing</h2>
           <dl class="kv">
             <dt>Queue</dt><dd><a :href="'#/tasks?queue=' + encodeURIComponent(task.queue) + '&state=' + task.state">{{ task.queue }}</a></dd>
-            <dt>Event</dt><dd>{{ task.event }}</dd>
+            <dt>Type</dt><dd>{{ task.type }}</dd>
             <dt>Payload version</dt><dd>{{ task.payloadVersion }}</dd>
             <dt>Account</dt><dd>{{ task.account || '-' }}</dd>
             <dt>Unique key</dt><dd class="mono">{{ task.uniqueKey || '-' }}</dd>

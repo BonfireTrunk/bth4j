@@ -41,7 +41,7 @@ class TaskProcessorCapacityTest {
     private final TaskClient client =
             TaskClient.builder().store(store).clock(clock).build();
     private final int queueId = names.queueId("Q:DEF");
-    private final int eventId = names.eventId(TYPE.name());
+    private final int typeId = names.typeId(TYPE.name());
     private final Map<Long, TaskExecution> running = new ConcurrentHashMap<>();
     private final QueueReservations reservations = new QueueReservations();
     private final TaskExecution.Settings settings = new TaskExecution.Settings(
@@ -143,7 +143,7 @@ class TaskProcessorCapacityTest {
                 .reservations(reservations)
                 .executor(executor)
                 .queueIds(List.of(queueId))
-                .knownEventIds(Set.of(eventId))
+                .knownTypeIds(Set.of(typeId))
                 .queuePolicies(Map.of(queueId, QueuePolicy.maxConcurrent(maxConcurrent)))
                 .claimBatchSize(maxConcurrent)
                 .idlePollInterval(Duration.ofMillis(1))

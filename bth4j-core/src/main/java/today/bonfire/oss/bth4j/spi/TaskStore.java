@@ -45,12 +45,12 @@ public interface TaskStore {
      */
     int queueId(String name);
 
-    /** Resolves an event (task type) name to its id, registering it when new. Permanent, cacheable. */
-    int eventId(String name);
+    /** Resolves a task type name to its id, registering it when new. Permanent, cacheable. */
+    int typeId(String name);
 
     /** @return every registered queue, id to name */
     Map<Integer, String> queueNames();
 
-    /** @return every registered event, id to name */
-    Map<Integer, String> eventNames();
+    /** @return every registered type, id to name */
+    Map<Integer, String> typeNames();
 }

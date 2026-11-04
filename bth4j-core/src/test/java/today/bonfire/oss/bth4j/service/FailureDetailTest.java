@@ -469,7 +469,7 @@ class FailureDetailTest {
                 FullStore.class.getClassLoader(), new Class<?>[] {FullStore.class}, (proxy, method, args) -> {
                     return switch (method.getName()) {
                         case "queueNames" -> Map.of(1, "Q:DEF");
-                        case "eventNames" -> Map.of(1, "boom");
+                        case "typeNames" -> Map.of(1, "boom");
                         case "ack" -> {
                             if (scheduleError != null) throw scheduleError;
                             acked = true;
@@ -527,7 +527,7 @@ class FailureDetailTest {
                 .id(9)
                 .revision(1)
                 .queueId(1)
-                .eventId(1)
+                .typeId(1)
                 .state(TaskState.LEASED)
                 .attempts(1)
                 .scheduleId(fixedDelay ? "sched" : null)

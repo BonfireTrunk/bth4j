@@ -30,7 +30,7 @@ class MicrometerTaskObserverTest {
 
     private double count(String result, String outcome) {
         return registry.get(MicrometerTaskObserver.TASKS)
-                .tags("event", "send", "queue", "emails", "result", result, "outcome", outcome)
+                .tags("type", "send", "queue", "emails", "result", result, "outcome", outcome)
                 .counter()
                 .count();
     }
@@ -41,7 +41,7 @@ class MicrometerTaskObserverTest {
 
         assertThat(count("succeeded", "applied")).isEqualTo(1);
         var timer = registry.get(MicrometerTaskObserver.DURATION)
-                .tags("event", "send", "queue", "emails")
+                .tags("type", "send", "queue", "emails")
                 .timer();
         assertThat(timer.count()).isEqualTo(1);
         assertThat(timer.totalTime(TimeUnit.MILLISECONDS)).isEqualTo(250);
@@ -87,11 +87,11 @@ class MicrometerTaskObserverTest {
     }
 
     @Test
-    void leaseExpiredHasUnknownEventAndQueue() {
+    void leaseExpiredHasUnknownTypeAndQueue() {
         observer.onEvent(new TaskEvent.LeaseExpired(9, 1, 3, false));
 
         var counter = registry.get(MicrometerTaskObserver.TASKS)
-                .tags("event", "unknown", "queue", "unknown", "result", "lease_lost", "outcome", "applied")
+                .tags("type", "unknown", "queue", "unknown", "result", "lease_lost", "outcome", "applied")
                 .counter();
         assertThat(counter.count()).isEqualTo(1);
     }
@@ -103,7 +103,7 @@ class MicrometerTaskObserverTest {
         observer.onEvent(new TaskEvent.Purged(TaskState.SUCCEEDED, 5));
 
         assertThat(registry.get(MicrometerTaskObserver.DEFERRED)
-                        .tag("event", "send")
+                        .tag("type", "send")
                         .counter()
                         .count())
                 .isEqualTo(1);

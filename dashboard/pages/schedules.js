@@ -47,12 +47,12 @@ export default {
     <status-msg :loading="loading" :error="error" :empty="!data || data.length === 0" empty-text="No schedules defined." empty-hint="Schedules are registered by the application with client.putSchedule(...)."></status-msg>
     <div class="table-wrap" v-if="data && data.length">
       <table>
-        <thead><tr><th>Next fire</th><th>Id</th><th>Event</th><th>Queue</th><th>Trigger</th><th>Zone</th><th>Misfire</th><th>Overlap</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Next fire</th><th>Id</th><th>Type</th><th>Queue</th><th>Trigger</th><th>Zone</th><th>Misfire</th><th>Overlap</th><th>Status</th><th></th></tr></thead>
         <tbody>
           <tr v-for="s in data" :key="s.id">
             <td><span v-if="parked(s)" class="muted">held until the running occurrence ends</span><time-ago v-else :at="s.nextFire" :late="!s.paused"></time-ago></td>
             <td class="mono">{{ s.id }}</td>
-            <td>{{ s.event }}</td>
+            <td>{{ s.type }}</td>
             <td>{{ s.queue }}</td>
             <td class="mono"><template v-if="s.cron">{{ s.cron }}</template><template v-else-if="s.fixedDelay">every {{ duration(s.fixedDelay) }}</template><template v-else>-</template></td>
             <td>{{ s.zone || 'UTC' }}</td>

@@ -43,7 +43,7 @@ class PostgresTaskStoreIT {
     private PostgresTaskStore store;
     private String prefix;
     private int queue;
-    private int event;
+    private int type;
     private int worker;
 
     @BeforeEach
@@ -52,7 +52,7 @@ class PostgresTaskStoreIT {
         prefix = PostgresTestSupport.prefix(namespace);
         store = PostgresTestSupport.store(namespace);
         queue = store.queueId("default");
-        event = store.eventId("send-mail");
+        type = store.typeId("send-mail");
         worker = store.allocateWorkerId("host:1");
     }
 
@@ -60,7 +60,7 @@ class PostgresTaskStoreIT {
         return TaskRecord.builder()
                 .id(id)
                 .queueId(queue)
-                .eventId(event)
+                .typeId(type)
                 .maxAttempts(3)
                 .created(Instant.now())
                 .data("payload-" + id);
@@ -221,19 +221,19 @@ class PostgresTaskStoreIT {
         for (int i = 0; i < 20; i++) assertThat(store.queueId("default")).isEqualTo(queue);
         int other = store.queueId("other");
         assertThat(other).isEqualTo(queue + 1);
-        assertThat(store.eventId("send-mail")).isEqualTo(event);
-        int report = store.eventId("report");
+        assertThat(store.typeId("send-mail")).isEqualTo(type);
+        int report = store.typeId("report");
         assertThat(store.queueNames()).containsExactly(Map.entry(queue, "default"), Map.entry(other, "other"));
-        assertThat(store.eventNames()).containsExactly(Map.entry(event, "send-mail"), Map.entry(report, "report"));
+        assertThat(store.typeNames()).containsExactly(Map.entry(type, "send-mail"), Map.entry(report, "report"));
         assertThatThrownBy(() -> store.queueId(" ")).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void fullRegistryIsReported() throws SQLException {
         sql("SELECT setval('" + prefix + "_event_id_seq', 32767)");
-        assertThatThrownBy(() -> store.eventId("one-too-many"))
+        assertThatThrownBy(() -> store.typeId("one-too-many"))
                 .isInstanceOf(TaskStoreException.class)
-                .hasMessageContaining("event registry is full");
+                .hasMessageContaining("type registry is full");
     }
 
     // ---- enqueue -------------------------------------------------------------------------------------
@@ -430,17 +430,17 @@ class PostgresTaskStoreIT {
     }
 
     @Test
-    void claimSkipsUnknownEvents() {
-        int unknown = store.eventId("from-a-newer-runner");
+    void claimSkipsUnknownTypes() {
+        int unknown = store.typeId("from-a-newer-runner");
         long known = newId();
         long other = newId();
         store.enqueue(
-                task(other).eventId(unknown).due(Instant.now().minusSeconds(60)).build());
+                task(other).typeId(unknown).due(Instant.now().minusSeconds(60)).build());
         store.enqueue(task(known).build());
 
         assertThat(store.claim(new ClaimRequest(List.of(queue), 5, LEASE, worker, Set.of())))
                 .isEmpty();
-        assertThat(store.claim(new ClaimRequest(List.of(queue), 5, LEASE, worker, Set.of(event))))
+        assertThat(store.claim(new ClaimRequest(List.of(queue), 5, LEASE, worker, Set.of(type))))
                 .extracting(TaskRecord::id)
                 .containsExactly(known);
         assertThat(get(other).state()).isEqualTo(TaskState.QUEUED);
@@ -636,7 +636,7 @@ class PostgresTaskStoreIT {
         assertThat(e.revision()).isEqualTo(t.revision());
         assertThat(e.attempts()).isEqualTo(1);
         assertThat(e.maxAttempts()).isEqualTo(3);
-        assertThat(e.eventId()).isEqualTo(event);
+        assertThat(e.typeId()).isEqualTo(type);
         assertThat(e.cancelRequested()).isFalse();
 
         assertThat(store.renew(List.of(new LeaseRef(id, t.revision())), Duration.ofMinutes(1)))
@@ -833,7 +833,7 @@ class PostgresTaskStoreIT {
     // ---- recurring definitions -----------------------------------------------------------------------
 
     private RecurringDefinition definition(String id, String cron) {
-        return new RecurringDefinition(id, event, 1, queue, "acme", cron, "{\"x\":1}", 4, 0);
+        return new RecurringDefinition(id, type, 1, queue, "acme", cron, "{\"x\":1}", 4, 0);
     }
 
     @Test
@@ -847,7 +847,7 @@ class PostgresTaskStoreIT {
         assertThat(due).hasSize(1);
         DueSchedule d = due.getFirst();
         assertThat(d.fireAt()).isEqualTo(fireAt);
-        assertThat(d.definition().eventId()).isEqualTo(event);
+        assertThat(d.definition().typeId()).isEqualTo(type);
         assertThat(d.definition().queueId()).isEqualTo(queue);
         assertThat(d.definition().account()).isEqualTo("acme");
         assertThat(d.definition().maxAttempts()).isEqualTo(4);
@@ -883,7 +883,7 @@ class PostgresTaskStoreIT {
         assertThat(store.dueRecurring(first, 10).getFirst().definition().revision())
                 .isEqualTo(revision);
 
-        var otherData = new RecurringDefinition("job", event, 1, queue, "acme", "0 * * * *", "{\"x\":2}", 4, 0);
+        var otherData = new RecurringDefinition("job", type, 1, queue, "acme", "0 * * * *", "{\"x\":2}", 4, 0);
         assertThat(store.putRecurring(otherData, first.plusSeconds(600), first.plusSeconds(600)))
                 .isEqualTo(PutRecurringOutcome.CHANGED);
         assertThat(store.recurringSchedules()).containsEntry("job", first);
@@ -1134,7 +1134,7 @@ class PostgresTaskStoreIT {
     private RecurringDefinition fullDefinition(String id) {
         return new RecurringDefinition(
                 id,
-                event,
+                type,
                 2,
                 queue,
                 "acme",
@@ -1153,7 +1153,7 @@ class PostgresTaskStoreIT {
 
     private RecurringDefinition fixedDelay(String id, long delayMs) {
         return new RecurringDefinition(
-                id, event, 1, queue, null, null, null, null, 0, delayMs, false, null, 1, null, false, 0);
+                id, type, 1, queue, null, null, null, null, 0, delayMs, false, null, 1, null, false, 0);
     }
 
     @Test
@@ -1175,7 +1175,7 @@ class PostgresTaskStoreIT {
         store.putRecurring(fixedDelay("a-delay", 30_000), at.plusSeconds(500), at.plusSeconds(500));
         assertThat(store.recurringSchedules()).containsEntry("a-delay", at.plusSeconds(500));
         var zoneChanged = new RecurringDefinition(
-                "b-cron", event, 2, queue, "acme", "0 9 * * *", "UTC", null, 0, null, false, "{}", 5, null, false, 0);
+                "b-cron", type, 2, queue, "acme", "0 9 * * *", "UTC", null, 0, null, false, "{}", 5, null, false, 0);
         store.putRecurring(zoneChanged, at.plusSeconds(700), at.plusSeconds(700));
         assertThat(store.recurringSchedules()).containsEntry("b-cron", at.plusSeconds(700));
     }

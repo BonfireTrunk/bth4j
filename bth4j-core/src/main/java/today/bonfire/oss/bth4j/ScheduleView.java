@@ -6,7 +6,7 @@ import java.time.Instant;
 /** A recurring definition as applications and the admin API see it. */
 public record ScheduleView(
         String id,
-        String event,
+        String type,
         String queue,
         String account,
         String cron,

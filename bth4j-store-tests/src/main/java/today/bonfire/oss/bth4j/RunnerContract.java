@@ -171,7 +171,7 @@ public abstract class RunnerContract {
         var done = awaitState(id, TaskState.SUCCEEDED);
         assertThat(seen.get()).isEqualTo(new Payload("alpha", 7));
         assertThat(stateInside.get()).isEqualTo(TaskState.LEASED);
-        assertThat(viewInside.get().event()).isEqualTo("rc-payload");
+        assertThat(viewInside.get().type()).isEqualTo("rc-payload");
         assertThat(viewInside.get().queue()).isEqualTo("Q:DEF");
         assertThat(viewInside.get().headers()).containsEntry("trace", "t-1");
         assertThat(done.attempts()).isEqualTo(1);
@@ -616,7 +616,7 @@ public abstract class RunnerContract {
     }
 
     @Test
-    void eventWithoutARegisteredProcessorIsNeverClaimedByThisRunner() {
+    void typeWithoutARegisteredProcessorIsNeverClaimedByThisRunner() {
         var ran = new CountDownLatch(1);
         startRunner(r -> r.register(OTHER_TYPE, (ctx, payload) -> ran.countDown()));
 
@@ -1147,7 +1147,7 @@ public abstract class RunnerContract {
     private void registerLate(String id, String cron, String misfire, int catchUpMax, Duration late) {
         var def = new today.bonfire.oss.bth4j.spi.RecurringDefinition(
                 id,
-                store.eventId(VOID_TYPE.name()),
+                store.typeId(VOID_TYPE.name()),
                 1,
                 store.queueId("Q:DEF"),
                 null,

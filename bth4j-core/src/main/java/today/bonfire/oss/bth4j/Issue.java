@@ -5,7 +5,7 @@ import java.time.Instant;
 /**
  * Something an operator should look at, kept in memory by the runner that saw it (bounded, newest last).
  *
- * @param kind   {@code unknown-event}, {@code store-error}, {@code lease-lost}, {@code retry-policy},
+ * @param kind   {@code unknown-type}, {@code store-error}, {@code lease-lost}, {@code retry-policy},
  *               {@code executor-rejected}, {@code schedule-misfire}, {@code schedule-overlap}, {@code schedule-paused}
  * @param taskId the task concerned, or null
  */

@@ -41,7 +41,7 @@ public abstract class StoreContract {
     protected FullStore store;
     private int worker;
     private int queue;
-    private int event;
+    private int type;
 
     /** @return a store with no state, isolated from every other namespace */
     protected abstract FullStore newStore(String namespace);
@@ -66,7 +66,7 @@ public abstract class StoreContract {
         }
     }
 
-    /** @return the largest queue or event id the store under test accepts; the registry test is skipped above 1000 */
+    /** @return the largest queue or type id the store under test accepts; the registry test is skipped above 1000 */
     protected int registryBound() {
         return 32767;
     }
@@ -77,7 +77,7 @@ public abstract class StoreContract {
         store.init();
         worker = store.allocateWorkerId("contract-test");
         queue = store.queueId("main");
-        event = store.eventId("work");
+        type = store.typeId("work");
     }
 
     private Instant now() {
@@ -85,14 +85,14 @@ public abstract class StoreContract {
     }
 
     private TaskRecord.Builder task() {
-        return task(queue, event);
+        return task(queue, type);
     }
 
-    private TaskRecord.Builder task(int queueId, int eventId) {
+    private TaskRecord.Builder task(int queueId, int typeId) {
         return TaskRecord.builder()
                 .id(store.allocateIds(1))
                 .queueId(queueId)
-                .eventId(eventId)
+                .typeId(typeId)
                 .maxAttempts(3)
                 .created(now())
                 .data("payload");
@@ -116,7 +116,7 @@ public abstract class StoreContract {
         return claim(count, LEASE, null, queueIds);
     }
 
-    private List<TaskRecord> claim(int count, Duration lease, Set<Integer> events, int... queueIds) {
+    private List<TaskRecord> claim(int count, Duration lease, Set<Integer> typeIds, int... queueIds) {
         List<Integer> queues = new ArrayList<>();
         for (int q : queueIds) {
             queues.add(q);
@@ -124,7 +124,7 @@ public abstract class StoreContract {
         if (queues.isEmpty()) {
             queues.add(queue);
         }
-        return store.claim(new ClaimRequest(queues, count, lease, worker, events));
+        return store.claim(new ClaimRequest(queues, count, lease, worker, typeIds));
     }
 
     private TaskRecord claimOne() {
@@ -224,28 +224,28 @@ public abstract class StoreContract {
     }
 
     @Test
-    void eventIdIsStablePermanentAndStartsAtOne() {
+    void typeIdIsStablePermanentAndStartsAtOne() {
         TaskStore fresh = newStore("fresh" + COUNTER.incrementAndGet());
-        assertThat(fresh.eventId("a")).isEqualTo(1);
-        assertThat(fresh.eventId("b")).isEqualTo(2);
-        assertThat(fresh.eventId("a")).isEqualTo(1);
+        assertThat(fresh.typeId("a")).isEqualTo(1);
+        assertThat(fresh.typeId("b")).isEqualTo(2);
+        assertThat(fresh.typeId("a")).isEqualTo(1);
     }
 
     @Test
-    void queueAndEventRegistriesAreIndependent() {
+    void queueAndTypeRegistriesAreIndependent() {
         TaskStore fresh = newStore("fresh" + COUNTER.incrementAndGet());
         assertThat(fresh.queueId("x")).isEqualTo(1);
-        assertThat(fresh.eventId("y")).isEqualTo(1);
+        assertThat(fresh.typeId("y")).isEqualTo(1);
         assertThat(fresh.queueNames()).containsOnly(Map.entry(1, "x"));
-        assertThat(fresh.eventNames()).containsOnly(Map.entry(1, "y"));
+        assertThat(fresh.typeNames()).containsOnly(Map.entry(1, "y"));
     }
 
     @Test
     void registryNamesMapIdToName() {
         int other = store.queueId("other");
-        int ev = store.eventId("other-event");
+        int ev = store.typeId("other-type");
         assertThat(store.queueNames()).containsEntry(queue, "main").containsEntry(other, "other");
-        assertThat(store.eventNames()).containsEntry(event, "work").containsEntry(ev, "other-event");
+        assertThat(store.typeNames()).containsEntry(type, "work").containsEntry(ev, "other-type");
     }
 
     @Test
@@ -273,7 +273,7 @@ public abstract class StoreContract {
         assertThat(t.stateChanged()).isBetween(millis(before), after.plusMillis(1));
         assertThat(t.attempts()).isZero();
         assertThat(t.queueId()).isEqualTo(queue);
-        assertThat(t.eventId()).isEqualTo(event);
+        assertThat(t.typeId()).isEqualTo(type);
         assertThat(t.data()).isEqualTo("payload");
     }
 
@@ -446,7 +446,7 @@ public abstract class StoreContract {
     void claimReadsQueuesInRequestOrder() {
         int second = store.queueId("second");
         long inMain = put(task());
-        long inSecond = put(task(second, event));
+        long inSecond = put(task(second, type));
         List<Long> order = claim(2, second, queue).stream().map(TaskRecord::id).toList();
         assertThat(order).containsExactly(inSecond, inMain);
     }
@@ -455,7 +455,7 @@ public abstract class StoreContract {
     void claimReadsALaterQueueOnlyToFillTheCount() {
         int second = store.queueId("second");
         long inMain = put(task());
-        long inSecond = put(task(second, event));
+        long inSecond = put(task(second, type));
         assertThat(claim(1, queue, second)).extracting(TaskRecord::id).containsExactly(inMain);
         assertThat(get(inSecond).state()).isEqualTo(TaskState.QUEUED);
     }
@@ -467,11 +467,11 @@ public abstract class StoreContract {
     }
 
     @Test
-    void claimSkipsUnknownEventsWithoutCountingAnAttempt() {
-        int other = store.eventId("other");
+    void claimSkipsUnknownTypesWithoutCountingAnAttempt() {
+        int other = store.typeId("other");
         long known = put(task());
         long unknown = put(task(queue, other));
-        List<TaskRecord> claimed = claim(5, LEASE, Set.of(event));
+        List<TaskRecord> claimed = claim(5, LEASE, Set.of(type));
         assertThat(claimed).extracting(TaskRecord::id).containsExactly(known);
         TaskRecord skipped = get(unknown);
         assertThat(skipped.attempts()).isZero();
@@ -479,8 +479,8 @@ public abstract class StoreContract {
     }
 
     @Test
-    void claimWithNullKnownEventsTakesEveryEvent() {
-        int other = store.eventId("other");
+    void claimWithNullKnownTypesTakesEveryType() {
+        int other = store.typeId("other");
         put(task());
         put(task(queue, other));
         assertThat(claim(5, LEASE, null)).hasSize(2);
@@ -1145,7 +1145,7 @@ public abstract class StoreContract {
 
     @Test
     void reclaimListsExpiredLeasesOldestFirst() {
-        put(task().maxAttempts(5).eventId(event));
+        put(task().maxAttempts(5).typeId(type));
         TaskRecord first = claim(1, SHORT, null).get(0);
         advance(Duration.ofMillis(60));
         put(task());
@@ -1159,7 +1159,7 @@ public abstract class StoreContract {
         assertThat(e.revision()).isEqualTo(first.revision());
         assertThat(e.attempts()).isEqualTo(1);
         assertThat(e.maxAttempts()).isEqualTo(5);
-        assertThat(e.eventId()).isEqualTo(event);
+        assertThat(e.typeId()).isEqualTo(type);
         assertThat(e.cancelRequested()).isFalse();
         assertThat(store.reclaim(1)).hasSize(1);
         assertThat(get(running.id()).state()).isEqualTo(TaskState.LEASED);
@@ -1311,12 +1311,12 @@ public abstract class StoreContract {
     // recurring
 
     private RecurringDefinition definition(String id, String cron) {
-        return new RecurringDefinition(id, event, 1, queue, "acme", cron, "{}", 3, 0);
+        return new RecurringDefinition(id, type, 1, queue, "acme", cron, "{}", 3, 0);
     }
 
     /** {@link #definition} with other data, so that a put of it replaces the definition. */
     private RecurringDefinition changedData(String id, String cron) {
-        return new RecurringDefinition(id, event, 1, queue, "acme", cron, "{\"v\":2}", 3, 0);
+        return new RecurringDefinition(id, type, 1, queue, "acme", cron, "{\"v\":2}", 3, 0);
     }
 
     private TaskRecord occurrence(Instant fireAt) {
@@ -1336,7 +1336,7 @@ public abstract class StoreContract {
         RecurringDefinition stored = due.get(0).definition();
         assertThat(stored.scheduleId()).isEqualTo("nightly");
         assertThat(stored.cron()).isEqualTo("0 0 * * *");
-        assertThat(stored.eventId()).isEqualTo(event);
+        assertThat(stored.typeId()).isEqualTo(type);
         assertThat(stored.queueId()).isEqualTo(queue);
         assertThat(stored.account()).isEqualTo("acme");
         assertThat(stored.data()).isEqualTo("{}");
@@ -1405,7 +1405,7 @@ public abstract class StoreContract {
         store.putRecurring(base, fire, fire);
         var longer = new RecurringDefinition(
                 base.scheduleId(),
-                base.eventId(),
+                base.typeId(),
                 base.payloadVersion(),
                 base.queueId(),
                 base.account(),
@@ -1447,11 +1447,11 @@ public abstract class StoreContract {
         assertThat(store.recurringSchedules()).containsOnly(Map.entry("a", first));
         RecurringDefinition base = fullDefinition("a");
         RecurringDefinition otherZone = new RecurringDefinition(
-                "a", event, 2, queue, "acme", null, "UTC", "CATCH_UP", 5, 90_000L, true, "{}", 4, null, false, 0);
+                "a", type, 2, queue, "acme", null, "UTC", "CATCH_UP", 5, 90_000L, true, "{}", 4, null, false, 0);
         store.putRecurring(otherZone, second, second);
         assertThat(store.recurringSchedules()).containsOnly(Map.entry("a", second));
         RecurringDefinition otherDelay = new RecurringDefinition(
-                "a", event, 2, queue, "acme", null, "UTC", "CATCH_UP", 5, 60_000L, true, "{}", 4, null, false, 0);
+                "a", type, 2, queue, "acme", null, "UTC", "CATCH_UP", 5, 60_000L, true, "{}", 4, null, false, 0);
         store.putRecurring(otherDelay, third, third);
         assertThat(store.recurringSchedules()).containsOnly(Map.entry("a", third));
         store.putRecurring(base, first, first);
@@ -1846,7 +1846,7 @@ public abstract class StoreContract {
     void pausedQueuesAreSkippedByClaimUntilResumed() {
         int second = store.queueId("second");
         putNew();
-        long other = put(task(second, event));
+        long other = put(task(second, type));
         store.pauseQueue(queue, true);
         assertThat(claim(10, queue, second)).extracting(TaskRecord::id).containsExactly(other);
         assertThat(claim(10)).isEmpty();
@@ -1990,7 +1990,7 @@ public abstract class StoreContract {
     private RecurringDefinition fullDefinition(String id) {
         return new RecurringDefinition(
                 id,
-                event,
+                type,
                 2,
                 queue,
                 "acme",
@@ -2013,22 +2013,7 @@ public abstract class StoreContract {
         store.putRecurring(fullDefinition("fixed"), fire, fire);
         store.putRecurring(
                 new RecurringDefinition(
-                        "cron",
-                        event,
-                        1,
-                        queue,
-                        null,
-                        "0 3 * * *",
-                        null,
-                        null,
-                        0,
-                        null,
-                        false,
-                        null,
-                        3,
-                        null,
-                        false,
-                        0),
+                        "cron", type, 1, queue, null, "0 3 * * *", null, null, 0, null, false, null, 3, null, false, 0),
                 fire.plusSeconds(5),
                 fire.plusSeconds(5));
         List<RecurringSchedule> all = store.recurringDefinitions();
@@ -2036,7 +2021,7 @@ public abstract class StoreContract {
         RecurringSchedule fixed = all.get(1);
         assertThat(fixed.nextFire()).isEqualTo(fire);
         RecurringDefinition d = fixed.definition();
-        assertThat(d.eventId()).isEqualTo(event);
+        assertThat(d.typeId()).isEqualTo(type);
         assertThat(d.payloadVersion()).isEqualTo(2);
         assertThat(d.queueId()).isEqualTo(queue);
         assertThat(d.account()).isEqualTo("acme");
@@ -2261,7 +2246,7 @@ public abstract class StoreContract {
     private RecurringDefinition withFixedDelay(RecurringDefinition d, long delayMs) {
         return new RecurringDefinition(
                 d.scheduleId(),
-                d.eventId(),
+                d.typeId(),
                 d.payloadVersion(),
                 d.queueId(),
                 d.account(),
@@ -2870,7 +2855,7 @@ public abstract class StoreContract {
         putNew();
         putNew();
         put(task().due(now().plus(Duration.ofHours(1))));
-        put(task(second, event));
+        put(task(second, type));
         TaskRecord t = leased(task());
         assertThat(store.ack(t.id(), t.revision(), true, true, null)).isTrue();
         TaskRecord d = leased(task());
@@ -2925,7 +2910,7 @@ public abstract class StoreContract {
             int walkQueue = store.queueId("walk" + limit);
             List<Long> all = new ArrayList<>();
             for (int i = 0; i < 9; i++) {
-                all.add(put(task(walkQueue, event)));
+                all.add(put(task(walkQueue, type)));
             }
             List<Long> seen = new ArrayList<>();
             String cursor = null;
@@ -2951,14 +2936,14 @@ public abstract class StoreContract {
 
     @Test
     void cursorWalkTerminatesAndListsEachUnmovedTaskOnceWhileTasksAreClaimedAndDeferredBetweenPages() {
-        int other = store.eventId("other");
+        int other = store.typeId("other");
         for (int limit : new int[] {1, 3, 4}) {
             int walkQueue = store.queueId("defer" + limit);
             List<Long> all = new ArrayList<>();
             long deferred = put(task(walkQueue, other).due(millis(now().minusSeconds(60))));
             all.add(deferred);
             for (int i = 0; i < 9; i++) {
-                all.add(put(task(walkQueue, event)));
+                all.add(put(task(walkQueue, type)));
             }
             List<Long> seen = new ArrayList<>();
             List<Long> moved = new ArrayList<>();
@@ -2971,7 +2956,7 @@ public abstract class StoreContract {
                 cursor = got.next();
                 ended = cursor == null;
                 if (page == 0) {
-                    List<TaskRecord> claimed = claim(3, LEASE, Set.of(event), walkQueue);
+                    List<TaskRecord> claimed = claim(3, LEASE, Set.of(type), walkQueue);
                     assertThat(claimed).hasSize(3);
                     claimed.forEach(t -> moved.add(t.id()));
                 }
@@ -3079,7 +3064,7 @@ public abstract class StoreContract {
     void tasksFiltersByStateAndQueue() {
         int second = store.queueId("second");
         long inMain = putNew();
-        long inSecond = put(task(second, event));
+        long inSecond = put(task(second, type));
         assertThat(store.tasks(TaskState.QUEUED, null, null, 10).items())
                 .extracting(TaskRecord::id)
                 .containsExactlyInAnyOrder(inMain, inSecond);

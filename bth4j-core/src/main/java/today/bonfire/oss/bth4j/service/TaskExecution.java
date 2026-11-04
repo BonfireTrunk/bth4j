@@ -89,7 +89,7 @@ public final class TaskExecution implements Runnable, TaskContext {
         this.steps = new LinkedHashMap<>(record.steps() == null ? Map.of() : record.steps());
         this.cancelRequested = record.cancelRequestedAt() != null;
         this.cancelReason = record.cancelReason();
-        var registration = settings.registry().get(view.event());
+        var registration = settings.registry().get(view.type());
         this.interruptOnCancel = registration != null && registration.type().isInterruptOnCancel();
     }
 
@@ -170,9 +170,9 @@ public final class TaskExecution implements Runnable, TaskContext {
         var started = s.clock().instant();
         startedAt = started;
         emit(new TaskEvent.Started(view, record.workerId() == null ? 0 : record.workerId()));
-        var registration = s.registry().get(view.event());
+        var registration = s.registry().get(view.type());
         if (registration == null) {
-            defer("no processor registered for " + view.event());
+            defer("no processor registered for " + view.type());
             return;
         }
         Throwable failure = null;
@@ -232,8 +232,8 @@ public final class TaskExecution implements Runnable, TaskContext {
         log.error("Task {} cannot run on this worker ({}), deferring it by {}", record.id(), reason, DEFER);
         apply(() -> s.store()
                 .reschedule(record.id(), record.revision(), s.clock().instant().plus(DEFER)));
-        s.status().issue("unknown-event", reason, record.id());
-        emit(new TaskEvent.Deferred(record.id(), view.event(), reason));
+        s.status().issue("unknown-type", reason, record.id());
+        emit(new TaskEvent.Deferred(record.id(), view.type(), reason));
     }
 
     private void succeed(Instant started) {

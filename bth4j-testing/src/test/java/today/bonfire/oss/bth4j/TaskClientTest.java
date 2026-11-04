@@ -338,7 +338,7 @@ class TaskClientTest {
 
     @Test
     void coldNamesWithTheStoreDownCarryTheCallerIdInBothCalls() {
-        var client = clientOn(storeFailingOn("queueId", "eventId"));
+        var client = clientOn(storeFailingOn("queueId", "typeId"));
         long id = client.nextId();
 
         assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).id(id).build()))
@@ -532,8 +532,8 @@ class TaskClientTest {
     }
 
     @Test
-    void coldEventLookupFailureHandsBackNoGeneratedIdForReuse() {
-        var client = clientOn(storeFailingOn("eventId"));
+    void coldTypeLookupFailureHandsBackNoGeneratedIdForReuse() {
+        var client = clientOn(storeFailingOn("typeId"));
 
         assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).build()))
                 .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
@@ -759,7 +759,7 @@ class TaskClientTest {
     @Test
     void coldNameFailuresAfterReservationCarryEveryIdInAMixedBatch() {
         long callerId = store.allocateIds(1);
-        for (String name : List.of("queueId", "eventId")) {
+        for (String name : List.of("queueId", "typeId")) {
             long firstGenerated = store.idHighWaterMark();
             var client = clientOn(storeFailingOn(name));
 
@@ -1169,7 +1169,7 @@ class TaskClientTest {
     }
 
     @Test
-    void taskViewResolvesQueueAndEventNames() {
+    void taskViewResolvesQueueAndTypeNames() {
         var client = builder().build();
 
         var result = client.enqueue(TaskRequest.of(TYPED, new Payload("v"))
@@ -1181,7 +1181,7 @@ class TaskClientTest {
         var view = client.task(result.id()).orElseThrow();
         assertThat(view.id()).isEqualTo(result.id());
         assertThat(view.queue()).isEqualTo("Q:HIGH");
-        assertThat(view.event()).isEqualTo("client-typed");
+        assertThat(view.type()).isEqualTo("client-typed");
         assertThat(view.state()).isEqualTo(TaskState.QUEUED);
         assertThat(view.account()).isEqualTo("acme");
         assertThat(view.maxAttempts()).isEqualTo(4);

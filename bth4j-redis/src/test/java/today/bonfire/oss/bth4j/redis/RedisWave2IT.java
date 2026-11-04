@@ -54,7 +54,7 @@ class RedisWave2IT {
     private RedisTaskStore store;
     private Keys keys;
     private int queue;
-    private int event;
+    private int type;
 
     @BeforeAll
     static void connect() {
@@ -88,14 +88,14 @@ class RedisWave2IT {
         keys = store.keys();
         store.init();
         queue = store.queueId("default");
-        event = store.eventId("send");
+        type = store.typeId("send");
     }
 
     private TaskRecord.Builder task(long id) {
         return TaskRecord.builder()
                 .id(id)
                 .queueId(queue)
-                .eventId(event)
+                .typeId(type)
                 .maxAttempts(3)
                 .created(Instant.now().truncatedTo(ChronoUnit.MILLIS));
     }
@@ -550,7 +550,7 @@ class RedisWave2IT {
     // ---- recurring -----------------------------------------------------------------------------------
 
     private RecurringDefinition cron(String id) {
-        return new RecurringDefinition(id, event, 2, queue, "acme", "* * * * *", "{\"d\":1}", 5, 0);
+        return new RecurringDefinition(id, type, 2, queue, "acme", "* * * * *", "{\"d\":1}", 5, 0);
     }
 
     @Test
@@ -558,7 +558,7 @@ class RedisWave2IT {
         var fire = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
         var full = new RecurringDefinition(
                 "full",
-                event,
+                type,
                 3,
                 queue,
                 "acme",
@@ -574,7 +574,7 @@ class RedisWave2IT {
                 false,
                 0);
         var delay = new RecurringDefinition(
-                "delay", event, 1, queue, null, null, null, null, 0, 30_000L, false, null, 1, null, true, 0);
+                "delay", type, 1, queue, null, null, null, null, 0, 30_000L, false, null, 1, null, true, 0);
 
         store.putRecurring(delay, fire.plusSeconds(1), fire.plusSeconds(1));
         store.putRecurring(full, fire, fire);
@@ -652,12 +652,12 @@ class RedisWave2IT {
 
     private RecurringDefinition zoned(String id, String zone) {
         return new RecurringDefinition(
-                id, event, 2, queue, "acme", "* * * * *", zone, null, 0, null, false, null, 5, null, false, 0);
+                id, type, 2, queue, "acme", "* * * * *", zone, null, 0, null, false, null, 5, null, false, 0);
     }
 
     private RecurringDefinition fixedDelay(String id, long ms) {
         return new RecurringDefinition(
-                id, event, 2, queue, null, null, null, null, 0, ms, false, null, 5, null, false, 0);
+                id, type, 2, queue, null, null, null, null, 0, ms, false, null, 5, null, false, 0);
     }
 
     @Test
@@ -750,7 +750,7 @@ class RedisWave2IT {
     void commitWithAHeldUniqueKeyAdvancesTheDefinitionWithoutStoringTheOccurrence() {
         var fire = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MILLIS);
         var overlap = new RecurringDefinition(
-                "s", event, 2, queue, null, "* * * * *", null, null, 0, null, true, null, 5, null, false, 0);
+                "s", type, 2, queue, null, "* * * * *", null, null, 0, null, true, null, 5, null, false, 0);
         store.putRecurring(overlap, fire, fire);
         var first = store.dueRecurring(Instant.now(), 10).getFirst();
         var next1 = fire.plusSeconds(60);

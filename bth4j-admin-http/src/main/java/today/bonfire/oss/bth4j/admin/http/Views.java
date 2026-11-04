@@ -57,7 +57,7 @@ final class Views {
                 "revision", text(t.revision()),
                 "state", t.state().name(),
                 "queue", t.queue(),
-                "event", t.event(),
+                "type", t.type(),
                 "payloadVersion", t.payloadVersion(),
                 "attempts", t.attempts(),
                 "maxAttempts", t.maxAttempts(),
@@ -123,7 +123,7 @@ final class Views {
     static Map<String, Object> schedule(ScheduleView s) {
         return obj(
                 "id", s.id(),
-                "event", s.event(),
+                "type", s.type(),
                 "queue", s.queue(),
                 "account", s.account(),
                 "cron", s.cron(),

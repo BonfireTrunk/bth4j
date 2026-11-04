@@ -63,7 +63,7 @@ Always present:
 | `id` | 64-bit, client-allocated in blocks (see Ids) |
 | `revision` | the fence: +1 on every state change, never on renew, step or progress writes |
 | `queueId` | queue registry id (smallint) |
-| `eventId` | task type registry id (smallint); "event" is the stored name of a `TaskType` |
+| `typeId` | task type registry id (smallint); the stored name of a `TaskType` is its type name |
 | `payloadVersion` | `TaskType.payloadVersion()` when the task was enqueued |
 | `state` | code 0 to 6, see States |
 | `attempts` | how often the task was claimed, minus attempts given back |
@@ -308,10 +308,10 @@ store keeps to the last 20 (oldest dropped). The message is bounded to 2 KiB and
 When maintenance reclaims an expired lease it asks the policy with a null error; a `RetryAfter` becomes
 the retry time, anything else (or no attempts left) makes the task DEAD.
 
-## Unknown events
+## Unknown types
 
-A runner claims only the events it has processors for (`ClaimRequest.knownEventIds`). A task of another
-event can sit in a queue the runner reads, for example during a rolling deploy where only some instances
+A runner claims only the types it has processors for (`ClaimRequest.knownTypeIds`). A task of another
+task type can sit in a queue the runner reads, for example during a rolling deploy where only some instances
 know a new task type. Each store handles it in its cheapest way, and all three leave the task QUEUED and
 spend no attempt:
 
@@ -364,18 +364,18 @@ registries:
 | Registry | Id type | Redis | PostgreSQL |
 |---|---|---|---|
 | queue | smallint, 1 to 32767 | `reg:queue` (name to id; listings invert it, purge walks its values), `seq:queue` | `<prefix>_queue(id smallserial, name unique, paused)` |
-| event | smallint, 1 to 32767 | `reg:event` (name to id), `seq:event` | `<prefix>_event(id smallserial, name unique)` |
+| type | smallint, 1 to 32767 | `reg:event` (name to id), `seq:event` | `<prefix>_event(id smallserial, name unique)` |
 | worker | integer | `seq:worker`, `w:<id>` hash (label, started, seen, running), `workers` zset | `<prefix>_worker(id serial, label, started_at, last_seen, running)` |
 
 Ids are permanent and never reused, so `Names` caches both directions for the life of the process; a miss
 in the reverse direction reloads the registry once. Resolution reads first and registers only a new name,
 because on PostgreSQL an insert that loses a conflict still consumes a sequence value and would exhaust a
 smallint sequence. Both stores refuse beyond 32767 names. The runner registers all its queues and the
-events of its processors at start; the client registers lazily on the first use of a name. Every runner
+types of its processors at start; the client registers lazily on the first use of a name. Every runner
 start allocates a new worker id with its label (`workerLabel`, default the JVM name `pid@host`).
 
 There are no foreign keys in any table, and none in Redis by nature. The registries are written only
-through `queueId` and `eventId`; the services are the only writers of the task rows. Dashboards and ad hoc
+through `queueId` and `typeId`; the services are the only writers of the task rows. Dashboards and ad hoc
 SQL join the registry tables by id. The `paused` column of the queue table is written by `AdminStore.pauseQueue`; `last_seen` and `running`
 of the worker table by `heartbeat` (see Workers).
 
@@ -448,7 +448,7 @@ A script is called by its SHA-1 with `EVALSHA`; on `NOSCRIPT` it is loaded once 
 routed by the declared key. A pipelined batch (`runAll`) that meets `NOSCRIPT` loads the script once and
 sends only the rejected calls again, in order. Queue order is by score `due`; equal scores tie by member bytes (the id as
 text), which is accepted. A claim scans a queue for at most `count * 4` ids (cap 1000), so a block of
-unknown-event tasks cannot make one claim unbounded. A claim reads the payload `d:<id>` of every task it
+unknown-type tasks cannot make one claim unbounded. A claim reads the payload `d:<id>` of every task it
 returns: the hash has no field that says whether a payload exists (a payload may also be dropped by ACK), so
 that read stays. PROMOTE reads the head of each `sched:<qid>` first and the due batch only for queues whose
 head is due, so an idle poll costs one command per queue plus two. RENEW is sent in chunks of 256 leases in
@@ -590,7 +590,7 @@ clock.
 
 - `build()` creates the client and calls `store.init()`; nothing else touches the store.
 - `start()` fails with `TaskConfigurationError` when no processor is registered. It freezes the registry,
-  allocates the worker id, resolves queue and event ids (also those of the queue policies), starts the four services (processor, scheduled,
+  allocates the worker id, resolves queue and type ids (also those of the queue policies), starts the four services (processor, scheduled,
   recurring, maintenance) and a monitor that restarts a service whose thread died every
   `serviceCheckInterval` (default 10 s). It returns after starting. A second call, or a call after
   `stop()`, logs a warning and does nothing.
@@ -805,16 +805,16 @@ characters.
 Runner state for operators is local to a runner. `RunnerHealth(status, workerId, running, abandoned,
 lastClaimAt, lastMaintenanceAt, lastStoreErrorAt, lastStoreError, issueCount)` is a snapshot, with status NEW, RUNNING,
 QUIET or STOPPED. Issues are a bounded ring of 100 `Issue(at, kind, detail, taskId)` kept by `RunnerStatus`;
-the kinds are `unknown-event`, `store-error`, `lease-lost`, `attempt-abandoned`, `retry-policy`, `executor-rejected`,
+the kinds are `unknown-type`, `store-error`, `lease-lost`, `attempt-abandoned`, `retry-policy`, `executor-rejected`,
 `schedule-misfire`, `schedule-overlap` and `schedule-paused`. They are in memory and lost on restart.
 
 ## Metrics, logging and the HTTP API
 
 None of these change the protocol; they read `TaskEvent`s and `AdminOps`.
 
-`LoggingTaskObserver` (core) writes one SLF4J line per event with `bth4j.task`, `bth4j.event` and `bth4j.queue`
-in the MDC. `MicrometerTaskObserver` counts events (`bth4j.tasks` with `event`, `queue`, `result`, `outcome`),
-times successful runs and counts deferrals, fires and purges; its tags are queue and event names and results,
+`LoggingTaskObserver` (core) writes one SLF4J line per event with `bth4j.task`, `bth4j.type` and `bth4j.queue`
+in the MDC. `MicrometerTaskObserver` counts events (`bth4j.tasks` with `type`, `queue`, `result`, `outcome`),
+times successful runs and counts deferrals, fires and purges; its tags are queue and type names and results,
 never ids or messages, to bound the number of meters. `MicrometerRunnerMetrics.bind` registers gauges for
 running tasks, runner up and tasks per state and queue, refreshed by one daemon thread over `admin().counts()`
 and `health()`, so a scrape never reads the store.
@@ -838,7 +838,7 @@ through `FullStore`:
 
 | Interface | Content |
 |---|---|
-| `TaskStore` | `info`, `init`, `allocateIds`, `allocateWorkerId`, `queueId`, `eventId`, `queueNames`, `eventNames` |
+| `TaskStore` | `info`, `init`, `allocateIds`, `allocateWorkerId`, `queueId`, `typeId`, `queueNames`, `typeNames` |
 | `ExecutionStore` | `enqueue`, `enqueueAll`, `claim`, `renew`, `ack`, `fail`, `failExpired`, `finishCancelled`, `reschedule`, `unclaim`, `saveSteps`, `progress` |
 | `MaintenanceStore` | `promote`, `reclaim`, `expire`, `purge`, `purgeWorkers`, `releaseKeys`, `nextDue` |
 | `ScheduleStore` | `putRecurring`, `deleteRecurring`, `recurringSchedules`, `recurringDefinitions`, `dueRecurring`, `commitRecurring`, `pauseRecurring`, `setNextFire` |

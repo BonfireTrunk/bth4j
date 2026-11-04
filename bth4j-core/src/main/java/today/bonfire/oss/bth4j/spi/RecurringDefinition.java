@@ -1,7 +1,7 @@
 package today.bonfire.oss.bth4j.spi;
 
 /**
- * A recurring definition as the store keeps it. Each occurrence becomes a task with the definition's event,
+ * A recurring definition as the store keeps it. Each occurrence becomes a task with the definition's type,
  * queue, account, payload, maximum attempts and maximum run time.
  *
  * @param cron         five-field expression, or null for a fixed-delay definition
@@ -18,7 +18,7 @@ package today.bonfire.oss.bth4j.spi;
  */
 public record RecurringDefinition(
         String scheduleId,
-        int eventId,
+        int typeId,
         int payloadVersion,
         int queueId,
         String account,
@@ -41,7 +41,7 @@ public record RecurringDefinition(
     /** A cron definition in UTC with the default misfire handling and no overlap protection. */
     public RecurringDefinition(
             String scheduleId,
-            int eventId,
+            int typeId,
             int payloadVersion,
             int queueId,
             String account,
@@ -51,7 +51,7 @@ public record RecurringDefinition(
             long revision) {
         this(
                 scheduleId,
-                eventId,
+                typeId,
                 payloadVersion,
                 queueId,
                 account,
@@ -71,7 +71,7 @@ public record RecurringDefinition(
     public RecurringDefinition withRevision(long revision) {
         return new RecurringDefinition(
                 scheduleId,
-                eventId,
+                typeId,
                 payloadVersion,
                 queueId,
                 account,
@@ -91,7 +91,7 @@ public record RecurringDefinition(
     public RecurringDefinition withPaused(boolean paused) {
         return new RecurringDefinition(
                 scheduleId,
-                eventId,
+                typeId,
                 payloadVersion,
                 queueId,
                 account,

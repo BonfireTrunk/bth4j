@@ -70,7 +70,7 @@ public final class InMemoryStore implements FullStore {
     private final Map<String, Long> keyHolders = new HashMap<>();
     private final Map<String, Recurring> recurring = new HashMap<>();
     private final Map<String, Integer> queueIds = new LinkedHashMap<>();
-    private final Map<String, Integer> eventIds = new LinkedHashMap<>();
+    private final Map<String, Integer> typeIds = new LinkedHashMap<>();
     private final Set<Integer> pausedQueues = new HashSet<>();
     private final Map<Integer, WorkerInfo> workers = new TreeMap<>();
     private long nextTaskId = 1;
@@ -142,8 +142,8 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public int eventId(String name) {
-        return register(eventIds, name, "event");
+    public int typeId(String name) {
+        return register(typeIds, name, "type");
     }
 
     private int register(Map<String, Integer> registry, String name, String kind) {
@@ -170,8 +170,8 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public Map<Integer, String> eventNames() {
-        return names(eventIds);
+    public Map<Integer, String> typeNames() {
+        return names(typeIds);
     }
 
     private Map<Integer, String> names(Map<String, Integer> registry) {
@@ -256,7 +256,7 @@ public final class InMemoryStore implements FullStore {
         lock.lock();
         try {
             Instant now = clock.instant();
-            Set<Integer> known = request.knownEventIds();
+            Set<Integer> known = request.knownTypeIds();
             List<TaskRecord> claimed = new ArrayList<>();
             for (int queueId : request.queueIds()) {
                 if (pausedQueues.contains(queueId)) {
@@ -269,7 +269,7 @@ public final class InMemoryStore implements FullStore {
                 List<TaskRecord> candidates = tasks.values().stream()
                         .filter(t -> t.state() == TaskState.QUEUED && t.queueId() == queueId)
                         .filter(t -> t.startBy() == null || t.startBy().isAfter(now))
-                        .filter(t -> known == null || known.contains(t.eventId()))
+                        .filter(t -> known == null || known.contains(t.typeId()))
                         .sorted(BY_DUE)
                         .limit(missing)
                         .toList();
@@ -539,7 +539,7 @@ public final class InMemoryStore implements FullStore {
                             t.revision(),
                             t.attempts(),
                             t.maxAttempts(),
-                            t.eventId(),
+                            t.typeId(),
                             t.cancelRequestedAt() != null))
                     .toList();
         } finally {

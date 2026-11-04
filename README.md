@@ -511,7 +511,7 @@ BackgroundRunner.builder()
 ```
 
 `new LoggingTaskObserver()` is a ready observer that writes one SLF4J line per event (logger `bth4j.tasks`) and
-puts `bth4j.task`, `bth4j.event` and `bth4j.queue` in the MDC; pass your own `Logger` to use another name.
+puts `bth4j.task`, `bth4j.type` and `bth4j.queue` in the MDC; pass your own `Logger` to use another name.
 
 ### Inspection
 
@@ -538,7 +538,7 @@ List<Issue> issues = runner.issues();      // the last 100 things an operator sh
 boolean drained = runner.drain(Duration.ofSeconds(30));   // quiet, then wait for the running tasks
 ```
 
-An `Issue` has a time, a kind, a detail and the task id when there is one. The kinds are `unknown-event`,
+An `Issue` has a time, a kind, a detail and the task id when there is one. The kinds are `unknown-type`,
 `store-error`, `lease-lost`, `attempt-abandoned`, `retry-policy`, `executor-rejected`, `schedule-misfire`,
 `schedule-overlap` and `schedule-paused`. Issues live in the memory of the runner that saw them. `drain` leaves the runner quiet
 (call `resume()` to claim again, or `stop()`), and returns whether every running task finished in time; use it
@@ -609,9 +609,9 @@ MicrometerRunnerMetrics metrics = MicrometerRunnerMetrics.bind(runner, registry,
 
 | Meter | Type | Tags |
 |---|---|---|
-| `bth4j.tasks` | counter | `event`, `queue`, `result` (`succeeded`, `retried`, `died`, `rescheduled`, `cancelled`, `expired`, `lease_lost`), `outcome` (`applied`, `lost`, `unknown`) |
-| `bth4j.task.duration` | timer | `event`, `queue` |
-| `bth4j.deferred` | counter | `event` |
+| `bth4j.tasks` | counter | `type`, `queue`, `result` (`succeeded`, `retried`, `died`, `rescheduled`, `cancelled`, `expired`, `lease_lost`), `outcome` (`applied`, `lost`, `unknown`) |
+| `bth4j.task.duration` | timer | `type`, `queue` |
+| `bth4j.deferred` | counter | `type` |
 | `bth4j.schedule.fired` | counter | none |
 | `bth4j.purged` | counter | `state` |
 | `bth4j.runner.running` | gauge | none |
@@ -620,7 +620,7 @@ MicrometerRunnerMetrics metrics = MicrometerRunnerMetrics.bind(runner, registry,
 | `bth4j.tasks.state` | gauge | `state`, `queue` |
 
 The observer's tags are only names and results, never ids or messages, so the number of meters stays bounded.
-`expired` and `lease_lost` are counted with `event` and `queue` set to `unknown`. The gauges are refreshed by
+`expired` and `lease_lost` are counted with `type` and `queue` set to `unknown`. The gauges are refreshed by
 one daemon thread every `refresh`, so a scrape never reads the store.
 
 ### Admin HTTP server and dashboard

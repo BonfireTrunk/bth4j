@@ -137,7 +137,7 @@ public final class DefaultAdminOps implements AdminOps {
         var d = s.definition();
         return new ScheduleView(
                 d.scheduleId(),
-                names.eventName(d.eventId()),
+                names.typeName(d.typeId()),
                 names.queueName(d.queueId()),
                 d.account(),
                 d.cron(),
@@ -192,7 +192,7 @@ public final class DefaultAdminOps implements AdminOps {
     }
 
     @Override
-    public Map<Integer, String> eventNames() {
-        return store.eventNames();
+    public Map<Integer, String> typeNames() {
+        return store.typeNames();
     }
 }

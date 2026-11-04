@@ -51,7 +51,7 @@ public sealed interface TaskEvent {
     record LeaseExpired(long id, int attempts, int maxAttempts, boolean dead) implements TaskEvent {}
 
     /** A claimed task could not be run (no processor, undecodable payload) and was put back. */
-    record Deferred(long id, String event, String reason) implements TaskEvent {}
+    record Deferred(long id, String type, String reason) implements TaskEvent {}
 
     /** An occurrence of a recurring definition was created. */
     record ScheduleFired(String scheduleId, long taskId, Instant fireAt) implements TaskEvent {}

@@ -283,7 +283,7 @@ public final class TaskClient {
     private boolean requireSameContent(TaskRecord sent) {
         var stored = store.getTask(sent.id()).orElse(null);
         if (stored == null) return false;
-        if (stored.eventId() != sent.eventId()) throw new TaskIdReusedException(sent.id(), "another task type");
+        if (stored.typeId() != sent.typeId()) throw new TaskIdReusedException(sent.id(), "another task type");
         if (stored.queueId() != sent.queueId()) throw new TaskIdReusedException(sent.id(), "another queue");
         if (stored.data() != null && !stored.data().equals(sent.data())) {
             throw new TaskIdReusedException(sent.id(), "another payload");
@@ -310,7 +310,7 @@ public final class TaskClient {
         var b = TaskRecord.builder()
                 .id(id)
                 .queueId(names.queueId(queues.getValidQueue(request.queue())))
-                .eventId(names.eventId(type.name()))
+                .typeId(names.typeId(type.name()))
                 .payloadVersion(type.payloadVersion())
                 .state(due != null && due.isAfter(now) ? TaskState.SCHEDULED : TaskState.QUEUED)
                 .maxAttempts(request.maxAttempts() != null ? request.maxAttempts() : defaultMaxAttempts)
@@ -374,7 +374,7 @@ public final class TaskClient {
         };
         var stored = new RecurringDefinition(
                 definition.id(),
-                names.eventId(type.name()),
+                names.typeId(type.name()),
                 type.payloadVersion(),
                 names.queueId(queues.getValidQueue(definition.queue())),
                 definition.account(),

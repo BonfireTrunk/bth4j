@@ -187,7 +187,7 @@ final class FakeAdminOps implements AdminOps {
     }
 
     @Override
-    public Map<Integer, String> eventNames() {
+    public Map<Integer, String> typeNames() {
         return Map.of();
     }
 }

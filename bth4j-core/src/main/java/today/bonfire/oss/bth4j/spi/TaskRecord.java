@@ -13,7 +13,7 @@ import java.util.Map;
  * @param revision          +1 on every state change; never on renew, step or progress writes; the fence every
  *                          transition checks
  * @param queueId           see {@link TaskStore#queueId}
- * @param eventId           see {@link TaskStore#eventId}
+ * @param typeId           see {@link TaskStore#typeId}
  * @param payloadVersion    the task type's payload version when the task was enqueued
  * @param state             current state
  * @param attempts          how often the task was claimed
@@ -47,7 +47,7 @@ public record TaskRecord(
         long id,
         int revision,
         int queueId,
-        int eventId,
+        int typeId,
         int payloadVersion,
         TaskState state,
         int attempts,
@@ -90,7 +90,7 @@ public record TaskRecord(
         b.id = id;
         b.revision = revision;
         b.queueId = queueId;
-        b.eventId = eventId;
+        b.typeId = typeId;
         b.payloadVersion = payloadVersion;
         b.state = state;
         b.attempts = attempts;
@@ -129,7 +129,7 @@ public record TaskRecord(
         private long id;
         private int revision;
         private int queueId;
-        private int eventId;
+        private int typeId;
         private int payloadVersion = 1;
         private TaskState state = TaskState.QUEUED;
         private int attempts;
@@ -174,8 +174,8 @@ public record TaskRecord(
             return this;
         }
 
-        public Builder eventId(int v) {
-            eventId = v;
+        public Builder typeId(int v) {
+            typeId = v;
             return this;
         }
 
@@ -314,7 +314,7 @@ public record TaskRecord(
                     id,
                     revision,
                     queueId,
-                    eventId,
+                    typeId,
                     payloadVersion,
                     state,
                     attempts,

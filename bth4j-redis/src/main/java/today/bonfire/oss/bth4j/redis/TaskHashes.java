@@ -24,7 +24,7 @@ final class TaskHashes {
         var f = new ArrayList<String>();
         put(f, F_REVISION, t.revision());
         put(f, F_QUEUE, t.queueId());
-        put(f, F_EVENT, t.eventId());
+        put(f, F_EVENT, t.typeId());
         put(f, F_PAYLOAD_VERSION, t.payloadVersion());
         put(f, F_ATTEMPTS, t.attempts());
         put(f, F_MAX_ATTEMPTS, t.maxAttempts());
@@ -61,7 +61,7 @@ final class TaskHashes {
                 .id(id)
                 .revision(integer(h, F_REVISION))
                 .queueId(integer(h, F_QUEUE))
-                .eventId(integer(h, F_EVENT))
+                .typeId(integer(h, F_EVENT))
                 .payloadVersion(integer(h, F_PAYLOAD_VERSION))
                 .state(state)
                 .attempts(integer(h, F_ATTEMPTS))

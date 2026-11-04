@@ -38,7 +38,7 @@ def make_tasks():
         state = STATES[(i * 3 + i // 7) % len(STATES)]
         tid = str(BASE_ID + i)
         t = {
-            "id": tid, "revision": str(1 + i % 5), "queue": qnames[i % 3], "event": ["send-mail", "build-report", "sync-account"][i % 3],
+            "id": tid, "revision": str(1 + i % 5), "queue": qnames[i % 3], "type": ["send-mail", "build-report", "sync-account"][i % 3],
             "payloadVersion": 1, "state": state, "attempts": 1 if state != "QUEUED" else 0, "maxAttempts": 5,
             "created": iso(-86400 + i * 600), "due": iso(-86000 + i * 600), "stateChanged": iso(-3600 + i * 20),
             "workerId": 7 if state == "LEASED" else None, "leaseUntil": iso(30) if state == "LEASED" else None,
@@ -68,9 +68,9 @@ def counts():
 
 
 schedules = {
-    "nightly-report": {"id": "nightly-report", "event": "build-report", "queue": "reports", "account": None, "cron": "0 0 2 * * *", "zone": "Europe/Berlin",
+    "nightly-report": {"id": "nightly-report", "type": "build-report", "queue": "reports", "account": None, "cron": "0 0 2 * * *", "zone": "Europe/Berlin",
                        "misfire": "FIRE_ONCE", "fixedDelay": None, "overlapSkip": True, "paused": False, "nextFire": iso(7200), "maxAttempts": 3},
-    "mail-pump": {"id": "mail-pump", "event": "send-mail", "queue": "mail", "account": None, "cron": None, "zone": None,
+    "mail-pump": {"id": "mail-pump", "type": "send-mail", "queue": "mail", "account": None, "cron": None, "zone": None,
                   "misfire": "SKIP", "fixedDelay": "PT30S", "overlapSkip": False, "paused": True, "nextFire": iso(25), "maxAttempts": 5},
 }
 workers = [
@@ -78,7 +78,7 @@ workers = [
     {"id": 8, "label": "host-b/9876", "startedAt": iso(-9000), "lastSeen": iso(-300), "running": 0},
 ]
 issues = [
-    {"at": iso(-600), "kind": "unknown-event", "detail": "No handler for event 'legacy-export'", "taskId": str(BASE_ID + 3)},
+    {"at": iso(-600), "kind": "unknown-type", "detail": "No handler for type 'legacy-export'", "taskId": str(BASE_ID + 3)},
     {"at": iso(-60), "kind": "store-error", "detail": "Connection refused (retrying)", "taskId": None},
     {"at": iso(-5000), "kind": "lease-lost", "detail": "Lease expired while running", "taskId": str(BASE_ID + 9)},
 ]

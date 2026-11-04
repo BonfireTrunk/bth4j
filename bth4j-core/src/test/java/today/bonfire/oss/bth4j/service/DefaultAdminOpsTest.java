@@ -40,14 +40,14 @@ class DefaultAdminOpsTest {
     private static final Instant NOW = Instant.parse("2026-06-01T12:00:00Z");
     private static final int DEFAULT_QUEUE_ID = 1;
     private static final int OTHER_QUEUE_ID = 2;
-    private static final int EVENT_ID = 7;
+    private static final int TYPE_ID = 7;
     private static final java.util.Set<String> REGISTRY_METHODS =
-            java.util.Set.of("queueId", "eventId", "queueNames", "eventNames");
+            java.util.Set.of("queueId", "typeId", "queueNames", "typeNames");
 
     private final Map<String, Function<Object[], Object>> handlers = new HashMap<>();
     private final List<String> calls = new ArrayList<>();
     private final Map<Integer, String> queueNames = new HashMap<>();
-    private final Map<Integer, String> eventNames = new HashMap<>();
+    private final Map<Integer, String> typeNames = new HashMap<>();
     private Supplier<RunnerHealth> health;
     private Supplier<List<Issue>> issues;
     private DefaultAdminOps ops;
@@ -56,7 +56,7 @@ class DefaultAdminOpsTest {
     void setUp() {
         queueNames.put(DEFAULT_QUEUE_ID, "Q:DEF");
         queueNames.put(OTHER_QUEUE_ID, "Q:OTHER");
-        eventNames.put(EVENT_ID, "send-mail");
+        typeNames.put(TYPE_ID, "send-mail");
         handlers.put(
                 "queueId",
                 a -> queueNames.entrySet().stream()
@@ -64,9 +64,9 @@ class DefaultAdminOpsTest {
                         .findFirst()
                         .orElseThrow()
                         .getKey());
-        handlers.put("eventId", a -> EVENT_ID);
+        handlers.put("typeId", a -> TYPE_ID);
         handlers.put("queueNames", a -> queueNames);
-        handlers.put("eventNames", a -> eventNames);
+        handlers.put("typeNames", a -> typeNames);
         ops = newOps();
     }
 
@@ -95,7 +95,7 @@ class DefaultAdminOpsTest {
         return TaskRecord.builder()
                 .id(id)
                 .queueId(queueId)
-                .eventId(EVENT_ID)
+                .typeId(TYPE_ID)
                 .state(TaskState.QUEUED)
                 .build();
     }
@@ -103,7 +103,7 @@ class DefaultAdminOpsTest {
     private static RecurringDefinition definition(String id, String cron, Long fixedDelayMs, boolean paused) {
         return new RecurringDefinition(
                 id,
-                EVENT_ID,
+                TYPE_ID,
                 1,
                 OTHER_QUEUE_ID,
                 "acme",
@@ -149,7 +149,7 @@ class DefaultAdminOpsTest {
     @Test
     void queueAndEventNamesComeFromTheStoreRegistry() {
         assertThat(ops.queueNames()).isEqualTo(queueNames);
-        assertThat(ops.eventNames()).isEqualTo(eventNames);
+        assertThat(ops.typeNames()).isEqualTo(typeNames);
     }
 
     @Test
@@ -180,14 +180,14 @@ class DefaultAdminOpsTest {
     }
 
     @Test
-    void taskIsReturnedWithQueueAndEventNames() {
+    void taskIsReturnedWithQueueAndTypeNames() {
         handlers.put("getTask", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
 
         var view = ops.task(42).orElseThrow();
 
         assertThat(view.id()).isEqualTo(42);
         assertThat(view.queue()).isEqualTo("Q:OTHER");
-        assertThat(view.event()).isEqualTo("send-mail");
+        assertThat(view.type()).isEqualTo("send-mail");
     }
 
     @Test
@@ -264,7 +264,7 @@ class DefaultAdminOpsTest {
     }
 
     @Test
-    void taskByKeyIsReturnedWithQueueAndEventNames() {
+    void taskByKeyIsReturnedWithQueueAndTypeNames() {
         handlers.put("taskByKey", a -> Optional.of(record(42, OTHER_QUEUE_ID)));
 
         var view = ops.taskByKey("invoice-9").orElseThrow();
@@ -330,7 +330,7 @@ class DefaultAdminOpsTest {
         var occurrence = TaskRecord.builder()
                 .id(7)
                 .queueId(OTHER_QUEUE_ID)
-                .eventId(EVENT_ID)
+                .typeId(TYPE_ID)
                 .state(TaskState.SCHEDULED)
                 .uniqueKey("sched:poll")
                 .scheduleId("poll")
@@ -376,7 +376,7 @@ class DefaultAdminOpsTest {
                 a -> Optional.of(TaskRecord.builder()
                         .id((Long) a[0])
                         .queueId(OTHER_QUEUE_ID)
-                        .eventId(EVENT_ID)
+                        .typeId(TYPE_ID)
                         .state(TaskState.CANCELLED)
                         .scheduleId("poll")
                         .headers(Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT5S"))
@@ -396,7 +396,7 @@ class DefaultAdminOpsTest {
                 a -> Optional.of(TaskRecord.builder()
                         .id((Long) a[0])
                         .queueId(OTHER_QUEUE_ID)
-                        .eventId(EVENT_ID)
+                        .typeId(TYPE_ID)
                         .state(TaskState.QUEUED)
                         .scheduleId("poll")
                         .headers(Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT5S"))
@@ -458,7 +458,7 @@ class DefaultAdminOpsTest {
         assertThat(views).hasSize(2);
         var nightly = views.get(0);
         assertThat(nightly.id()).isEqualTo("nightly");
-        assertThat(nightly.event()).isEqualTo("send-mail");
+        assertThat(nightly.type()).isEqualTo("send-mail");
         assertThat(nightly.queue()).isEqualTo("Q:OTHER");
         assertThat(nightly.account()).isEqualTo("acme");
         assertThat(nightly.cron()).isEqualTo("0 2 * * *");

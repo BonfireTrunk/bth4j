@@ -57,7 +57,7 @@ class RedisTaskStoreIT {
     private RedisTaskStore store;
     private Keys keys;
     private int queue;
-    private int event;
+    private int type;
 
     @BeforeAll
     static void connect() {
@@ -91,14 +91,14 @@ class RedisTaskStoreIT {
         keys = store.keys();
         store.init();
         queue = store.queueId("default");
-        event = store.eventId("send");
+        type = store.typeId("send");
     }
 
     private TaskRecord.Builder task(long id) {
         return TaskRecord.builder()
                 .id(id)
                 .queueId(queue)
-                .eventId(event)
+                .typeId(type)
                 .maxAttempts(3)
                 .created(Instant.now().truncatedTo(ChronoUnit.MILLIS));
     }
@@ -174,7 +174,7 @@ class RedisTaskStoreIT {
         assertThat(other).isNotEqualTo(queue);
         assertThat(new RedisTaskStore(jedis, keys.namespace).queueId("other")).isEqualTo(other);
         assertThat(store.queueNames()).containsEntry(queue, "default").containsEntry(other, "other");
-        assertThat(store.eventNames()).containsEntry(event, "send");
+        assertThat(store.typeNames()).containsEntry(type, "send");
         assertThat(jedis.hvals(keys.registry("queue"))).contains(String.valueOf(queue), String.valueOf(other));
     }
 
@@ -182,7 +182,7 @@ class RedisTaskStoreIT {
     void registryRefusesMoreThan32767Names() {
         jedis.set(keys.prefix + "seq:event", "32767");
 
-        assertThatThrownBy(() -> store.eventId("one too many")).isInstanceOf(TaskStoreException.class);
+        assertThatThrownBy(() -> store.typeId("one too many")).isInstanceOf(TaskStoreException.class);
     }
 
     // ---- enqueue -------------------------------------------------------------------------------------
@@ -428,13 +428,13 @@ class RedisTaskStoreIT {
     }
 
     @Test
-    void unknownEventsAreDeferredFiveSecondsWithoutAnAttempt() {
-        var unknown = store.eventId("unknown");
-        store.enqueue(task(1).eventId(unknown).build());
+    void unknownTypesAreDeferredFiveSecondsWithoutAnAttempt() {
+        var unknown = store.typeId("unknown");
+        store.enqueue(task(1).typeId(unknown).build());
         store.enqueue(task(2).build());
         var before = System.currentTimeMillis();
 
-        var claimed = store.claim(new ClaimRequest(List.of(queue), 5, LEASE, 1, Set.of(event)));
+        var claimed = store.claim(new ClaimRequest(List.of(queue), 5, LEASE, 1, Set.of(type)));
 
         assertThat(claimed).extracting(TaskRecord::id).containsExactly(2L);
         var deferred = store.getTask(1).orElseThrow();
@@ -707,7 +707,7 @@ class RedisTaskStoreIT {
         assertThat(e.revision()).isEqualTo(t.revision());
         assertThat(e.attempts()).isEqualTo(1);
         assertThat(e.maxAttempts()).isEqualTo(3);
-        assertThat(e.eventId()).isEqualTo(event);
+        assertThat(e.typeId()).isEqualTo(type);
         assertThat(e.cancelRequested()).isFalse();
         assertThat(store.getTask(1).orElseThrow().state()).isEqualTo(TaskState.LEASED);
         assertThat(store.failExpired(1, e.revision(), failure(1), Instant.now().plusSeconds(5), true, null))
@@ -999,11 +999,11 @@ class RedisTaskStoreIT {
     // ---- schedules -----------------------------------------------------------------------------------
 
     private RecurringDefinition definition(String id, String cron) {
-        return new RecurringDefinition(id, event, 2, queue, "acme", cron, "{\"d\":1}", 5, 0);
+        return new RecurringDefinition(id, type, 2, queue, "acme", cron, "{\"d\":1}", 5, 0);
     }
 
     private RecurringDefinition otherData(String id, String cron) {
-        return new RecurringDefinition(id, event, 2, queue, "acme", cron, "{\"d\":2}", 5, 0);
+        return new RecurringDefinition(id, type, 2, queue, "acme", cron, "{\"d\":2}", 5, 0);
     }
 
     @Test
@@ -1018,7 +1018,7 @@ class RedisTaskStoreIT {
         assertThat(due.scheduleId()).isEqualTo("s");
         assertThat(due.fireAt()).isEqualTo(fire);
         var d = due.definition();
-        assertThat(d.eventId()).isEqualTo(event);
+        assertThat(d.typeId()).isEqualTo(type);
         assertThat(d.queueId()).isEqualTo(queue);
         assertThat(d.payloadVersion()).isEqualTo(2);
         assertThat(d.account()).isEqualTo("acme");

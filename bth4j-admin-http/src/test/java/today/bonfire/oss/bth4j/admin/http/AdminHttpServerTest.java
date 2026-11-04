@@ -555,7 +555,7 @@ class AdminHttpServerTest {
                 .containsEntry("revision", "7")
                 .containsEntry("state", "DEAD")
                 .containsEntry("queue", "default")
-                .containsEntry("event", "send-mail")
+                .containsEntry("type", "send-mail")
                 .containsEntry("created", "2026-01-01T00:00:00Z")
                 .containsEntry("maxRunTime", "PT5M")
                 .containsEntry("attempts", 1L)

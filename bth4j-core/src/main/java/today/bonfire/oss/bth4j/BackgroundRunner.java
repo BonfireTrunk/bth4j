@@ -203,8 +203,8 @@ public final class BackgroundRunner {
             for (var q : queues.queuesToProcess) queueIds.add(names.queueId(q));
             var policies = new LinkedHashMap<Integer, QueuePolicy>();
             config.queuePolicies.forEach((q, p) -> policies.put(names.queueId(q), p));
-            var eventIds = new HashSet<Integer>();
-            for (var e : registry.typeNames()) eventIds.add(names.eventId(e));
+            var typeIds = new HashSet<Integer>();
+            for (var e : registry.typeNames()) typeIds.add(names.typeId(e));
             services = new RunnerServices(
                     store,
                     names,
@@ -221,7 +221,7 @@ public final class BackgroundRunner {
                     config.failureDetail,
                     List.copyOf(queueIds),
                     policies,
-                    Set.copyOf(eventIds),
+                    Set.copyOf(typeIds),
                     workerId);
             taskProcessorService = startTaskProcessorService();
             scheduledTaskService = startScheduledTaskService();
