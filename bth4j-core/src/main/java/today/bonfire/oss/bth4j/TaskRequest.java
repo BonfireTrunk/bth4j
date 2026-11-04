@@ -20,8 +20,8 @@ public final class TaskRequest<T> {
      */
     public static final int MAX_ATTEMPTS = Short.MAX_VALUE;
 
-    /** The longest {@code maxRun} of a task or schedule, about 24.8 days: stores keep it as an int of milliseconds. */
-    public static final Duration MAX_RUN = Duration.ofMillis(Integer.MAX_VALUE);
+    /** The longest {@code maxRunTime} of a task or schedule, about 24.8 days: stores keep it as an int of milliseconds. */
+    public static final Duration MAX_RUN_TIME = Duration.ofMillis(Integer.MAX_VALUE);
 
     public static final int MAX_UNIQUE_KEY_LENGTH = 256;
     public static final int MAX_ACCOUNT_LENGTH = 128;
@@ -29,9 +29,10 @@ public final class TaskRequest<T> {
     public static final int MAX_PAYLOAD_BYTES = 256 * 1024;
 
     /** The rule for a maximum run time of a task or schedule; null means none. */
-    public static void requireMaxRun(Duration maxRun) {
-        if (maxRun != null && (maxRun.isNegative() || maxRun.isZero() || maxRun.compareTo(MAX_RUN) > 0)) {
-            throw new TaskValidationException("maxRun must be positive and at most " + MAX_RUN);
+    public static void requireMaxRunTime(Duration maxRunTime) {
+        if (maxRunTime != null
+                && (maxRunTime.isNegative() || maxRunTime.isZero() || maxRunTime.compareTo(MAX_RUN_TIME) > 0)) {
+            throw new TaskValidationException("maxRunTime must be positive and at most " + MAX_RUN_TIME);
         }
     }
 
@@ -53,7 +54,7 @@ public final class TaskRequest<T> {
     private final Integer maxAttempts;
     private final Map<String, String> headers;
     private final Instant startBy;
-    private final Duration maxRun;
+    private final Duration maxRunTime;
     private final String retryPolicy;
     private final Long id;
 
@@ -69,7 +70,7 @@ public final class TaskRequest<T> {
         this.maxAttempts = b.maxAttempts;
         this.headers = b.headers == null ? Map.of() : Map.copyOf(b.headers);
         this.startBy = b.startBy;
-        this.maxRun = b.maxRun;
+        this.maxRunTime = b.maxRunTime;
         this.retryPolicy = b.retryPolicy;
         this.id = b.id;
     }
@@ -86,7 +87,7 @@ public final class TaskRequest<T> {
         this.maxAttempts = source.maxAttempts;
         this.headers = source.headers;
         this.startBy = source.startBy;
-        this.maxRun = source.maxRun;
+        this.maxRunTime = source.maxRunTime;
         this.retryPolicy = source.retryPolicy;
         this.id = positiveId(id);
     }
@@ -157,8 +158,8 @@ public final class TaskRequest<T> {
         return startBy;
     }
 
-    public Duration maxRun() {
-        return maxRun;
+    public Duration maxRunTime() {
+        return maxRunTime;
     }
 
     public String retryPolicy() {
@@ -191,7 +192,7 @@ public final class TaskRequest<T> {
         private Integer maxAttempts;
         private Map<String, String> headers;
         private Instant startBy;
-        private Duration maxRun;
+        private Duration maxRunTime;
         private String retryPolicy;
         private Long id;
 
@@ -275,9 +276,9 @@ public final class TaskRequest<T> {
         }
 
         /** An attempt running longer than this is cancelled; the task ends CANCELLED. */
-        public Builder<T> maxRun(Duration maxRun) {
-            requireMaxRun(maxRun);
-            this.maxRun = maxRun;
+        public Builder<T> maxRunTime(Duration maxRunTime) {
+            requireMaxRunTime(maxRunTime);
+            this.maxRunTime = maxRunTime;
             return this;
         }
 

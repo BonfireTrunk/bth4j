@@ -49,7 +49,7 @@ final class FakeAdminOps implements AdminOps {
                 .due(Instant.parse("2026-01-01T00:00:01Z"))
                 .stateChanged(Instant.parse("2026-01-01T00:00:02Z"))
                 .data(data)
-                .maxRun(Duration.ofMinutes(5))
+                .maxRunTime(Duration.ofMinutes(5))
                 .build();
         return new TaskView(record, queue, "send-mail");
     }

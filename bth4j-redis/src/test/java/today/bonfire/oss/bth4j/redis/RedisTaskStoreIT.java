@@ -243,7 +243,7 @@ class RedisTaskStoreIT {
                 .scheduleId("sched")
                 .retryOf(3L)
                 .startBy(Instant.ofEpochMilli(1_900_000_000_000L))
-                .maxRun(Duration.ofMinutes(2))
+                .maxRunTime(Duration.ofMinutes(2))
                 .payloadVersion(4)
                 .build();
 
@@ -257,7 +257,7 @@ class RedisTaskStoreIT {
         assertThat(back.scheduleId()).isEqualTo("sched");
         assertThat(back.retryOf()).isEqualTo(3L);
         assertThat(back.startBy()).isEqualTo(t.startBy());
-        assertThat(back.maxRun()).isEqualTo(Duration.ofMinutes(2));
+        assertThat(back.maxRunTime()).isEqualTo(Duration.ofMinutes(2));
         assertThat(back.payloadVersion()).isEqualTo(4);
         assertThat(back.created()).isEqualTo(t.created());
         assertThat(back.state()).isEqualTo(TaskState.QUEUED);

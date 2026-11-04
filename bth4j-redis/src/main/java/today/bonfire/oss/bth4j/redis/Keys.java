@@ -68,7 +68,7 @@ public final class Keys {
     public static final String F_SCHEDULE = "sid";
     public static final String F_RETRY_OF = "rof";
     public static final String F_START_BY = "sb";
-    public static final String F_MAX_RUN = "mr";
+    public static final String F_MAX_RUN_TIME = "mr";
     public static final String F_CANCEL_AT = "cra";
     public static final String F_CANCEL_REASON = "crs";
     public static final String F_PROGRESS = "prg";

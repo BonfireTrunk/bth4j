@@ -112,8 +112,8 @@ public final class TaskView {
         return record.startBy();
     }
 
-    public Duration maxRun() {
-        return record.maxRun();
+    public Duration maxRunTime() {
+        return record.maxRunTime();
     }
 
     public Instant cancelRequestedAt() {

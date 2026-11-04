@@ -161,16 +161,23 @@ class TaskRequestTest {
     }
 
     @Test
-    void maxRunMustBePositiveAndAtMostMaxRun() {
+    void maxRunTimeMustBePositiveAndAtMostMaxRunTime() {
         var builder = TaskRequest.of(VOID);
 
-        assertThatThrownBy(() -> builder.maxRun(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> builder.maxRun(Duration.ofSeconds(-1))).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> builder.maxRun(TaskRequest.MAX_RUN.plusMillis(1)))
+        assertThatThrownBy(() -> builder.maxRunTime(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> builder.maxRunTime(Duration.ofSeconds(-1)))
                 .isInstanceOf(TaskValidationException.class);
-        assertThat(TaskRequest.of(VOID).maxRun(TaskRequest.MAX_RUN).build().maxRun())
-                .isEqualTo(TaskRequest.MAX_RUN);
-        assertThat(TaskRequest.of(VOID).maxRun(Duration.ofSeconds(1)).build().maxRun())
+        assertThatThrownBy(() -> builder.maxRunTime(TaskRequest.MAX_RUN_TIME.plusMillis(1)))
+                .isInstanceOf(TaskValidationException.class);
+        assertThat(TaskRequest.of(VOID)
+                        .maxRunTime(TaskRequest.MAX_RUN_TIME)
+                        .build()
+                        .maxRunTime())
+                .isEqualTo(TaskRequest.MAX_RUN_TIME);
+        assertThat(TaskRequest.of(VOID)
+                        .maxRunTime(Duration.ofSeconds(1))
+                        .build()
+                        .maxRunTime())
                 .isEqualTo(Duration.ofSeconds(1));
     }
 
@@ -193,7 +200,7 @@ class TaskRequestTest {
                 .maxAttempts(7)
                 .header("a", "b")
                 .startBy(Instant.parse("2031-01-02T00:00:00Z"))
-                .maxRun(Duration.ofSeconds(3))
+                .maxRunTime(Duration.ofSeconds(3))
                 .retryPolicy("policy")
                 .build();
 

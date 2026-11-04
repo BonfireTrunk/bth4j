@@ -35,7 +35,8 @@ import java.util.Map;
  * @param scheduleId        the recurring definition this task is an occurrence of, or null
  * @param retryOf           the dead task this one was created from by an admin retry, or null
  * @param startBy           the task expires when it has not started by then, or null
- * @param maxRun            the task is failed when an attempt runs longer, or null
+ * @param maxRunTime        longest time one attempt may run before the runner cancels it, or null for the runner's
+ *                          default
  * @param cancelRequestedAt when a cancel was requested, or null
  * @param cancelReason      why, or null
  * @param progress          free-form progress text set by the processor, or null
@@ -67,7 +68,7 @@ public record TaskRecord(
         String scheduleId,
         Long retryOf,
         Instant startBy,
-        Duration maxRun,
+        Duration maxRunTime,
         Instant cancelRequestedAt,
         String cancelReason,
         String progress,
@@ -110,7 +111,7 @@ public record TaskRecord(
         b.scheduleId = scheduleId;
         b.retryOf = retryOf;
         b.startBy = startBy;
-        b.maxRun = maxRun;
+        b.maxRunTime = maxRunTime;
         b.cancelRequestedAt = cancelRequestedAt;
         b.cancelReason = cancelReason;
         b.progress = progress;
@@ -149,7 +150,7 @@ public record TaskRecord(
         private String scheduleId;
         private Long retryOf;
         private Instant startBy;
-        private Duration maxRun;
+        private Duration maxRunTime;
         private Instant cancelRequestedAt;
         private String cancelReason;
         private String progress;
@@ -278,8 +279,8 @@ public record TaskRecord(
             return this;
         }
 
-        public Builder maxRun(Duration v) {
-            maxRun = v;
+        public Builder maxRunTime(Duration v) {
+            maxRunTime = v;
             return this;
         }
 
@@ -334,7 +335,7 @@ public record TaskRecord(
                     scheduleId,
                     retryOf,
                     startBy,
-                    maxRun,
+                    maxRunTime,
                     cancelRequestedAt,
                     cancelReason,
                     progress,

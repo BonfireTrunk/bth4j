@@ -45,7 +45,7 @@ def make_tasks():
             "claimedAt": iso(-40) if state in ("LEASED", "SUCCEEDED", "DEAD") else None,
             "account": "acme" if i % 2 else None, "headers": {"trace": "t-%d" % i} if i % 4 == 0 else {},
             "uniqueKey": "uk-%d" % i if i % 5 == 0 else None, "scheduleId": "nightly-report" if i % 11 == 0 else None,
-            "retryOf": None, "startBy": None, "maxRun": "PT15M" if i % 3 == 0 else None,
+            "retryOf": None, "startBy": None, "maxRunTime": "PT15M" if i % 3 == 0 else None,
             "cancelRequestedAt": iso(-100) if state == "CANCELLED" else None,
             "cancelReason": "no longer needed" if state == "CANCELLED" else None,
             "progress": "step 2 of 3" if state == "LEASED" else None,

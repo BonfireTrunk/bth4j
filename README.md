@@ -154,7 +154,7 @@ enqueue --(no due)--> QUEUED --claim--> LEASED --ack--> SUCCEEDED
 ```
 
 A task also ends CANCELLED (an operator cancelled it, its processor threw `TaskCancelledException` or it ran
-past its `maxRun`) or EXPIRED (its `startBy` passed before it could start). From DEAD, CANCELLED or EXPIRED
+past its `maxRunTime`) or EXPIRED (its `startBy` passed before it could start). From DEAD, CANCELLED or EXPIRED
 an operator can send it back to QUEUED with `AdminOps.retry`.
 
 A runner is made of four services: the task processor (claims in batches and runs the tasks, renews their
@@ -206,7 +206,7 @@ most 8192, and all step names and encoded results of a task together at most 655
 | `uniqueKey(key)` / `uniqueKey(key, Uniqueness.keepFor(d))` | at most one task record holds the key; released when the task finishes, or `d` after; an operator retry within `d` keeps it |
 | `maxAttempts(n)` | attempts before the task is dead; the runner default when absent |
 | `startBy(instant)` | the task expires if it has not started by then, see "Cancelling tasks"; must not be before the run time |
-| `maxRun(duration)` | an attempt running longer is asked to stop, see "Cancelling tasks" |
+| `maxRunTime(duration)` | an attempt running longer is asked to stop, see "Cancelling tasks" |
 | `retryPolicy(name)` | a retry policy registered on the runner with that name, see "Retries" |
 | `account(text)`, `header(name, value)` | application labels, stored with the task (8 KiB of headers) |
 | `id(id)` | an id the client allocated (`client.nextId()` or a retry prepared with `EnqueueFailedException.retryRequests(...)`), see below |
@@ -274,7 +274,7 @@ Ids must be allocated by a client of this namespace: `client.nextId()` or an exc
 that already belongs to a task is accepted again only for the same request, encoded identically: the stored task is compared on type, queue, the
 payload as stored text (when the task still has it; a finished task may have dropped it) and the unique key
 (only while the stored task holds one, even after an operator retry). Headers, account, attempts, retry policy,
-`startBy`, `maxRun`, delay, `at(...)`, the `keepFor` duration and payload version are not compared. Any other
+`startBy`, `maxRunTime`, delay, `at(...)`, the `keepFor` duration and payload version are not compared. Any other
 difference throws `TaskIdReusedException`. Before writing,
 `enqueueAll` rejects duplicate caller ids, checks the high-water mark before reserving fresh ids, rejects caller
 ids inside that fresh range, and compares every caller id with its stored task. These checks add no store reads
@@ -371,10 +371,10 @@ Starting a new `ctx.step` also checks. If the revision fence still accepts it, a
 and returns normally ends the task SUCCEEDED; the request is not applied after a normal return. If the worker dies while a cancel is pending, maintenance
 ends the task CANCELLED when its lease expires instead of retrying it.
 
-`maxRun(duration)` uses the same path: when an attempt has run longer, the lease renewal asks it to stop with
-the reason "max run time ... exceeded". A task without its own `maxRun` gets the runner's
-`defaultMaxRun(duration)`, one hour unless the builder sets another; a task that legitimately runs longer
-needs its own `maxRun` (at most `TaskRequest.MAX_RUN`, about 24.8 days). An attempt that is still running one
+`maxRunTime(duration)` uses the same path: when an attempt has run longer, the lease renewal asks it to stop with
+the reason "max run time ... exceeded". A task without its own `maxRunTime` gets the runner's
+`defaultMaxRunTime(duration)`, one hour unless the builder sets another; a task that legitimately runs longer
+needs its own `maxRunTime` (at most `TaskRequest.MAX_RUN_TIME`, about 24.8 days). An attempt that is still running one
 renewal period after the request is abandoned: the runner stops renewing its lease, so the lease expires and
 maintenance retries or ends the task, and raises the issue `attempt-abandoned`. The abandoned thread keeps its
 executor and queue slots until the processor returns, which `RunnerHealth.abandoned` and the gauge
@@ -385,14 +385,14 @@ claims skip it, maintenance moves it to EXPIRED and the observer receives `TaskE
 ```java
 client.enqueue(TaskRequest.of(EXPORT, export)
         .startBy(Instant.now().plus(Duration.ofMinutes(10)))   // expired, not run, if no worker was free by then
-        .maxRun(Duration.ofMinutes(30))                        // asked to stop after 30 minutes
+        .maxRunTime(Duration.ofMinutes(30))                        // asked to stop after 30 minutes
         .build());
 ```
 
 ### Recurring tasks
 
 `client.putSchedule(ScheduleDefinition.of(id, type, payload, cron))` creates or replaces a definition and
-returns the next fire time; `.queue(...)`, `.account(...)`, `.maxAttempts(...)` and `.maxRun(...)` refine it. The cron
+returns the next fire time; `.queue(...)`, `.account(...)`, `.maxAttempts(...)` and `.maxRunTime(...)` refine it. The cron
 expression has 5 fields (Unix format). Each fire time creates one task, exactly once across all instances.
 Registering the same id with the same timing (expression, zone and delay) keeps the next fire time while a
 fixed-delay occurrence is still running, or while it is not beyond the second fire after now; changed timing, or a

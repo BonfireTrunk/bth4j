@@ -34,7 +34,7 @@ class TaskProcessorOverrunTest {
     private static final TaskType<Void> TYPE = TaskType.of("overrun-test");
     private static final Duration LEASE = Duration.ofSeconds(3);
     private static final Duration RENEW_INTERVAL = Duration.ofSeconds(1);
-    private static final Duration DEFAULT_MAX_RUN = Duration.ofSeconds(2);
+    private static final Duration DEFAULT_MAX_RUN_TIME = Duration.ofSeconds(2);
 
     private final MutableClock clock = new MutableClock();
     private final InMemoryStore store = new InMemoryStore(clock);
@@ -84,11 +84,11 @@ class TaskProcessorOverrunTest {
     }
 
     @Test
-    void anAttemptPastTheDefaultMaxRunIsCancelledThenAbandonedOnce() throws Exception {
-        var processor = processor(DEFAULT_MAX_RUN);
+    void anAttemptPastTheDefaultMaxRunTimeIsCancelledThenAbandonedOnce() throws Exception {
+        var processor = processor(DEFAULT_MAX_RUN_TIME);
         long id = startStuckAttempt(processor, TaskRequest.of(TYPE).build());
 
-        clock.advance(DEFAULT_MAX_RUN.plusMillis(1));
+        clock.advance(DEFAULT_MAX_RUN_TIME.plusMillis(1));
         processor.renewOnce();
 
         assertThat(context.get().cancelRequested()).isTrue();
@@ -119,10 +119,11 @@ class TaskProcessorOverrunTest {
     }
 
     @Test
-    void theTasksOwnMaxRunWinsOverTheDefault() throws Exception {
+    void theTasksOwnMaxRunTimeWinsOverTheDefault() throws Exception {
         var processor = processor(Duration.ofMinutes(1));
         long id = startStuckAttempt(
-                processor, TaskRequest.of(TYPE).maxRun(Duration.ofSeconds(1)).build());
+                processor,
+                TaskRequest.of(TYPE).maxRunTime(Duration.ofSeconds(1)).build());
 
         clock.advance(Duration.ofMillis(1_001));
         processor.renewOnce();
@@ -137,11 +138,11 @@ class TaskProcessorOverrunTest {
     }
 
     @Test
-    void anAttemptWithinItsMaxRunKeepsItsLease() throws Exception {
-        var processor = processor(DEFAULT_MAX_RUN);
+    void anAttemptWithinItsMaxRunTimeKeepsItsLease() throws Exception {
+        var processor = processor(DEFAULT_MAX_RUN_TIME);
         long id = startStuckAttempt(processor, TaskRequest.of(TYPE).build());
 
-        clock.advance(DEFAULT_MAX_RUN.minusMillis(1));
+        clock.advance(DEFAULT_MAX_RUN_TIME.minusMillis(1));
         processor.renewOnce();
 
         assertThat(context.get().cancelRequested()).isFalse();
@@ -161,7 +162,7 @@ class TaskProcessorOverrunTest {
         return id;
     }
 
-    private TaskProcessorService processor(Duration defaultMaxRun) {
+    private TaskProcessorService processor(Duration defaultMaxRunTime) {
         return new TaskProcessorService.Builder()
                 .group(new ThreadGroup("overrun-test"))
                 .threadName("overrun-test")
@@ -174,7 +175,7 @@ class TaskProcessorOverrunTest {
                 .claimBatchSize(1)
                 .idlePollInterval(Duration.ofMillis(1))
                 .lease(LEASE)
-                .defaultMaxRun(defaultMaxRun)
+                .defaultMaxRunTime(defaultMaxRunTime)
                 .workerId(1)
                 .create();
     }

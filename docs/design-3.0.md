@@ -86,7 +86,7 @@ Present only when set (a store never writes a null field):
 | `retryPolicy` | name of a retry policy; null means the runner's policy |
 | `scheduleId` | the recurring definition this task is an occurrence of |
 | `retryOf` | reserved for an admin retry link |
-| `startBy`, `maxRun` | expiry and run-time limit, see Expiry and maximum run time |
+| `startBy`, `maxRunTime` | expiry and run-time limit, see Expiry and maximum run time |
 | `cancelRequestedAt`, `cancelReason` | set by a cancel request (or by `finishCancelled`); see Cancel protocol |
 | `progress` | free text set by the processor, at most 4096 characters |
 | `steps` | completed steps by name (see Steps) |
@@ -580,7 +580,7 @@ interval makes as frequent as needed.
 
 Leases: a claimed task is leased for `leaseDuration` (default 60 s, minimum 1 s). A renewal thread extends
 the leases of all running tasks every third of that duration in one call, passes cancel requests on to
-running executions and requests the cancellation of tasks past their `maxRun`. Maintenance (`maintenanceCheckInterval`, default 5 s) finds expired leases with
+running executions and requests the cancellation of tasks past their `maxRunTime`. Maintenance (`maintenanceCheckInterval`, default 5 s) finds expired leases with
 `reclaim` and fails them with `failExpired` (or ends them with `finishCancelled` when a cancel was
 requested), expires tasks past their `startBy` and writes the worker heartbeat. Clock skew between instances only matters for the client-side
 instants (`created`, request `at`/`delay`, retry times); leases, due times and retention use the store
@@ -666,9 +666,9 @@ does not expire again.
 
 `TaskClient` rejects a `startBy` before the requested run time.
 
-`maxRun` is enforced in the renewal loop, not in the store. An execution whose task has no `maxRun` uses the
-runner's `defaultMaxRun` (one hour by default), so every attempt has a limit. Each pass compares
-`startedAt + maxRun` of every running execution with the runner clock; an execution past it gets
+`maxRunTime` is enforced in the renewal loop, not in the store. An execution whose task has no `maxRunTime` uses the
+runner's `defaultMaxRunTime` (one hour by default), so every attempt has a limit. Each pass compares
+`startedAt + maxRunTime` of every running execution with the runner clock; an execution past it gets
 `requestCancel("max run time <d> exceeded")`, the same path as an operator's request, including the interrupt
 for types that opted in. The task then ends CANCELLED with that reason. The check runs once per renewal period,
 so a limit is honoured within a third of `leaseDuration`. `startedAt` is the time the processor started on this
@@ -679,7 +679,7 @@ its lease is no longer renewed, so it expires and maintenance retries the task o
 worker, and the runner raises `attempt-abandoned` once with the number of abandoned attempts that hold slots.
 The thread cannot be stopped, so it keeps its executor slot and its queue slot until the processor returns;
 `RunnerHealth.abandoned` counts those attempts. If it returns, its completion meets a lost lease or a newer
-revision and changes nothing. A schedule's `maxRun` is copied into each occurrence.
+revision and changes nothing. A schedule's `maxRunTime` is copied into each occurrence.
 
 ## Queue policies and pausing
 

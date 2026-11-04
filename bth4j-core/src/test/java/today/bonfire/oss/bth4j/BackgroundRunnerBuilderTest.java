@@ -10,14 +10,15 @@ import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
 class BackgroundRunnerBuilderTest {
 
     @Test
-    void defaultMaxRunMustBePositiveAndAtMostMaxRun() {
+    void defaultMaxRunTimeMustBePositiveAndAtMostMaxRunTime() {
         var builder = BackgroundRunner.builder();
 
-        assertThatThrownBy(() -> builder.defaultMaxRun(Duration.ZERO)).isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> builder.defaultMaxRun(TaskRequest.MAX_RUN.plusMillis(1)))
+        assertThatThrownBy(() -> builder.defaultMaxRunTime(Duration.ZERO)).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> builder.defaultMaxRunTime(TaskRequest.MAX_RUN_TIME.plusMillis(1)))
                 .isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> builder.defaultMaxRun(Duration.ofSeconds(Long.MAX_VALUE)))
+        assertThatThrownBy(() -> builder.defaultMaxRunTime(Duration.ofSeconds(Long.MAX_VALUE)))
                 .isInstanceOf(TaskConfigurationError.class);
-        assertThatCode(() -> builder.defaultMaxRun(TaskRequest.MAX_RUN)).doesNotThrowAnyException();
+        assertThatCode(() -> builder.defaultMaxRunTime(TaskRequest.MAX_RUN_TIME))
+                .doesNotThrowAnyException();
     }
 }

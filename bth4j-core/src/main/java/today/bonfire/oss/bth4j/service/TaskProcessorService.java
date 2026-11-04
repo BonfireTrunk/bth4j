@@ -48,7 +48,7 @@ public class TaskProcessorService extends CustomThread {
     private final int workerId;
     private final Duration lease;
     private final Duration renewInterval;
-    private final Duration defaultMaxRun;
+    private final Duration defaultMaxRunTime;
     private final Duration idlePollInterval;
     private final int claimBatchSize;
     private final AtomicInteger queueOffset = new AtomicInteger();
@@ -75,7 +75,7 @@ public class TaskProcessorService extends CustomThread {
         this.reservations = b.reservations;
         this.lease = b.lease;
         this.renewInterval = Duration.ofMillis(Math.max(100, lease.toMillis() / 3));
-        this.defaultMaxRun = b.defaultMaxRun;
+        this.defaultMaxRunTime = b.defaultMaxRunTime;
         this.idlePollInterval = b.idlePollInterval;
         this.claimBatchSize = b.claimBatchSize;
         this.quiet = b.quiet;
@@ -304,19 +304,19 @@ public class TaskProcessorService extends CustomThread {
         }
     }
 
-    private Duration maxRun(TaskExecution e) {
-        return e.maxRun() != null ? e.maxRun() : defaultMaxRun;
+    private Duration maxRunTime(TaskExecution e) {
+        return e.maxRunTime() != null ? e.maxRunTime() : defaultMaxRunTime;
     }
 
     private void cancelIfOverrunning(TaskExecution e, Instant now) {
         var started = e.startedAt();
         if (started == null || e.overrunSince() != null) return;
-        var maxRun = maxRun(e);
-        if (!now.isAfter(started.plus(maxRun))) return;
+        var maxRunTime = maxRunTime(e);
+        if (!now.isAfter(started.plus(maxRunTime))) return;
         e.markOverrun(now);
         if (e.cancelRequested()) return;
-        log.warn("Task {} exceeded its maximum run time of {}, requesting cancellation", e.taskId(), maxRun);
-        e.requestCancel("max run time " + maxRun + " exceeded");
+        log.warn("Task {} exceeded its maximum run time of {}, requesting cancellation", e.taskId(), maxRunTime);
+        e.requestCancel("max run time " + maxRunTime + " exceeded");
     }
 
     /**
@@ -329,7 +329,7 @@ public class TaskProcessorService extends CustomThread {
         var since = e.overrunSince();
         if (since == null || now.isBefore(since.plus(renewInterval))) return false;
         if (reservations.abandon(e)) {
-            var detail = "task " + e.taskId() + " ran past its maximum run time of " + maxRun(e)
+            var detail = "task " + e.taskId() + " ran past its maximum run time of " + maxRunTime(e)
                     + " and did not stop; its lease is no longer renewed and its slot stays held until it returns ("
                     + reservations.abandoned() + " abandoned attempts hold slots)";
             settings.status().issue("attempt-abandoned", detail, e.taskId());
@@ -376,7 +376,7 @@ public class TaskProcessorService extends CustomThread {
         private Set<Integer> knownEventIds;
         private int workerId;
         private Duration lease = Duration.ofSeconds(60);
-        private Duration defaultMaxRun = Duration.ofHours(1);
+        private Duration defaultMaxRunTime = Duration.ofHours(1);
         private Duration idlePollInterval = Duration.ofMillis(500);
         private int claimBatchSize = 32;
         private boolean quiet;
@@ -430,8 +430,8 @@ public class TaskProcessorService extends CustomThread {
         }
 
         /** The maximum run time of an attempt whose task sets none. */
-        public Builder defaultMaxRun(Duration defaultMaxRun) {
-            this.defaultMaxRun = defaultMaxRun;
+        public Builder defaultMaxRunTime(Duration defaultMaxRunTime) {
+            this.defaultMaxRunTime = defaultMaxRunTime;
             return this;
         }
 

@@ -148,7 +148,7 @@ public final class DefaultAdminOps implements AdminOps {
                 d.paused(),
                 s.nextFire(),
                 d.maxAttempts(),
-                d.maxRunMs() == null ? null : Duration.ofMillis(d.maxRunMs()));
+                d.maxRunTimeMs() == null ? null : Duration.ofMillis(d.maxRunTimeMs()));
     }
 
     @Override

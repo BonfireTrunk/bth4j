@@ -322,7 +322,7 @@ public final class TaskClient {
                 .uniqueKey(request.uniqueKey())
                 .retryPolicy(request.retryPolicy())
                 .startBy(request.startBy())
-                .maxRun(request.maxRun());
+                .maxRunTime(request.maxRunTime());
         if (request.uniqueKey() != null && request.uniqueness() instanceof Uniqueness.KeepFor k) {
             b.keyKeep(k.duration());
         }
@@ -386,7 +386,7 @@ public final class TaskClient {
                 definition.overlap() == Overlap.SKIP,
                 codecs.encode(type, definition.payload()),
                 definition.maxAttempts() != null ? definition.maxAttempts() : defaultMaxAttempts,
-                definition.maxRun() == null ? null : definition.maxRun().toMillis(),
+                definition.maxRunTime() == null ? null : definition.maxRunTime().toMillis(),
                 false,
                 0);
         var outcome = store.putRecurring(stored, next, keepUntil);

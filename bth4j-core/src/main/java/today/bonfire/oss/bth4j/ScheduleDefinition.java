@@ -16,8 +16,8 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
  *
  * @param cron       five-field unix expression; null for a fixed-delay definition
  * @param fixedDelay delay between the end of an occurrence and the next; null for a cron definition
- * @param maxRun     maximum run time of each occurrence's attempts; null for the runner's
- *                   {@code defaultMaxRun}
+ * @param maxRunTime     maximum run time of each occurrence's attempts; null for the runner's
+ *                   {@code defaultMaxRunTime}
  */
 public record ScheduleDefinition<T>(
         String id,
@@ -31,7 +31,7 @@ public record ScheduleDefinition<T>(
         String queue,
         String account,
         Integer maxAttempts,
-        Duration maxRun) {
+        Duration maxRunTime) {
 
     public static final Duration MIN_FIXED_DELAY = Duration.ofSeconds(1);
 
@@ -52,7 +52,7 @@ public record ScheduleDefinition<T>(
         if (maxAttempts != null && (maxAttempts < 1 || maxAttempts > TaskRequest.MAX_ATTEMPTS)) {
             throw new TaskValidationException("maxAttempts must be between 1 and " + TaskRequest.MAX_ATTEMPTS);
         }
-        TaskRequest.requireMaxRun(maxRun);
+        TaskRequest.requireMaxRunTime(maxRunTime);
         if (misfire == null) misfire = Misfire.FIRE_ONCE_NOW;
         if (overlap == null) overlap = Overlap.ALLOW;
     }
@@ -80,38 +80,38 @@ public record ScheduleDefinition<T>(
 
     public ScheduleDefinition<T> queue(String queue) {
         return new ScheduleDefinition<>(
-                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRun);
+                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRunTime);
     }
 
     public ScheduleDefinition<T> account(String account) {
         return new ScheduleDefinition<>(
-                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRun);
+                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRunTime);
     }
 
     public ScheduleDefinition<T> maxAttempts(int maxAttempts) {
         return new ScheduleDefinition<>(
-                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRun);
+                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRunTime);
     }
 
-    /** An occurrence's attempt running longer than this is cancelled, like {@link TaskRequest.Builder#maxRun}. */
-    public ScheduleDefinition<T> maxRun(Duration maxRun) {
+    /** An occurrence's attempt running longer than this is cancelled, like {@link TaskRequest.Builder#maxRunTime}. */
+    public ScheduleDefinition<T> maxRunTime(Duration maxRunTime) {
         return new ScheduleDefinition<>(
-                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRun);
+                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRunTime);
     }
 
     /** The zone the cron expression is evaluated in. Ignored by fixed-delay definitions. */
     public ScheduleDefinition<T> zone(ZoneId zone) {
         return new ScheduleDefinition<>(
-                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRun);
+                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRunTime);
     }
 
     public ScheduleDefinition<T> misfire(Misfire misfire) {
         return new ScheduleDefinition<>(
-                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRun);
+                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRunTime);
     }
 
     public ScheduleDefinition<T> overlap(Overlap overlap) {
         return new ScheduleDefinition<>(
-                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRun);
+                id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRunTime);
     }
 }

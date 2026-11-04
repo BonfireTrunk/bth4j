@@ -41,7 +41,7 @@ final class TaskHashes {
         put(f, F_SCHEDULE, t.scheduleId());
         put(f, F_RETRY_OF, t.retryOf());
         put(f, F_START_BY, t.startBy());
-        put(f, F_MAX_RUN, t.maxRun());
+        put(f, F_MAX_RUN_TIME, t.maxRunTime());
         put(f, F_CANCEL_AT, t.cancelRequestedAt());
         put(f, F_CANCEL_REASON, t.cancelReason());
         put(f, F_PROGRESS, t.progress());
@@ -82,7 +82,7 @@ final class TaskHashes {
                 .scheduleId(h.get(F_SCHEDULE))
                 .retryOf(h.containsKey(F_RETRY_OF) ? Long.parseLong(h.get(F_RETRY_OF)) : null)
                 .startBy(instant(h, F_START_BY))
-                .maxRun(duration(h, F_MAX_RUN))
+                .maxRunTime(duration(h, F_MAX_RUN_TIME))
                 .cancelRequestedAt(instant(h, F_CANCEL_AT))
                 .cancelReason(h.get(F_CANCEL_REASON))
                 .progress(h.get(F_PROGRESS))

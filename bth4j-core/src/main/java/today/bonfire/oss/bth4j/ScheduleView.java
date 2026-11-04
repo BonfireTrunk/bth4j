@@ -17,4 +17,4 @@ public record ScheduleView(
         boolean paused,
         Instant nextFire,
         int maxAttempts,
-        Duration maxRun) {}
+        Duration maxRunTime) {}

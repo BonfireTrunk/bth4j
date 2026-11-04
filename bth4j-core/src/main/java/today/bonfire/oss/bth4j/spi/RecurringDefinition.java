@@ -12,7 +12,7 @@ package today.bonfire.oss.bth4j.spi;
  * @param overlapSkip  true gives each occurrence the unique key {@code sched:<scheduleId>} so that one is
  *                     skipped while the previous one is not finished
  * @param paused       a paused definition is left out of {@link ScheduleStore#dueRecurring}
- * @param maxRunMs     maximum run time of each occurrence's attempts, or null for the runner's default
+ * @param maxRunTimeMs     maximum run time of each occurrence's attempts, or null for the runner's default
  * @param revision     assigned by {@link ScheduleStore#putRecurring}, kept when the put changes nothing; a commit
  *                     for an older revision is rejected
  */
@@ -30,7 +30,7 @@ public record RecurringDefinition(
         boolean overlapSkip,
         String data,
         int maxAttempts,
-        Long maxRunMs,
+        Long maxRunTimeMs,
         boolean paused,
         long revision) {
 
@@ -83,7 +83,7 @@ public record RecurringDefinition(
                 overlapSkip,
                 data,
                 maxAttempts,
-                maxRunMs,
+                maxRunTimeMs,
                 paused,
                 revision);
     }
@@ -103,7 +103,7 @@ public record RecurringDefinition(
                 overlapSkip,
                 data,
                 maxAttempts,
-                maxRunMs,
+                maxRunTimeMs,
                 paused,
                 revision);
     }

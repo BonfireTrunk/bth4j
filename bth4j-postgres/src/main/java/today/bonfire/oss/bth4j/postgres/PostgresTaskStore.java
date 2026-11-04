@@ -638,7 +638,7 @@ public class PostgresTaskStore implements FullStore {
         var scheduleId = new String[n];
         var retryOf = new Long[n];
         var startBy = new String[n];
-        var maxRun = new Integer[n];
+        var maxRunTime = new Integer[n];
         var cancelRequestedAt = new String[n];
         var cancelReason = new String[n];
         var progress = new String[n];
@@ -666,7 +666,9 @@ public class PostgresTaskStore implements FullStore {
             scheduleId[i] = t.scheduleId();
             retryOf[i] = t.retryOf();
             startBy[i] = text(t.startBy());
-            maxRun[i] = t.maxRun() == null ? null : Math.toIntExact(t.maxRun().toMillis());
+            maxRunTime[i] = t.maxRunTime() == null
+                    ? null
+                    : Math.toIntExact(t.maxRunTime().toMillis());
             cancelRequestedAt[i] = text(t.cancelRequestedAt());
             cancelReason[i] = t.cancelReason();
             progress[i] = t.progress();
@@ -692,7 +694,7 @@ public class PostgresTaskStore implements FullStore {
             scheduleId,
             retryOf,
             startBy,
-            maxRun,
+            maxRunTime,
             cancelRequestedAt,
             cancelReason,
             progress,
@@ -1109,8 +1111,8 @@ public class PostgresTaskStore implements FullStore {
                 ps.setBoolean(11, d.overlapSkip());
                 ps.setString(12, d.data());
                 ps.setInt(13, d.maxAttempts());
-                if (d.maxRunMs() == null) ps.setNull(14, Types.INTEGER);
-                else ps.setInt(14, Math.toIntExact(d.maxRunMs()));
+                if (d.maxRunTimeMs() == null) ps.setNull(14, Types.INTEGER);
+                else ps.setInt(14, Math.toIntExact(d.maxRunTimeMs()));
                 ps.setBoolean(15, d.paused());
                 setInstant(ps, 16, nextFire);
                 setInstant(ps, 17, keepUntil);
@@ -1193,8 +1195,8 @@ public class PostgresTaskStore implements FullStore {
                 if (o.uniqueKey() == null || o.keyKeep() == null) ps.setNull(18, Types.BIGINT);
                 else ps.setLong(18, o.keyKeep().toMillis());
                 setInstant(ps, 19, o.startBy());
-                if (o.maxRun() == null) ps.setNull(20, Types.INTEGER);
-                else ps.setInt(20, Math.toIntExact(o.maxRun().toMillis()));
+                if (o.maxRunTime() == null) ps.setNull(20, Types.INTEGER);
+                else ps.setInt(20, Math.toIntExact(o.maxRunTime().toMillis()));
                 if (single(ps) != 1) return false;
             }
             if (fixedDelay) {
@@ -1423,7 +1425,7 @@ public class PostgresTaskStore implements FullStore {
                 .scheduleId(rs.getString("schedule_id"))
                 .retryOf(getLong(rs, "retry_of"))
                 .startBy(getInstant(rs, "start_by"))
-                .maxRun(getMillis(rs, "max_run_ms"))
+                .maxRunTime(getMillis(rs, "max_run_ms"))
                 .cancelRequestedAt(getInstant(rs, "cancel_requested_at"))
                 .cancelReason(rs.getString("cancel_reason"))
                 .progress(rs.getString("progress"))

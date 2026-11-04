@@ -165,15 +165,16 @@ class ScheduleDefinitionTest {
     }
 
     @Test
-    void maxRunFollowsTheTaskRule() {
+    void maxRunTimeFollowsTheTaskRule() {
         var d = ScheduleDefinition.of("id", NO_PAYLOAD, "0 2 * * *");
 
-        assertThat(d.maxRun()).isNull();
-        assertThatThrownBy(() -> d.maxRun(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> d.maxRun(TaskRequest.MAX_RUN.plusMillis(1)))
+        assertThat(d.maxRunTime()).isNull();
+        assertThatThrownBy(() -> d.maxRunTime(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> d.maxRunTime(TaskRequest.MAX_RUN_TIME.plusMillis(1)))
                 .isInstanceOf(TaskValidationException.class);
-        assertThat(d.maxRun(Duration.ofMinutes(5)).maxRun()).isEqualTo(Duration.ofMinutes(5));
-        assertThat(d.maxRun(Duration.ofMinutes(5)).maxAttempts(2).maxRun()).isEqualTo(Duration.ofMinutes(5));
+        assertThat(d.maxRunTime(Duration.ofMinutes(5)).maxRunTime()).isEqualTo(Duration.ofMinutes(5));
+        assertThat(d.maxRunTime(Duration.ofMinutes(5)).maxAttempts(2).maxRunTime())
+                .isEqualTo(Duration.ofMinutes(5));
     }
 
     @Test
@@ -259,6 +260,6 @@ class ScheduleDefinitionTest {
                 queue != null ? queue : base.queue(),
                 account != null ? account : base.account(),
                 maxAttempts != null ? maxAttempts : base.maxAttempts(),
-                base.maxRun());
+                base.maxRunTime());
     }
 }

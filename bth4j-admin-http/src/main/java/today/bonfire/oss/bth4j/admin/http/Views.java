@@ -73,7 +73,7 @@ final class Views {
                 "scheduleId", t.scheduleId(),
                 "retryOf", text(t.retryOf()),
                 "startBy", t.startBy(),
-                "maxRun", text(t.maxRun()),
+                "maxRunTime", text(t.maxRunTime()),
                 "cancelRequestedAt", t.cancelRequestedAt(),
                 "cancelReason", t.cancelReason(),
                 "progress", t.progress(),
@@ -134,7 +134,7 @@ final class Views {
                 "paused", s.paused(),
                 "nextFire", s.nextFire(),
                 "maxAttempts", s.maxAttempts(),
-                "maxRun", text(s.maxRun()));
+                "maxRunTime", text(s.maxRunTime()));
     }
 
     static Map<String, Object> worker(WorkerInfo w) {

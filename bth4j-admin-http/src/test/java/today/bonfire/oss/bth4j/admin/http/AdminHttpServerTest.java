@@ -557,7 +557,7 @@ class AdminHttpServerTest {
                 .containsEntry("queue", "default")
                 .containsEntry("event", "send-mail")
                 .containsEntry("created", "2026-01-01T00:00:00Z")
-                .containsEntry("maxRun", "PT5M")
+                .containsEntry("maxRunTime", "PT5M")
                 .containsEntry("attempts", 1L)
                 .containsEntry("maxAttempts", 3L)
                 .containsKeys(
@@ -661,7 +661,7 @@ class AdminHttpServerTest {
         assertThat(schedules.get(0))
                 .containsEntry("id", "nightly")
                 .containsEntry("fixedDelay", "PT1H")
-                .containsEntry("maxRun", "PT10M")
+                .containsEntry("maxRunTime", "PT10M")
                 .containsEntry("nextFire", "2026-02-01T00:00:00Z");
         assertThat(jsonList(get("/api/v1/workers", login)).get(0))
                 .containsEntry("id", 2L)

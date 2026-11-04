@@ -532,8 +532,8 @@ public class RedisTaskStore implements FullStore {
         if (d.fixedDelayMs() != null) {
             args.addAll(List.of(F_FIXED_DELAY, String.valueOf(d.fixedDelayMs())));
         }
-        if (d.maxRunMs() != null) {
-            args.addAll(List.of(F_MAX_RUN, String.valueOf(d.maxRunMs())));
+        if (d.maxRunTimeMs() != null) {
+            args.addAll(List.of(F_MAX_RUN_TIME, String.valueOf(d.maxRunTimeMs())));
         }
         if (d.overlapSkip()) {
             args.addAll(List.of(F_OVERLAP_SKIP, "1"));
@@ -600,7 +600,7 @@ public class RedisTaskStore implements FullStore {
                 "1".equals(d.get(F_OVERLAP_SKIP)),
                 d.get(F_DATA),
                 Integer.parseInt(d.get(F_MAX_ATTEMPTS)),
-                d.containsKey(F_MAX_RUN) ? Long.parseLong(d.get(F_MAX_RUN)) : null,
+                d.containsKey(F_MAX_RUN_TIME) ? Long.parseLong(d.get(F_MAX_RUN_TIME)) : null,
                 "1".equals(d.get(F_PAUSED)),
                 Long.parseLong(d.get(F_REVISION)));
     }

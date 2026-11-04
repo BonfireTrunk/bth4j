@@ -252,7 +252,7 @@ class PostgresTaskStoreIT {
                 .scheduleId("nightly")
                 .retryOf(7L)
                 .startBy(Instant.now().plusSeconds(60))
-                .maxRun(Duration.ofSeconds(9))
+                .maxRunTime(Duration.ofSeconds(9))
                 .progress("10%")
                 .steps(steps)
                 .build();
@@ -276,7 +276,7 @@ class PostgresTaskStoreIT {
         assertThat(r.scheduleId()).isEqualTo("nightly");
         assertThat(r.retryOf()).isEqualTo(7L);
         assertThat(r.startBy()).isEqualTo(t.startBy().truncatedTo(ChronoUnit.MICROS));
-        assertThat(r.maxRun()).isEqualTo(Duration.ofSeconds(9));
+        assertThat(r.maxRunTime()).isEqualTo(Duration.ofSeconds(9));
         assertThat(r.progress()).isEqualTo("10%");
         assertThat(r.steps()).isEqualTo(steps);
         assertThat(r.workerId()).isNull();

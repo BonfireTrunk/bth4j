@@ -295,7 +295,7 @@ public abstract class StoreContract {
                 .retryPolicy("slow")
                 .retryOf(7L)
                 .payloadVersion(4)
-                .maxRun(Duration.ofSeconds(9)));
+                .maxRunTime(Duration.ofSeconds(9)));
         TaskRecord t = get(id);
         assertThat(t.account()).isEqualTo("acme");
         assertThat(t.headers()).isEqualTo(headers);
@@ -303,7 +303,7 @@ public abstract class StoreContract {
         assertThat(t.retryPolicy()).isEqualTo("slow");
         assertThat(t.retryOf()).isEqualTo(7L);
         assertThat(t.payloadVersion()).isEqualTo(4);
-        assertThat(t.maxRun()).isEqualTo(Duration.ofSeconds(9));
+        assertThat(t.maxRunTime()).isEqualTo(Duration.ofSeconds(9));
         assertThat(t.maxAttempts()).isEqualTo(3);
     }
 
@@ -1399,7 +1399,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringComparesTheMaxRun() {
+    void putRecurringComparesTheMaxRunTime() {
         Instant fire = millis(now().plusSeconds(60));
         var base = fullDefinition("a");
         store.putRecurring(base, fire, fire);
@@ -1417,12 +1417,13 @@ public abstract class StoreContract {
                 base.overlapSkip(),
                 base.data(),
                 base.maxAttempts(),
-                base.maxRunMs() * 2,
+                base.maxRunTimeMs() * 2,
                 base.paused(),
                 0);
 
         assertThat(store.putRecurring(longer, fire, fire)).isEqualTo(PutRecurringOutcome.CHANGED);
-        assertThat(store.dueRecurring(fire, 10).get(0).definition().maxRunMs()).isEqualTo(base.maxRunMs() * 2);
+        assertThat(store.dueRecurring(fire, 10).get(0).definition().maxRunTimeMs())
+                .isEqualTo(base.maxRunTimeMs() * 2);
     }
 
     @Test
@@ -2272,7 +2273,7 @@ public abstract class StoreContract {
                 d.overlapSkip(),
                 d.data(),
                 d.maxAttempts(),
-                d.maxRunMs(),
+                d.maxRunTimeMs(),
                 d.paused(),
                 d.revision());
     }

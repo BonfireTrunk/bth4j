@@ -113,8 +113,8 @@ public final class TaskExecution implements Runnable, TaskContext {
         return startedAt;
     }
 
-    Duration maxRun() {
-        return record.maxRun();
+    Duration maxRunTime() {
+        return record.maxRunTime();
     }
 
     /** @return when the runner found this attempt past its maximum run time, or null */

@@ -400,7 +400,7 @@ public final class BackgroundRunner {
                 .running(runningTasks)
                 .reservations(queueReservations)
                 .lease(config.leaseDuration)
-                .defaultMaxRun(config.defaultMaxRun)
+                .defaultMaxRunTime(config.defaultMaxRunTime)
                 .idlePollInterval(config.idlePollInterval)
                 .claimBatchSize(config.claimBatchSize)
                 .quiet(quiet)
@@ -489,7 +489,7 @@ public final class BackgroundRunner {
         private Duration purgeInterval = Duration.ofMinutes(1);
         private int purgeBatchSize = 500;
         private Duration leaseDuration = Duration.ofSeconds(60);
-        private Duration defaultMaxRun = Duration.ofHours(1);
+        private Duration defaultMaxRunTime = Duration.ofHours(1);
         private Duration idlePollInterval = Duration.ofMillis(500);
         private int claimBatchSize = 32;
         private Duration shutdownTimeout = Duration.ofSeconds(30);
@@ -668,19 +668,19 @@ public final class BackgroundRunner {
         }
 
         /**
-         * The maximum run time of an attempt whose task or schedule sets no {@code maxRun}. Past it the runner
+         * The maximum run time of an attempt whose task or schedule sets no {@code maxRunTime}. Past it the runner
          * requests cancellation (and interrupts the processor when its type opted in with
          * {@code interruptOnCancel}); an attempt still running one renewal period later is abandoned: its lease
          * is no longer renewed, so maintenance retries or ends the task, while the stuck thread keeps its slots
          * until it returns and is reported as the issue {@code attempt-abandoned}. Default one hour, at most
-         * {@link TaskRequest#MAX_RUN}.
+         * {@link TaskRequest#MAX_RUN_TIME}.
          */
-        public Builder defaultMaxRun(Duration maxRun) {
-            requirePositive(maxRun, "defaultMaxRun");
-            if (maxRun.compareTo(TaskRequest.MAX_RUN) > 0) {
-                throw new TaskConfigurationError("defaultMaxRun must be at most " + TaskRequest.MAX_RUN);
+        public Builder defaultMaxRunTime(Duration maxRunTime) {
+            requirePositive(maxRunTime, "defaultMaxRunTime");
+            if (maxRunTime.compareTo(TaskRequest.MAX_RUN_TIME) > 0) {
+                throw new TaskConfigurationError("defaultMaxRunTime must be at most " + TaskRequest.MAX_RUN_TIME);
             }
-            this.defaultMaxRun = maxRun;
+            this.defaultMaxRunTime = maxRunTime;
             return this;
         }
 

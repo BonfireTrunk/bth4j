@@ -197,7 +197,7 @@ export default {
             <dt>Worker</dt><dd>{{ task.workerId ?? '-' }}</dd>
             <dt>Lease until</dt><dd><time-ago :at="task.leaseUntil"></time-ago></dd>
             <dt>Start by</dt><dd><time-ago :at="task.startBy" late></time-ago></dd>
-            <dt>Max run</dt><dd>{{ task.maxRun ? duration(task.maxRun) : '-' }}</dd>
+            <dt>Max run time</dt><dd>{{ task.maxRunTime ? duration(task.maxRunTime) : '-' }}</dd>
             <dt>Progress</dt><dd>{{ task.progress || '-' }}</dd>
           </dl>
           <template v-if="cancelled">
