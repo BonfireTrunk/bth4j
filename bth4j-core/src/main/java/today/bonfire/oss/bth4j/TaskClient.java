@@ -524,8 +524,8 @@ public final class TaskClient {
 
         /** Attempts for requests that do not set their own. Default 10. */
         public Builder defaultMaxAttempts(int attempts) {
-            if (attempts < 1 || attempts > Short.MAX_VALUE) {
-                throw new TaskConfigurationError("defaultMaxAttempts must be 1 to " + Short.MAX_VALUE);
+            if (attempts < 1 || attempts > TaskRequest.MAX_ATTEMPTS) {
+                throw new TaskConfigurationError("defaultMaxAttempts must be 1 to " + TaskRequest.MAX_ATTEMPTS);
             }
             this.defaultMaxAttempts = attempts;
             return this;

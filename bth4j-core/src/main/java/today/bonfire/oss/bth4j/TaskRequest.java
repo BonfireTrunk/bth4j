@@ -14,6 +14,12 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
  */
 public final class TaskRequest<T> {
 
+    /**
+     * The largest {@code maxAttempts} of a task or schedule, the way to say "retry until it succeeds". With the
+     * default retry policy (1 s doubling to a one-hour cap) it amounts to about 3.7 years of hourly retries.
+     */
+    public static final int MAX_ATTEMPTS = Short.MAX_VALUE;
+
     public static final int MAX_UNIQUE_KEY_LENGTH = 256;
     public static final int MAX_ACCOUNT_LENGTH = 128;
     public static final int MAX_HEADERS_BYTES = 8 * 1024;
@@ -229,10 +235,10 @@ public final class TaskRequest<T> {
             return this;
         }
 
-        /** @param maxAttempts how often the task may be tried before it is dead, at least 1 */
+        /** @param maxAttempts how often the task may be tried before it is dead, 1 to {@link #MAX_ATTEMPTS} */
         public Builder<T> maxAttempts(int maxAttempts) {
-            if (maxAttempts < 1 || maxAttempts > Short.MAX_VALUE) {
-                throw new TaskValidationException("maxAttempts must be between 1 and " + Short.MAX_VALUE);
+            if (maxAttempts < 1 || maxAttempts > MAX_ATTEMPTS) {
+                throw new TaskValidationException("maxAttempts must be between 1 and " + MAX_ATTEMPTS);
             }
             this.maxAttempts = maxAttempts;
             return this;

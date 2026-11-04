@@ -46,8 +46,8 @@ public record ScheduleDefinition<T>(
         if (type.hasPayload() && payload == null) {
             throw new TaskValidationException("Task type " + type + " needs a payload");
         }
-        if (maxAttempts != null && (maxAttempts < 1 || maxAttempts > Short.MAX_VALUE)) {
-            throw new TaskValidationException("maxAttempts must be between 1 and " + Short.MAX_VALUE);
+        if (maxAttempts != null && (maxAttempts < 1 || maxAttempts > TaskRequest.MAX_ATTEMPTS)) {
+            throw new TaskValidationException("maxAttempts must be between 1 and " + TaskRequest.MAX_ATTEMPTS);
         }
         if (misfire == null) misfire = Misfire.FIRE_ONCE_NOW;
         if (overlap == null) overlap = Overlap.ALLOW;

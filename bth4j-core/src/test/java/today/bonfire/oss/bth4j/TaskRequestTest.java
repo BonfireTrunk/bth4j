@@ -113,11 +113,15 @@ class TaskRequestTest {
         var builder = TaskRequest.of(VOID);
 
         assertThat(TaskRequest.of(VOID).maxAttempts(1).build().maxAttempts()).isEqualTo(1);
-        assertThat(TaskRequest.of(VOID).maxAttempts(Short.MAX_VALUE).build().maxAttempts())
+        assertThat(TaskRequest.of(VOID)
+                        .maxAttempts(TaskRequest.MAX_ATTEMPTS)
+                        .build()
+                        .maxAttempts())
                 .isEqualTo((int) Short.MAX_VALUE);
         assertThatThrownBy(() -> builder.maxAttempts(0)).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> builder.maxAttempts(-3)).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> builder.maxAttempts(Short.MAX_VALUE + 1)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> builder.maxAttempts(TaskRequest.MAX_ATTEMPTS + 1))
+                .isInstanceOf(TaskValidationException.class);
     }
 
     @Test
