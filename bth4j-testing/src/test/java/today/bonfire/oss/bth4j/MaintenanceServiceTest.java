@@ -44,6 +44,9 @@ class MaintenanceServiceTest {
     private boolean keepDead = true;
     private int batchSize = 100;
     private int purgeBatchSize = 500;
+    private int workerId;
+    private int runningTasks;
+    private Duration workerStaleAfter = Duration.ofMinutes(10);
 
     // ---- expired leases -------------------------------------------------------------------------------
 
@@ -547,6 +550,166 @@ class MaintenanceServiceTest {
         assertThat(store.getTask(id).orElseThrow().uniqueKey()).isNull();
     }
 
+    // ---- worker heartbeat -----------------------------------------------------------------------------
+
+    @Test
+    void aCycleRecordsTheWorkersHeartbeatWithItsRunningCount() throws Exception {
+        workerId = store.allocateWorkerId("worker-a");
+        var startedAt = clock.instant();
+        runningTasks = 3;
+        clock.advance(Duration.ofMinutes(5));
+
+        cycle();
+
+        assertThat(store.workers()).singleElement().satisfies(w -> {
+            assertThat(w.id()).isEqualTo(workerId);
+            assertThat(w.label()).isEqualTo("worker-a");
+            assertThat(w.startedAt()).isEqualTo(startedAt);
+            assertThat(w.lastSeen()).isEqualTo(clock.instant());
+            assertThat(w.running()).isEqualTo(3);
+        });
+        assertThat(status.lastMaintenanceAt()).isEqualTo(clock.instant());
+        assertThat(status.issues()).isEmpty();
+    }
+
+    @Test
+    void eachCycleReportsTheRunningCountAtThatMoment() throws Exception {
+        workerId = store.allocateWorkerId("worker-a");
+        runningTasks = 3;
+        cycle();
+        clock.advance(Duration.ofSeconds(5));
+        runningTasks = 1;
+
+        cycle();
+
+        assertThat(store.workers()).singleElement().satisfies(w -> {
+            assertThat(w.lastSeen()).isEqualTo(clock.instant());
+            assertThat(w.running()).isEqualTo(1);
+        });
+    }
+
+    @Test
+    void aServiceWithoutAWorkerRecordsNoHeartbeatButStillMarksMaintenance() throws Exception {
+        store.allocateWorkerId("other");
+        var before = store.workers();
+        clock.advance(Duration.ofMinutes(5));
+
+        cycle();
+
+        assertThat(store.workers()).isEqualTo(before);
+        assertThat(status.lastMaintenanceAt()).isEqualTo(clock.instant());
+    }
+
+    @Test
+    void aFailedHeartbeatIsRecordedWithoutMarkingMaintenanceAndTheNextCycleRecovers() throws Exception {
+        workerId = store.allocateWorkerId("worker-a");
+        runningTasks = 2;
+        clock.advance(Duration.ofSeconds(5));
+        var failing = new AtomicInteger(1);
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("heartbeat") && failing.getAndDecrement() > 0) throw new TaskStoreException("store down");
+            return real.proceed();
+        });
+
+        cycle();
+
+        assertThat(store.workers().getFirst().running()).isZero();
+        assertThat(status.lastMaintenanceAt()).isNull();
+        assertThat(status.lastStoreErrorAt()).isEqualTo(clock.instant());
+        assertThat(status.lastStoreError()).isEqualTo(new TaskStoreException("store down").toString());
+        assertThat(status.issues()).singleElement().satisfies(i -> {
+            assertThat(i.kind()).isEqualTo("store-error");
+            assertThat(i.detail()).isEqualTo(new TaskStoreException("store down").toString());
+        });
+
+        clock.advance(Duration.ofSeconds(5));
+        cycle();
+
+        assertThat(store.workers().getFirst().running()).isEqualTo(2);
+        assertThat(store.workers().getFirst().lastSeen()).isEqualTo(clock.instant());
+        assertThat(status.lastMaintenanceAt()).isEqualTo(clock.instant());
+        assertThat(status.issues()).hasSize(1);
+    }
+
+    // ---- stale workers --------------------------------------------------------------------------------
+
+    @Test
+    void aWorkerSilentForLongerThanTheThresholdIsRemovedAndAFreshOneIsKept() throws Exception {
+        int stale = store.allocateWorkerId("stale");
+        clock.advance(Duration.ofMinutes(6));
+        int fresh = store.allocateWorkerId("fresh");
+        clock.advance(Duration.ofMinutes(5));
+
+        purge();
+
+        assertThat(store.workers()).extracting(w -> w.id()).containsExactly(fresh);
+        assertThat(store.workers()).extracting(w -> w.id()).doesNotContain(stale);
+    }
+
+    @Test
+    void aWorkerExactlyAtTheThresholdIsKeptAndOneMillisecondOlderIsRemoved() throws Exception {
+        int id = store.allocateWorkerId("edge");
+        clock.advance(workerStaleAfter);
+
+        purge();
+
+        assertThat(store.workers()).extracting(w -> w.id()).containsExactly(id);
+
+        clock.advance(Duration.ofMillis(1));
+        purge();
+
+        assertThat(store.workers()).isEmpty();
+    }
+
+    @Test
+    void aHeartbeatKeepsAWorkerFromBeingPurged() throws Exception {
+        workerId = store.allocateWorkerId("beating");
+        clock.advance(Duration.ofMinutes(9));
+        cycle();
+        clock.advance(Duration.ofMinutes(9));
+
+        purge();
+
+        assertThat(store.workers()).extracting(w -> w.id()).containsExactly(workerId);
+    }
+
+    @Test
+    void theStaleThresholdIsTheConfiguredOne() throws Exception {
+        workerStaleAfter = Duration.ofSeconds(30);
+        store.allocateWorkerId("short");
+        clock.advance(Duration.ofSeconds(31));
+
+        purge();
+
+        assertThat(store.workers()).isEmpty();
+    }
+
+    @Test
+    void aFailedWorkerPurgeIsRecordedAndTheNextPurgeRemovesTheStaleWorker() throws Exception {
+        store.allocateWorkerId("stale");
+        clock.advance(workerStaleAfter.plusSeconds(1));
+        var failing = new AtomicInteger(1);
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("purgeWorkers") && failing.getAndDecrement() > 0) {
+                throw new TaskStoreException("store down");
+            }
+            return real.proceed();
+        });
+
+        purge();
+
+        assertThat(store.workers()).hasSize(1);
+        assertThat(status.issues()).singleElement().satisfies(i -> {
+            assertThat(i.kind()).isEqualTo("store-error");
+            assertThat(i.detail()).isEqualTo(new TaskStoreException("store down").toString());
+        });
+
+        purge();
+
+        assertThat(store.workers()).isEmpty();
+        assertThat(status.issues()).hasSize(1);
+    }
+
     // ---- fixtures -------------------------------------------------------------------------------------
 
     private TaskRequest.Builder<Void> request() {
@@ -636,6 +799,8 @@ class MaintenanceServiceTest {
                 .keepDead(keepDead)
                 .batchSize(batchSize)
                 .purgeBatchSize(purgeBatchSize)
+                .worker(workerId, () -> runningTasks)
+                .workerStaleAfter(workerStaleAfter)
                 .create();
     }
 }

@@ -9,6 +9,8 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -337,6 +339,81 @@ class RecurringTaskServiceTest {
         assertThat(events).hasSize(2);
     }
 
+    // ---- the loop thread ------------------------------------------------------------------------------
+
+    @Test
+    void aStoreFailureInARoundIsRecordedAndTheNextRoundStillCreatesTheOccurrence() throws Exception {
+        checkInterval = Duration.ofMillis(10);
+        register(definition("0 * * * *", null, 0), T0);
+        var calls = new AtomicInteger();
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("dueRecurring") && calls.incrementAndGet() == 1)
+                throw new TaskStoreException("store down");
+            return real.proceed();
+        });
+
+        runLoopUntil(() -> !occurrences().isEmpty());
+
+        var error = new TaskStoreException("store down").toString();
+        assertThat(occurrences())
+                .singleElement()
+                .satisfies(o -> assertThat(o.scheduleId()).isEqualTo(ID));
+        assertThat(calls.get()).isGreaterThanOrEqualTo(2);
+        assertThat(status.issues()).singleElement().satisfies(i -> {
+            assertThat(i.kind()).isEqualTo("store-error");
+            assertThat(i.detail()).isEqualTo(error);
+            assertThat(i.taskId()).isNull();
+        });
+        assertThat(status.lastStoreError()).isEqualTo(error);
+        assertThat(status.lastStoreErrorAt()).isEqualTo(clock.instant());
+    }
+
+    @Test
+    void everyFailingRoundIsRecordedAndTheLoopKeepsRetryingUntilStopped() throws Exception {
+        checkInterval = Duration.ofMillis(10);
+        var calls = new AtomicInteger();
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("dueRecurring")) {
+                calls.incrementAndGet();
+                throw new TaskStoreException("store down");
+            }
+            return real.proceed();
+        });
+
+        runLoopUntil(() -> status.issueCount() >= 3);
+
+        assertThat(status.issues())
+                .hasSizeGreaterThanOrEqualTo(3)
+                .allSatisfy(i -> assertThat(i.kind()).isEqualTo("store-error"));
+        assertThat(calls.get()).isGreaterThanOrEqualTo(3);
+    }
+
+    @Test
+    void aFatalErrorEndsTheLoopWithoutBeingRecordedAsAStoreError() throws Exception {
+        checkInterval = Duration.ofMillis(10);
+        var calls = new AtomicInteger();
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("dueRecurring")) {
+                calls.incrementAndGet();
+                throw new OutOfMemoryError("fatal");
+            }
+            return real.proceed();
+        });
+        var service = service();
+        var escaped = new AtomicReference<Throwable>();
+        service.setUncaughtExceptionHandler((t, e) -> escaped.set(e));
+
+        service.start();
+
+        assertThat(service.waitTillDone(Duration.ofSeconds(5))).isTrue();
+        service.join(5000);
+        assertThat(service.isAlive()).isFalse();
+        assertThat(escaped.get()).isInstanceOf(OutOfMemoryError.class).hasMessage("fatal");
+        assertThat(calls).hasValue(1);
+        assertThat(status.issues()).isEmpty();
+        assertThat(status.lastStoreError()).isNull();
+    }
+
     // ---- fixtures -------------------------------------------------------------------------------------
 
     private RecurringDefinition definition(String cron, String misfire, int catchUpMaxFires) {
@@ -374,6 +451,19 @@ class RecurringTaskServiceTest {
 
     private void register(RecurringDefinition definition, Instant fireAt) {
         store.putRecurring(definition, fireAt, fireAt);
+    }
+
+    private void runLoopUntil(BooleanSupplier condition) throws Exception {
+        var service = service();
+        service.start();
+        try {
+            var deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (!condition.getAsBoolean() && System.nanoTime() < deadline) Thread.sleep(5);
+            assertThat(condition.getAsBoolean()).isTrue();
+        } finally {
+            service.stopThread();
+            assertThat(service.waitTillDone(Duration.ofSeconds(5))).isTrue();
+        }
     }
 
     private void round() throws Exception {
