@@ -8,6 +8,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import org.slf4j.Logger;
@@ -54,6 +56,10 @@ class TaskProcessorService extends CustomThread {
     private final Map<Long, TaskExecution> running;
 
     private final QueueReservations reservations;
+    /** one permit per finished task of a capped queue, so a claim held back by a cap retries when it frees */
+    private final Semaphore queueSlotFreed = new Semaphore(0);
+    /** the last shared claim skipped a queue at its cap; written and read by the processor thread only */
+    private boolean capBlocked;
 
     private final Thread renewer;
     private volatile boolean renewalRunning = true;
@@ -128,6 +134,7 @@ class TaskProcessorService extends CustomThread {
         }
         List<TaskRecord> tasks;
         try {
+            queueSlotFreed.drainPermits();
             tasks = policed ? claimShared(slots) : claim(rotatedQueues(), slots);
             settings.status().claimed();
         } catch (RuntimeException e) {
@@ -148,7 +155,12 @@ class TaskProcessorService extends CustomThread {
             }
         }
         if (tasks.isEmpty()) {
-            Thread.sleep(idlePollInterval);
+            if (policed && capBlocked) {
+                // a skipped queue may still have work: claim again as soon as one of its slots frees
+                queueSlotFreed.tryAcquire(idlePollInterval.toNanos(), TimeUnit.NANOSECONDS);
+            } else {
+                Thread.sleep(idlePollInterval);
+            }
         }
     }
 
@@ -164,6 +176,7 @@ class TaskProcessorService extends CustomThread {
     private List<TaskRecord> claimShared(int slots) {
         var order = rotatedDistinctQueues();
         var caps = new int[order.size()];
+        capBlocked = false;
         int totalWeight = 0;
         for (int i = 0; i < order.size(); i++) {
             var policy = policies.getOrDefault(order.get(i), QueuePolicy.DEFAULT);
@@ -172,6 +185,7 @@ class TaskProcessorService extends CustomThread {
                     : Math.max(0, policy.maxConcurrent() - reservations.running(order.get(i)));
             caps[i] = Math.min(cap, slots);
             if (caps[i] > 0) totalWeight += policy.weight();
+            else capBlocked = true;
         }
         if (totalWeight == 0) return List.of();
         var shares = new int[order.size()];
@@ -232,6 +246,10 @@ class TaskProcessorService extends CustomThread {
     private void finished(TaskExecution execution) {
         running.remove(execution.taskId(), execution);
         reservations.release(execution);
+        if (policies.getOrDefault(execution.queueId(), QueuePolicy.DEFAULT).maxConcurrent() > 0) {
+            queueSlotFreed.release();
+        }
+        if (execution.succeeded()) executor.succeeded();
     }
 
     /** The queues to process, starting one position later on every call. */

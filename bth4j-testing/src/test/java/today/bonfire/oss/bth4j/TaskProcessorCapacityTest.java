@@ -31,7 +31,12 @@ import today.bonfire.oss.bth4j.testing.MutableClock;
 @Timeout(5)
 class TaskProcessorCapacityTest {
     private static final TaskType<Void> TYPE = TaskType.of("capacity-test");
+    private static final TaskType<Void> FAILING = TaskType.of("capacity-test-failing");
     private static final Duration LEASE = Duration.ofSeconds(1);
+    /** past the class timeout minus the waits below, so only a wake-up ends the wait in time */
+    private static final Duration IDLE_LONGER_THAN_THE_TEST = Duration.ofSeconds(4);
+    /** generous for a wake-up; a full idle sleep of {@link #IDLE_LONGER_THAN_THE_TEST} cannot fit */
+    private static final Duration WOKEN_WITHIN = Duration.ofSeconds(1);
 
     private final MutableClock clock = new MutableClock();
     private final InMemoryStore store = new InMemoryStore(clock);
@@ -55,10 +60,15 @@ class TaskProcessorCapacityTest {
             .build();
     private final int queueId = names.queueId("Q:DEF");
     private final int typeId = names.typeId(TYPE.name());
+    private final int failingTypeId = names.typeId(FAILING.name());
     private final Map<Long, TaskExecution> running = new ConcurrentHashMap<>();
     private final QueueReservations reservations = new QueueReservations();
     private final RunnerStatus status = new RunnerStatus(clock);
-    private final TaskProcessorRegistry registry = new TaskProcessorRegistry().register(TYPE, (context, payload) -> {});
+    private final TaskProcessorRegistry registry = new TaskProcessorRegistry()
+            .register(TYPE, (context, payload) -> {})
+            .register(FAILING, (context, payload) -> {
+                throw new IllegalStateException("failed by the test");
+            });
     private final TaskExecution.Settings settings = settingsOn(store);
 
     @Test
@@ -477,6 +487,97 @@ class TaskProcessorCapacityTest {
         assertThat(reservations.running(queueId)).isEqualTo(1);
     }
 
+    @Test
+    void aClaimHeldBackByAQueueCapClaimsAgainAsSoonAsATaskOfThatQueueFinishes() throws Exception {
+        var executor = new ManualExecutor(10);
+        var processor = processor(
+                settings,
+                executor,
+                5,
+                List.of(queueId),
+                Map.of(queueId, QueuePolicy.maxConcurrent(1)),
+                IDLE_LONGER_THAN_THE_TEST);
+        var ids = enqueue(2, "Q:DEF");
+        processOnce(processor);
+        assertThat(leased(ids)).isEqualTo(1);
+
+        var waiting = Thread.ofPlatform().start(() -> {
+            try {
+                processor.processOnce();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        try {
+            awaitState(waiting, Thread.State.TIMED_WAITING);
+            executor.runNext();
+
+            waiting.join(WOKEN_WITHIN.toMillis());
+            assertThat(waiting.isAlive()).as("woken by the finished task").isFalse();
+        } finally {
+            waiting.interrupt();
+            waiting.join();
+        }
+        processOnce(processor);
+        assertThat(leased(ids)).isEqualTo(1);
+        assertThat(ids.stream().filter(id -> state(id) == TaskState.SUCCEEDED)).hasSize(1);
+    }
+
+    @Test
+    void aClaimThatFoundNoWorkUnderItsCapWaitsTheFullIntervalWhenATaskFinishes() throws Exception {
+        var executor = new ManualExecutor(10);
+        var processor = processor(
+                settings,
+                executor,
+                5,
+                List.of(queueId),
+                Map.of(queueId, QueuePolicy.maxConcurrent(2)),
+                IDLE_LONGER_THAN_THE_TEST);
+        enqueue(1, "Q:DEF");
+        processOnce(processor);
+
+        var waiting = Thread.ofPlatform().start(() -> {
+            try {
+                processor.processOnce();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        try {
+            awaitState(waiting, Thread.State.TIMED_WAITING);
+            executor.runNext();
+
+            waiting.join(WOKEN_WITHIN.toMillis());
+            assertThat(waiting.isAlive())
+                    .as("still sleeping: nothing was held back")
+                    .isTrue();
+        } finally {
+            waiting.interrupt();
+            waiting.join();
+        }
+    }
+
+    @Test
+    void theExecutorHearsOfSucceededAttemptsOnly() throws Exception {
+        var executor = new ManualExecutor(10);
+        var processor = processor(executor, 5);
+        client.enqueue(TaskRequest.of(TYPE).build());
+        client.enqueue(TaskRequest.of(FAILING).build());
+        processOnce(processor);
+
+        executor.runNext();
+        executor.runNext();
+
+        assertThat(executor.succeeded).hasValue(1);
+    }
+
+    private static void awaitState(Thread thread, Thread.State state) throws InterruptedException {
+        while (thread.getState() != state) {
+            if (!thread.isAlive()) throw new AssertionError("thread ended before reaching " + state);
+            Thread.sleep(1);
+        }
+    }
+
     private long enqueue() {
         return client.enqueue(TaskRequest.of(TYPE).build()).id();
     }
@@ -555,6 +656,16 @@ class TaskProcessorCapacityTest {
             int claimBatchSize,
             List<Integer> queueIds,
             Map<Integer, QueuePolicy> policies) {
+        return processor(processorSettings, executor, claimBatchSize, queueIds, policies, Duration.ofMillis(1));
+    }
+
+    private TaskProcessorService processor(
+            TaskExecution.Settings processorSettings,
+            BackgroundExecutor executor,
+            int claimBatchSize,
+            List<Integer> queueIds,
+            Map<Integer, QueuePolicy> policies,
+            Duration idlePollInterval) {
         return new TaskProcessorService.Builder()
                 .group(new ThreadGroup("capacity-test"))
                 .threadName("capacity-test")
@@ -563,10 +674,10 @@ class TaskProcessorCapacityTest {
                 .reservations(reservations)
                 .executor(executor)
                 .queueIds(queueIds)
-                .knownTypeIds(Set.of(typeId))
+                .knownTypeIds(Set.of(typeId, failingTypeId))
                 .queuePolicies(policies)
                 .claimBatchSize(claimBatchSize)
-                .idlePollInterval(Duration.ofMillis(1))
+                .idlePollInterval(idlePollInterval)
                 .lease(LEASE)
                 .workerId(1)
                 .create();
@@ -580,25 +691,26 @@ class TaskProcessorCapacityTest {
         private final Deque<Runnable> tasks = new ArrayDeque<>();
         private int available;
         boolean reject;
+        final AtomicInteger succeeded = new AtomicInteger();
 
         ManualExecutor(int slots) {
             this.available = slots;
         }
 
         @Override
-        public int reserve(int max, Duration wait) {
+        public synchronized int reserve(int max, Duration wait) {
             int given = Math.min(max, available);
             available -= given;
             return given;
         }
 
         @Override
-        public void release(int slots) {
+        public synchronized void release(int slots) {
             available += slots;
         }
 
         @Override
-        public void execute(Runnable task) {
+        public synchronized void execute(Runnable task) {
             if (reject) {
                 available++;
                 throw new RejectedExecutionException("rejected by the test");
@@ -606,7 +718,7 @@ class TaskProcessorCapacityTest {
             tasks.add(task);
         }
 
-        void runNext() {
+        synchronized void runNext() {
             var next = tasks.removeFirst();
             try {
                 next.run();
@@ -615,8 +727,13 @@ class TaskProcessorCapacityTest {
             }
         }
 
-        int available() {
+        synchronized int available() {
             return available;
+        }
+
+        @Override
+        public void succeeded() {
+            succeeded.incrementAndGet();
         }
 
         int pending() {

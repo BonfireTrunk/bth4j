@@ -29,6 +29,13 @@ public interface BackgroundExecutor {
      */
     void execute(Runnable task);
 
+    /**
+     * Called once for each task whose processor returned normally, after its acknowledgement and before its
+     * slot is freed. Failed, rescheduled and cancelled attempts are not reported. An adaptive executor can use
+     * it as its throughput signal. Does nothing by default.
+     */
+    default void succeeded() {}
+
     /** @return the number of tasks running right now */
     int activeCount();
 

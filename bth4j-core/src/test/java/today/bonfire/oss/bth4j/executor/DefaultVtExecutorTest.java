@@ -187,6 +187,46 @@ class DefaultVtExecutorTest {
         assertThat(executor.availablePermits()).isEqualTo(executor.currentMaxThreads());
     }
 
+    /** The limit moves only when the test calls {@link DefaultVtExecutor#adjustThreadCount()}, at 0% CPU. */
+    private DefaultVtExecutor unmonitored(int min, int max) {
+        var executor = new DefaultVtExecutor(min, max, () -> 0.0, false);
+        created.add(executor);
+        return executor;
+    }
+
+    private static void interval(DefaultVtExecutor executor, int successes) {
+        for (int i = 0; i < successes; i++) executor.succeeded();
+        executor.adjustThreadCount();
+    }
+
+    @Test
+    void flatThroughputProbesUpwardsForThreeIntervalsAndAgainOnlyAfterThroughputChanges() {
+        var executor = unmonitored(2, 50);
+
+        for (int i = 0; i < 20; i++) interval(executor, 5);
+        assertThat(executor.currentMaxThreads()).isEqualTo(4);
+
+        interval(executor, 10);
+        interval(executor, 10);
+        assertThat(executor.currentMaxThreads()).isEqualTo(5);
+    }
+
+    @Test
+    void tasksThatFinishWithoutSucceedingDoNotRaiseTheLimit() throws InterruptedException {
+        var executor = unmonitored(2, 50);
+
+        for (int i = 0; i < 10; i++) {
+            int slots = executor.reserve(2, Duration.ofSeconds(5));
+            var done = new CountDownLatch(slots);
+            for (int j = 0; j < slots; j++) executor.execute(done::countDown);
+            done.await();
+            awaitTrue(() -> executor.getActiveTaskCount() == 0);
+            executor.adjustThreadCount();
+        }
+
+        assertThat(executor.currentMaxThreads()).isEqualTo(2);
+    }
+
     @Test
     void maxConcurrencyBelowMinimumIsClampedToMinimum() {
         var executor = new DefaultVtExecutor(4, 2);

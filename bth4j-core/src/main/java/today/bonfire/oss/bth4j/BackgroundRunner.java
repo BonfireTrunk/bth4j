@@ -671,7 +671,11 @@ public final class BackgroundRunner {
             return this;
         }
 
-        /** How long the processor sleeps when a claim found nothing. Default 500 ms, at least 10 ms. */
+        /**
+         * How long the processor sleeps when a claim found nothing. When a queue was skipped because it was at its
+         * {@link QueuePolicy#maxConcurrent()}, it claims again as soon as a task of a capped queue finishes. Default
+         * 500 ms, at least 10 ms.
+         */
         public Builder idlePollInterval(Duration interval) {
             requirePositive(interval, "idlePollInterval");
             if (interval.toMillis() < 10)

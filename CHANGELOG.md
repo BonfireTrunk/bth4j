@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `BackgroundExecutor.succeeded()`: a default method the runner calls once for each task whose processor returned normally, after its acknowledgement. Custom executors may ignore it.
+
+### Fixed
+
+- Queue caps: when a claim found nothing because a queue was at its `QueuePolicy.maxConcurrent`, the runner slept the full `idlePollInterval` (500 ms by default) even after a task of that queue finished. It now claims again as soon as a task of a capped queue finishes.
+- Adaptive concurrency counted failed attempts as throughput, so fast failures (for example HTTP 429 replies) raised the limit. It now counts only succeeded tasks.
+- Adaptive concurrency kept raising the limit while throughput stayed flat, because each increase reset the probe count. It now probes for at most three intervals and again only after throughput changes.
+
 ## [4.0.0] - 2026-11-05
 
 ### Changed (breaking)

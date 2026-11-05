@@ -450,7 +450,9 @@ A `QueuePolicy(weight, maxConcurrent)` shares a runner's free executor slots bet
 are divided in proportion to the weights (default 1), each queue is capped at `maxConcurrent` tasks of that
 queue running on this runner at once (0 means no limit), and a queue that cannot fill its share lets the others
 use it. A runner with any policy claims once per queue instead of once per cycle; queues without a policy have
-weight 1 and no limit. Limits are per runner, not per fleet.
+weight 1 and no limit. Limits are per runner, not per fleet. When a claim found nothing because a queue was at
+its cap, the runner claims again as soon as a task of a capped queue finishes instead of waiting for
+`idlePollInterval`.
 
 ```java
 BackgroundRunner.builder()
@@ -686,7 +688,8 @@ until the window ends.
 
 By default a runner runs twice as many tasks at once as there are processors, each on a virtual thread.
 `concurrency(Concurrency.fixed(n))` sets another limit; `concurrency(Concurrency.adaptive(min, max))` lets
-the limit move with CPU load and throughput.
+the limit move with CPU load and throughput, counting only tasks that succeeded. A custom `BackgroundExecutor`
+hears of each succeeded task through `succeeded()`.
 
 ## Configuration
 
@@ -714,7 +717,7 @@ All settings are on `BackgroundRunner.builder()`.
 | `purgeInterval` | 1 minute | time between purge runs |
 | `purgeBatchSize` | 500 | tasks removed per purge call; the purge loops until a call removes fewer |
 | `leaseDuration` | 60 s (at least 1 s) | how long a claimed task stays leased without renewal; renewed every third while running. A lapsed lease cannot be renewed any more, so keep it well above the worst pause (GC, container freeze, slow store round trip); a few seconds is fragile |
-| `idlePollInterval` | 500 ms (at least 10 ms) | sleep after a claim that found nothing, and the wait for a free executor slot |
+| `idlePollInterval` | 500 ms (at least 10 ms) | sleep after a claim that found nothing (cut short when a queue at its `maxConcurrent` frees a slot), and the wait for a free executor slot |
 | `claimBatchSize` | 32 | most tasks claimed in one call, bounded by free executor slots |
 | `shutdownTimeout` | 30 s | how long `stop()` waits for services and running tasks |
 | `serviceCheckInterval` | 10 s | how often a dead service thread is restarted |

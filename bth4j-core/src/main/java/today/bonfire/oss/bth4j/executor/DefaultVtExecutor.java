@@ -11,6 +11,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.DoubleSupplier;
 import org.slf4j.Logger;
 
 /**
@@ -18,7 +19,9 @@ import org.slf4j.Logger;
  * <p>
  * The number of concurrently running tasks is limited by a semaphore. The limit starts at the number
  * of available processors and is tuned once per second based on CPU load and throughput, between the
- * number of processors and {@code maxConcurrency}.
+ * number of processors and {@code maxConcurrency}. Throughput counts only the tasks that succeeded (see
+ * {@link #succeeded()}), so fast failures do not look like progress. While throughput stays flat the limit
+ * probes upwards for at most three intervals, and again only after throughput has changed.
  */
 public class DefaultVtExecutor implements BackgroundExecutor {
     private static final Logger log = org.slf4j.LoggerFactory.getLogger(today.bonfire.oss.bth4j.Loggers.EXECUTOR);
@@ -31,7 +34,7 @@ public class DefaultVtExecutor implements BackgroundExecutor {
     private final AtomicInteger maxConcurrentTasks;
     private final AdjustableSemaphore concurrencyLimiter;
     private final AtomicInteger activeTaskCount;
-    private final OperatingSystemMXBean osBean;
+    private final DoubleSupplier cpuLoad;
     private final Timer monitor;
     private final int changingOutputDampenLimit = 1;
     private final int constantOutputDampeningLimit = 3;
@@ -41,8 +44,8 @@ public class DefaultVtExecutor implements BackgroundExecutor {
     private int consecutiveIncreases = 0;
     private int consecutiveDecreases = 0;
     private long consecutiveZeroThroughput = 0;
-    /** number of tasks that finished running, successfully or not. Written by many threads, so not a plain long. */
-    private final LongAdder totalTasksCompleted = new LongAdder();
+    /** number of tasks that succeeded. Written by many threads, so not a plain long. */
+    private final LongAdder totalTasksSucceeded = new LongAdder();
 
     private int consecutiveStableThroughput = 0;
 
@@ -58,16 +61,21 @@ public class DefaultVtExecutor implements BackgroundExecutor {
      * @param maxConcurrency upper bound of the adaptive limit, at least {@code minConcurrency}
      */
     public DefaultVtExecutor(int minConcurrency, int maxConcurrency) {
+        this(minConcurrency, maxConcurrency, DefaultVtExecutor::systemCpuLoad, true);
+    }
+
+    /** With {@code monitor} false nothing tunes the limit unless {@link #adjustThreadCount()} is called. */
+    DefaultVtExecutor(int minConcurrency, int maxConcurrency, DoubleSupplier cpuLoad, boolean monitor) {
         this.minConcurrency = Math.max(1, minConcurrency);
         this.maxConcurrency = Math.max(this.minConcurrency, maxConcurrency);
         this.maxConcurrentTasks = new AtomicInteger(this.minConcurrency);
         this.concurrencyLimiter = new AdjustableSemaphore(this.minConcurrency);
         this.activeTaskCount = new AtomicInteger(0);
-        this.osBean = ManagementFactory.getOperatingSystemMXBean();
+        this.cpuLoad = cpuLoad;
         this.executor = Executors.newVirtualThreadPerTaskExecutor();
-        this.monitor = new Timer("bth4j-vt-monitor", true); // daemon timer
+        this.monitor = monitor ? new Timer("bth4j-vt-monitor", true) : null; // daemon timer
 
-        startMonitoring();
+        if (monitor) startMonitoring();
     }
 
     private void startMonitoring() {
@@ -87,12 +95,12 @@ public class DefaultVtExecutor implements BackgroundExecutor {
                 MONITOR_INTERVAL_MS);
     }
 
-    private void adjustThreadCount() {
-        double cpuLoad = getCpuLoad();
+    void adjustThreadCount() {
+        double cpuLoad = this.cpuLoad.getAsDouble();
         int currentMax = maxConcurrentTasks.get();
 
         // Calculate throughput metrics
-        long completed = totalTasksCompleted.sum();
+        long completed = totalTasksSucceeded.sum();
         long throughput = completed - lastCompletedCount;
         long throughputChange = throughput - lastThroughput;
 
@@ -108,6 +116,7 @@ public class DefaultVtExecutor implements BackgroundExecutor {
                 reason = "high CPU load";
             }
             consecutiveIncreases = 0;
+            consecutiveStableThroughput = 0;
         } else {
             if (throughput == 0 && activeTaskCount.get() == 0) {
                 consecutiveZeroThroughput++;
@@ -117,6 +126,7 @@ public class DefaultVtExecutor implements BackgroundExecutor {
                         String.format("%.3f", cpuLoad),
                         currentMax);
 
+                consecutiveStableThroughput = 0;
                 if (consecutiveZeroThroughput >= constantOutputDampeningLimit) {
                     if (currentMax > minConcurrency) {
                         newMax = minConcurrency;
@@ -126,6 +136,7 @@ public class DefaultVtExecutor implements BackgroundExecutor {
                 consecutiveIncreases = 0;
             } else {
                 consecutiveZeroThroughput = 0;
+                if (throughputChange != 0) consecutiveStableThroughput = 0;
                 if (throughputChange > 0) {
                     newMax = Math.min(maxConcurrency, currentMax + 1);
                     reason = "increasing throughput";
@@ -144,7 +155,6 @@ public class DefaultVtExecutor implements BackgroundExecutor {
             if (newMax > currentMax) {
                 consecutiveIncreases++;
                 consecutiveDecreases = 0;
-                consecutiveStableThroughput = 0;
                 if (consecutiveIncreases > changingOutputDampenLimit) {
                     updateConcurrencyLimit(currentMax, newMax, reason, cpuLoad, throughput, throughputChange);
                     consecutiveIncreases = 0;
@@ -157,7 +167,6 @@ public class DefaultVtExecutor implements BackgroundExecutor {
             } else if (newMax < currentMax) {
                 consecutiveDecreases++;
                 consecutiveIncreases = 0;
-                consecutiveStableThroughput = 0;
                 if (consecutiveDecreases > changingOutputDampenLimit) {
                     updateConcurrencyLimit(currentMax, newMax, reason, cpuLoad, throughput, throughputChange);
                     consecutiveDecreases = 0;
@@ -232,8 +241,6 @@ public class DefaultVtExecutor implements BackgroundExecutor {
                 try {
                     task.run();
                 } finally {
-                    // counts finished tasks, including failed ones, to measure throughput
-                    totalTasksCompleted.increment();
                     activeTaskCount.decrementAndGet();
                     concurrencyLimiter.release();
                 }
@@ -242,6 +249,12 @@ public class DefaultVtExecutor implements BackgroundExecutor {
             concurrencyLimiter.release();
             throw e;
         }
+    }
+
+    /** Counts towards the throughput that tunes the limit. */
+    @Override
+    public void succeeded() {
+        totalTasksSucceeded.increment();
     }
 
     @Override
@@ -256,11 +269,12 @@ public class DefaultVtExecutor implements BackgroundExecutor {
 
     @Override
     public void shutdown() {
-        monitor.cancel();
+        if (monitor != null) monitor.cancel();
         executor.shutdown();
     }
 
-    private double getCpuLoad() {
+    private static double systemCpuLoad() {
+        OperatingSystemMXBean osBean = ManagementFactory.getOperatingSystemMXBean();
         double load;
         if (osBean instanceof com.sun.management.OperatingSystemMXBean sunOsBean) {
             load = sunOsBean.getCpuLoad();
