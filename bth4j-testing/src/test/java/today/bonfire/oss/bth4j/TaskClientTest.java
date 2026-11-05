@@ -21,6 +21,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.FullStore;
+import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
@@ -430,7 +431,7 @@ class TaskClientTest {
         long id = client.nextId();
         client.enqueue(TaskRequest.of(TYPED, new Payload("original")).id(id).build());
         var leased = store.claim(new ClaimRequest(
-                        List.of(store.queueId("Q:DEF")),
+                        List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)),
                         1,
                         Duration.ofSeconds(30),
                         store.allocateWorkerId("test", Set.of(), Set.of()),

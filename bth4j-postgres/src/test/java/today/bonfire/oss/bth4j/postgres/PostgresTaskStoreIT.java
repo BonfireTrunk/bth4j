@@ -28,6 +28,7 @@ import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
+import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
@@ -81,7 +82,7 @@ class PostgresTaskStoreIT {
     }
 
     private List<TaskRecord> claim(int count) {
-        return store.claim(new ClaimRequest(List.of(queue), count, LEASE, worker, null));
+        return store.claim(new ClaimRequest(List.of(new QueueGrant(queue, count, count)), count, LEASE, worker, null));
     }
 
     private TaskRecord get(long id) {
@@ -243,7 +244,7 @@ class PostgresTaskStoreIT {
 
     @Test
     void fullRegistryIsReported() throws SQLException {
-        sql("SELECT setval('" + prefix + "_event_id_seq', 32767)");
+        sql("SELECT setval('" + prefix + "_type_id_seq', 32767)");
         assertThatThrownBy(() -> store.typeId("one-too-many"))
                 .isInstanceOf(TaskStoreException.class)
                 .hasMessageContaining("type registry is full");
@@ -409,10 +410,81 @@ class PostgresTaskStoreIT {
         store.enqueue(task(base + 1).queueId(urgent).build());
         store.enqueue(task(base + 2).queueId(urgent).build());
 
-        var claimed = store.claim(new ClaimRequest(List.of(urgent, queue, urgent), 2, LEASE, worker, null));
+        var claimed = store.claim(new ClaimRequest(
+                List.of(new QueueGrant(urgent, 2, 2), new QueueGrant(queue, 2, 2)), 2, LEASE, worker, null));
         assertThat(claimed).extracting(TaskRecord::id).containsExactly(base + 1, base + 2);
-        claimed = store.claim(new ClaimRequest(List.of(urgent, queue), 2, LEASE, worker, null));
+        claimed = store.claim(new ClaimRequest(
+                List.of(new QueueGrant(urgent, 2, 2), new QueueGrant(queue, 2, 2)), 2, LEASE, worker, null));
         assertThat(claimed).extracting(TaskRecord::id).containsExactly(base);
+    }
+
+    @Test
+    void secondPassFailureRollsBackClaimsAcrossQueues() {
+        int other = store.queueId("other");
+        long first = newId();
+        long overflow = newId();
+        long second = newId();
+        Instant due = Instant.now().minusSeconds(60);
+        store.enqueue(task(first).due(due).build());
+        store.enqueue(task(overflow).due(due).revision(Integer.MAX_VALUE).build());
+        store.enqueue(task(second).queueId(other).due(due).build());
+        var before = List.of(get(first), get(overflow), get(second));
+        var grants = List.of(new QueueGrant(queue, 1, 2), new QueueGrant(other, 1, 1));
+
+        assertThatThrownBy(() -> store.claim(new ClaimRequest(grants, 3, LEASE, worker, null)))
+                .isInstanceOf(TaskStoreException.class)
+                .hasCauseInstanceOf(SQLException.class)
+                .satisfies(e ->
+                        assertThat(((SQLException) e.getCause()).getSQLState()).isEqualTo("22003"));
+
+        assertThat(List.of(get(first), get(overflow), get(second))).isEqualTo(before);
+        assertThat(store.counts().values())
+                .allSatisfy(counts -> assertThat(counts.leased()).isZero());
+    }
+
+    @Test
+    void bothPassesSkipUnknownTypesAndExpiredStartBy() {
+        int unknown = store.typeId("unknown");
+        long first = newId();
+        long expired = newId();
+        long unknownId = newId();
+        long refill = newId();
+        store.enqueue(task(first).build());
+        store.enqueue(task(expired).startBy(Instant.now().minusSeconds(60)).build());
+        store.enqueue(task(unknownId).typeId(unknown).build());
+        store.enqueue(task(refill).build());
+        var untouched = List.of(get(expired), get(unknownId));
+
+        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 3)), 3, LEASE, worker, Set.of(type))))
+                .extracting(TaskRecord::id)
+                .containsExactly(first, refill);
+        assertThat(List.of(get(expired), get(unknownId))).isEqualTo(untouched);
+        assertThat(store.expire(10)).containsExactly(expired);
+    }
+
+    @Test
+    void claimSkipsRowsLockedByAnotherTransactionInBothPasses() throws SQLException {
+        long base = store.allocateIds(4);
+        Instant due = Instant.now().minusSeconds(60);
+        for (int i = 0; i < 4; i++) store.enqueue(task(base + i).due(due).build());
+        try (var c = PostgresTestSupport.dataSource().getConnection();
+                var ps = c.prepareStatement("SELECT id FROM " + prefix + "_task WHERE id IN (?, ?) FOR UPDATE")) {
+            c.setAutoCommit(false);
+            ps.setLong(1, base);
+            ps.setLong(2, base + 2);
+            try (var rs = ps.executeQuery()) {
+                assertThat(rs.next()).isTrue();
+            }
+            try {
+                assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 3)), 3, LEASE, worker, null)))
+                        .extracting(TaskRecord::id)
+                        .containsExactly(base + 1, base + 3);
+                assertThat(get(base).state()).isEqualTo(TaskState.QUEUED);
+                assertThat(get(base + 2).state()).isEqualTo(TaskState.QUEUED);
+            } finally {
+                c.rollback();
+            }
+        }
     }
 
     @Test
@@ -424,14 +496,14 @@ class PostgresTaskStoreIT {
                 task(other).typeId(unknown).due(Instant.now().minusSeconds(60)).build());
         store.enqueue(task(known).build());
 
-        assertThat(store.claim(new ClaimRequest(List.of(queue), 5, LEASE, worker, Set.of())))
+        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, worker, Set.of())))
                 .isEmpty();
-        assertThat(store.claim(new ClaimRequest(List.of(queue), 5, LEASE, worker, Set.of(type))))
+        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, worker, Set.of(type))))
                 .extracting(TaskRecord::id)
                 .containsExactly(known);
         assertThat(get(other).state()).isEqualTo(TaskState.QUEUED);
         assertThat(get(other).attempts()).isZero();
-        assertThat(store.claim(new ClaimRequest(List.of(queue), 5, LEASE, worker, null)))
+        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, worker, null)))
                 .extracting(TaskRecord::id)
                 .containsExactly(other);
     }
@@ -593,7 +665,8 @@ class PostgresTaskStoreIT {
     void failExpiredOnlyActsOnAnExpiredLease() throws Exception {
         long id = newId();
         store.enqueue(task(id).build());
-        var t = store.claim(new ClaimRequest(List.of(queue), 1, Duration.ofMillis(1), worker, null))
+        var t = store.claim(
+                        new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, Duration.ofMillis(1), worker, null))
                 .getFirst();
         Thread.sleep(20);
 
@@ -1061,7 +1134,8 @@ class PostgresTaskStoreIT {
         store.pauseQueue(queue, true);
         assertThat(store.queues())
                 .containsExactly(new QueueInfo(queue, "default", true), new QueueInfo(other, "other", false));
-        assertThat(store.claim(new ClaimRequest(List.of(queue, other), 5, LEASE, worker, null)))
+        assertThat(store.claim(new ClaimRequest(
+                        List.of(new QueueGrant(queue, 5, 5), new QueueGrant(other, 5, 5)), 5, LEASE, worker, null)))
                 .extracting(TaskRecord::id)
                 .containsExactly(b);
 
@@ -1071,17 +1145,87 @@ class PostgresTaskStoreIT {
     }
 
     @Test
+    void queuedByTypeGroupsOnlyQueuedRowsIncludingPausedQueues() {
+        int otherQueue = store.queueId("other");
+        int otherType = store.typeId("other");
+        assertThat(store.queuedByType()).isEmpty();
+        enqueueAndClaim(task(newId()));
+        store.enqueue(task(newId()).due(Instant.now().plusSeconds(3600)).build());
+        long cancelled = newId();
+        store.enqueue(task(cancelled).build());
+        store.cancel(cancelled, 0, "cancel", null);
+        long first = newId();
+        store.enqueue(task(first).build());
+        store.enqueue(task(newId()).typeId(otherType).build());
+        store.enqueue(task(newId()).queueId(otherQueue).build());
+        store.enqueue(task(newId()).queueId(otherQueue).typeId(otherType).build());
+        store.enqueue(task(newId()).queueId(otherQueue).typeId(otherType).build());
+        store.pauseQueue(otherQueue, true);
+
+        assertThat(store.queuedByType())
+                .isEqualTo(Map.of(queue, Map.of(type, 1L, otherType, 1L), otherQueue, Map.of(type, 1L, otherType, 2L)));
+        assertThat(claim(1)).extracting(TaskRecord::id).containsExactly(first);
+        assertThat(store.queuedByType())
+                .isEqualTo(Map.of(queue, Map.of(otherType, 1L), otherQueue, Map.of(type, 1L, otherType, 2L)));
+    }
+
+    @Test
+    void workerCoverageRoundTripsSmallintArrays() throws SQLException {
+        var queueIds = Set.of(queue, (int) Short.MAX_VALUE);
+        var typeIds = Set.of(type, (int) Short.MAX_VALUE);
+        int covered = store.allocateWorkerId("covered", queueIds, typeIds);
+        assertThat(store.workers())
+                .filteredOn(w -> w.id() == covered)
+                .singleElement()
+                .satisfies(w -> {
+                    assertThat(w.queueIds()).isEqualTo(queueIds);
+                    assertThat(w.typeIds()).isEqualTo(typeIds);
+                    assertThat(w.accepting()).isTrue();
+                });
+        assertThat(store.workers())
+                .filteredOn(w -> w.id() == worker)
+                .singleElement()
+                .satisfies(w -> {
+                    assertThat(w.queueIds()).isEmpty();
+                    assertThat(w.typeIds()).isEmpty();
+                });
+        try (var c = PostgresTestSupport.dataSource().getConnection();
+                var ps = c.prepareStatement("SELECT queue_ids, type_ids FROM " + prefix + "_worker WHERE id = ?")) {
+            ps.setInt(1, covered);
+            // Cross the driver's prepare threshold to exercise text and binary int2[] decoding.
+            for (int i = 0; i < 6; i++) {
+                try (var rs = ps.executeQuery()) {
+                    assertThat(rs.next()).isTrue();
+                    for (int column = 1; column <= 2; column++) {
+                        var array = rs.getArray(column);
+                        try {
+                            assertThat(array.getBaseTypeName()).isEqualTo("int2");
+                            assertThat(array.getArray()).isInstanceOf(Short[].class);
+                        } finally {
+                            array.free();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     void heartbeatsAreListedAndStaleWorkersPurged() throws Exception {
         int second = store.allocateWorkerId("host:2", Set.of(), Set.of());
-        store.heartbeat(worker, 5);
+        store.heartbeat(worker, 5, false);
 
         var workers = store.workers();
         assertThat(workers).extracting(w -> w.id()).containsExactly(worker, second);
         var w = workers.getFirst();
         assertThat(w.label()).isEqualTo("host:1");
         assertThat(w.running()).isEqualTo(5);
+        assertThat(w.accepting()).isFalse();
         assertThat(w.lastSeen()).isAfterOrEqualTo(w.startedAt());
         assertThat(workers.get(1).running()).isZero();
+        assertThat(workers.get(1).accepting()).isTrue();
+        store.heartbeat(worker, 0, true);
+        assertThat(store.workers().getFirst().accepting()).isTrue();
 
         assertThat(store.purgeWorkers(Duration.ofHours(1))).isZero();
         sql("UPDATE " + prefix + "_worker SET last_seen = now() - interval '2 hours' WHERE id = " + second);
@@ -1464,7 +1608,7 @@ class PostgresTaskStoreIT {
                 + " IF pg_trigger_depth() > 1 THEN RETURN NULL; END IF;"
                 + " IF (SELECT rounds_left FROM " + prefix + "_chaos) > 0 THEN"
                 + " UPDATE " + prefix + "_chaos SET rounds_left = rounds_left - 1;"
-                + " INSERT INTO " + prefix + "_task (id, revision, queue_id, event_id, payload_version, state,"
+                + " INSERT INTO " + prefix + "_task (id, revision, queue_id, type_id, payload_version, state,"
                 + " attempts, max_attempts, created, due, state_changed, unique_key)"
                 + " VALUES (" + holder + ", 0, " + queue + ", " + type + ", 1, 0, 0, 1, now(), now(), now(), '"
                 + key + "');"

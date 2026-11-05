@@ -8,8 +8,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import org.slf4j.Logger;
@@ -18,6 +16,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.executor.BackgroundExecutor;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
+import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 
 /**
@@ -26,7 +25,7 @@ import today.bonfire.oss.bth4j.spi.TaskRecord;
  * Every iteration first reserves executor slots, then claims at most that many tasks, so a claimed task
  * always has a slot. Without queue policies one claim covers all queues, tried round robin, so an idle
  * runner costs one store call per poll interval. With queue policies the free slots are shared between the
- * queues in proportion to their weights and capped by their concurrency limits, one claim per queue. When
+ * queues in proportion to their weights and capped by their concurrency limits, in one atomic claim. When
  * nothing was claimed the thread sleeps for the idle poll interval. A quiet runner keeps the loop but claims
  * nothing.
  * <p>
@@ -56,8 +55,6 @@ class TaskProcessorService extends CustomThread {
     private final Map<Long, TaskExecution> running;
 
     private final QueueReservations reservations;
-    /** one permit per finished task of a capped queue, so a claim held back by a cap retries when it frees */
-    private final Semaphore queueSlotFreed = new Semaphore(0);
     /** the last shared claim skipped a queue at its cap; written and read by the processor thread only */
     private boolean capBlocked;
 
@@ -134,7 +131,7 @@ class TaskProcessorService extends CustomThread {
         }
         List<TaskRecord> tasks;
         try {
-            queueSlotFreed.drainPermits();
+            reservations.drainSignal();
             tasks = policed ? claimShared(slots) : claim(rotatedQueues(), slots);
             settings.status().claimed();
         } catch (RuntimeException e) {
@@ -147,7 +144,11 @@ class TaskProcessorService extends CustomThread {
         for (var record : tasks) {
             var execution = new TaskExecution(record, settings, this::finished);
             running.put(record.id(), execution);
-            reservations.reserve(execution);
+            reservations.reserve(
+                    execution,
+                    policies.getOrDefault(execution.queueId(), QueuePolicy.DEFAULT)
+                                    .maxConcurrent()
+                            > 0);
             try {
                 executor.execute(execution);
             } catch (RuntimeException e) {
@@ -158,7 +159,7 @@ class TaskProcessorService extends CustomThread {
         if (tasks.isEmpty()) {
             if (policed && capBlocked) {
                 // a skipped queue may still have work: claim again as soon as one of its slots frees
-                queueSlotFreed.tryAcquire(idlePollInterval.toNanos(), TimeUnit.NANOSECONDS);
+                reservations.awaitSlot(idlePollInterval);
             } else {
                 Thread.sleep(idlePollInterval);
             }
@@ -166,7 +167,16 @@ class TaskProcessorService extends CustomThread {
     }
 
     private List<TaskRecord> claim(List<Integer> queues, int count) {
-        return settings.store().claim(new ClaimRequest(queues, count, lease, workerId, knownTypeIds));
+        return settings.store()
+                .claim(new ClaimRequest(
+                        queues.stream()
+                                .distinct()
+                                .map(q -> new QueueGrant(q, count, count))
+                                .toList(),
+                        count,
+                        lease,
+                        workerId,
+                        knownTypeIds));
     }
 
     /**
@@ -204,23 +214,11 @@ class TaskProcessorService extends CustomThread {
                 given++;
             }
         }
-        var claimed = new ArrayList<TaskRecord>(slots);
-        var filled = new boolean[order.size()];
+        var grants = new ArrayList<QueueGrant>(order.size());
         for (int i = 0; i < order.size(); i++) {
-            if (shares[i] == 0) continue;
-            var got = claim(List.of(order.get(i)), shares[i]);
-            claimed.addAll(got);
-            filled[i] = got.size() == shares[i];
-            caps[i] -= got.size();
+            grants.add(new QueueGrant(order.get(i), shares[i], caps[i]));
         }
-        int left = slots - claimed.size();
-        for (int i = 0; left > 0 && i < order.size(); i++) {
-            if (!filled[i] || caps[i] == 0) continue;
-            var got = claim(List.of(order.get(i)), Math.min(left, caps[i]));
-            claimed.addAll(got);
-            left -= got.size();
-        }
-        return claimed;
+        return settings.store().claim(new ClaimRequest(grants, slots, lease, workerId, knownTypeIds));
     }
 
     private void returnToQueue(TaskExecution execution, RuntimeException cause) {
@@ -247,9 +245,6 @@ class TaskProcessorService extends CustomThread {
     private void finished(TaskExecution execution) {
         running.remove(execution.taskId(), execution);
         reservations.release(execution);
-        if (policies.getOrDefault(execution.queueId(), QueuePolicy.DEFAULT).maxConcurrent() > 0) {
-            queueSlotFreed.release();
-        }
     }
 
     /** The queues to process, starting one position later on every call. */

@@ -34,7 +34,7 @@ public interface TaskStore {
     long allocateIds(int count);
 
     /**
-     * Registers a worker and returns its id. Ids are never reused.
+     * Registers an accepting worker and returns its id. Ids are never reused.
      *
      * @param label free text that identifies the process, for example host and pid
      * @param queueIds queues this worker processes

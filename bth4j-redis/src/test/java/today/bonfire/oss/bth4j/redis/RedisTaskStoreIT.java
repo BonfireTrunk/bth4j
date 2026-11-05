@@ -33,6 +33,7 @@ import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
+import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.RecordJson;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.StateCounts;
@@ -115,7 +116,7 @@ class RedisTaskStoreIT {
     }
 
     private List<TaskRecord> claim(int count) {
-        return store.claim(new ClaimRequest(List.of(queue), count, LEASE, 1, null));
+        return store.claim(new ClaimRequest(List.of(new QueueGrant(queue, count, count)), count, LEASE, 1, null));
     }
 
     private static FailureInfo failure(int attempt) {
@@ -128,6 +129,10 @@ class RedisTaskStoreIT {
     }
 
     // ---- identity ------------------------------------------------------------------------------------
+
+    private Set<Integer> queuedTypes() {
+        return store.queuedByType().getOrDefault(queue, Map.of()).keySet();
+    }
 
     @Test
     void initWritesSchemaAndRefusesAnotherVersion() {
@@ -181,7 +186,7 @@ class RedisTaskStoreIT {
 
     @Test
     void registryRefusesMoreThan32767Names() {
-        jedis.set(keys.prefix + "seq:event", "32767");
+        jedis.set(keys.prefix + "seq:type", "32767");
 
         assertThatThrownBy(() -> store.typeId("one too many")).isInstanceOf(TaskStoreException.class);
     }
@@ -195,10 +200,10 @@ class RedisTaskStoreIT {
         var hash = jedis.hgetAll(keys.task(1));
 
         assertThat(hash.keySet())
-                .containsExactlyInAnyOrder("rev", "q", "ev", "pv", "state", "att", "max", "created", "due", "sc", "wt");
+                .containsExactlyInAnyOrder("rev", "q", "ty", "pv", "state", "att", "max", "created", "due", "sc", "wt");
         assertThat(hash).containsEntry("state", "0");
         assertThat(jedis.ttl(keys.task(1))).isEqualTo(-1);
-        assertThat(jedis.zscore(keys.queue(queue), "1")).isEqualTo(Double.valueOf(hash.get("due")));
+        assertThat(jedis.zscore(keys.queue(queue, type), "1")).isEqualTo(Double.valueOf(hash.get("due")));
         assertThat(counts().queued()).isEqualTo(1);
     }
 
@@ -215,7 +220,7 @@ class RedisTaskStoreIT {
             assertThat(scripts.run(RedisScripts.ENQUEUE, RedisTaskStore.enqueueArgs(record)))
                     .isEqualTo(List.of(0L, ""));
             assertThat(jedis.hgetAll(keys.task(id))).isEqualTo(before);
-            assertThat(jedis.zrange(keys.queue(queue), 0, -1)).contains(String.valueOf(id));
+            assertThat(jedis.zrange(keys.queue(queue, type), 0, -1)).contains(String.valueOf(id));
         }
         assertThat(counts().queued()).isEqualTo(2);
     }
@@ -410,7 +415,7 @@ class RedisTaskStoreIT {
         assertThat(jedis.zscore(keys.leased, "1"))
                 .isEqualTo((double) first.leaseUntil().toEpochMilli());
         assertThat(jedis.zscore(keys.index(2, queue), "2")).isNotNull();
-        assertThat(jedis.zscore(keys.queue(queue), "1")).isNull();
+        assertThat(jedis.zscore(keys.queue(queue, type), "1")).isNull();
         assertThat(counts().queued()).isEqualTo(1);
         assertThat(counts().leased()).isEqualTo(2);
     }
@@ -422,34 +427,120 @@ class RedisTaskStoreIT {
         store.enqueue(task(2).queueId(other).build());
         store.enqueue(task(3).queueId(other).build());
 
-        var one = store.claim(new ClaimRequest(List.of(other, queue), 1, LEASE, 1, null));
-        var rest = store.claim(new ClaimRequest(List.of(other, queue), 5, LEASE, 1, null));
+        var one = store.claim(
+                new ClaimRequest(List.of(new QueueGrant(other, 1, 1), new QueueGrant(queue, 1, 1)), 1, LEASE, 1, null));
+        var rest = store.claim(
+                new ClaimRequest(List.of(new QueueGrant(other, 5, 5), new QueueGrant(queue, 5, 5)), 5, LEASE, 1, null));
 
         assertThat(one).extracting(TaskRecord::id).containsExactly(2L);
         assertThat(rest).extracting(TaskRecord::id).containsExactly(3L, 1L);
-        assertThat(store.claim(new ClaimRequest(List.of(queue), 0, LEASE, 1, null)))
+        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 0, 0)), 0, LEASE, 1, null)))
                 .isEmpty();
     }
 
     @Test
-    void unknownTypesAreDeferredFiveSecondsWithoutAnAttempt() {
+    void unknownTypesAreUntouchedIncludingWhenTheirStartByHasPassed() {
         var unknown = store.typeId("unknown");
-        store.enqueue(task(1).typeId(unknown).build());
-        store.enqueue(task(2).build());
-        var before = System.currentTimeMillis();
+        store.enqueue(task(1).typeId(unknown).startBy(Instant.EPOCH).build());
+        store.enqueue(task(2).typeId(unknown).build());
+        store.enqueue(task(3).build());
+        var hashes = List.of(jedis.hgetAll(keys.task(1)), jedis.hgetAll(keys.task(2)));
+        var scores = jedis.zrangeWithScores(keys.queue(queue, unknown), 0, -1);
+        var startBy = jedis.zscore(keys.startBy, "1");
+        var request = new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, 1, Set.of(type));
 
-        var claimed = store.claim(new ClaimRequest(List.of(queue), 5, LEASE, 1, Set.of(type)));
+        assertThat(store.claim(request)).extracting(TaskRecord::id).containsExactly(3L);
+        assertThat(store.claim(request)).isEmpty();
 
-        assertThat(claimed).extracting(TaskRecord::id).containsExactly(2L);
-        var deferred = store.getTask(1).orElseThrow();
-        assertThat(deferred.attempts()).isZero();
-        assertThat(deferred.revision()).isEqualTo(0);
-        assertThat(deferred.state()).isEqualTo(TaskState.QUEUED);
-        assertThat(jedis.zscore(keys.queue(queue), "1")).isBetween(before + 4_500d, before + 6_500d);
-        assertThat(store.claim(new ClaimRequest(List.of(queue), 5, LEASE, 1, null)))
+        assertThat(jedis.hgetAll(keys.task(1))).isEqualTo(hashes.get(0));
+        assertThat(jedis.hgetAll(keys.task(2))).isEqualTo(hashes.get(1));
+        assertThat(jedis.zrangeWithScores(keys.queue(queue, unknown), 0, -1)).isEqualTo(scores);
+        assertThat(jedis.zscore(keys.startBy, "1")).isEqualTo(startBy);
+        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, 1, Set.of())))
                 .isEmpty();
-        assertThat(store.claim(new ClaimRequest(List.of(queue), 5, LEASE, 1, Set.of())))
-                .isEmpty();
+        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, 1, Set.of(unknown))))
+                .extracting(TaskRecord::id)
+                .containsExactly(2L);
+        assertThat(store.getTask(1).orElseThrow().state()).isEqualTo(TaskState.EXPIRED);
+    }
+
+    @Test
+    void manyForeignTasksDoNotConsumeTheClaimScanBudget() {
+        var foreign = store.typeId("foreign");
+        var tasks = new ArrayList<TaskRecord>();
+        for (var id = 1; id <= 1500; id++)
+            tasks.add(task(id).typeId(foreign).due(Instant.EPOCH).build());
+        tasks.add(task(2000).due(Instant.ofEpochMilli(1)).build());
+        store.enqueueAll(tasks);
+        var before = jedis.zrangeWithScores(keys.queue(queue, foreign), 0, -1);
+
+        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, 1, Set.of(type))))
+                .extracting(TaskRecord::id)
+                .containsExactly(2000L);
+
+        assertThat(jedis.zrangeWithScores(keys.queue(queue, foreign), 0, -1)).isEqualTo(before);
+        assertThat(store.queuedByType()).isEqualTo(Map.of(queue, Map.of(foreign, 1500L)));
+        assertThat(queuedTypes()).containsExactly(foreign);
+    }
+
+    @Test
+    void claimMergesTypeQueuesByDueThenLexicalIdAcrossBothPasses() {
+        var types = List.of(type, store.typeId("second"), store.typeId("third"));
+        var tasks = new ArrayList<TaskRecord>();
+        for (var id = 1; id <= 210; id++) {
+            tasks.add(task(id).typeId(types.get(id % types.size()))
+                    .due(Instant.ofEpochMilli(id % 3))
+                    .build());
+        }
+        tasks.add(
+                task(9007199254740993L).typeId(types.get(1)).due(Instant.EPOCH).build());
+        store.enqueueAll(tasks);
+        var expected = tasks.stream()
+                .sorted(java.util.Comparator.comparing(TaskRecord::due).thenComparing(t -> String.valueOf(t.id())))
+                .map(TaskRecord::id)
+                .toList();
+
+        var claimed = store.claim(
+                new ClaimRequest(List.of(new QueueGrant(queue, 2, tasks.size())), tasks.size(), LEASE, 1, null));
+
+        assertThat(claimed).extracting(TaskRecord::id).containsExactlyElementsOf(expected);
+        assertThat(queuedTypes()).isEmpty();
+        assertThat(jedis.keys(keys.prefix + "q:*")).isEmpty();
+    }
+
+    @Test
+    void scanBudgetIsSharedAcrossPassesAndCleansStaleEntries() {
+        store.enqueue(task(1).due(Instant.EPOCH).build());
+        store.enqueue(task(2).due(Instant.ofEpochMilli(2)).build());
+        var stale = new java.util.HashMap<String, Double>();
+        for (var id = 1000; id < 2100; id++) stale.put(String.valueOf(id), 1d);
+        jedis.zadd(keys.queue(queue, type), stale);
+
+        var claimed = store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 300)), 300, LEASE, 1, null));
+
+        assertThat(claimed).extracting(TaskRecord::id).containsExactly(1L);
+        assertThat(jedis.zcard(keys.queue(queue, type))).isEqualTo(102);
+        assertThat(queuedTypes()).containsExactly(type);
+        assertThat(claim(300)).extracting(TaskRecord::id).containsExactly(2L);
+        assertThat(queuedTypes()).isEmpty();
+    }
+
+    @Test
+    void queuedListingMergesTypesWithNumericTiesAndSurvivesTheCursorTypeDisappearing() {
+        var second = store.typeId("second");
+        store.enqueue(task(2).due(Instant.EPOCH).build());
+        store.enqueue(task(10).typeId(second).due(Instant.EPOCH).build());
+        store.enqueue(task(3).typeId(second).due(Instant.ofEpochMilli(1)).build());
+        var first = store.tasks(TaskState.QUEUED, queue, null, 1);
+        assertThat(first.items()).extracting(TaskRecord::id).containsExactly(2L);
+        assertThat(store.delete(2, 0, null)).isTrue();
+        assertThat(queuedTypes()).containsExactly(second);
+
+        var next = store.tasks(TaskState.QUEUED, queue, first.next(), 1);
+        assertThat(next.items()).extracting(TaskRecord::id).containsExactly(10L);
+        assertThat(store.tasks(TaskState.QUEUED, null, next.next(), 10).items())
+                .extracting(TaskRecord::id)
+                .containsExactly(3L);
     }
 
     @Test
@@ -470,7 +561,8 @@ class RedisTaskStoreIT {
                     var mine = new ArrayList<TaskRecord>();
                     List<TaskRecord> got;
                     do {
-                        got = store.claim(new ClaimRequest(List.of(queue), 7, LEASE, worker, null));
+                        got = store.claim(
+                                new ClaimRequest(List.of(new QueueGrant(queue, 7, 7)), 7, LEASE, worker, null));
                         mine.addAll(got);
                     } while (!got.isEmpty());
                     return mine;
@@ -728,7 +820,7 @@ class RedisTaskStoreIT {
     @Test
     void failExpiredIsLostWhileTheLeaseHoldsAndWorksOnceItExpired() {
         enqueued(1);
-        var t = store.claim(new ClaimRequest(List.of(queue), 1, Duration.ofMinutes(5), 1, null))
+        var t = store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, Duration.ofMinutes(5), 1, null))
                 .getFirst();
         assertThat(store.failExpired(1, t.revision(), failure(1), null, true, null))
                 .isEqualTo(FailOutcome.LOST);
@@ -753,7 +845,7 @@ class RedisTaskStoreIT {
     @Test
     void renewedLeaseIsNotReclaimedAsExpired() {
         enqueued(1);
-        var t = store.claim(new ClaimRequest(List.of(queue), 1, Duration.ofMillis(1000), 1, null))
+        var t = store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, Duration.ofMillis(1000), 1, null))
                 .getFirst();
         sleep(300);
 
@@ -800,7 +892,7 @@ class RedisTaskStoreIT {
         assertThat(back.workerId()).isNull();
         assertThat(back.leaseUntil()).isNull();
         assertThat(back.revision()).isEqualTo(t.revision() + 1);
-        assertThat(jedis.zscore(keys.queue(queue), "1"))
+        assertThat(jedis.zscore(keys.queue(queue, type), "1"))
                 .isEqualTo((double) original.due().toEpochMilli());
         assertThat(claim(1)).hasSize(1);
     }
@@ -893,7 +985,7 @@ class RedisTaskStoreIT {
         assertThat(moved.state()).isEqualTo(TaskState.QUEUED);
         assertThat(moved.due()).isEqualTo(due);
         assertThat(moved.revision()).isEqualTo(1);
-        assertThat(jedis.zscore(keys.queue(queue), "1")).isEqualTo((double) due.toEpochMilli());
+        assertThat(jedis.zscore(keys.queue(queue, type), "1")).isEqualTo((double) due.toEpochMilli());
         assertThat(store.promote(10).nextDue()).isEqualTo(later);
         assertThat(counts().queued()).isEqualTo(1);
         assertThat(counts().scheduled()).isEqualTo(1);
@@ -1010,7 +1102,8 @@ class RedisTaskStoreIT {
         for (var i = 1; i <= 12; i++) {
             store.enqueue(task(i).queueId(i % 3 == 0 ? other : queue).build());
         }
-        for (var t : store.claim(new ClaimRequest(List.of(queue, other), 12, LEASE, 1, null))) {
+        for (var t : store.claim(new ClaimRequest(
+                List.of(new QueueGrant(queue, 12, 12), new QueueGrant(other, 12, 12)), 12, LEASE, 1, null))) {
             store.ack(t.id(), t.revision(), true, true, null);
         }
 
@@ -1063,7 +1156,7 @@ class RedisTaskStoreIT {
     void numericIdOrderBreaksTiesBetweenEqualScores() {
         for (var id : new long[] {9, 10, 100, 11}) {
             enqueued(id);
-            jedis.zadd(keys.queue(queue), 5_000, String.valueOf(id));
+            jedis.zadd(keys.queue(queue, type), 5_000, String.valueOf(id));
             jedis.hset(keys.task(id), "due", "5000");
         }
 

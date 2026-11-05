@@ -33,6 +33,7 @@ import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
+import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
@@ -187,7 +188,8 @@ class TaskExecutionTest {
             assertThat(task.state()).isEqualTo(takenOver ? TaskState.QUEUED : TaskState.SUCCEEDED);
             assertThat(task.failures()).isNull();
             if (!takenOver) {
-                assertThat(store.claim(new ClaimRequest(List.of(store.queueId("Q:DEF")), 1, LEASE, 1, null)))
+                assertThat(store.claim(new ClaimRequest(
+                                List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)), 1, LEASE, 1, null)))
                         .isEmpty();
             }
         }
@@ -432,7 +434,8 @@ class TaskExecutionTest {
         assertThat(store.failExpired(execution.taskId(), execution.revision(), failure, clock.instant(), true, null))
                 .isEqualTo(FailOutcome.RETRY);
         store.promote(10);
-        assertThat(store.claim(new ClaimRequest(List.of(store.queueId("Q:DEF")), 1, LEASE, 1, null)))
+        assertThat(store.claim(
+                        new ClaimRequest(List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)), 1, LEASE, 1, null)))
                 .singleElement()
                 .satisfies(r -> assertThat(r.id()).isEqualTo(execution.taskId()));
     }
@@ -530,7 +533,8 @@ class TaskExecutionTest {
         registry.register(type, processor);
         ScheduleFixtures.fixedDelayOccurrence(
                 store, client, clock.instant(), store.typeId(type.name()), store.queueId("Q:DEF"), 3);
-        var record = store.claim(new ClaimRequest(List.of(store.queueId("Q:DEF")), 1, LEASE, 1, null))
+        var record = store.claim(
+                        new ClaimRequest(List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)), 1, LEASE, 1, null))
                 .getFirst();
         return new TaskExecution(record, settings(), e -> {});
     }
@@ -538,7 +542,8 @@ class TaskExecutionTest {
     private TaskExecution execution(TaskType<Void> type, TaskProcessor<Void> processor) {
         registry.register(type, processor);
         long id = client.enqueue(TaskRequest.of(type).build()).id();
-        var record = store.claim(new ClaimRequest(List.of(store.queueId("Q:DEF")), 1, LEASE, 1, null))
+        var record = store.claim(
+                        new ClaimRequest(List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)), 1, LEASE, 1, null))
                 .getFirst();
         assertThat(record.id()).isEqualTo(id);
         return new TaskExecution(record, settings(), e -> {

@@ -150,7 +150,8 @@ public abstract class StoreContract {
         if (queues.isEmpty()) {
             queues.add(queue);
         }
-        return store.claim(new ClaimRequest(queues, count, lease, worker, typeIds));
+        return store.claim(new ClaimRequest(
+                queues.stream().map(q -> new QueueGrant(q, count, count)).toList(), count, lease, worker, typeIds));
     }
 
     private TaskRecord claimOne() {
@@ -773,6 +774,87 @@ public abstract class StoreContract {
     }
 
     @Test
+    void claimGrantsUseBothPassesInOrderAndRespectCaps() {
+        int second = store.queueId("second");
+        int empty = store.queueId("empty");
+        var firstIds = new ArrayList<Long>();
+        var secondIds = new ArrayList<Long>();
+        for (int i = 0; i < 5; i++) {
+            firstIds.add(put(task()));
+            secondIds.add(put(task(second, type)));
+        }
+        var grants = List.of(new QueueGrant(queue, 1, 2), new QueueGrant(empty, 3, 3), new QueueGrant(second, 1, 4));
+
+        assertThat(store.claim(new ClaimRequest(grants, 6, LEASE, worker, null)))
+                .extracting(TaskRecord::id)
+                .containsExactly(
+                        firstIds.get(0),
+                        secondIds.get(0),
+                        firstIds.get(1),
+                        secondIds.get(1),
+                        secondIds.get(2),
+                        secondIds.get(3));
+        assertThat(get(firstIds.get(2)).state()).isEqualTo(TaskState.QUEUED);
+        assertThat(get(secondIds.get(4)).state()).isEqualTo(TaskState.QUEUED);
+    }
+
+    @Test
+    void claimGrantsSkipPausedAndZeroSharesAndRefillOnlyFilledGrants() {
+        int paused = store.queueId("paused");
+        int zero = store.queueId("zero");
+        int partial = store.queueId("partial");
+        long pausedId = put(task(paused, type));
+        long zeroId = put(task(zero, type));
+        long partialId = put(task(partial, type));
+        var ids = new ArrayList<Long>();
+        for (int i = 0; i < 5; i++) ids.add(put(task()));
+        store.pauseQueue(paused, true);
+        var grants = List.of(
+                new QueueGrant(paused, 2, 5),
+                new QueueGrant(zero, 0, 5),
+                new QueueGrant(partial, 2, 5),
+                new QueueGrant(queue, 1, 3));
+
+        assertThat(store.claim(new ClaimRequest(grants, 5, LEASE, worker, null)))
+                .extracting(TaskRecord::id)
+                .containsExactly(partialId, ids.get(0), ids.get(1), ids.get(2));
+        assertThat(get(pausedId).state()).isEqualTo(TaskState.QUEUED);
+        assertThat(get(zeroId).state()).isEqualTo(TaskState.QUEUED);
+        assertThat(get(ids.get(3)).state()).isEqualTo(TaskState.QUEUED);
+    }
+
+    @Test
+    void claimRefillsInGrantOrderWithoutExceedingTheTotalCount() {
+        int second = store.queueId("second");
+        int empty = store.queueId("empty");
+        var ids = new ArrayList<Long>();
+        for (int i = 0; i < 5; i++) ids.add(put(task()));
+        long next = put(task(second, type));
+        long extra = put(task(second, type));
+        var grants = List.of(new QueueGrant(queue, 1, 5), new QueueGrant(empty, 2, 2), new QueueGrant(second, 1, 5));
+
+        assertThat(store.claim(new ClaimRequest(grants, 4, LEASE, worker, null)))
+                .extracting(TaskRecord::id)
+                .containsExactly(ids.get(0), next, ids.get(1), ids.get(2));
+        assertThat(get(ids.get(3)).state()).isEqualTo(TaskState.QUEUED);
+        assertThat(get(extra).state()).isEqualTo(TaskState.QUEUED);
+    }
+
+    @Test
+    void claimGrantsTruncateSharesAtTheTotalCount() {
+        int second = store.queueId("second");
+        long first = put(task());
+        long next = put(task(second, type));
+        long extra = put(task(second, type));
+        var grants = List.of(new QueueGrant(queue, 1, 5), new QueueGrant(second, 5, 5));
+
+        assertThat(store.claim(new ClaimRequest(grants, 2, LEASE, worker, null)))
+                .extracting(TaskRecord::id)
+                .containsExactly(first, next);
+        assertThat(get(extra).state()).isEqualTo(TaskState.QUEUED);
+    }
+
+    @Test
     void claimIgnoresScheduledTasks() {
         put(task().due(now().plus(Duration.ofHours(1))));
         assertThat(claim(5)).isEmpty();
@@ -783,11 +865,13 @@ public abstract class StoreContract {
         int other = store.typeId("other");
         long known = put(task());
         long unknown = put(task(queue, other));
+        TaskRecord before = get(unknown);
         List<TaskRecord> claimed = claim(5, LEASE, Set.of(type));
         assertThat(claimed).extracting(TaskRecord::id).containsExactly(known);
         TaskRecord skipped = get(unknown);
         assertThat(skipped.attempts()).isZero();
-        assertThat(skipped.state()).isIn(TaskState.QUEUED, TaskState.SCHEDULED);
+        assertThat(skipped).isEqualTo(before);
+        assertThat(claim(1, LEASE, Set.of(other))).extracting(TaskRecord::id).containsExactly(unknown);
     }
 
     @Test
@@ -809,7 +893,8 @@ public abstract class StoreContract {
             int w = store.allocateWorkerId("t", Set.of(), Set.of());
             List<Long> mine = new ArrayList<>();
             while (true) {
-                List<TaskRecord> got = store.claim(new ClaimRequest(List.of(queue), 5, LEASE, w, null));
+                List<TaskRecord> got =
+                        store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, w, null));
                 if (got.isEmpty()) {
                     return mine;
                 }
@@ -2724,20 +2809,65 @@ public abstract class StoreContract {
         WorkerInfo w = before.stream().filter(x -> x.id() == worker).findFirst().orElseThrow();
         assertThat(w.label()).isEqualTo("contract-test");
         assertThat(w.running()).isZero();
+        assertThat(w.accepting()).isTrue();
         assertThat(w.queueIds()).containsExactly(queue);
         assertThat(w.typeIds()).containsExactly(type);
         advance(PAST_SHORT);
-        store.heartbeat(worker, 4);
+        store.heartbeat(worker, 4, false);
         WorkerInfo after = store.workers().stream()
                 .filter(x -> x.id() == worker)
                 .findFirst()
                 .orElseThrow();
         assertThat(after.running()).isEqualTo(4);
+        assertThat(after.accepting()).isFalse();
         assertThat(after.lastSeen()).isAfter(w.lastSeen());
         assertThat(after.startedAt()).isEqualTo(w.startedAt());
         assertThat(after.label()).isEqualTo("contract-test");
         assertThat(after.queueIds()).containsExactly(queue);
         assertThat(after.typeIds()).containsExactly(type);
+    }
+
+    @Test
+    void heartbeatCanResumeAcceptingWork() {
+        store.heartbeat(worker, 1, false);
+        store.heartbeat(worker, 0, true);
+        assertThat(store.workers())
+                .filteredOn(w -> w.id() == worker)
+                .singleElement()
+                .satisfies(w -> {
+                    assertThat(w.accepting()).isTrue();
+                    assertThat(w.running()).isZero();
+                });
+    }
+
+    @Test
+    void queuedByTypeCountsOnlyQueuedTasksAcrossQueuesAndTypes() {
+        int second = store.queueId("second");
+        int other = store.typeId("other");
+        assertThat(store.queuedByType()).isEmpty();
+        for (var state : List.of(
+                TaskState.LEASED,
+                TaskState.SUCCEEDED,
+                TaskState.DEAD,
+                TaskState.CANCELLED,
+                TaskState.EXPIRED,
+                TaskState.SCHEDULED)) {
+            inState(state, task());
+        }
+        for (int i = 0; i < 105; i++) put(task());
+        long otherId = put(task(queue, other));
+        put(task(second, type));
+        put(task(second, other));
+        put(task(second, other));
+        store.pauseQueue(second, true);
+
+        assertThat(store.queuedByType())
+                .isEqualTo(Map.of(queue, Map.of(type, 105L, other, 1L), second, Map.of(type, 1L, other, 2L)));
+        assertThat(claim(1, LEASE, Set.of(other))).extracting(TaskRecord::id).containsExactly(otherId);
+        assertThat(store.queuedByType())
+                .isEqualTo(Map.of(queue, Map.of(type, 105L), second, Map.of(type, 1L, other, 2L)));
+        claim(105);
+        assertThat(store.queuedByType()).isEqualTo(Map.of(second, Map.of(type, 1L, other, 2L)));
     }
 
     @Test
@@ -2750,8 +2880,8 @@ public abstract class StoreContract {
         var expectedTypes = Set.copyOf(types);
         queues.clear();
         types.clear();
-        store.heartbeat(known, 1);
-        store.heartbeat(empty, 0);
+        store.heartbeat(known, 1, true);
+        store.heartbeat(empty, 0, true);
 
         assertThat(store.workers())
                 .filteredOn(w -> w.id() == known)
@@ -2773,7 +2903,7 @@ public abstract class StoreContract {
     void purgeWorkersDeletesOnlyWorkersNotSeenRecently() {
         int stale = store.allocateWorkerId("stale", Set.of(), Set.of());
         advance(PAST_SHORT);
-        store.heartbeat(worker, 0);
+        store.heartbeat(worker, 0, true);
         assertThat(store.purgeWorkers(SHORT)).isEqualTo(1);
         assertThat(store.workers()).extracting(WorkerInfo::id).contains(worker).doesNotContain(stale);
         assertThat(store.purgeWorkers(SHORT)).isZero();

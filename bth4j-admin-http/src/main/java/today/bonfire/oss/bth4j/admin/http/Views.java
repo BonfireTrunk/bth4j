@@ -150,6 +150,7 @@ final class Views {
                 "startedAt", w.startedAt(),
                 "lastSeen", w.lastSeen(),
                 "running", w.running(),
+                "accepting", w.accepting(),
                 "queues", names(w.queueIds(), queues),
                 "types", names(w.typeIds(), types));
     }

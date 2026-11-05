@@ -34,13 +34,16 @@ public interface ExecutionStore extends TaskStore {
     List<EnqueueOutcome> enqueueAll(List<TaskRecord> tasks);
 
     /**
-     * Moves up to {@code count} queued tasks to LEASED and returns them with their new revision, lease and
-     * worker. Queues are read in the given order by {@code (due, id)}; a store may order tasks with the same
-     * {@code due} by the id's decimal text instead of its value (the Redis store does), which differs only
-     * where ids of different digit counts share a due time. Tasks whose type is not in
-     * {@link ClaimRequest#knownTypeIds()} are left alone; a store that cannot filter cheaply may instead
-     * move their due time a few seconds ahead without counting an attempt. Each claim adds one to
-     * {@code attempts}, sets {@code claimedAt} and keeps {@code due}.
+     * Atomically moves up to {@link ClaimRequest#count()} queued tasks to LEASED across all grants.
+     * In grant order, skip paused queues and zero shares, and claim up to the smaller of the share and
+     * remaining count. A grant filled that first pass only when it took that positive amount in full.
+     * In a second pass in the same order, only filled grants may claim more, up to their cap minus what
+     * they already took and the remaining count.
+     * <p>
+     * Within each queue tasks are read by {@code (due, id)}; a store may order equal-due tasks by the id's
+     * decimal text (the Redis store does). Tasks outside {@link ClaimRequest#knownTypeIds()} are left
+     * unchanged, including their due time; null accepts every type. Each claim adds one to {@code attempts},
+     * sets {@code claimedAt} and keeps {@code due}, returning the new revision, lease and worker.
      */
     List<TaskRecord> claim(ClaimRequest request);
 

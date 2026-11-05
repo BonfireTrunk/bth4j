@@ -5,29 +5,50 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.Concurrency;
+import today.bonfire.oss.bth4j.MemorySignal;
 
 class ResourceControllerTest {
     private long now;
     private ResourceController controller = new ResourceController(Concurrency.adaptive(8, 200), now);
+    private int limit = 8;
+
+    private void configure(Concurrency.Adaptive settings) {
+        controller = new ResourceController(settings, now);
+        limit = settings.min();
+    }
 
     private ResourceController.Decision tick(double cpu, double memory) {
+        return tick(new ResourceSampler.Sample(cpu, memory), 1, 1);
+    }
+
+    private ResourceController.Decision tick(ResourceSampler.Sample sample, int occupied, int active) {
         now += TimeUnit.MILLISECONDS.toNanos(500);
-        return controller.tick(new ResourceSampler.Sample(cpu, memory), 1, now);
+        var decision = controller.tick(sample, occupied, active, now);
+        limit = decision.limit();
+        return decision;
     }
 
     private int grow(double cpu, double memory) {
-        controller.claimed(8, 8);
-        return tick(cpu, memory).limit();
+        return grow(new ResourceSampler.Sample(cpu, memory));
+    }
+
+    private int grow(ResourceSampler.Sample sample) {
+        controller.claimed(8, 8, now);
+        return tick(sample, limit, 1).limit();
     }
 
     private int ramp() {
-        tick(0, 0.1);
-        for (int i = 0; i < 4; i++) grow(0, 0.1);
-        return 22;
+        return ramp(new ResourceSampler.Sample(0, 0.1));
+    }
+
+    private int ramp(ResourceSampler.Sample sample) {
+        tick(sample, 1, 1);
+        for (int i = 0; i < 4; i++) grow(sample);
+        return limit;
     }
 
     @Test
-    void fastRampReachesAboutOneHundredInElevenCreditedTicks() {
+    void fastRampReachesAboutOneHundredInElevenSaturatedTicksWithDemand() {
         tick(0.1, 0.1);
         int limit = 8;
         for (int i = 0; i < 11; i++) limit = grow(0.1, 0.1);
@@ -51,19 +72,76 @@ class ResourceControllerTest {
     }
 
     @Test
-    void creditIsRequiredConsumedOnceAndClearedByPartialOrEmptyClaims() {
+    void partialAndEmptyClaimsClearDemandEvidence() {
         tick(0, 0.1);
         assertThat(tick(0, 0.1).limit()).isEqualTo(8);
         assertThat(grow(0, 0.1)).isEqualTo(10);
         assertThat(tick(0, 0.1).limit()).isEqualTo(10);
-        controller.claimed(4, 4);
-        controller.claimed(4, 3);
-        assertThat(tick(0, 0.1).limit()).isEqualTo(10);
-        controller.claimed(4, 4);
-        controller.claimed(4, 0);
-        assertThat(tick(0, 0.1).limit()).isEqualTo(10);
-        controller.claimed(0, 0);
-        assertThat(tick(0, 0.1).limit()).isEqualTo(10);
+        controller.claimed(4, 4, now);
+        controller.claimed(4, 3, now);
+        var partial = tick(new ResourceSampler.Sample(0, 0.1), limit, 1);
+        assertThat(partial.limit()).isEqualTo(11);
+        assertThat(partial.reason()).isEqualTo("demand probe");
+        controller.claimed(4, 4, now);
+        controller.claimed(4, 0, now);
+        assertThat(tick(new ResourceSampler.Sample(0, 0.1), limit, 1).limit()).isEqualTo(11);
+        controller.claimed(0, 0, now);
+        assertThat(tick(new ResourceSampler.Sample(0, 0.1), limit, 1).limit()).isEqualTo(11);
+    }
+
+    @Test
+    void fullBatchDoesNotGrowWhenTheLimitHasFreeSlots() {
+        configure(Concurrency.adaptive(100, 200));
+        tick(0, 0.1);
+        controller.claimed(32, 32, now);
+        for (int i = 0; i < 12; i++) {
+            assertThat(tick(new ResourceSampler.Sample(0, 0.1), 42, 10).limit()).isEqualTo(100);
+        }
+    }
+
+    @Test
+    void eachFullClaimAllowsOneStepAndStaleDemandFallsBackToProbing() {
+        tick(0, 0.1);
+        controller.claimed(8, 8, now);
+        var sample = new ResourceSampler.Sample(0, 0.1);
+        assertThat(tick(sample, limit, 1).limit()).isEqualTo(10);
+        assertThat(tick(sample, limit, 1).reason()).isEqualTo("hold");
+        controller.claimed(2, 2, now);
+        assertThat(tick(sample, limit, 1).limit()).isEqualTo(13);
+        for (int i = 0; i < 10; i++) tick(0, 0.1);
+        var expired = tick(sample, limit, 1);
+        assertThat(expired.limit()).isEqualTo(14);
+        assertThat(expired.reason()).isEqualTo("demand probe");
+        assertThat(tick(sample, limit, 1).limit()).isEqualTo(14);
+    }
+
+    @Test
+    void saturatedWithoutDemandProbesOneSlotAtMostEveryFiveSeconds() {
+        var sample = new ResourceSampler.Sample(0, 0.1);
+        assertThat(tick(sample, limit, 1).limit()).isEqualTo(8);
+        assertThat(tick(sample, limit, 1).limit()).isEqualTo(9);
+        for (int i = 0; i < 9; i++) assertThat(tick(sample, limit, 1).limit()).isEqualTo(9);
+        assertThat(tick(sample, limit, 1).limit()).isEqualTo(10);
+        for (int i = 0; i < 9; i++) assertThat(tick(sample, limit, 1).limit()).isEqualTo(10);
+        assertThat(tick(sample, limit, 1).limit()).isEqualTo(11);
+    }
+
+    @Test
+    void probesNeedHeadroomAndRespectTheCpuCooldown() {
+        configure(Concurrency.adaptive(8, 200, 0.5, 0.8));
+        ramp();
+        for (int i = 0; i < 4; i++) tick(1, 0.1);
+        assertThat(tick(1, 0.1).limit()).isEqualTo(18);
+        controller.claimed(1, 0, now);
+        var sample = new ResourceSampler.Sample(0, 0.1);
+        for (int i = 0; i < 3; i++) assertThat(tick(sample, limit, 1).limit()).isEqualTo(18);
+        var recovered = tick(sample, limit, 1);
+        assertThat(recovered.limit()).isEqualTo(19);
+        assertThat(recovered.reason()).isEqualTo("demand probe");
+        for (int i = 0; i < 12; i++) {
+            assertThat(tick(new ResourceSampler.Sample(0, 0.78), limit, 1).limit())
+                    .isEqualTo(19);
+        }
     }
 
     @Test
@@ -80,7 +158,7 @@ class ResourceControllerTest {
 
     @Test
     void cpuNeedsOneSecondAboveTheSmoothedThresholdAndCoolsDownForTwoSeconds() {
-        controller = new ResourceController(Concurrency.adaptive(8, 200, 0.5, 0.8), now);
+        configure(Concurrency.adaptive(8, 200, 0.5, 0.8));
         ramp();
         assertThat(tick(1, 0.1).limit()).isEqualTo(22);
         assertThat(tick(1, 0.1).limit()).isEqualTo(22);
@@ -93,7 +171,7 @@ class ResourceControllerTest {
 
     @Test
     void cpuReductionsAreLimitedToOncePerSecondAndStopAtMin() {
-        controller = new ResourceController(Concurrency.adaptive(8, 200, 0.5, 0.8), now);
+        configure(Concurrency.adaptive(8, 200, 0.5, 0.8));
         ramp();
         for (int i = 0; i < 4; i++) tick(1, 0.1);
         assertThat(tick(1, 0.1).limit()).isEqualTo(18);
@@ -104,12 +182,15 @@ class ResourceControllerTest {
     }
 
     @Test
-    void reductionsClearPreviouslyGrantedCredit() {
+    void memoryReductionCooldownOutlastsDemandEvidenceThenAllowsAProbe() {
         ramp();
-        controller.claimed(8, 8);
+        controller.claimed(8, 8, now);
         for (int i = 0; i < 3; i++) tick(0, 0.85);
-        for (int i = 0; i < 12; i++) tick(0, 0.1);
-        assertThat(tick(0, 0.1).limit()).isEqualTo(17);
+        var sample = new ResourceSampler.Sample(0, 0.1);
+        for (int i = 0; i < 9; i++) assertThat(tick(sample, limit, 1).limit()).isEqualTo(17);
+        var decision = tick(sample, limit, 1);
+        assertThat(decision.limit()).isEqualTo(18);
+        assertThat(decision.reason()).isEqualTo("demand probe");
     }
 
     @Test
@@ -122,7 +203,7 @@ class ResourceControllerTest {
     }
 
     @Test
-    void memoryEmergencyGoesStraightToMinAndClearsCredit() {
+    void memoryEmergencyGoesStraightToMin() {
         ramp();
         assertThat(grow(1, 0.95)).isEqualTo(8);
         for (int i = 0; i < 10; i++) tick(0, 0.1);
@@ -131,7 +212,7 @@ class ResourceControllerTest {
 
     @Test
     void memoryReductionTakesPrecedenceOverCpuAndDoesNotLoseItsLongerCooldown() {
-        controller = new ResourceController(Concurrency.adaptive(8, 200, 0.5, 0.8), now);
+        configure(Concurrency.adaptive(8, 200, 0.5, 0.8));
         ramp();
         tick(1, 0.1);
         tick(1, 0.1);
@@ -165,6 +246,53 @@ class ResourceControllerTest {
     }
 
     @Test
+    void heapEmergencyStillReducesWhenSystemMemoryIsUnavailable() {
+        configure(Concurrency.adaptive(8, 200).withMemorySignal(MemorySignal.HEAP_AND_SYSTEM));
+        ramp(new ResourceSampler.Sample(0, 0.1, 0.1));
+        var decision = tick(new ResourceSampler.Sample(0, 0.97, Double.NaN), limit, 1);
+        assertThat(decision.limit()).isEqualTo(8);
+        assertThat(decision.reason()).isEqualTo("memory emergency");
+    }
+
+    @Test
+    void heapTargetStillReducesWhenSystemMemoryIsUnavailable() {
+        configure(Concurrency.adaptive(8, 200).withMemorySignal(MemorySignal.HEAP_AND_SYSTEM));
+        ramp(new ResourceSampler.Sample(0, 0.1, 0.1));
+        var sample = new ResourceSampler.Sample(0, 0.85, Double.NaN);
+        assertThat(tick(sample, limit, 1).limit()).isEqualTo(22);
+        assertThat(tick(sample, limit, 1).limit()).isEqualTo(22);
+        var decision = tick(sample, limit, 1);
+        assertThat(decision.limit()).isEqualTo(17);
+        assertThat(decision.reason()).isEqualTo("memory target");
+    }
+
+    @Test
+    void missingComponentBlocksGrowthAndDecaysDespiteValidCombinedMemory() {
+        configure(Concurrency.adaptive(8, 200).withMemorySignal(MemorySignal.HEAP_AND_SYSTEM));
+        ramp(new ResourceSampler.Sample(0, 0.1, 0.1));
+        var sample = new ResourceSampler.Sample(0, 0.1, Double.NaN);
+        for (int i = 0; i < 9; i++) assertThat(grow(sample)).isEqualTo(22);
+        var decision = tick(sample, limit, 1);
+        assertThat(decision.limit()).isEqualTo(17);
+        assertThat(decision.reason()).isEqualTo("unknown resource signal");
+        var complete = new ResourceSampler.Sample(0, 0.1, 0.1);
+        assertThat(grow(complete)).isEqualTo(17);
+        assertThat(grow(complete)).isEqualTo(22);
+    }
+
+    @Test
+    void componentAvailabilityIsTrackedIndependently() {
+        configure(Concurrency.adaptive(8, 200).withMemorySignal(MemorySignal.HEAP_AND_SYSTEM));
+        ramp(new ResourceSampler.Sample(0, 0.1, 0.1));
+        for (int i = 0; i < 20; i++) {
+            var sample = i % 2 == 0
+                    ? new ResourceSampler.Sample(0, 0.1, Double.NaN)
+                    : new ResourceSampler.Sample(0, Double.NaN, 0.1);
+            assertThat(grow(sample)).isEqualTo(22);
+        }
+    }
+
+    @Test
     void longPauseProducesOnlyOneReductionAndRequiresFreshSamples() {
         ramp();
         now += TimeUnit.MINUTES.toNanos(1);
@@ -174,34 +302,53 @@ class ResourceControllerTest {
     }
 
     @Test
-    void idleResetsAfterThirtySecondsButReservedSlotsAndActivityPreventIt() {
+    void idleResetsAfterThirtySecondsEvenWithReservedSlots() {
         ramp();
-        long last = now;
         now += TimeUnit.SECONDS.toNanos(29);
-        assertThat(controller.tick(new ResourceSampler.Sample(0, 0.1), 0, now).limit())
-                .isEqualTo(22);
-        controller.occupied(now);
-        now += TimeUnit.SECONDS.toNanos(29);
-        assertThat(controller.tick(new ResourceSampler.Sample(0, 0.1), 0, now).limit())
+        assertThat(controller
+                        .tick(new ResourceSampler.Sample(0, 0.1), 1, 0, now)
+                        .limit())
                 .isEqualTo(22);
         now += TimeUnit.SECONDS.toNanos(1);
-        assertThat(controller.tick(new ResourceSampler.Sample(0, 0.1), 0, now).limit())
+        assertThat(controller
+                        .tick(new ResourceSampler.Sample(0, 0.1), 1, 0, now)
+                        .limit())
                 .isEqualTo(8);
-        assertThat(now - last).isEqualTo(TimeUnit.SECONDS.toNanos(59));
+    }
+
+    @Test
+    void runningTasksPreventIdleResetAndStartTheTimerAtTheirLastActiveTick() {
+        ramp();
+        for (int i = 0; i < 80; i++) assertThat(tick(0, 0.1).limit()).isEqualTo(22);
+        var sample = new ResourceSampler.Sample(0, 0.1);
+        for (int i = 0; i < 59; i++) assertThat(tick(sample, 0, 0).limit()).isEqualTo(22);
+        assertThat(tick(sample, 0, 0).limit()).isEqualTo(8);
+    }
+
+    @Test
+    void nonemptyPartialClaimRestartsTheIdleTimerWithoutARunningTask() {
+        ramp();
+        var sample = new ResourceSampler.Sample(0, 0.1);
+        for (int i = 0; i < 59; i++) tick(sample, 0, 0);
+        controller.claimed(8, 1, now);
+        for (int i = 0; i < 59; i++) assertThat(tick(sample, 0, 0).limit()).isEqualTo(22);
+        assertThat(tick(sample, 0, 0).limit()).isEqualTo(8);
     }
 
     @Test
     void idleResetAppliesEvenWhenPressureOrUnknownSignalsWouldAlsoReduce() {
         ramp();
-        controller.tick(new ResourceSampler.Sample(1, 0.85), 0, now);
+        controller.tick(new ResourceSampler.Sample(1, 0.85), 0, 0, now);
         now += TimeUnit.SECONDS.toNanos(30);
-        assertThat(controller.tick(new ResourceSampler.Sample(1, 0.85), 0, now).limit())
+        assertThat(controller
+                        .tick(new ResourceSampler.Sample(1, 0.85), 0, 0, now)
+                        .limit())
                 .isEqualTo(8);
     }
 
     @Test
     void clampsAtBothBoundsAndAlwaysRemovesASlotAboveMin() {
-        controller = new ResourceController(Concurrency.adaptive(1, 3), now);
+        configure(Concurrency.adaptive(1, 3));
         tick(0, 0.1);
         for (int i = 0; i < 5; i++) grow(0, 0.1);
         assertThat(tick(0, 0.1).limit()).isEqualTo(3);
@@ -213,7 +360,7 @@ class ResourceControllerTest {
 
     @Test
     void growthArithmeticCannotOverflow() {
-        controller = new ResourceController(Concurrency.adaptive(Integer.MAX_VALUE - 1, Integer.MAX_VALUE), now);
+        configure(Concurrency.adaptive(Integer.MAX_VALUE - 1, Integer.MAX_VALUE));
         tick(0, 0.1);
         assertThat(grow(0, 0.1)).isEqualTo(Integer.MAX_VALUE);
         assertThat(grow(0, 0.1)).isEqualTo(Integer.MAX_VALUE);
@@ -222,7 +369,7 @@ class ResourceControllerTest {
 
     @Test
     void lowTargetsScaleBothGrowthMargins() {
-        controller = new ResourceController(Concurrency.adaptive(8, 200, 0.1, 0.1), now);
+        configure(Concurrency.adaptive(8, 200, 0.1, 0.1));
         tick(0.02, 0.02);
         assertThat(grow(0.02, 0.02)).isEqualTo(10);
         assertThat(grow(0.06, 0.06)).isEqualTo(11);
@@ -230,12 +377,9 @@ class ResourceControllerTest {
     }
 
     @Test
-    void permitDebtBlocksGrowthUntilOccupiedFallsToLimit() {
+    void permitDebtCountsAsSaturatedAndAllowsGrowthWithFreshDemand() {
         ramp();
-        controller.claimed(22, 22);
-        now += TimeUnit.MILLISECONDS.toNanos(500);
-        assertThat(controller.tick(new ResourceSampler.Sample(0, 0.1), 23, now).limit())
-                .isEqualTo(22);
-        assertThat(tick(0, 0.1).limit()).isEqualTo(28);
+        controller.claimed(22, 22, now);
+        assertThat(tick(new ResourceSampler.Sample(0, 0.1), 23, 23).limit()).isEqualTo(28);
     }
 }

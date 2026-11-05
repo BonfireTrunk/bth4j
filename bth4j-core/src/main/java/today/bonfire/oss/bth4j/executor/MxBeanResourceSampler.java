@@ -54,14 +54,9 @@ final class MxBeanResourceSampler implements ResourceSampler {
     public Sample sample(long now) {
         double cpuValue = read(cpu);
         double heapValue = heapWindow.lowest(read(this::heapUsage), now);
-        double memory = heapValue;
-        if (signal == MemorySignal.HEAP_AND_SYSTEM) {
-            double system = systemWindow.lowest(read(this::systemUsage), now);
-            memory = ResourceSampler.valid(heapValue) && ResourceSampler.valid(system)
-                    ? Math.max(heapValue, system)
-                    : Double.NaN;
-        }
-        return new Sample(cpuValue, memory);
+        double system =
+                signal == MemorySignal.HEAP_AND_SYSTEM ? systemWindow.lowest(read(this::systemUsage), now) : Double.NaN;
+        return new Sample(cpuValue, heapValue, system);
     }
 
     private double heapUsage() {

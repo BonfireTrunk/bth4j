@@ -27,6 +27,7 @@ import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
 import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
+import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
@@ -129,7 +130,7 @@ public final class InMemoryStore implements FullStore {
         try {
             int id = nextWorkerId++;
             Instant now = clock.instant();
-            workers.put(id, new WorkerInfo(id, label, now, now, 0, queueIds, typeIds));
+            workers.put(id, new WorkerInfo(id, label, now, now, 0, true, queueIds, typeIds));
             return id;
         } finally {
             lock.unlock();
@@ -256,41 +257,51 @@ public final class InMemoryStore implements FullStore {
         lock.lock();
         try {
             Instant now = clock.instant();
-            Set<Integer> known = request.knownTypeIds();
             List<TaskRecord> claimed = new ArrayList<>();
-            for (int queueId : request.queueIds()) {
-                if (pausedQueues.contains(queueId)) {
-                    continue;
-                }
-                int missing = request.count() - claimed.size();
-                if (missing <= 0) {
-                    break;
-                }
-                List<TaskRecord> candidates = tasks.values().stream()
-                        .filter(t -> t.state() == TaskState.QUEUED && t.queueId() == queueId)
-                        .filter(t -> t.startBy() == null || t.startBy().isAfter(now))
-                        .filter(t -> known == null || known.contains(t.typeId()))
-                        .sorted(BY_DUE)
-                        .limit(missing)
-                        .toList();
-                for (TaskRecord t : candidates) {
-                    TaskRecord leased = t.toBuilder()
-                            .state(TaskState.LEASED)
-                            .attempts(t.attempts() + 1)
-                            .revision(t.revision() + 1)
-                            .claimedAt(now)
-                            .stateChangedAt(now)
-                            .leaseUntil(now.plus(request.lease()))
-                            .workerId(request.workerId())
-                            .build();
-                    tasks.put(t.id(), leased);
-                    claimed.add(leased);
-                }
+            var got = new int[request.grants().size()];
+            var filled = new boolean[got.length];
+            for (int i = 0; i < got.length && claimed.size() < request.count(); i++) {
+                var grant = request.grants().get(i);
+                if (pausedQueues.contains(grant.queueId()) || grant.share() == 0) continue;
+                int take = Math.min(grant.share(), request.count() - claimed.size());
+                got[i] = claimQueue(request, grant, take, now, claimed);
+                filled[i] = got[i] == take && take > 0;
+            }
+            for (int i = 0; i < got.length && claimed.size() < request.count(); i++) {
+                if (!filled[i]) continue;
+                var grant = request.grants().get(i);
+                int take = Math.min(request.count() - claimed.size(), grant.cap() - got[i]);
+                claimQueue(request, grant, take, now, claimed);
             }
             return claimed;
         } finally {
             lock.unlock();
         }
+    }
+
+    private int claimQueue(ClaimRequest request, QueueGrant grant, int take, Instant now, List<TaskRecord> claimed) {
+        var known = request.knownTypeIds();
+        List<TaskRecord> candidates = tasks.values().stream()
+                .filter(t -> t.state() == TaskState.QUEUED && t.queueId() == grant.queueId())
+                .filter(t -> t.startBy() == null || t.startBy().isAfter(now))
+                .filter(t -> known == null || known.contains(t.typeId()))
+                .sorted(BY_DUE)
+                .limit(take)
+                .toList();
+        for (TaskRecord t : candidates) {
+            TaskRecord leased = t.toBuilder()
+                    .state(TaskState.LEASED)
+                    .attempts(t.attempts() + 1)
+                    .revision(t.revision() + 1)
+                    .claimedAt(now)
+                    .stateChangedAt(now)
+                    .leaseUntil(now.plus(request.lease()))
+                    .workerId(request.workerId())
+                    .build();
+            tasks.put(t.id(), leased);
+            claimed.add(leased);
+        }
+        return candidates.size();
     }
 
     @Override
@@ -1016,7 +1027,7 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public void heartbeat(int workerId, int running) {
+    public void heartbeat(int workerId, int running, boolean accepting) {
         lock.lock();
         try {
             WorkerInfo w = workers.get(workerId);
@@ -1024,8 +1035,31 @@ public final class InMemoryStore implements FullStore {
                 workers.put(
                         workerId,
                         new WorkerInfo(
-                                w.id(), w.label(), w.startedAt(), clock.instant(), running, w.queueIds(), w.typeIds()));
+                                w.id(),
+                                w.label(),
+                                w.startedAt(),
+                                clock.instant(),
+                                running,
+                                accepting,
+                                w.queueIds(),
+                                w.typeIds()));
             }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public Map<Integer, Map<Integer, Long>> queuedByType() {
+        lock.lock();
+        try {
+            var result = new TreeMap<Integer, Map<Integer, Long>>();
+            for (var task : tasks.values()) {
+                if (task.state() == TaskState.QUEUED) {
+                    result.computeIfAbsent(task.queueId(), q -> new TreeMap<>()).merge(task.typeId(), 1L, Long::sum);
+                }
+            }
+            return result;
         } finally {
             lock.unlock();
         }

@@ -16,6 +16,7 @@ import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
+import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
@@ -47,6 +48,7 @@ class MaintenanceServiceTest {
     private int purgeBatchSize = 500;
     private int workerId;
     private int runningTasks;
+    private boolean accepting = true;
     private Duration workerStaleAfter = Duration.ofMinutes(10);
 
     // ---- expired leases -------------------------------------------------------------------------------
@@ -590,6 +592,17 @@ class MaintenanceServiceTest {
     }
 
     @Test
+    void eachCycleReportsWhetherTheRunnerAcceptsWork() throws Exception {
+        workerId = store.allocateWorkerId("worker-a", Set.of(), Set.of());
+        accepting = false;
+        cycle();
+        assertThat(store.workers().getFirst().accepting()).isFalse();
+        accepting = true;
+        cycle();
+        assertThat(store.workers().getFirst().accepting()).isTrue();
+    }
+
+    @Test
     void aServiceWithoutAWorkerRecordsNoHeartbeatButStillMarksMaintenance() throws Exception {
         store.allocateWorkerId("other", Set.of(), Set.of());
         var before = store.workers();
@@ -719,7 +732,7 @@ class MaintenanceServiceTest {
 
     private long leased(TaskRequest<Void> request) {
         long id = client.enqueue(request).id();
-        var claimed = store.claim(new ClaimRequest(List.of(queueId), 1, LEASE, 1, null));
+        var claimed = store.claim(new ClaimRequest(List.of(new QueueGrant(queueId, 1, 1)), 1, LEASE, 1, null));
         assertThat(claimed).singleElement().satisfies(r -> assertThat(r.id()).isEqualTo(id));
         return id;
     }
@@ -727,7 +740,7 @@ class MaintenanceServiceTest {
     private long leasedOccurrence(int maxAttempts) {
         long id = ScheduleFixtures.fixedDelayOccurrence(
                 store, client, clock.instant(), store.typeId(TYPE.name()), queueId, maxAttempts);
-        var claimed = store.claim(new ClaimRequest(List.of(queueId), 1, LEASE, 1, null));
+        var claimed = store.claim(new ClaimRequest(List.of(new QueueGrant(queueId, 1, 1)), 1, LEASE, 1, null));
         assertThat(claimed).singleElement().satisfies(r -> assertThat(r.id()).isEqualTo(id));
         return id;
     }
@@ -801,6 +814,7 @@ class MaintenanceServiceTest {
                 .batchSize(batchSize)
                 .purgeBatchSize(purgeBatchSize)
                 .worker(workerId, () -> runningTasks)
+                .accepting(() -> accepting)
                 .workerStaleAfter(workerStaleAfter)
                 .create();
     }

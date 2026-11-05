@@ -85,20 +85,38 @@ class MxBeanResourceSamplerTest {
     }
 
     @Test
-    void combinedMemoryIsUnknownIfEitherComponentIsInvalid() {
+    void combinedMemoryKeepsTheValidComponentWhenTheOtherIsUnavailable() {
         var sampler = sampler(MemorySignal.HEAP_AND_SYSTEM);
         for (long value : new long[] {-1, 101}) {
             free.set(value);
-            assertThat(sampler.sample(0).memory()).isNaN();
+            var sample = sampler.sample(0);
+            assertThat(sample.memory()).isEqualTo(0.2);
+            assertThat(sample.system()).isNaN();
         }
         free.set(30);
         for (long value : new long[] {-1, 0}) {
             total.set(value);
-            assertThat(sampler.sample(0).memory()).isNaN();
+            assertThat(sampler.sample(0).memory()).isEqualTo(0.2);
         }
         total.set(100);
         heap.set(null);
+        var sample = sampler.sample(0);
+        assertThat(sample.memory()).isEqualTo(0.7);
+        assertThat(sample.heap()).isNaN();
+        free.set(-1);
         assertThat(sampler.sample(0).memory()).isNaN();
+    }
+
+    @Test
+    void missingSystemReadingPreservesTheHeapWindowBeforeExposingAnEmergency() {
+        var sampler = sampler(MemorySignal.HEAP_AND_SYSTEM);
+        sampler.sample(0);
+        free.set(-1);
+        heap.set(usage(97));
+        assertThat(sampler.sample(seconds(1)).memory()).isEqualTo(0.2);
+        var sample = sampler.sample(seconds(2));
+        assertThat(sample.memory()).isEqualTo(0.97);
+        assertThat(sample.system()).isNaN();
     }
 
     @Test

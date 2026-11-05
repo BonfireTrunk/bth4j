@@ -68,7 +68,7 @@ public final class BackgroundRunner {
     private volatile TaskProcessorService taskProcessorService;
     private volatile CustomThread scheduledTaskService;
     private volatile CustomThread recurringTaskService;
-    private volatile CustomThread maintenanceService;
+    private volatile MaintenanceService maintenanceService;
     private volatile RunnerServices services;
 
     private BackgroundRunner(Builder b) {
@@ -235,6 +235,8 @@ public final class BackgroundRunner {
         quiet = true;
         var p = taskProcessorService;
         if (p != null) p.quiet(true);
+        var maintenance = maintenanceService;
+        if (maintenance != null) maintenance.heartbeatNow();
         log.info("Background runner {} is quiet", threadGroup.getName());
     }
 
@@ -243,6 +245,8 @@ public final class BackgroundRunner {
         quiet = false;
         var p = taskProcessorService;
         if (p != null) p.quiet(false);
+        var maintenance = maintenanceService;
+        if (maintenance != null) maintenance.heartbeatNow();
         log.info("Background runner {} resumed", threadGroup.getName());
     }
 
@@ -430,7 +434,7 @@ public final class BackgroundRunner {
         return service;
     }
 
-    private CustomThread startMaintenanceService() {
+    private MaintenanceService startMaintenanceService() {
         var retention = new LinkedHashMap<TaskState, Duration>();
         retention.put(TaskState.SUCCEEDED, config.succeededRetention);
         retention.put(TaskState.DEAD, config.deadRetention);
@@ -453,9 +457,11 @@ public final class BackgroundRunner {
                 .batchSize(config.claimBatchSize * 4)
                 .purgeBatchSize(config.purgeBatchSize)
                 .worker(workerId, runningTasks::size)
+                .accepting(() -> !quiet)
                 .workerStaleAfter(config.workerStaleAfter)
                 .create();
         service.start();
+        service.heartbeatNow();
         return service;
     }
 
@@ -564,8 +570,8 @@ public final class BackgroundRunner {
 
         /**
          * How this runner shares its slots between queues. The queue must be one it processes; queues without
-         * a policy get {@link QueuePolicy#DEFAULT}. Any policy other than the default switches the runner from
-         * one claim per cycle to one claim per queue.
+         * a policy get {@link QueuePolicy#DEFAULT}. Any policy other than the default makes each claim share the
+         * slots between the queues by weight and cap, still in one store call.
          */
         public Builder queue(String name, QueuePolicy policy) {
             if (StringUtils.isBlank(name)) throw new TaskConfigurationException("queue name cannot be blank");

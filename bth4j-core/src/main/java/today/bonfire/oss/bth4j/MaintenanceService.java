@@ -5,8 +5,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.function.IntSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,6 +48,7 @@ class MaintenanceService extends CustomThread {
     private final int purgeBatchSize;
     private final int workerId;
     private final IntSupplier running;
+    private final BooleanSupplier accepting;
     private final Duration workerStaleAfter;
 
     MaintenanceService(Builder b) {
@@ -65,6 +68,7 @@ class MaintenanceService extends CustomThread {
         this.purgeBatchSize = b.purgeBatchSize;
         this.workerId = b.workerId;
         this.running = b.running;
+        this.accepting = b.accepting;
         this.workerStaleAfter = b.workerStaleAfter;
         this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
             var thread = new Thread(b.group, r, b.threadName + "-scheduler");
@@ -192,9 +196,18 @@ class MaintenanceService extends CustomThread {
         }
     }
 
+    void heartbeatNow() {
+        try {
+            executor.execute(this::heartbeat);
+        } catch (RejectedExecutionException e) {
+            // A concurrent stop leaves the next service generation to publish the state.
+            if (!executor.isShutdown()) throw e;
+        }
+    }
+
     private void heartbeat() {
         try {
-            if (workerId > 0) store.heartbeat(workerId, running.getAsInt());
+            if (workerId > 0) store.heartbeat(workerId, running.getAsInt(), accepting.getAsBoolean());
             status.maintained();
         } catch (Exception e) {
             status.storeError(e);
@@ -273,6 +286,7 @@ class MaintenanceService extends CustomThread {
         private int purgeBatchSize = 500;
         private int workerId;
         private IntSupplier running = () -> 0;
+        private BooleanSupplier accepting = () -> true;
         private Duration workerStaleAfter = Duration.ofMinutes(10);
 
         Builder group(ThreadGroup group) {
@@ -355,6 +369,11 @@ class MaintenanceService extends CustomThread {
         Builder worker(int workerId, IntSupplier running) {
             this.workerId = workerId;
             this.running = running;
+            return this;
+        }
+
+        Builder accepting(BooleanSupplier accepting) {
+            this.accepting = accepting;
             return this;
         }
 

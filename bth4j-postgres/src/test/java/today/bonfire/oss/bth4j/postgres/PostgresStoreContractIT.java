@@ -20,7 +20,7 @@ class PostgresStoreContractIT extends StoreContract {
     @Override
     protected void fillRegistry(TaskStore fresh, String namespace, Registry registry, int lastId) {
         var sequence =
-                PostgresTestSupport.prefix(namespace) + (registry == Registry.QUEUE ? "_queue" : "_event") + "_id_seq";
+                PostgresTestSupport.prefix(namespace) + (registry == Registry.QUEUE ? "_queue" : "_type") + "_id_seq";
         try (var c = PostgresTestSupport.dataSource().getConnection();
                 var st = c.createStatement()) {
             st.execute("SELECT setval('" + sequence + "', " + lastId + ")");

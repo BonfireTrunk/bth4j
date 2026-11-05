@@ -23,7 +23,6 @@ import redis.clients.jedis.Protocol;
 import redis.clients.jedis.Response;
 import redis.clients.jedis.UnifiedJedis;
 import redis.clients.jedis.exceptions.JedisException;
-import redis.clients.jedis.params.ZAddParams;
 import redis.clients.jedis.resps.Tuple;
 import today.bonfire.oss.bth4j.common.Json;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
@@ -177,7 +176,7 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public int typeId(String name) {
-        return register("event", name, typeIds);
+        return register("type", name, typeIds);
     }
 
     private int register(String kind, String name, Map<String, Integer> cache) {
@@ -197,7 +196,7 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public Map<Integer, String> typeNames() {
-        return names("event");
+        return names("type");
     }
 
     private Map<Integer, String> names(String kind) {
@@ -274,7 +273,7 @@ public class RedisTaskStore implements FullStore {
     @SuppressWarnings("unchecked")
     public List<TaskRecord> claim(ClaimRequest request) {
         var known = request.knownTypeIds();
-        if (request.count() < 1 || request.queueIds().isEmpty() || (known != null && known.isEmpty())) {
+        if (request.count() < 1 || request.grants().isEmpty() || (known != null && known.isEmpty())) {
             return List.of();
         }
         var args = new ArrayList<String>();
@@ -282,7 +281,11 @@ public class RedisTaskStore implements FullStore {
         args.add(String.valueOf(request.lease().toMillis()));
         args.add(String.valueOf(request.workerId()));
         args.add(known == null ? "" : known.stream().map(String::valueOf).collect(Collectors.joining(",")));
-        request.queueIds().forEach(q -> args.add(String.valueOf(q)));
+        request.grants().forEach(g -> {
+            args.add(String.valueOf(g.queueId()));
+            args.add(String.valueOf(g.share()));
+            args.add(String.valueOf(g.cap()));
+        });
         var r = (List<Object>) guard(() -> scripts.run(RedisScripts.CLAIM, args));
         var at = num(r.get(0));
         var lease = String.valueOf(at + request.lease().toMillis());
@@ -441,7 +444,7 @@ public class RedisTaskStore implements FullStore {
             var fields = new ArrayList<Response<List<String>>>(ids.size());
             try (var pipeline = jedis.pipelined()) {
                 ids.forEach(id -> fields.add(pipeline.hmget(
-                        keys.task(Long.parseLong(id)), F_REVISION, F_ATTEMPTS, F_MAX_ATTEMPTS, F_EVENT, F_CANCEL_AT)));
+                        keys.task(Long.parseLong(id)), F_REVISION, F_ATTEMPTS, F_MAX_ATTEMPTS, F_TYPE, F_CANCEL_AT)));
                 pipeline.sync();
             }
             var out = new ArrayList<ExpiredLease>(ids.size());
@@ -512,7 +515,7 @@ public class RedisTaskStore implements FullStore {
         args.add(ms(nextFire));
         args.add(ms(keepUntil));
         args.addAll(List.of(
-                F_EVENT,
+                F_TYPE,
                 String.valueOf(d.typeId()),
                 F_QUEUE,
                 String.valueOf(d.queueId()),
@@ -591,7 +594,7 @@ public class RedisTaskStore implements FullStore {
     private static RecurringDefinition definition(String id, Map<String, String> d) {
         return new RecurringDefinition(
                 id,
-                Integer.parseInt(d.get(F_EVENT)),
+                Integer.parseInt(d.get(F_TYPE)),
                 Integer.parseInt(d.get(F_PAYLOAD_VERSION)),
                 Integer.parseInt(d.get(F_QUEUE)),
                 d.get(F_ACCOUNT),
@@ -679,38 +682,40 @@ public class RedisTaskStore implements FullStore {
         });
     }
 
-    /** One ZCARD per state and queue, pipelined: the zsets are the counts, so they cannot drift. */
+    /** Counts come from state zset cardinalities in one atomic read. */
     @Override
+    @SuppressWarnings("unchecked")
     public Map<Integer, StateCounts> counts() {
-        return guard(() -> {
-            var qids = sortedQueueIds();
-            var cards = new ArrayList<Response<Long>>(qids.size() * 7);
-            try (var pipeline = jedis.pipelined()) {
-                for (var qid : qids) {
-                    cards.add(pipeline.zcard(keys.queue(qid)));
-                    cards.add(pipeline.zcard(keys.scheduled(qid)));
-                    for (var state = 2; state <= 6; state++) {
-                        cards.add(pipeline.zcard(keys.index(state, qid)));
-                    }
-                }
-                pipeline.sync();
+        var rows = (List<List<Object>>) guard(() -> scripts.run(RedisScripts.COUNTS, List.of()));
+        var out = new TreeMap<Integer, StateCounts>();
+        for (var row : rows) {
+            out.put(
+                    (int) num(row.get(0)),
+                    new StateCounts(
+                            num(row.get(1)),
+                            num(row.get(2)),
+                            num(row.get(3)),
+                            num(row.get(4)),
+                            num(row.get(5)),
+                            num(row.get(6)),
+                            num(row.get(7))));
+        }
+        return out;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public Map<Integer, Map<Integer, Long>> queuedByType() {
+        var rows = (List<List<Object>>) guard(() -> scripts.run(RedisScripts.QUEUED_BY_TYPE, List.of()));
+        var out = new TreeMap<Integer, Map<Integer, Long>>();
+        for (var row : rows) {
+            var counts = new TreeMap<Integer, Long>();
+            for (var pair : (List<List<Object>>) row.get(1)) {
+                counts.put((int) num(pair.get(0)), num(pair.get(1)));
             }
-            var out = new LinkedHashMap<Integer, StateCounts>();
-            for (var i = 0; i < qids.size(); i++) {
-                var c = cards.subList(i * 7, i * 7 + 7);
-                out.put(
-                        qids.get(i),
-                        new StateCounts(
-                                c.get(0).get(),
-                                c.get(1).get(),
-                                c.get(2).get(),
-                                c.get(3).get(),
-                                c.get(4).get(),
-                                c.get(5).get(),
-                                c.get(6).get()));
-            }
-            return out;
-        });
+            out.put((int) num(row.get(0)), counts);
+        }
+        return out;
     }
 
     private List<Integer> sortedQueueIds() {
@@ -722,11 +727,10 @@ public class RedisTaskStore implements FullStore {
 
     /**
      * Lists from the structure that holds the state: {@code idx:<state>:<qid>} for LEASED and the terminal states,
-     * {@code q:<qid>} for QUEUED and {@code sched:<qid>} for SCHEDULED. Order is by the zset score, then numeric
+     * {@code q:<qid>:<tid>} for QUEUED and {@code sched:<qid>} for SCHEDULED. Order is by the zset score, then numeric
      * id: stateChanged for the indexed states, due for QUEUED and SCHEDULED. The cursor is
-     * {@code <score>:<id>} of the last entry of the page, the score it has in the zset being paged (not the
-     * task's {@code due} field, which a deferral leaves behind), so each page costs a seek plus at most one chunk
-     * of 500 per zset.
+     * {@code <score>:<id>} of the last entry of the page. QUEUED pages merge the non-empty type zsets of each
+     * queue, preserving the same cursor when a task or an entire type leaves the queue.
      */
     @Override
     public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
@@ -761,8 +765,15 @@ public class RedisTaskStore implements FullStore {
     private List<Entry> listing(TaskState state, Integer queueId, Entry after, int limit) {
         var entries = new ArrayList<Entry>();
         var qids = queueId == null ? sortedQueueIds() : List.of(queueId);
+        var tids = state == TaskState.QUEUED ? jedis.hvals(keys.registry("type")) : List.<String>of();
         for (var qid : qids) {
-            entries.addAll(page(stateZset(state, qid), after, limit));
+            if (state == TaskState.QUEUED) {
+                for (var tid : tids) {
+                    entries.addAll(page(keys.queue(qid, Integer.parseInt(tid)), after, limit));
+                }
+            } else {
+                entries.addAll(page(stateZset(state, qid), after, limit));
+            }
         }
         entries.sort(ORDER);
         return entries.subList(0, Math.min(limit, entries.size()));
@@ -775,7 +786,7 @@ public class RedisTaskStore implements FullStore {
 
     private String stateZset(TaskState state, int qid) {
         return switch (state) {
-            case QUEUED -> keys.queue(qid);
+            case QUEUED -> throw new IllegalArgumentException("QUEUED has one zset per type");
             case SCHEDULED -> keys.scheduled(qid);
             default -> keys.index(state.code(), qid);
         };
@@ -925,22 +936,11 @@ public class RedisTaskStore implements FullStore {
         });
     }
 
-    /**
-     * ZADD XX only touches a registered worker, so one that purgeWorkers removed is not brought back. CH reports
-     * 0 both for an unknown worker and for one whose score did not change (two heartbeats in the same ms), so
-     * a 0 is settled with ZSCORE.
-     */
     @Override
-    public void heartbeat(int workerId, int running) {
-        guard(() -> {
-            var at = serverNow();
-            var id = String.valueOf(workerId);
-            if (jedis.zadd(keys.workers, at, id, ZAddParams.zAddParams().xx().ch()) == 0
-                    && jedis.zscore(keys.workers, id) == null) {
-                return;
-            }
-            jedis.hset(keys.worker(workerId), Map.of(F_SEEN, String.valueOf(at), F_RUNNING, String.valueOf(running)));
-        });
+    public void heartbeat(int workerId, int running, boolean accepting) {
+        guard(() -> scripts.run(
+                RedisScripts.HEARTBEAT,
+                List.of(String.valueOf(workerId), String.valueOf(running), accepting ? "1" : "0")));
     }
 
     @Override
@@ -967,6 +967,7 @@ public class RedisTaskStore implements FullStore {
                         Instant.ofEpochMilli(Long.parseLong(h.get(F_STARTED))),
                         Instant.ofEpochMilli(Long.parseLong(h.get(F_SEEN))),
                         Integer.parseInt(h.getOrDefault(F_RUNNING, "0")),
+                        "1".equals(h.get(F_ACCEPTING)),
                         workerIds(h.get(F_QUEUES)),
                         workerIds(h.get(F_TYPES))));
             }

@@ -26,8 +26,6 @@ public class DefaultVtExecutor implements BackgroundExecutor {
     private final LongSupplier clock;
     private final ResourceController controller;
     private final ScheduledExecutorService monitor;
-    /** written on every reserve, release and finish without the monitor lock, read by the next tick */
-    private volatile long lastActivity;
 
     public DefaultVtExecutor() {
         this(AVAILABLE_PROCESSORS, Math.max(256, AVAILABLE_PROCESSORS * 8));
@@ -54,8 +52,7 @@ public class DefaultVtExecutor implements BackgroundExecutor {
         this.concurrencyLimiter = new AdjustableSemaphore(settings.min());
         this.sampler = sampler;
         this.clock = clock;
-        this.lastActivity = clock.getAsLong();
-        this.controller = new ResourceController(settings, lastActivity);
+        this.controller = new ResourceController(settings, clock.getAsLong());
         this.monitor = schedule
                 ? Executors.newSingleThreadScheduledExecutor(r -> {
                     var thread = new Thread(r, "bth4j-vt-monitor");
@@ -83,8 +80,7 @@ public class DefaultVtExecutor implements BackgroundExecutor {
         var sample = sampler.sample(now);
         int old = maxConcurrentTasks.get();
         int occupied = old - concurrencyLimiter.availablePermits();
-        controller.occupied(lastActivity);
-        var decision = controller.tick(sample, occupied, now);
+        var decision = controller.tick(sample, occupied, activeCount(), now);
         int next = decision.limit();
         if (next != old) {
             maxConcurrentTasks.set(next);
@@ -111,13 +107,9 @@ public class DefaultVtExecutor implements BackgroundExecutor {
         }
     }
 
-    private void occupied() {
-        lastActivity = clock.getAsLong();
-    }
-
     @Override
     public synchronized void claimed(int reserved, int claimed) {
-        controller.claimed(reserved, claimed);
+        controller.claimed(reserved, claimed, clock.getAsLong());
     }
 
     @Override
@@ -134,14 +126,12 @@ public class DefaultVtExecutor implements BackgroundExecutor {
         while (reserved < max && concurrencyLimiter.tryAcquire()) {
             reserved++;
         }
-        occupied();
         return reserved;
     }
 
     @Override
     public void release(int slots) {
         if (slots > 0) {
-            occupied();
             concurrencyLimiter.release(slots);
         }
     }
@@ -156,12 +146,10 @@ public class DefaultVtExecutor implements BackgroundExecutor {
                     task.run();
                 } finally {
                     activeTaskCount.decrementAndGet();
-                    occupied();
                     concurrencyLimiter.release();
                 }
             });
         } catch (RuntimeException e) {
-            occupied();
             concurrencyLimiter.release();
             throw e;
         }

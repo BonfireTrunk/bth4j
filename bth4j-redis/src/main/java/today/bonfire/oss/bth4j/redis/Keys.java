@@ -5,14 +5,15 @@ package today.bonfire.oss.bth4j.redis;
  * ({@code {ns}:}) so that all of them live in the same Redis Cluster slot, which the scripts rely on: they
  * receive the prefix as an argument and derive every other key from it.
  * <p>
- * Keys, with {@code qid} a queue id and {@code state} a {@link today.bonfire.oss.bth4j.spi.TaskState} code:
+ * Keys, with {@code qid} a queue id, {@code tid} a type id and {@code state} a
+ * {@link today.bonfire.oss.bth4j.spi.TaskState} code:
  * <ul>
  * <li>{@code meta} hash (field {@code schema}); {@code seq:id}, {@code seq:worker}, {@code seq:queue},
- * {@code seq:event} counters</li>
- * <li>{@code reg:queue} and {@code reg:event} hashes, name to id; listings invert them with one HGETALL and
+ * {@code seq:type} counters</li>
+ * <li>{@code reg:queue} and {@code reg:type} hashes, name to id; listings invert them with one HGETALL and
  * purge walks the queue ids with HVALS</li>
- * <li>{@code w:<id>} hash (label, started, seen, running); {@code workers} zset of worker ids scored by the last
- * heartbeat ms, which {@code purgeWorkers} walks</li>
+ * <li>{@code w:<id>} hash (label, started, seen, running, accepting, queues, types); {@code workers} zset of
+ * worker ids scored by the last heartbeat ms, which {@code purgeWorkers} walks</li>
  * <li>{@code paused} set of queue ids that CLAIM skips</li>
  * <li>{@code startby} zset of QUEUED and SCHEDULED ids that have a {@code sb}, scored by it, so that expiry finds
  * them without scanning; an id leaves it on claim, cancel, delete and expire and returns when a task goes back to
@@ -26,8 +27,9 @@ package today.bonfire.oss.bth4j.redis;
  * {@code wid} only while LEASED or terminal: the transitions leave them in place and the reader ignores them</li>
  * <li>{@code d:<id>} string with the payload; {@code st:<id>} string with the steps JSON; {@code f:<id>} list
  * of failures, one JSON object each, the last {@link RedisScripts#MAX_FAILURES} kept</li>
- * <li>{@code q:<qid>} zset of QUEUED ids scored by due ms; {@code sched:<qid>} zset of SCHEDULED ids scored
- * by due ms; {@code leased} zset scored by lease expiry ms</li>
+ * <li>{@code q:<qid>:<tid>} zset of QUEUED ids of one queue and type scored by due ms; readers find them from
+ * the claim's known types or the type registry, since Redis deletes an emptied zset; {@code sched:<qid>} zset of
+ * SCHEDULED ids scored by due ms; {@code leased} zset scored by lease expiry ms. The type id is stored in task and recurring-definition hashes as {@code ty}</li>
  * <li>{@code idx:<state>:<qid>} zset scored by stateChanged ms, for LEASED and the terminal states. Counts
  * are the cardinalities of these zsets, so they cannot drift</li>
  * <li>{@code rm:<state>:<qid>} zset of terminal ids that purge may remove, scored by stateChanged ms;
@@ -47,7 +49,7 @@ public final class Keys {
     public static final String F_REVISION = "rev";
     public static final String F_QUEUE = "q";
     public static final String F_WRITE_TOKEN = "wt";
-    public static final String F_EVENT = "ev";
+    public static final String F_TYPE = "ty";
     public static final String F_PAYLOAD_VERSION = "pv";
     public static final String F_STATE = "state";
     public static final String F_ATTEMPTS = "att";
@@ -86,6 +88,7 @@ public final class Keys {
     public static final String F_STARTED = "started";
     public static final String F_SEEN = "seen";
     public static final String F_RUNNING = "running";
+    public static final String F_ACCEPTING = "accepting";
     public static final String F_QUEUES = "queues";
     public static final String F_TYPES = "types";
 
@@ -134,8 +137,8 @@ public final class Keys {
         return prefix + "f:" + id;
     }
 
-    public String queue(int qid) {
-        return prefix + "q:" + qid;
+    public String queue(int qid, int tid) {
+        return prefix + "q:" + qid + ":" + tid;
     }
 
     public String scheduled(int qid) {
@@ -158,7 +161,7 @@ public final class Keys {
         return prefix + "cron:" + scheduleId;
     }
 
-    /** registry hash name to id; {@code kind} is {@code queue} or {@code event} */
+    /** registry hash name to id; {@code kind} is {@code queue} or {@code type} */
     public String registry(String kind) {
         return prefix + "reg:" + kind;
     }

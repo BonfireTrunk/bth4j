@@ -1,8 +1,11 @@
 package today.bonfire.oss.bth4j;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -13,19 +16,24 @@ import java.util.concurrent.atomic.AtomicInteger;
  * earlier attempt was still finishing holds a slot of its own.
  */
 final class QueueReservations {
-    private final Map<TaskExecution, Integer> held = new ConcurrentHashMap<>();
+    private final Map<TaskExecution, Boolean> held = new ConcurrentHashMap<>();
     private final Map<Integer, AtomicInteger> perQueue = new ConcurrentHashMap<>();
     private final Set<TaskExecution> abandoned = ConcurrentHashMap.newKeySet();
 
-    void reserve(TaskExecution execution) {
-        if (held.putIfAbsent(execution, execution.queueId()) == null) {
+    private final Semaphore slotFreed = new Semaphore(0);
+
+    void reserve(TaskExecution execution, boolean capped) {
+        if (held.putIfAbsent(execution, capped) == null) {
             count(execution.queueId()).incrementAndGet();
         }
     }
 
     void release(TaskExecution execution) {
-        var queueId = held.remove(execution);
-        if (queueId != null) count(queueId).decrementAndGet();
+        var capped = held.remove(execution);
+        if (capped != null) {
+            count(execution.queueId()).decrementAndGet();
+            if (capped) slotFreed.release();
+        }
         abandoned.remove(execution);
     }
 
@@ -50,6 +58,14 @@ final class QueueReservations {
     int running(int queueId) {
         var count = perQueue.get(queueId);
         return count == null ? 0 : count.get();
+    }
+
+    void drainSignal() {
+        slotFreed.drainPermits();
+    }
+
+    void awaitSlot(Duration timeout) throws InterruptedException {
+        slotFreed.tryAcquire(timeout.toNanos(), TimeUnit.NANOSECONDS);
     }
 
     private AtomicInteger count(int queueId) {

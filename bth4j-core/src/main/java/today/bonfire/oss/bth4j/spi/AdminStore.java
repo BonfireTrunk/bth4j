@@ -47,8 +47,8 @@ public interface AdminStore extends TaskStore {
     /** @return every queue the store knows, in id order */
     List<QueueInfo> queues();
 
-    /** Records that the worker is alive now and how many tasks it is running. */
-    void heartbeat(int workerId, int running);
+    /** Records that the worker is alive now, how many tasks it is running and whether it accepts new work. */
+    void heartbeat(int workerId, int running, boolean accepting);
 
     /** @return every worker row, in id order */
     List<WorkerInfo> workers();

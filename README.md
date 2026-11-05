@@ -449,10 +449,11 @@ BackgroundRunner.builder()
 A `QueuePolicy(weight, maxConcurrent)` shares a runner's free executor slots between its queues. Free slots
 are divided in proportion to the weights (default 1), each queue is capped at `maxConcurrent` tasks of that
 queue running on this runner at once (0 means no limit), and a queue that cannot fill its share lets the others
-use it. A runner with any policy claims once per queue instead of once per cycle; queues without a policy have
-weight 1 and no limit. Limits are per runner, not per fleet. When a claim found nothing because a queue was at
-its cap, the runner claims again as soon as a task of a capped queue finishes instead of waiting for
-`idlePollInterval`.
+use it. All queues' shares and caps go to the store in one atomic claim per cycle. The store first tries
+each share in order, then offers unused slots to queues that filled their share, respecting each cap.
+Queues without a policy have weight 1 and no limit. Limits are per runner, not per fleet. When a claim
+found nothing because a queue was at its cap, the runner claims again as soon as a task of a capped queue
+finishes. This wake-up survives a processor restart; `idlePollInterval` remains the timeout fallback.
 
 ```java
 BackgroundRunner.builder()
@@ -551,16 +552,19 @@ An `Issue` has a time, a kind, a detail and the task id when there is one. The k
 (call `resume()` to claim again, or `stop()`), and returns whether every running task finished in time; use it
 before a rolling restart.
 
-Each runner also writes a heartbeat (last seen time and running tasks) to the worker registry every
-`maintenanceCheckInterval`, and maintenance deletes workers that were silent for `workerStaleAfter` (10
-minutes by default). `admin.workers()` lists them, including the queue ids they process and their
-registered task type ids, recorded at startup.
+Each runner also writes a heartbeat (last seen time, running tasks and whether it is accepting work) to
+the worker registry every `maintenanceCheckInterval`. New workers accept work. `quiet()` and `drain()`
+stop accepting; `resume()` accepts again. Quiet and resume request an immediate heartbeat on the
+maintenance thread without blocking the caller on the store. Maintenance deletes workers that were
+silent for `workerStaleAfter` (10 minutes by default). `admin.workers()` lists them, including `accepting`,
+the queue ids they process and their registered task type ids, recorded at startup.
 
 `admin.unservedWork()` finds queued work that no worker seen within the last minute can process;
 `admin.unservedWork(Duration)` chooses another heartbeat window using the admin clock. Paused queues
-are skipped. A queue without a live worker produces `UnservedWork(queue, null, waiting)` with its full
-queued count. For queues with live workers, only the first 100 queued tasks are sampled: an unhandled
-type produces `UnservedWork(queue, type, waiting)`, where waiting is a lower bound from that sample.
+are skipped, and workers that are not accepting do not contribute coverage. A queue without a live
+accepting worker produces `UnservedWork(queue, null, waiting)` with its full queued count. For queues
+with live accepting workers, each unhandled type produces `UnservedWork(queue, type, waiting)` with
+its exact queued count. Both come from `InspectionStore.queuedByType()` at the time of that read.
 
 ### Admin API
 
@@ -667,10 +671,10 @@ with a body of `{"reason"}` and no revision: viewers may read, admins may cancel
 is answered 400; cancel answers 404 when no task holds the key and 409 when the holder is already finished or changed meanwhile),
 `schedules` (with `pause`, `resume`, `trigger`, delete), `workers`, `unserved` and `issues`.
 
-`GET /api/v1/workers` includes `queues` and `types` as name lists. `GET /api/v1/unserved` returns a list
+`GET /api/v1/workers` includes `queues` and `types` as name lists and the boolean `accepting`. `GET /api/v1/unserved` returns a list
 of `{"queue", "type", "waiting"}` using the one-minute heartbeat window. A null type means the whole queue is unserved and waiting is its queued
-count; otherwise waiting is a lower bound from at most the first 100 queued tasks in that queue. Both
-endpoints are available to viewers. The dashboard shows coverage on Workers and unserved work on Overview.
+count; otherwise waiting is the exact queued count of that type. Both endpoints are available to viewers.
+The dashboard shows coverage and quiet status on Workers and unserved work on Overview.
 
 `GET /api/v1/tasks` answers `{"items": [...], "next": "<cursor>" | null}`: pass `next` as `cursor` for the following
 page; `next` is null after the last page. A missing or empty `cursor` starts at the beginning, and a malformed one is
@@ -712,25 +716,35 @@ A daemon samples every 500 ms with fixed delay and monotonic time, without catch
 `OperatingSystemMXBean.getCpuLoad()` (container-aware on JDK 25), smoothed with EWMA alpha 0.25, without a
 load-average fallback. Heap usage is used / max (committed if max is undefined), taking the lowest reading
 in the last 2 seconds to smooth the GC sawtooth. `HEAP_AND_SYSTEM` takes the greater of heap and system
-usage, each with its own 2-second minimum. It catches native memory such as image buffers, but the system
-figure can count OS file cache as used and hold the limit low on a long-running host.
+usage, each with its own 2-second minimum. Reductions use the highest valid component, so an unavailable
+system reading cannot hide heap pressure; growth requires every configured component to be valid. System
+usage catches native memory such as image buffers, but can count OS file cache as used and hold the limit
+low on a long-running host.
 
-A claim that fills its executor reservation grants one growth credit; a partial or empty claim clears it.
-Queue caps therefore do not drive growth. With a credit, raw and smoothed CPU and memory at least 0.15
-below their targets grow the limit by 25% (rounded up, at most 16 slots); at least 0.05 below grows by one.
-For targets below 0.2 these margins scale proportionally. Each tick makes at most one increase.
+A claim that fills its executor reservation provides demand evidence for 5 seconds and allows one growth
+step, so the slots a step adds must be filled before the next one; a partial or empty claim clears it. Growth requires saturation: running plus reserved slots must be at least the current
+limit, including permit debt after a reduction. With fresh evidence, raw and smoothed CPU and memory at
+least 0.15 below their targets grow the limit by 25% (rounded up, at most 16 slots); at least 0.05 below
+grows by one. Without fresh evidence, a saturated runner with at least 0.05 headroom probes by adding
+exactly one slot, at most once every 5 seconds. A full claim restores demand evidence; an empty claim
+leaves the slot free, stopping growth. Probes obey the same resource checks and cooldowns as other growth.
+For targets below 0.2 these margins scale proportionally. Each tick makes at most one increase; free slots
+always prevent growth.
 
 Memory at or above 0.95 resets the limit to `min`. Memory at its target for 1 second reduces the limit by
 25%, at most once per second, and blocks growth for 5 seconds. Smoothed CPU above its target plus 0.03 for
 1 second reduces it by 20%, at most once per second, and blocks growth for 2 seconds. Memory takes priority.
-Invalid or unavailable CPU or memory blocks growth; after 5 seconds without a valid reading, the limit
-decays by 25% per second toward `min`. Two fresh valid samples are needed before growth resumes. After
-30 seconds with nothing running or reserved, the limit returns to `min`.
+Invalid or unavailable CPU or any configured memory component blocks growth; after 5 seconds without a
+valid reading for that signal, the limit decays by 25% per second toward `min`. Two fresh valid samples of
+each configured signal are needed before growth resumes. After 30 seconds without a running task seen
+at a sampling tick or a nonempty claim, the limit returns to `min`. Reservations, releases and empty polls
+do not restart that idle timer.
 
 Shrinking never cancels tasks or blocks waiting for them: permits may remain negative until occupied slots
-finish, and growth waits until occupied slots no longer exceed the limit. `runner.concurrencyLimit()` exposes
-the current limit when supported by the executor. Custom executors can receive demand through
-`BackgroundExecutor.claimed(reserved, claimed)` and expose their limit through `limit()`; both have defaults.
+finish; saturated growth and probes can recover even while those tasks keep running.
+`runner.concurrencyLimit()` exposes the current limit when supported by the executor. Custom executors can
+receive demand through `BackgroundExecutor.claimed(reserved, claimed)` and expose their limit through
+`limit()`; both have defaults.
 Limit changes are logged at DEBUG and holds at TRACE under `Loggers.EXECUTOR`.
 
 ## Configuration
@@ -799,6 +813,15 @@ a different token under the same id returns exists, before checking the unique k
 the task exists: with a zero succeeded retention a task that already ran and was removed is stored again by a
 resend.
 
+Layout 4 stores queued tasks in `q:<queue-id>:<type-id>` zsets scored by due milliseconds; a claim reads the
+zsets of the worker's known types, counts and listings those of the registered types. A claim runs both grant passes in one atomic script and merges
+only the worker's known types by `(due, lexical id)`, leaving foreign tasks unchanged. Its scan budget is
+`min(count * 4, 1000)` eligible entries per queue across both passes. Queue listings merge the type zsets
+by `(due, numeric id)` and retain their position cursors when a type empties. `queuedByType()` reads exact
+zset cardinalities in one script without task hash reads. Type names use `reg:type` and `seq:type`; task and
+recurring-definition hashes store the type id in `ty`. Worker registration sets `accepting` to 1, and one
+heartbeat script atomically updates the worker's time, running count and accepting flag.
+
 Memory: the task hash stays a listpack only while every value is at most `hash-max-listpack-value` bytes
 (default 64). A header map, account, unique key, progress text or cancel reason longer than that makes the
 hash a hashtable, about 5 times larger for that task; raise the setting if your tasks carry such values.
@@ -808,20 +831,47 @@ entries (default 128) and cost about 6 times more per entry as a skiplist; raisi
 ### PostgreSQL
 
 ```java
-var store = new PostgresTaskStore(dataSource, "bth");   // tables bth_task, bth_queue, bth_event, bth_worker, bth_schedule, bth_meta
+var store = new PostgresTaskStore(dataSource, "bth");   // tables bth_task, bth_queue, bth_type, bth_worker, bth_schedule, bth_meta
 ```
 
 The tables are created when the runner or client is built, or run `store.schemaStatements()` from your
 migration tool. The prefix is lower case letters, digits and underscores, at most 41 characters; runners with
 the same prefix on the same database share the work. There are no foreign keys. PostgreSQL 9.5 or newer is
-required (`SKIP LOCKED`, `ON CONFLICT`); the tests run on 17. Tables written by bth4j 3.0 or 4.0.0 (schema
+required (`SKIP LOCKED`, `ON CONFLICT`); the tests run on 18. Tables written by bth4j 3.0 or 4.0.0 (schema
 version 1 or 2) are refused by `init`; start with a new prefix or drop the tables.
+
+Schema version 3 stores task types in `<prefix>_type` and `type_id` columns in the task and schedule
+tables. Worker coverage uses `queue_ids` and `type_ids` as `smallint[] NOT NULL`; `accepting` is a
+required boolean, true on registration and updated by heartbeat.
+
+Queue grants are claimed in one transaction: one statement selects all first-pass shares with per-queue
+`FOR UPDATE SKIP LOCKED` scans, followed by a second statement only when a filled grant can refill.
+A failure rolls back both passes. `queuedByType()` uses one `GROUP BY queue_id, type_id` over queued
+rows. The queued partial index ends with `type_id` to cover those counts while preserving claim order;
+it uses ordinary index columns, compatible with PostgreSQL 9.5.
 
 ### Other stores
 
 The store interface is `today.bonfire.oss.bth4j.spi.FullStore`. A store on another engine implements it and
 subclasses `StoreContract` and `RunnerContract` from `bth4j-store-tests`; see "The store SPI and how to implement a store" in
 [docs/design-3.0.md](docs/design-3.0.md).
+
+### Store SPI
+
+`ExecutionStore.claim` takes `ClaimRequest(List<QueueGrant> grants, int count, Duration lease,
+int workerId, Set<Integer> knownTypeIds)`. A `QueueGrant(queueId, share, cap)` requires
+`0 <= share <= cap`; grants must be non-empty and contain no duplicate queue ids. The store performs
+both passes atomically across all grants, claiming each queue by `(due, id)` (Redis may compare equal-due
+ids as decimal text). Pass 1 skips paused queues and zero shares, takes up to `min(share, remaining)`,
+and marks a grant filled only when it took that positive amount in full. Pass 2 visits only filled grants
+in order, taking up to `min(remaining, cap - alreadyClaimed)`. Total claims never exceed `count`.
+Without policies each queue has `share = cap = count`, preserving queue preference order. Unknown
+types stay unchanged, including their due times; a null `knownTypeIds` accepts every type.
+
+`InspectionStore.queuedByType()` returns exact QUEUED counts as queue id to type id to count, with
+only non-zero entries. `AdminStore.heartbeat(workerId, running, accepting)` persists the worker's
+accepting state, exposed by `WorkerInfo.accepting()`. `allocateWorkerId` creates accepting workers.
+`StoreContract` covers these behaviours for every store implementation.
 
 ## Testing
 

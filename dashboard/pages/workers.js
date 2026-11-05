@@ -25,7 +25,7 @@ export default {
             <td><time-ago :at="w.startedAt"></time-ago></td>
             <td><time-ago :at="w.lastSeen"></time-ago></td>
             <td class="num">{{ w.running }}</td>
-            <td><span v-if="isStale(w)" class="tag issue">SILENT OVER 1 MIN</span><span v-else class="muted">alive</span></td>
+            <td><span v-if="isStale(w)" class="tag issue">SILENT OVER 1 MIN</span><span v-else-if="!w.accepting" class="tag">quiet</span><span v-else class="muted">alive</span></td>
           </tr>
         </tbody>
       </table>

@@ -24,6 +24,9 @@ public interface InspectionStore extends TaskStore {
     /** @return counts per state for every queue that has or had tasks, by queue id */
     Map<Integer, StateCounts> counts();
 
+    /** @return exact QUEUED counts by queue id and type id, with only non-zero entries */
+    Map<Integer, Map<Integer, Long>> queuedByType();
+
     /**
      * Lists tasks in one state, by {@code (stateChanged, id)} ascending, paging by an opaque position that the
      * store encodes itself. The position does not depend on the task it was taken from, so that task leaving

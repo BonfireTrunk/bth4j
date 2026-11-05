@@ -64,7 +64,7 @@ class RedisStoreContractIT extends StoreContract {
 
     @Override
     protected void fillRegistry(TaskStore fresh, String namespace, Registry registry, int lastId) {
-        var counter = new Keys(namespace).prefix + "seq:" + (registry == Registry.QUEUE ? "queue" : "event");
+        var counter = new Keys(namespace).prefix + "seq:" + (registry == Registry.QUEUE ? "queue" : "type");
         jedis.set(counter, Integer.toString(lastId));
     }
 }

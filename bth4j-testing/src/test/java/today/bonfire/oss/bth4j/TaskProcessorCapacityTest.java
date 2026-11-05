@@ -15,6 +15,8 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import today.bonfire.oss.bth4j.executor.BackgroundExecutor;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
@@ -374,7 +376,7 @@ class TaskProcessorCapacityTest {
     }
 
     @Test
-    void whenOneQueueClaimsAndTheNextThrowsTheClaimedTasksAreReclaimableAndNoSlotLeaks() throws Exception {
+    void weightedQueuesAreClaimedInOneStoreCall() throws Exception {
         int first = names.queueId("Q:FIRST");
         int second = names.queueId("Q:SECOND");
         var executor = new ManualExecutor(4);
@@ -393,19 +395,15 @@ class TaskProcessorCapacityTest {
         var firstIds = enqueue(3, "Q:FIRST");
         var secondIds = enqueue(3, "Q:SECOND");
 
-        assertThatThrownBy(() -> processOnce(processor)).isInstanceOf(TaskStoreException.class);
+        processOnce(processor);
 
+        assertThat(claims).hasValue(1);
         assertThat(leased(firstIds)).isEqualTo(2);
-        assertThat(leased(secondIds)).isZero();
-        assertThat(running).isEmpty();
-        assertThat(executor.available()).isEqualTo(4);
-        assertThat(reservations.running(first)).isZero();
-        assertThat(reservations.running(second)).isZero();
-
-        clock.advance(LEASE.plusMillis(1));
-        assertThat(store.reclaim(10))
-                .hasSize(2)
-                .allSatisfy(e -> assertThat(firstIds).contains(e.id()));
+        assertThat(leased(secondIds)).isEqualTo(2);
+        assertThat(running).hasSize(4);
+        assertThat(executor.available()).isZero();
+        assertThat(reservations.running(first)).isEqualTo(2);
+        assertThat(reservations.running(second)).isEqualTo(2);
     }
 
     @Test
@@ -489,8 +487,9 @@ class TaskProcessorCapacityTest {
         assertThat(reservations.running(queueId)).isEqualTo(1);
     }
 
-    @Test
-    void aClaimHeldBackByAQueueCapClaimsAgainAsSoonAsATaskOfThatQueueFinishes() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aClaimHeldBackByAQueueCapWakesWhenAnInheritedTaskFinishes(boolean restart) throws Exception {
         var executor = new ManualExecutor(10);
         var processor = processor(
                 settings,
@@ -503,9 +502,18 @@ class TaskProcessorCapacityTest {
         processOnce(processor);
         assertThat(leased(ids)).isEqualTo(1);
 
+        var waitingProcessor = restart
+                ? processor(
+                        settings,
+                        executor,
+                        5,
+                        List.of(queueId),
+                        Map.of(queueId, QueuePolicy.maxConcurrent(1)),
+                        IDLE_LONGER_THAN_THE_TEST)
+                : processor;
         var waiting = Thread.ofPlatform().start(() -> {
             try {
-                processor.processOnce();
+                waitingProcessor.processOnce();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
@@ -520,7 +528,7 @@ class TaskProcessorCapacityTest {
             waiting.interrupt();
             waiting.join();
         }
-        processOnce(processor);
+        processOnce(waitingProcessor);
         assertThat(leased(ids)).isEqualTo(1);
         assertThat(ids.stream().filter(id -> state(id) == TaskState.SUCCEEDED)).hasSize(1);
     }

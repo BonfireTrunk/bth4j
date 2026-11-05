@@ -11,6 +11,7 @@ public record WorkerInfo(
         Instant startedAt,
         Instant lastSeen,
         int running,
+        boolean accepting,
         Set<Integer> queueIds,
         Set<Integer> typeIds) {
     public WorkerInfo {

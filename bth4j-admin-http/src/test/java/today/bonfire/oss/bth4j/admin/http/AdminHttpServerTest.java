@@ -728,7 +728,7 @@ class AdminHttpServerTest {
 
     @Test
     void overviewHasCountsPerQueueTotalsWorkersIssuesAndHealth() throws Exception {
-        ops.workers.add(new WorkerInfo(1, "w", Instant.EPOCH, Instant.EPOCH, 0, Set.of(), Set.of()));
+        ops.workers.add(new WorkerInfo(1, "w", Instant.EPOCH, Instant.EPOCH, 0, true, Set.of(), Set.of()));
         ops.issues.add(new Issue(Instant.EPOCH, "store-error", "boom", 5L));
         ops.issues.add(new Issue(Instant.EPOCH, "lease-lost", "x", null));
         ops.health = new RunnerHealth(RunnerHealth.Status.RUNNING, 1, 2, 0, null, null, null, null, 2);
@@ -779,7 +779,7 @@ class AdminHttpServerTest {
     @Test
     void queuesSchedulesWorkersAndIssuesAreListed() throws Exception {
         ops.schedules.add(schedule("nightly"));
-        ops.workers.add(new WorkerInfo(2, "w2", Instant.EPOCH, Instant.EPOCH, 1, Set.of(), Set.of()));
+        ops.workers.add(new WorkerInfo(2, "w2", Instant.EPOCH, Instant.EPOCH, 1, true, Set.of(), Set.of()));
         ops.issues.add(new Issue(Instant.EPOCH, "store-error", "boom", 5L));
         start();
         var login = viewer();
@@ -835,17 +835,21 @@ class AdminHttpServerTest {
 
     @Test
     void workersViewIncludesCoverageNamesAndEmptyCoverage() throws Exception {
-        ops.workers.add(new WorkerInfo(1, "known", Instant.EPOCH, Instant.EPOCH, 2, Set.of(2, 1), Set.of(2, 1)));
-        ops.workers.add(new WorkerInfo(3, "empty", Instant.EPOCH, Instant.EPOCH, 0, Set.of(), Set.of()));
+        ops.workers.add(new WorkerInfo(1, "known", Instant.EPOCH, Instant.EPOCH, 2, true, Set.of(2, 1), Set.of(2, 1)));
+        ops.workers.add(new WorkerInfo(3, "empty", Instant.EPOCH, Instant.EPOCH, 0, false, Set.of(), Set.of()));
         start();
 
         var workers = jsonList(get("/api/v1/workers", viewer()));
         assertThat(workers).hasSize(2);
         assertThat(workers.getFirst())
-                .containsOnlyKeys("id", "label", "startedAt", "lastSeen", "running", "queues", "types")
+                .containsOnlyKeys("id", "label", "startedAt", "lastSeen", "running", "accepting", "queues", "types")
+                .containsEntry("accepting", true)
                 .containsEntry("queues", List.of("default", "mail"))
                 .containsEntry("types", List.of("export", "send-mail"));
-        assertThat(workers.get(1)).containsEntry("queues", List.of()).containsEntry("types", List.of());
+        assertThat(workers.get(1))
+                .containsEntry("accepting", false)
+                .containsEntry("queues", List.of())
+                .containsEntry("types", List.of());
     }
 
     @Test

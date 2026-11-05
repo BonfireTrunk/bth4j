@@ -4,10 +4,11 @@ A static single-page operator dashboard for the bth4j admin HTTP API. No build s
 `index.html`, `app.css`, `api.js`, `ui.js`, `app.js` and `pages/*.js` (plain ES modules).
 
 Pages: overview, queues, tasks (filter, cursor paging, detail), dead tasks, schedules, workers, issues.
-Workers shows each worker's queues and registered types. Overview polls
-`GET /api/v1/unserved` for queued work without a live worker (heartbeat within one minute). Whole-queue
-counts are exact at the counts read; type counts are lower bounds from a sample of up to 100 queued
-tasks. Paused queues are skipped.
+Workers shows each worker's queues, registered types and accepting state (`accepting` from the API).
+A live worker that is not accepting is shown as quiet; a stale heartbeat still shows the silence warning.
+Overview polls `GET /api/v1/unserved` for queued work without a live accepting worker (heartbeat within
+one minute). Whole-queue and per-type counts are exact at the queued-count read. Quiet workers do not
+contribute coverage, and paused queues are skipped.
 
 ## Serving it
 

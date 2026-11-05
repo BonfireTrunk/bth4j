@@ -13,7 +13,6 @@ import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
 import today.bonfire.oss.bth4j.testing.MutableClock;
 
@@ -74,7 +73,7 @@ class DefaultAdminOpsCoverageTest {
         clock.advance(Duration.ofSeconds(61));
 
         assertThat(admin.unservedWork()).containsExactly(new UnservedWork("main", null, 1));
-        store.heartbeat(worker, 0);
+        store.heartbeat(worker, 0, true);
         assertThat(admin.unservedWork()).isEmpty();
     }
 
@@ -110,11 +109,11 @@ class DefaultAdminOpsCoverageTest {
         store.allocateWorkerId("other", Set.of(otherQueue), Set.of(otherType));
 
         assertThat(admin.unservedWork()).containsExactly(new UnservedWork("main", "export", 2));
-        assertThat(samples).containsExactly(java.util.Arrays.asList(TaskState.QUEUED, queue, null, 100));
+        assertThat(samples).isEmpty();
     }
 
     @Test
-    void samplesOnlyFirst100TasksOncePerServedQueue() {
+    void reportsExactCountsIncludingTypesBeyondTheFirst100Tasks() {
         store.allocateWorkerId("worker", Set.of(queue, otherQueue), Set.of());
         for (int i = 0; i < 105; i++) enqueue(queue, type);
         enqueue(queue, otherType);
@@ -122,11 +121,10 @@ class DefaultAdminOpsCoverageTest {
 
         assertThat(admin.unservedWork())
                 .containsExactlyInAnyOrder(
-                        new UnservedWork("main", "mail", 100), new UnservedWork("other", "export", 1));
-        assertThat(samples)
-                .containsExactlyInAnyOrder(
-                        java.util.Arrays.asList(TaskState.QUEUED, queue, null, 100),
-                        java.util.Arrays.asList(TaskState.QUEUED, otherQueue, null, 100));
+                        new UnservedWork("main", "mail", 105),
+                        new UnservedWork("main", "export", 1),
+                        new UnservedWork("other", "export", 1));
+        assertThat(samples).isEmpty();
     }
 
     @Test
@@ -145,6 +143,20 @@ class DefaultAdminOpsCoverageTest {
         store.allocateWorkerId("empty", Set.of(), Set.of());
 
         assertThat(admin.unservedWork()).containsExactly(new UnservedWork("main", null, 1));
+    }
+
+    @Test
+    void quietWorkersDoNotServeQueuesOrContributeTypeCoverage() {
+        enqueue(queue, type);
+        enqueue(queue, otherType);
+        int quiet = store.allocateWorkerId("quiet", Set.of(queue), Set.of(type, otherType));
+        store.heartbeat(quiet, 1, false);
+        assertThat(admin.unservedWork()).containsExactly(new UnservedWork("main", null, 2));
+
+        store.allocateWorkerId("accepting", Set.of(queue), Set.of(type));
+        assertThat(admin.unservedWork()).containsExactly(new UnservedWork("main", "export", 1));
+        store.heartbeat(quiet, 0, true);
+        assertThat(admin.unservedWork()).isEmpty();
     }
 
     @Test

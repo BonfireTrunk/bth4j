@@ -38,6 +38,7 @@ import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
+import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
@@ -121,7 +122,7 @@ class RedisScriptsIT {
     }
 
     private List<TaskRecord> claim(int count) {
-        return store.claim(new ClaimRequest(List.of(queue), count, LEASE, 1, null));
+        return store.claim(new ClaimRequest(List.of(new QueueGrant(queue, count, count)), count, LEASE, 1, null));
     }
 
     private TaskRecord claimOne(long id) {
@@ -136,6 +137,52 @@ class RedisScriptsIT {
 
     private String marker(long id, String field) {
         return jedis.hget(keys.task(id), field);
+    }
+
+    @Test
+    void allGrantsAndBothPassesUseOneScriptCall() {
+        var other = store.queueId("other");
+        var request =
+                new ClaimRequest(List.of(new QueueGrant(queue, 1, 3), new QueueGrant(other, 1, 1)), 4, LEASE, 1, null);
+        spied.claim(request);
+        spy.clearEvents();
+        store.enqueue(task(1).due(Instant.EPOCH).build());
+        store.enqueue(task(2).due(Instant.ofEpochMilli(1)).build());
+        store.enqueue(task(3).due(Instant.ofEpochMilli(2)).build());
+        store.enqueue(task(4).queueId(other).build());
+
+        assertThat(spied.claim(request)).extracting(TaskRecord::id).containsExactly(1L, 4L, 2L, 3L);
+        assertThat(spy.events()).containsExactly("evalsha");
+    }
+
+    @Test
+    void queuedByTypeUsesOneScriptAndOnlyQueueCardinalities() {
+        var other = store.typeId("other");
+        store.enqueue(task(1).build());
+        store.enqueue(task(2).typeId(other).build());
+        jedis.unlink(keys.task(1), keys.task(2));
+        spied.queuedByType();
+        spy.clearEvents();
+
+        assertThat(spied.queuedByType()).isEqualTo(Map.of(queue, Map.of(type, 1L, other, 1L)));
+        assertThat(spy.events()).containsExactly("evalsha");
+        assertThat(store.counts().get(queue).queued()).isEqualTo(2);
+    }
+
+    @Test
+    void heartbeatUsesOneScriptAndKeepsTheWorkerIndexAndHashTimeEqual() {
+        var worker = store.allocateWorkerId("worker", Set.of(queue), Set.of(type));
+        spied.heartbeat(worker, 0, true);
+        spy.clearEvents();
+
+        spied.heartbeat(worker, 4, false);
+
+        assertThat(spy.events()).containsExactly("evalsha");
+        assertThat(jedis.hget(keys.worker(worker), Keys.F_SEEN))
+                .isEqualTo(String.valueOf(
+                        jedis.zscore(keys.workers, String.valueOf(worker)).longValue()));
+        assertThat(jedis.hget(keys.worker(worker), Keys.F_RUNNING)).isEqualTo("4");
+        assertThat(jedis.hget(keys.worker(worker), Keys.F_ACCEPTING)).isEqualTo("0");
     }
 
     // ---- markers for steps and failures --------------------------------------------------------------
@@ -369,7 +416,7 @@ class RedisScriptsIT {
     void aScriptErrorThatIsNotNoScriptIsNotRetriedAndLoadsNothing() {
         var broken = store.queueId("broken");
         store.enqueue(task(99).build());
-        jedis.set(keys.queue(broken), "not a sorted set");
+        jedis.set(keys.queue(broken, type), "not a sorted set");
 
         assertThatThrownBy(() -> spied.enqueueAll(
                         List.of(task(1).build(), task(2).queueId(broken).build(), task(3).build())))
@@ -442,7 +489,7 @@ class RedisScriptsIT {
         var outcome = spied.enqueue(task(1).uniqueKey("k").build());
 
         assertThat(outcome).isEqualTo(EnqueueOutcome.STORED);
-        assertThat(jedis.zrange(keys.queue(queue), 0, -1)).containsExactly("1");
+        assertThat(jedis.zrange(keys.queue(queue, type), 0, -1)).containsExactly("1");
         assertThat(jedis.get(keys.uniqueKey("k"))).isEqualTo("1");
         assertThat(store.counts().get(queue).queued()).isEqualTo(1);
         spy.resendEveryEvalsha(false);
@@ -460,7 +507,7 @@ class RedisScriptsIT {
         var outcomes = spied.enqueueAll(tasks);
 
         assertThat(outcomes).containsExactly(EnqueueOutcome.STORED, EnqueueOutcome.STORED, EnqueueOutcome.STORED);
-        assertThat(jedis.zrange(keys.queue(queue), 0, -1)).containsExactlyInAnyOrder("1", "2", "3");
+        assertThat(jedis.zrange(keys.queue(queue, type), 0, -1)).containsExactlyInAnyOrder("1", "2", "3");
         assertThat(store.counts().get(queue).queued()).isEqualTo(3);
         spy.resendEveryEvalsha(false);
         assertThat(store.enqueueAll(tasks)).containsOnly(EnqueueOutcome.EXISTS);
