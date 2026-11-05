@@ -149,15 +149,16 @@ class RecurringTaskServiceTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"FIRE_ONCE_NOW", "unknown"})
-    void aMisfireThatFiresOnceNowCommitsOneOccurrenceDueNowAndMovesOn(String policy) throws Exception {
+    void aMisfireThatFiresOnceNowStoresOneOccurrenceForTheMissedFireAndMovesOn(String policy) throws Exception {
         clock.set(T0.plus(Duration.ofMinutes(35)));
         register(definition("*/10 * * * *", policy, 0), T0);
-        var committed = capturingCommits();
 
         round();
 
-        assertThat(committed).singleElement().satisfies(o -> assertThat(o.due()).isEqualTo(clock.instant()));
-        assertThat(occurrences()).hasSize(1);
+        assertThat(occurrences()).singleElement().satisfies(o -> {
+            assertThat(o.due()).isEqualTo(T0);
+            assertThat(o.state()).isEqualTo(TaskState.SCHEDULED);
+        });
         assertThat(events)
                 .singleElement()
                 .satisfies(
@@ -173,12 +174,12 @@ class RecurringTaskServiceTest {
     void aMisfireWithoutAPolicyFiresOnceNow() throws Exception {
         clock.set(T0.plus(Duration.ofMinutes(35)));
         register(definition("*/10 * * * *", null, 0), T0);
-        var committed = capturingCommits();
 
         round();
 
-        assertThat(committed).singleElement().satisfies(o -> assertThat(o.due()).isEqualTo(clock.instant()));
-        assertThat(occurrences()).hasSize(1);
+        assertThat(occurrences())
+                .singleElement()
+                .satisfies(o -> assertThat(o.due()).isEqualTo(T0));
     }
 
     // ---- rejected and failed commits ------------------------------------------------------------------
@@ -438,15 +439,6 @@ class RecurringTaskServiceTest {
                 null,
                 false,
                 0);
-    }
-
-    private List<TaskRecord> capturingCommits() {
-        var committed = new ArrayList<TaskRecord>();
-        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
-            if (method.equals("commitRecurring")) committed.add((TaskRecord) args[2]);
-            return real.proceed();
-        });
-        return committed;
     }
 
     private void register(RecurringDefinition definition, Instant fireAt) {

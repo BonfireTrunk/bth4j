@@ -10,7 +10,7 @@ import java.util.Map;
  * All methods are called concurrently, from several threads of one process and from several processes
  * sharing the store. They throw {@link TaskStoreException} when the store cannot be reached; callers retry
  * on their next cycle. The store's own clock decides lease expiry, due times and retention; the client
- * clock only sets {@link TaskRecord#created()} and request-level instants.
+ * clock only sets {@link TaskRecord#createdAt()} and request-level instants.
  */
 public interface TaskStore {
 

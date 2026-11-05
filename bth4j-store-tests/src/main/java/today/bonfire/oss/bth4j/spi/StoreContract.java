@@ -12,6 +12,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -613,6 +614,58 @@ public abstract class StoreContract {
             assertThat(store.enqueue(task().uniqueKey(key).build()))
                     .isEqualTo(new EnqueueOutcome.DuplicateKey(holder.id()));
         }
+    }
+
+    @Test
+    void keyCleanupRacingTheNextHoldersEnqueueNeverReleasesTheNewHoldersKey() throws Exception {
+        int rounds = 5;
+        List<Long> old = new ArrayList<>();
+        for (int round = 0; round < rounds; round++) {
+            TaskRecord t = leased(task().uniqueKey("swap" + round).keyKeep(SHORT));
+            assertThat(store.ack(t.id(), t.revision(), true, true, null)).isTrue();
+            old.add(t.id());
+        }
+        advance(PAST_SHORT);
+        for (int round = 0; round < rounds; round++) {
+            String key = "swap" + round;
+            List<TaskRecord> records = new ArrayList<>();
+            for (int i = 0; i < 6; i++) {
+                records.add(task().uniqueKey(key).build());
+            }
+            AtomicInteger turn = new AtomicInteger();
+            List<Raced> results = runConcurrently(records.size() + 2, () -> {
+                int mine = turn.getAndIncrement();
+                if (mine == records.size()) {
+                    store.releaseKeys(10);
+                    return null;
+                }
+                if (mine == records.size() + 1) {
+                    store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10);
+                    return null;
+                }
+                TaskRecord record = records.get(mine);
+                return new Raced(record, store.enqueue(record));
+            });
+
+            long winner = soleWinner(results.stream().filter(Objects::nonNull).toList())
+                    .record()
+                    .id();
+            assertThat(store.taskByKey(key)).map(TaskRecord::id).contains(winner);
+            assertThat(get(winner).uniqueKey()).isEqualTo(key);
+            assertThat(store.enqueue(task().uniqueKey(key).build())).isEqualTo(new EnqueueOutcome.DuplicateKey(winner));
+        }
+
+        store.releaseKeys(10);
+        while (store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10) > 0) {}
+        old.forEach(id -> assertThat(store.getTask(id)).isEmpty());
+        for (int round = 0; round < rounds; round++) {
+            String key = "swap" + round;
+            TaskRecord holder = store.taskByKey(key).orElseThrow();
+            assertThat(holder.state()).isEqualTo(TaskState.QUEUED);
+            assertThat(store.enqueue(task().uniqueKey(key).build()))
+                    .isEqualTo(new EnqueueOutcome.DuplicateKey(holder.id()));
+        }
+        assertThat(counts().queued()).isEqualTo(rounds);
     }
 
     @Test
@@ -2332,13 +2385,13 @@ public abstract class StoreContract {
 
     @Test
     void finishCancelledExpiredIsANoOpAfterTheLeaseWasRenewed() {
-        TaskRecord t = runningFixedDelayOccurrence("a", MID);
+        Duration firstLease = Duration.ofSeconds(2);
+        TaskRecord t = runningFixedDelayOccurrence("a", firstLease);
         Instant parked = nextFireOf("a");
-        advance(Duration.ofMillis(100));
         assertThat(store.renew(List.of(new LeaseRef(t.id(), t.revision())), LEASE))
                 .extracting(LeaseStatus::owned)
                 .containsExactly(true);
-        advance(PAST_MID);
+        advance(firstLease.plusMillis(100));
         TaskRecord renewed = get(t.id());
         assertThat(renewed.leaseUntil()).isAfter(now());
         ScheduleEffect effect = ScheduleEffect.pause("a", t.id());
@@ -2577,11 +2630,13 @@ public abstract class StoreContract {
 
     @Test
     void aPausedQueueStillPromotesScheduledWorkAndExpiresOverdueWorkWhileClaimsStayBlocked() {
+        Duration window = Duration.ofSeconds(2);
         store.pauseQueue(queue, true);
-        long scheduled = put(task().due(now().plus(SHORT)));
-        long overdue = put(task().startBy(now().plus(SHORT)));
-        long lateScheduled = put(task().due(now().plus(Duration.ofHours(1))).startBy(now().plus(SHORT)));
-        advance(PAST_SHORT);
+        long scheduled = put(task().due(now().plus(window)));
+        assertThat(get(scheduled).state()).isEqualTo(TaskState.SCHEDULED);
+        long overdue = put(task().startBy(now().plus(window)));
+        long lateScheduled = put(task().due(now().plus(Duration.ofHours(1))).startBy(now().plus(window)));
+        advance(window.plusMillis(100));
 
         assertThat(store.promote(10).moved()).isEqualTo(1);
         assertThat(store.expire(10)).containsExactlyInAnyOrder(overdue, lateScheduled);

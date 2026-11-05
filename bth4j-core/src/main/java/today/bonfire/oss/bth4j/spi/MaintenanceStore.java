@@ -14,7 +14,7 @@ public interface MaintenanceStore extends TaskStore {
     List<ExpiredLease> reclaim(int limit);
 
     /**
-     * Removes tasks in the given terminal state whose {@link TaskRecord#stateChanged()} is older than
+     * Removes tasks in the given terminal state whose {@link TaskRecord#stateChangedAt()} is older than
      * {@code retention}, oldest first, up to the limit. A task whose unique key is still held
      * ({@link TaskRecord#keyUntil()} in the future) is kept.
      *

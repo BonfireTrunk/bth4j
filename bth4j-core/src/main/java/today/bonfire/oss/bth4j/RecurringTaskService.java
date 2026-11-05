@@ -152,7 +152,7 @@ class RecurringTaskService extends CustomThread {
             var def = d.definition();
             var now = clock.instant();
             if (def.isFixedDelay()) {
-                return commitOccurrence(d, d.fireAt(), d.fireAt().plus(NEVER));
+                return commitOccurrence(d, d.fireAt().plus(NEVER));
             }
             var zone = Cron.zone(def.zone());
             var late = Duration.between(d.fireAt(), now);
@@ -160,7 +160,7 @@ class RecurringTaskService extends CustomThread {
                 return misfired(d, now, zone, late);
             }
             var after = d.fireAt().isAfter(now) ? d.fireAt() : now;
-            return commitOccurrence(d, d.fireAt(), nextOrPark(def, after, zone, d.fireAt()));
+            return commitOccurrence(d, nextOrPark(def, after, zone, d.fireAt()));
         } catch (Exception e) {
             log.error("Skipping recurring task {}", d.scheduleId(), e);
             return false;
@@ -193,11 +193,11 @@ class RecurringTaskService extends CustomThread {
                     return false;
                 }
                 // each missed fire gets its own occurrence; the next round picks the following one up
-                return commitOccurrence(d, d.fireAt(), nextOrPark(def, d.fireAt(), zone, d.fireAt()));
+                return commitOccurrence(d, nextOrPark(def, d.fireAt(), zone, d.fireAt()));
             }
             case Misfire.FireOnceNow f -> {
                 misfireIssue(d, late, "firing once now");
-                return commitOccurrence(d, now, nextOrPark(def, now, zone, d.fireAt()));
+                return commitOccurrence(d, nextOrPark(def, now, zone, d.fireAt()));
             }
         }
     }
@@ -219,18 +219,18 @@ class RecurringTaskService extends CustomThread {
         });
     }
 
-    private boolean commitOccurrence(DueSchedule d, Instant due, Instant next) {
+    private boolean commitOccurrence(DueSchedule d, Instant next) {
         var def = d.definition();
         var builder = TaskRecord.builder()
                 .id(ids.nextId())
                 .queueId(def.queueId())
                 .typeId(def.typeId())
                 .payloadVersion(def.payloadVersion())
-                .state(due.isAfter(clock.instant()) ? TaskState.SCHEDULED : TaskState.QUEUED)
+                .state(d.fireAt().isAfter(clock.instant()) ? TaskState.SCHEDULED : TaskState.QUEUED)
                 .maxAttempts(def.maxAttempts())
                 .maxRunTime(def.maxRunTimeMs() == null ? null : Duration.ofMillis(def.maxRunTimeMs()))
                 .createdAt(clock.instant())
-                .due(due)
+                .due(d.fireAt())
                 .encodedPayload(def.encodedPayload())
                 .account(def.account())
                 .scheduleId(d.scheduleId());

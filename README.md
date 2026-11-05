@@ -25,17 +25,17 @@ Add `bth4j-core` and one store module. Add `bth4j-testing` for tests.
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-core</artifactId>
-    <version>3.0.0</version>
+    <version>4.0.0</version>
 </dependency>
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-redis</artifactId>       <!-- or bth4j-postgres -->
-    <version>3.0.0</version>
+    <version>4.0.0</version>
 </dependency>
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-testing</artifactId>
-    <version>3.0.0</version>
+    <version>4.0.0</version>
     <scope>test</scope>
 </dependency>
 ```
@@ -46,12 +46,12 @@ The metrics and the admin HTTP server are separate modules; add them when you us
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-micrometer</artifactId>
-    <version>3.0.0</version>
+    <version>4.0.0</version>
 </dependency>
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-admin-http</artifactId>
-    <version>3.0.0</version>
+    <version>4.0.0</version>
 </dependency>
 ```
 
@@ -514,8 +514,8 @@ BackgroundRunner.builder()
 puts `bth4j.task`, `bth4j.type` and `bth4j.queue` in the MDC; pass your own `Logger` to use another name.
 
 The runner's own log lines go to the logger names in `Loggers`: `RUNNER`, `CLIENT`, `PROCESSOR`, `ATTEMPT`
-(one attempt of a task), `MAINTENANCE`, `RECURRING`, `PROMOTION` and `OBSERVERS`, plus `TASKS` for
-`LoggingTaskObserver`. They follow the class names below `Loggers.ROOT` (`today.bonfire.oss.bth4j`), so a
+(one attempt of a task), `MAINTENANCE`, `RECURRING`, `PROMOTION`, `EXECUTOR` (`DefaultVtExecutor`) and
+`OBSERVERS`, plus `TASKS` for `LoggingTaskObserver`. They follow the class names below `Loggers.ROOT` (`today.bonfire.oss.bth4j`), so a
 level set on that prefix covers them all except `TASKS`, and they do not change when an internal class moves.
 
 ### Inspection

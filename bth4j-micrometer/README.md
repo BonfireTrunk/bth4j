@@ -8,7 +8,7 @@ Written by `MicrometerTaskObserver` (one per runner, driven by task events):
 
 | Meter | Type | Tags | Notes |
 |---|---|---|---|
-| `bth4j.tasks` | counter | `type`, `queue`, `result`, `outcome` | `result` is `succeeded`, `retried`, `died`, `cancelled`, `rescheduled` or `lease_lost`. `outcome` is `applied`, or `lost` when the lease was lost before the store applied the transition. `lease_lost` comes from maintenance and carries only ids, so its `type` and `queue` are `unknown`. |
+| `bth4j.tasks` | counter | `type`, `queue`, `result`, `outcome` | `result` is `succeeded`, `retried`, `died`, `cancelled`, `rescheduled`, `expired` or `lease_lost`. `outcome` is `applied`, `lost` when the lease was lost before the store applied the transition, or `unknown` when the store call threw and the transition may or may not have been applied. `expired` and `lease_lost` come from maintenance and carry only ids, so their `type` and `queue` are `unknown`. |
 | `bth4j.task.duration` | timer | `type`, `queue` | Run time of succeeded tasks. |
 | `bth4j.deferred` | counter | `type` | Claimed tasks that could not run (no processor, undecodable payload) and were put back. |
 | `bth4j.schedule.fired` | counter | none | Occurrences created from recurring definitions. |
@@ -19,10 +19,11 @@ Written by `MicrometerRunnerMetrics` (gauges, refreshed by one daemon thread):
 | Meter | Type | Tags | Notes |
 |---|---|---|---|
 | `bth4j.runner.running` | gauge | none | Tasks running in this runner right now. |
+| `bth4j.runner.abandoned` | gauge | none | Attempts past their maximum run time that were abandoned and still hold a slot. |
 | `bth4j.runner.up` | gauge | none | 1 while the runner health status is `RUNNING`, otherwise 0. |
 | `bth4j.tasks.state` | gauge | `state`, `queue` | Tasks per state and queue as of the last refresh. A queue that disappears drops to 0. |
 
-Any common tags you pass are added to every meter. Tags only ever hold queue, event, state, result and outcome
+Any common tags you pass are added to every meter. Tags only ever hold type, queue, state, result and outcome
 names; task ids and messages are never used, so the number of meters is bounded.
 
 ## Wiring

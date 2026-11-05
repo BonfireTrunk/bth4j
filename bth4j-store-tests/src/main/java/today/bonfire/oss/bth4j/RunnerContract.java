@@ -54,6 +54,13 @@ public abstract class RunnerContract {
     private static final TaskType<Void> UNREGISTERED_TYPE = TaskType.of("rc-unregistered");
 
     private static final Duration AWAIT_LIMIT = Duration.ofSeconds(20);
+    /**
+     * How long a call that must wait for a held task is watched before the task is released. A correct call stays
+     * blocked however long this is, so a slow machine cannot fail the check; one that does not wait returns well
+     * within it.
+     */
+    private static final long HELD_FOR_MS = 300;
+
     private static final AtomicInteger NAMESPACES = new AtomicInteger();
 
     protected FullStore store;
@@ -614,12 +621,18 @@ public abstract class RunnerContract {
             releasedWhenStopReturned.set(released.get());
         });
         stopper.start();
-        await("the runner to be stopping", () -> runner.health().status() == RunnerHealth.Status.STOPPED);
-        assertThat(runner.runningTasks()).isEqualTo(1);
-        assertThat(client.task(id).orElseThrow().state()).isEqualTo(TaskState.LEASED);
-
-        released.set(true);
-        release.countDown();
+        try {
+            await("the runner to be stopping", () -> runner.health().status() == RunnerHealth.Status.STOPPED);
+            stopper.join(HELD_FOR_MS);
+            assertThat(stopper.isAlive())
+                    .as("stop returned while the task was still running")
+                    .isTrue();
+            assertThat(runner.runningTasks()).isEqualTo(1);
+            assertThat(client.task(id).orElseThrow().state()).isEqualTo(TaskState.LEASED);
+            released.set(true);
+        } finally {
+            release.countDown();
+        }
         stopper.join(20_000);
 
         assertThat(stopper.isAlive()).isFalse();
@@ -1071,13 +1084,19 @@ public abstract class RunnerContract {
             releasedWhenDrainReturned.set(released.get());
         });
         drainer.start();
-        await("the runner to be draining", runner::isQuiet);
-        assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.QUIET);
-        assertThat(runner.health().runningTasks()).isEqualTo(1);
-        assertThat(client.task(id).orElseThrow().state()).isEqualTo(TaskState.LEASED);
-
-        released.set(true);
-        release.countDown();
+        try {
+            await("the runner to be draining", runner::isQuiet);
+            drainer.join(HELD_FOR_MS);
+            assertThat(drainer.isAlive())
+                    .as("drain returned while the task was still running")
+                    .isTrue();
+            assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.QUIET);
+            assertThat(runner.health().runningTasks()).isEqualTo(1);
+            assertThat(client.task(id).orElseThrow().state()).isEqualTo(TaskState.LEASED);
+            released.set(true);
+        } finally {
+            release.countDown();
+        }
         drainer.join(20_000);
 
         assertThat(drainer.isAlive()).isFalse();
@@ -1195,7 +1214,7 @@ public abstract class RunnerContract {
                 r -> r.register(VOID_TYPE, (ctx, payload) -> dues.add(ctx.task().due())));
         int minute = farMinute();
         var latest = latestGridInstant(minute);
-        registerLate(
+        var missed = registerLate(
                 "late-once",
                 cronAt(minute),
                 today.bonfire.oss.bth4j.spi.RecurringDefinition.MISFIRE_FIRE_ONCE_NOW,
@@ -1205,8 +1224,7 @@ public abstract class RunnerContract {
         await("one catch-up run", () -> dues.size() == 1);
         await("a future fire time", () -> client.schedules().get("late-once").isAfter(Instant.now()));
         pause(300);
-        assertThat(dues).hasSize(1);
-        assertThat(dues.getFirst()).isBeforeOrEqualTo(Instant.now());
+        assertThat(dues).containsExactly(missed);
         assertThat(client.schedules().get("late-once")).isEqualTo(latest.plus(Duration.ofHours(1)));
         assertThat(runner.issues()).anyMatch(i -> i.kind().equals("schedule-misfire"));
     }
@@ -1338,7 +1356,8 @@ public abstract class RunnerContract {
         return thisHour.isAfter(now) ? thisHour.minus(Duration.ofHours(1)) : thisHour;
     }
 
-    private void registerLate(String id, String cron, String misfire, int catchUpMaxFires, Duration late) {
+    /** @return the missed fire time the definition is stored with */
+    private Instant registerLate(String id, String cron, String misfire, int catchUpMaxFires, Duration late) {
         var def = new today.bonfire.oss.bth4j.spi.RecurringDefinition(
                 id,
                 store.typeId(VOID_TYPE.name()),
@@ -1356,7 +1375,10 @@ public abstract class RunnerContract {
                 null,
                 false,
                 0);
-        store.putRecurring(def, Instant.now().minus(late), Instant.now().minus(late));
+        var missed =
+                Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MILLIS).minus(late);
+        store.putRecurring(def, missed, missed);
+        return missed;
     }
 
     private static List<String> eventNames(List<TaskEvent> events, long id) {

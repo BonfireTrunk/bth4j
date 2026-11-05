@@ -21,7 +21,7 @@ import org.slf4j.Logger;
  * number of processors and {@code maxConcurrency}.
  */
 public class DefaultVtExecutor implements BackgroundExecutor {
-    private static final Logger log = org.slf4j.LoggerFactory.getLogger(DefaultVtExecutor.class);
+    private static final Logger log = org.slf4j.LoggerFactory.getLogger(today.bonfire.oss.bth4j.Loggers.EXECUTOR);
 
     private static final int AVAILABLE_PROCESSORS = Runtime.getRuntime().availableProcessors();
     private static final double CPU_THRESHOLD_HIGH = 0.8; // 80% CPU threshold
