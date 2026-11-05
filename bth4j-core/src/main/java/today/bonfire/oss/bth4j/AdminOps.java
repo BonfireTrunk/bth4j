@@ -79,7 +79,7 @@ public interface AdminOps {
 
     /**
      * Finds queued work on unpaused queues without a live worker. Type counts are lower bounds from the
-     * first 100 queued tasks per served queue. A live worker with unknown coverage suppresses reports.
+     * first 100 queued tasks per served queue.
      *
      * @param liveWithin non-negative maximum heartbeat age, measured against the admin clock
      */

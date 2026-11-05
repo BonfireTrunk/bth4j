@@ -126,40 +126,11 @@ class PostgresTaskStoreIT {
     }
 
     @Test
-    void initAddsCoverageToAnExistingWorkerTableWithoutChangingTheSchemaVersion() throws SQLException {
-        sql("ALTER TABLE " + prefix + "_worker DROP COLUMN queue_ids, DROP COLUMN type_ids");
-        store.init();
-        store.init();
-
-        var legacy = store.workers().getFirst();
-        assertThat(legacy.id()).isEqualTo(worker);
-        assertThat(legacy.queueIds()).isNull();
-        assertThat(legacy.typeIds()).isNull();
-        sql("INSERT INTO " + prefix + "_worker (label, started_at, last_seen) VALUES ('old', now(), now())");
-        int registered = store.allocateWorkerId("new", Set.of(queue), Set.of(type));
-        store.heartbeat(registered, 2);
-        assertThat(store.workers())
-                .filteredOn(w -> w.id() == registered)
-                .singleElement()
-                .satisfies(w -> {
-                    assertThat(w.queueIds()).containsExactly(queue);
-                    assertThat(w.typeIds()).containsExactly(type);
-                    assertThat(w.running()).isEqualTo(2);
-                });
-        try (var c = PostgresTestSupport.dataSource().getConnection();
-                var st = c.createStatement();
-                var rs = st.executeQuery("SELECT value FROM " + prefix + "_meta WHERE key = 'schema_version'")) {
-            assertThat(rs.next()).isTrue();
-            assertThat(rs.getString(1)).isEqualTo("2");
-        }
-    }
-
-    @Test
     void initRefusesAnotherSchemaVersion() throws SQLException {
-        sql("UPDATE " + prefix + "_meta SET value = '3' WHERE key = 'schema_version'");
+        sql("UPDATE " + prefix + "_meta SET value = '4' WHERE key = 'schema_version'");
         assertThatThrownBy(store::init)
                 .isInstanceOf(TaskStoreException.class)
-                .hasMessage("schema version 3, this library needs 2");
+                .hasMessage("schema version 4, this library needs 3");
     }
 
     @Test
@@ -169,8 +140,19 @@ class PostgresTaskStoreIT {
         sql("INSERT INTO " + prefix + "_v1_meta (key, value) VALUES ('schema_version', '1')");
         assertThatThrownBy(old::init)
                 .isInstanceOf(TaskStoreException.class)
-                .hasMessage("schema version 1, this library needs 2");
+                .hasMessage("schema version 1, this library needs 3");
         assertThat(tableExists(prefix + "_v1_task")).isFalse();
+    }
+
+    @Test
+    void initRefusesThe40SchemaBeforeChangingIt() throws SQLException {
+        var old = new PostgresTaskStore(PostgresTestSupport.dataSource(), prefix + "_v2");
+        sql("CREATE TABLE " + prefix + "_v2_meta (key text PRIMARY KEY, value text NOT NULL)");
+        sql("INSERT INTO " + prefix + "_v2_meta (key, value) VALUES ('schema_version', '2')");
+        assertThatThrownBy(old::init)
+                .isInstanceOf(TaskStoreException.class)
+                .hasMessage("schema version 2, this library needs 3");
+        assertThat(tableExists(prefix + "_v2_task")).isFalse();
     }
 
     @Test

@@ -124,7 +124,6 @@ final class DefaultAdminOps implements AdminOps {
         var live = store.workers().stream()
                 .filter(w -> !w.lastSeen().isBefore(cutoff))
                 .toList();
-        if (live.stream().anyMatch(w -> w.queueIds() == null || w.typeIds() == null)) return List.of();
         var paused = new HashSet<Integer>();
         for (var queue : store.queues()) {
             if (queue.paused()) paused.add(queue.id());

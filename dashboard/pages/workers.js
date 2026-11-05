@@ -20,8 +20,8 @@ export default {
           <tr v-for="w in data" :key="w.id" :class="{ stale: isStale(w) }">
             <td class="mono">{{ w.id }}</td>
             <td>{{ w.label }}</td>
-            <td><span v-if="w.queues === null" class="muted">unknown</span><template v-else>{{ w.queues.join(', ') || 'none' }}</template></td>
-            <td><span v-if="w.types === null" class="muted">unknown</span><template v-else>{{ w.types.join(', ') || 'none' }}</template></td>
+            <td>{{ w.queues.join(', ') || 'none' }}</td>
+            <td>{{ w.types.join(', ') || 'none' }}</td>
             <td><time-ago :at="w.startedAt"></time-ago></td>
             <td><time-ago :at="w.lastSeen"></time-ago></td>
             <td class="num">{{ w.running }}</td>

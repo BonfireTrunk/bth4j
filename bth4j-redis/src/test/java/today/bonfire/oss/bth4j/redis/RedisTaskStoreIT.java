@@ -141,12 +141,12 @@ class RedisTaskStoreIT {
     }
 
     @Test
-    void initRefusesTheLayout2NamespaceOfA40Snapshot() {
-        jedis.hset(keys.meta, "schema", "2");
+    void initRefusesTheLayout3NamespaceOf40() {
+        jedis.hset(keys.meta, "schema", "3");
 
         assertThatThrownBy(store::init)
                 .isInstanceOf(TaskStoreException.class)
-                .hasMessageContaining("layout version 2, expected 3");
+                .hasMessageContaining("layout version 3, expected 4");
     }
 
     @Test
@@ -165,21 +165,6 @@ class RedisTaskStoreIT {
         assertThat(a).isNotEqualTo(b);
         assertThat(jedis.hget(keys.worker(a), "label")).isEqualTo("host-a:1");
         assertThat(jedis.hget(keys.worker(a), "started")).isNotNull();
-    }
-
-    @Test
-    void legacyWorkerHashHasUnknownCoverageAndHeartbeatPreservesIt() {
-        var id = store.allocateWorkerId("legacy", Set.of(queue), Set.of(type));
-        jedis.hdel(keys.worker(id), Keys.F_QUEUES, Keys.F_TYPES);
-        store.heartbeat(id, 2);
-
-        assertThat(store.workers()).singleElement().satisfies(w -> {
-            assertThat(w.id()).isEqualTo(id);
-            assertThat(w.queueIds()).isNull();
-            assertThat(w.typeIds()).isNull();
-            assertThat(w.running()).isEqualTo(2);
-        });
-        assertThat(store.info().schemaVersion()).isEqualTo(3);
     }
 
     @Test

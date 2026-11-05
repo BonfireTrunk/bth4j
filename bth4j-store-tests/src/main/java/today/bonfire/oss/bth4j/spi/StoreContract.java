@@ -2741,19 +2741,17 @@ public abstract class StoreContract {
     }
 
     @Test
-    void workerCoverageRoundTripsMultipleEmptyAndUnknownSets() {
+    void workerCoverageRoundTripsMultipleAndEmptySets() {
         var queues = new HashSet<>(Set.of(queue, store.queueId("other")));
         var types = new HashSet<>(Set.of(type, store.typeId("other")));
         int known = store.allocateWorkerId("known", queues, types);
         int empty = store.allocateWorkerId("empty", Set.of(), Set.of());
-        int unknown = store.allocateWorkerId("unknown", null, null);
         var expectedQueues = Set.copyOf(queues);
         var expectedTypes = Set.copyOf(types);
         queues.clear();
         types.clear();
         store.heartbeat(known, 1);
         store.heartbeat(empty, 0);
-        store.heartbeat(unknown, 0);
 
         assertThat(store.workers())
                 .filteredOn(w -> w.id() == known)
@@ -2768,13 +2766,6 @@ public abstract class StoreContract {
                 .satisfies(w -> {
                     assertThat(w.queueIds()).isEmpty();
                     assertThat(w.typeIds()).isEmpty();
-                });
-        assertThat(store.workers())
-                .filteredOn(w -> w.id() == unknown)
-                .singleElement()
-                .satisfies(w -> {
-                    assertThat(w.queueIds()).isNull();
-                    assertThat(w.typeIds()).isNull();
                 });
     }
 

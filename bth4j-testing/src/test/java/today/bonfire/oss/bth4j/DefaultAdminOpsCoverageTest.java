@@ -10,8 +10,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
@@ -115,25 +113,6 @@ class DefaultAdminOpsCoverageTest {
         assertThat(samples).containsExactly(java.util.Arrays.asList(TaskState.QUEUED, queue, null, 100));
     }
 
-    @ParameterizedTest
-    @ValueSource(ints = {0, 1, 2})
-    void unknownCoverageOnAnyLiveWorkerSuppressesReports(int unknown) {
-        enqueue(queue, type);
-        store.allocateWorkerId("legacy", unknown == 1 ? Set.of(otherQueue) : null, unknown == 0 ? Set.of() : null);
-
-        assertThat(admin.unservedWork()).isEmpty();
-        assertThat(samples).isEmpty();
-    }
-
-    @Test
-    void staleUnknownWorkerDoesNotSuppressReports() {
-        enqueue(queue, type);
-        store.allocateWorkerId("legacy", null, null);
-        clock.advance(Duration.ofSeconds(61));
-
-        assertThat(admin.unservedWork()).containsExactly(new UnservedWork("main", null, 1));
-    }
-
     @Test
     void samplesOnlyFirst100TasksOncePerServedQueue() {
         store.allocateWorkerId("worker", Set.of(queue, otherQueue), Set.of());
@@ -161,7 +140,7 @@ class DefaultAdminOpsCoverageTest {
     }
 
     @Test
-    void emptyKnownCoverageDoesNotSuppressReports() {
+    void aWorkerWithEmptyCoverageServesNoQueue() {
         enqueue(queue, type);
         store.allocateWorkerId("empty", Set.of(), Set.of());
 

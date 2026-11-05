@@ -50,6 +50,6 @@ public interface AdminStore extends TaskStore {
     /** Records that the worker is alive now and how many tasks it is running. */
     void heartbeat(int workerId, int running);
 
-    /** @return every worker row, in id order; coverage may be null for older workers */
+    /** @return every worker row, in id order */
     List<WorkerInfo> workers();
 }

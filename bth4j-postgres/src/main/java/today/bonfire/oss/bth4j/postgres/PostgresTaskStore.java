@@ -72,7 +72,7 @@ public class PostgresTaskStore implements FullStore {
      * The schema this class writes, stored in the {@code meta} table. {@link #init} refuses tables written with
      * another one; there is no migration between schemas. Version 1 is the 3.0 schema.
      */
-    public static final int SCHEMA_VERSION = 2;
+    public static final int SCHEMA_VERSION = 3;
 
     private static final Pattern PREFIX = Pattern.compile("[a-z][a-z0-9_]{0,40}");
     private static final int MAX_FAILURES = 20;
@@ -306,10 +306,8 @@ public class PostgresTaskStore implements FullStore {
                         + " started_at timestamptz NOT NULL,"
                         + " last_seen timestamptz NOT NULL,"
                         + " running integer NOT NULL DEFAULT 0,"
-                        + " queue_ids integer[],"
-                        + " type_ids integer[])",
-                "ALTER TABLE " + worker + " ADD COLUMN IF NOT EXISTS queue_ids integer[]",
-                "ALTER TABLE " + worker + " ADD COLUMN IF NOT EXISTS type_ids integer[]",
+                        + " queue_ids integer[] NOT NULL,"
+                        + " type_ids integer[] NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS " + task + " ("
                         + " id bigint PRIMARY KEY,"
                         + " revision integer NOT NULL,"
@@ -467,9 +465,9 @@ public class PostgresTaskStore implements FullStore {
     public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
         if (label == null) throw new IllegalArgumentException("label is required");
         return withConnection(c -> {
-            Array queues = c.createArrayOf("int4", queueIds == null ? null : queueIds.toArray(Integer[]::new));
+            Array queues = c.createArrayOf("int4", queueIds.toArray(Integer[]::new));
             try {
-                Array types = c.createArrayOf("int4", typeIds == null ? null : typeIds.toArray(Integer[]::new));
+                Array types = c.createArrayOf("int4", typeIds.toArray(Integer[]::new));
                 try (var ps = c.prepareStatement(
                         "INSERT INTO " + worker
                                 + " (label, started_at, last_seen, queue_ids, type_ids) VALUES (?, now(), now(), ?, ?) RETURNING id")) {
@@ -1683,7 +1681,6 @@ public class PostgresTaskStore implements FullStore {
 
     private static Set<Integer> workerIds(ResultSet rs, int column) throws SQLException {
         var array = rs.getArray(column);
-        if (array == null) return null;
         try {
             return Set.of((Integer[]) array.getArray());
         } finally {

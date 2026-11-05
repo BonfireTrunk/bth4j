@@ -37,8 +37,8 @@ public interface TaskStore {
      * Registers a worker and returns its id. Ids are never reused.
      *
      * @param label free text that identifies the process, for example host and pid
-     * @param queueIds queues this worker processes; null when coverage is unknown
-     * @param typeIds task types this worker processes; null when coverage is unknown
+     * @param queueIds queues this worker processes
+     * @param typeIds task types this worker processes
      */
     int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds);
 

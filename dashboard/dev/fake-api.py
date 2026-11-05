@@ -75,7 +75,7 @@ schedules = {
 }
 workers = [
     {"id": 7, "label": "host-a/1234", "startedAt": iso(-7200), "lastSeen": iso(-2), "running": 3, "queues": ["default", "mail"], "types": ["send-mail"]},
-    {"id": 8, "label": "host-b/9876", "startedAt": iso(-9000), "lastSeen": iso(-300), "running": 0, "queues": None, "types": None},
+    {"id": 8, "label": "host-b/9876", "startedAt": iso(-9000), "lastSeen": iso(-300), "running": 0, "queues": ["reports"], "types": ["build-report"]},
 ]
 issues = [
     {"at": iso(-600), "kind": "unknown-type", "detail": "No handler for type 'legacy-export'", "taskId": str(BASE_ID + 3)},

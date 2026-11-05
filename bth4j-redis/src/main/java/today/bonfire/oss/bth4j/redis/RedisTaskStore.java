@@ -67,7 +67,7 @@ public class RedisTaskStore implements FullStore {
      * namespace written with another one; there is no migration between layouts. 3.0 wrote layout 1; layout 2
      * was only in 4.0.0 snapshots, whose namespaces lack fields that this layout relies on.
      */
-    public static final int LAYOUT_VERSION = 3;
+    public static final int LAYOUT_VERSION = 4;
 
     private static final int PAGE_CHUNK = 500;
 
@@ -975,11 +975,8 @@ public class RedisTaskStore implements FullStore {
     }
 
     private static Set<Integer> workerIds(String value) {
-        if (value == null) return null;
-        var parsed = Json.parse(value);
-        if (parsed == null) return null;
         var ids = new HashSet<Integer>();
-        for (var id : (List<?>) parsed) ids.add(((Number) id).intValue());
+        for (var id : (List<?>) Json.parse(value)) ids.add(((Number) id).intValue());
         return ids;
     }
 

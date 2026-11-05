@@ -155,12 +155,7 @@ final class Views {
     }
 
     private static List<String> names(Set<Integer> ids, Map<Integer, String> names) {
-        return ids == null
-                ? null
-                : ids.stream()
-                        .map(id -> names.getOrDefault(id, "#" + id))
-                        .sorted()
-                        .toList();
+        return ids.stream().map(id -> names.getOrDefault(id, "#" + id)).sorted().toList();
     }
 
     static Map<String, Object> unserved(UnservedWork work) {

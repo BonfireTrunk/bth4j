@@ -554,16 +554,13 @@ before a rolling restart.
 Each runner also writes a heartbeat (last seen time and running tasks) to the worker registry every
 `maintenanceCheckInterval`, and maintenance deletes workers that were silent for `workerStaleAfter` (10
 minutes by default). `admin.workers()` lists them, including the queue ids they process and their
-registered task type ids. Coverage is recorded at startup and is null for workers using an older library.
+registered task type ids, recorded at startup.
 
 `admin.unservedWork()` finds queued work that no worker seen within the last minute can process;
 `admin.unservedWork(Duration)` chooses another heartbeat window using the admin clock. Paused queues
 are skipped. A queue without a live worker produces `UnservedWork(queue, null, waiting)` with its full
 queued count. For queues with live workers, only the first 100 queued tasks are sampled: an unhandled
 type produces `UnservedWork(queue, type, waiting)`, where waiting is a lower bound from that sample.
-A live worker with unknown queue or type coverage suppresses reports during rolling upgrades.
-PostgreSQL adds nullable worker columns during `init`; Redis uses extra worker hash fields. No manual
-migration or schema/layout version change is needed.
 
 ### Admin API
 
@@ -670,9 +667,8 @@ with a body of `{"reason"}` and no revision: viewers may read, admins may cancel
 is answered 400; cancel answers 404 when no task holds the key and 409 when the holder is already finished or changed meanwhile),
 `schedules` (with `pause`, `resume`, `trigger`, delete), `workers`, `unserved` and `issues`.
 
-`GET /api/v1/workers` includes `queues` and `types` as name lists (null for unknown coverage, empty for
-known empty coverage). `GET /api/v1/unserved` returns a list of `{"queue", "type", "waiting"}` using the
-one-minute heartbeat window. A null type means the whole queue is unserved and waiting is its queued
+`GET /api/v1/workers` includes `queues` and `types` as name lists. `GET /api/v1/unserved` returns a list
+of `{"queue", "type", "waiting"}` using the one-minute heartbeat window. A null type means the whole queue is unserved and waiting is its queued
 count; otherwise waiting is a lower bound from at most the first 100 queued tasks in that queue. Both
 endpoints are available to viewers. The dashboard shows coverage on Workers and unserved work on Overview.
 
@@ -796,7 +792,7 @@ var store = new RedisTaskStore(jedis, "my-app");   // UnifiedJedis (for example 
 The namespace prefixes every key and carries the Redis Cluster hash tag, so all keys of a store share one
 slot. The store does not close the Jedis client. Redis 7.4 or newer, or Valkey 9 or newer, is required (the
 store expires the key fields of finished tasks with hash field expiry). A namespace written by bth4j 3.0 has
-another layout and is refused by `init`, and so is one written by a 4.0.0 snapshot; start 4.0 with a new
+another layout and is refused by `init`, and so is one written by 4.0.0 or a 4.0.0 snapshot; start with a new
 namespace. Enqueue writes a random per-record
 token in task hash field `wt` with the other fields. A transport resend with that token returns stored again;
 a different token under the same id returns exists, before checking the unique key. The token only helps while
@@ -818,7 +814,8 @@ var store = new PostgresTaskStore(dataSource, "bth");   // tables bth_task, bth_
 The tables are created when the runner or client is built, or run `store.schemaStatements()` from your
 migration tool. The prefix is lower case letters, digits and underscores, at most 41 characters; runners with
 the same prefix on the same database share the work. There are no foreign keys. PostgreSQL 9.5 or newer is
-required (`SKIP LOCKED`, `ON CONFLICT`); the tests run on 17.
+required (`SKIP LOCKED`, `ON CONFLICT`); the tests run on 17. Tables written by bth4j 3.0 or 4.0.0 (schema
+version 1 or 2) are refused by `init`; start with a new prefix or drop the tables.
 
 ### Other stores
 
