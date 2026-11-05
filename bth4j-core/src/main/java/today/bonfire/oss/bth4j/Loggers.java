@@ -8,6 +8,12 @@ package today.bonfire.oss.bth4j;
 public final class Loggers {
     private Loggers() {}
 
+    /**
+     * The prefix of every name below except {@link #TASKS}: a level set on it, or a log capture by it, covers all
+     * the runner's own lines.
+     */
+    public static final String ROOT = "today.bonfire.oss.bth4j";
+
     /** Runner start, stop, quiet and resume, and the restart of a service thread that died. */
     public static final String RUNNER = "today.bonfire.oss.bth4j.BackgroundRunner";
 

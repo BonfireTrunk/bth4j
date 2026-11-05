@@ -515,8 +515,8 @@ puts `bth4j.task`, `bth4j.type` and `bth4j.queue` in the MDC; pass your own `Log
 
 The runner's own log lines go to the logger names in `Loggers`: `RUNNER`, `CLIENT`, `PROCESSOR`, `ATTEMPT`
 (one attempt of a task), `MAINTENANCE`, `RECURRING`, `PROMOTION` and `OBSERVERS`, plus `TASKS` for
-`LoggingTaskObserver`. They follow the class names below `today.bonfire.oss.bth4j`, so a level set on that
-package covers them, and they do not change when an internal class moves.
+`LoggingTaskObserver`. They follow the class names below `Loggers.ROOT` (`today.bonfire.oss.bth4j`), so a
+level set on that prefix covers them all except `TASKS`, and they do not change when an internal class moves.
 
 ### Inspection
 

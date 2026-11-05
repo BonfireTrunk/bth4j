@@ -42,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ScheduleDefinition.maxRunTime(Duration)` gives each occurrence's attempts a maximum run time. It is stored with the definition (Redis hash field `mr` of `cron:<id>`, PostgreSQL column `max_run_ms` of `<prefix>_schedule`) and shown as `ScheduleView.maxRunTime` and the admin field `maxRunTime`.
 - `TaskRequest.MAX_ATTEMPTS` names the largest `maxAttempts` (32767); `TaskRequest.MAX_RUN_TIME` the largest `maxRunTime`.
 - `Codecs` (`new Codecs(jsonMapper)`) encodes and decodes payloads and step results exactly as the runner stores them, so a test can pin their stored form without copying the rules.
-- `Loggers` names every logger the runner writes to (`RUNNER`, `CLIENT`, `PROCESSOR`, `ATTEMPT`, `MAINTENANCE`, `RECURRING`, `PROMOTION`, `OBSERVERS`, `TASKS`). The names are class-based and stay fixed when an internal class moves, so log configuration and log capture by name keep working.
+- `Loggers` names every logger the runner writes to (`RUNNER`, `CLIENT`, `PROCESSOR`, `ATTEMPT`, `MAINTENANCE`, `RECURRING`, `PROMOTION`, `OBSERVERS`, `TASKS`), and `ROOT` is the prefix all of them except `TASKS` share. The names are class-based and stay fixed when an internal class moves, so log configuration and log capture by name keep working.
 
 ### Changed
 

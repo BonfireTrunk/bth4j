@@ -10,6 +10,7 @@ class LoggersTest {
 
     @Test
     void theDocumentedNamesDoNotChange() {
+        assertThat(Loggers.ROOT).isEqualTo("today.bonfire.oss.bth4j");
         assertThat(Loggers.RUNNER).isEqualTo("today.bonfire.oss.bth4j.BackgroundRunner");
         assertThat(Loggers.CLIENT).isEqualTo("today.bonfire.oss.bth4j.TaskClient");
         assertThat(Loggers.PROCESSOR).isEqualTo("today.bonfire.oss.bth4j.TaskProcessorService");
@@ -37,7 +38,8 @@ class LoggersTest {
             field.setAccessible(true);
             assertThat(((Logger) field.get(null)).getName())
                     .as(e.getKey().getName())
-                    .isEqualTo(e.getValue());
+                    .isEqualTo(e.getValue())
+                    .startsWith(Loggers.ROOT + ".");
         }
     }
 }
