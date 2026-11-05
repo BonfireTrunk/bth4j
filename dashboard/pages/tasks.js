@@ -182,16 +182,16 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
       <status-msg :loading="loading" :error="error" :empty="!rows.length" empty-text="No tasks match these filters." :empty-hint="fixedState ? 'Nothing is dead. Good.' : 'Pick another state, or clear the queue filter.'"></status-msg>
       <div class="table-wrap" v-if="!loading && rows.length">
         <table class="clickable">
-          <thead><tr><th>Id</th><th>State</th><th>Queue</th><th>Event</th><th class="num">Attempts</th><th>Due</th><th>Changed</th><th>Last failure</th></tr></thead>
+          <thead><tr><th>Id</th><th>State</th><th>Queue</th><th>Type</th><th class="num">Attempts</th><th>Due</th><th>Changed</th><th>Last failure</th></tr></thead>
           <tbody>
             <tr v-for="t in rows" :key="t.id" @click="open(t.id)">
               <td class="mono"><a class="quiet" :href="'#/task/' + encodeURIComponent(t.id)" @click.stop>{{ t.id }}</a></td>
               <td><state-badge :state="t.state"></state-badge></td>
               <td>{{ t.queue }}</td>
-              <td>{{ t.event }}</td>
+              <td>{{ t.type }}</td>
               <td class="num">{{ t.attempts }} / {{ t.maxAttempts }}</td>
               <td><time-ago :at="t.due" :late="t.state === 'QUEUED' || t.state === 'SCHEDULED'"></time-ago></td>
-              <td><time-ago :at="t.stateChanged"></time-ago></td>
+              <td><time-ago :at="t.stateChangedAt"></time-ago></td>
               <td class="trunc mono small" :title="failureText(t, true)">{{ failureText(t, false) }}</td>
             </tr>
           </tbody>

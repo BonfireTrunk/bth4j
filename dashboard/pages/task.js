@@ -119,12 +119,12 @@ export default {
       const t = task.value;
       if (!t) return [];
       const stops = [
-        { label: 'Created', at: t.created, reached: true },
+        { label: 'Created', at: t.createdAt, reached: true },
         { label: 'Due', at: t.due, reached: Date.parse(t.due) <= Date.now() || t.state !== 'SCHEDULED' },
         { label: 'Claimed', at: t.claimedAt, reached: !!t.claimedAt },
       ];
-      if (FINISHED[t.state]) stops.push({ label: FINISHED[t.state], at: t.stateChanged, reached: true });
-      else if (t.state === 'LEASED') stops.push({ label: 'Running', at: t.stateChanged, reached: true });
+      if (FINISHED[t.state]) stops.push({ label: FINISHED[t.state], at: t.stateChangedAt, reached: true });
+      else if (t.state === 'LEASED') stops.push({ label: 'Running', at: t.stateChangedAt, reached: true });
       else stops.push({ label: 'Finished', at: null, reached: false });
       return stops;
     });
@@ -180,7 +180,7 @@ export default {
           <h2>Routing</h2>
           <dl class="kv">
             <dt>Queue</dt><dd><a :href="'#/tasks?queue=' + encodeURIComponent(task.queue) + '&state=' + task.state">{{ task.queue }}</a></dd>
-            <dt>Event</dt><dd>{{ task.event }}</dd>
+            <dt>Type</dt><dd>{{ task.type }}</dd>
             <dt>Payload version</dt><dd>{{ task.payloadVersion }}</dd>
             <dt>Account</dt><dd>{{ task.account || '-' }}</dd>
             <dt>Unique key</dt><dd class="mono">{{ task.uniqueKey || '-' }}</dd>
@@ -197,7 +197,7 @@ export default {
             <dt>Worker</dt><dd>{{ task.workerId ?? '-' }}</dd>
             <dt>Lease until</dt><dd><time-ago :at="task.leaseUntil"></time-ago></dd>
             <dt>Start by</dt><dd><time-ago :at="task.startBy" late></time-ago></dd>
-            <dt>Max run</dt><dd>{{ task.maxRun ? duration(task.maxRun) : '-' }}</dd>
+            <dt>Max run time</dt><dd>{{ task.maxRunTime ? duration(task.maxRunTime) : '-' }}</dd>
             <dt>Progress</dt><dd>{{ task.progress || '-' }}</dd>
           </dl>
           <template v-if="cancelled">

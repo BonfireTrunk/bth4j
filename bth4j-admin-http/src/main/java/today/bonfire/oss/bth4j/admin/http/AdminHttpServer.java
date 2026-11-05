@@ -441,10 +441,6 @@ public final class AdminHttpServer {
         }
         var queue = query.get("queue");
         var queueName = queue == null || queue.isEmpty() ? null : queue;
-        if (!query.containsKey("cursor")) {
-            var after = query.containsKey("after") ? parseLong(query.get("after"), "after") : 0L;
-            return Views.list(admin.tasks(state, queueName, after, limit), Views::task);
-        }
         var cursor = query.get("cursor");
         TaskViewPage page;
         try {
@@ -456,7 +452,7 @@ public final class AdminHttpServer {
     }
 
     private Map<String, Object> payload(long id) {
-        return Views.obj("payload", requireTask(id).data());
+        return Views.obj("payload", requireTask(id).encodedPayload());
     }
 
     private void retry(HttpExchange ex, long id) throws IOException {

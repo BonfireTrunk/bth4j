@@ -5,14 +5,20 @@ import java.time.Instant;
 
 /**
  * What a runner reports to its {@link TaskObserver}. The vocabulary is fixed; new event kinds are added, not
- * changed. {@code outcome} tells whether the store applied the transition ({@link Outcome#APPLIED}) or the
- * lease was lost meanwhile ({@link Outcome#LOST}).
+ * changed. {@code outcome} tells whether the store applied the transition ({@link Outcome#APPLIED}), rejected
+ * it because the lease was lost meanwhile ({@link Outcome#LOST}), or failed so that the result is not known
+ * ({@link Outcome#UNKNOWN}).
  */
 public sealed interface TaskEvent {
 
     enum Outcome {
         APPLIED,
-        LOST
+        LOST,
+        /**
+         * The store call failed (for example a timeout or a lost reply), so the transition may or may not have
+         * been committed. When it was not, the lease expires and maintenance retries the task.
+         */
+        UNKNOWN
     }
 
     /** A task passed its {@link TaskView#startBy()} before it could run and was moved to EXPIRED. */
@@ -26,8 +32,9 @@ public sealed interface TaskEvent {
 
     /**
      * The processor failed and the task will run again at {@code retryAt}. With {@link Outcome#LOST} this
-     * worker's lease was gone and nothing was written: the store's maintenance decides whether and when the
-     * task runs again, and {@code retryAt} is only the time the loss was noticed.
+     * worker's lease was gone and nothing was written; with {@link Outcome#UNKNOWN} the store call failed and
+     * the failure may not have been written. Either way the store's maintenance decides whether and when the
+     * task runs again, and {@code retryAt} is only the time the problem was noticed.
      */
     record Retrying(TaskView task, Throwable error, Instant retryAt, Outcome outcome) implements TaskEvent {}
 
@@ -44,7 +51,7 @@ public sealed interface TaskEvent {
     record LeaseExpired(long id, int attempts, int maxAttempts, boolean dead) implements TaskEvent {}
 
     /** A claimed task could not be run (no processor, undecodable payload) and was put back. */
-    record Deferred(long id, String event, String reason) implements TaskEvent {}
+    record Deferred(long id, String type, String reason) implements TaskEvent {}
 
     /** An occurrence of a recurring definition was created. */
     record ScheduleFired(String scheduleId, long taskId, Instant fireAt) implements TaskEvent {}

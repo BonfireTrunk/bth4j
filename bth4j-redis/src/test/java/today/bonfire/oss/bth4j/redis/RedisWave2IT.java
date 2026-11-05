@@ -54,7 +54,7 @@ class RedisWave2IT {
     private RedisTaskStore store;
     private Keys keys;
     private int queue;
-    private int event;
+    private int type;
 
     @BeforeAll
     static void connect() {
@@ -88,16 +88,16 @@ class RedisWave2IT {
         keys = store.keys();
         store.init();
         queue = store.queueId("default");
-        event = store.eventId("send");
+        type = store.typeId("send");
     }
 
     private TaskRecord.Builder task(long id) {
         return TaskRecord.builder()
                 .id(id)
                 .queueId(queue)
-                .eventId(event)
+                .typeId(type)
                 .maxAttempts(3)
-                .created(Instant.now().truncatedTo(ChronoUnit.MILLIS));
+                .createdAt(Instant.now().truncatedTo(ChronoUnit.MILLIS));
     }
 
     private TaskRecord enqueued(TaskRecord.Builder b) {
@@ -132,10 +132,10 @@ class RedisWave2IT {
 
     @Test
     void finishCancelledMovesLeasedToCancelledAndDropsData() {
-        enqueued(task(1).data("payload").account("a"));
+        enqueued(task(1).encodedPayload("payload").account("a"));
         var t = store.claim(new ClaimRequest(List.of(queue), 1, LEASE, 7, null)).getFirst();
 
-        assertThat(store.finishCancelled(1, t.revision(), "stop", false)).isTrue();
+        assertThat(store.finishCancelled(1, t.revision(), "stop", false, null)).isTrue();
 
         var done = store.getTask(1).orElseThrow();
         assertThat(done.state()).isEqualTo(TaskState.CANCELLED);
@@ -144,7 +144,7 @@ class RedisWave2IT {
         assertThat(done.cancelRequestedAt()).isNotNull();
         assertThat(done.workerId()).isEqualTo(7);
         assertThat(done.leaseUntil()).isNull();
-        assertThat(done.data()).isNull();
+        assertThat(done.encodedPayload()).isNull();
         assertThat(jedis.zscore(keys.leased, "1")).isNull();
         assertThat(jedis.zscore(keys.index(5, queue), "1")).isNotNull();
         assertThat(jedis.zscore(keys.index(2, queue), "1")).isNull();
@@ -154,15 +154,15 @@ class RedisWave2IT {
 
     @Test
     void finishCancelledKeepsPayloadAndTheEarlierRequestTime() {
-        enqueued(task(1).data("payload"));
+        enqueued(task(1).encodedPayload("payload"));
         var t = store.claim(new ClaimRequest(List.of(queue), 1, LEASE, 1, null)).getFirst();
-        assertThat(store.cancel(1, t.revision(), "ops")).isEqualTo(CancelOutcome.REQUESTED);
+        assertThat(store.cancel(1, t.revision(), "ops", null)).isEqualTo(CancelOutcome.REQUESTED);
         var requested = store.getTask(1).orElseThrow().cancelRequestedAt();
 
-        assertThat(store.finishCancelled(1, t.revision(), "ops", true)).isTrue();
+        assertThat(store.finishCancelled(1, t.revision(), "ops", true, null)).isTrue();
 
         var done = store.getTask(1).orElseThrow();
-        assertThat(done.data()).isEqualTo("payload");
+        assertThat(done.encodedPayload()).isEqualTo("payload");
         assertThat(done.cancelRequestedAt()).isEqualTo(requested);
     }
 
@@ -171,8 +171,9 @@ class RedisWave2IT {
         var t = leased(1);
         var queued = enqueued(2);
 
-        assertThat(store.finishCancelled(1, t.revision() + 1, "x", false)).isFalse();
-        assertThat(store.finishCancelled(2, queued.revision(), "x", false)).isFalse();
+        assertThat(store.finishCancelled(1, t.revision() + 1, "x", false, null)).isFalse();
+        assertThat(store.finishCancelled(2, queued.revision(), "x", false, null))
+                .isFalse();
 
         assertThat(store.getTask(1).orElseThrow().state()).isEqualTo(TaskState.LEASED);
         assertThat(store.getTask(2).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
@@ -185,7 +186,8 @@ class RedisWave2IT {
         var claimed = store.claim(new ClaimRequest(List.of(queue), 2, LEASE, 1, null));
 
         for (var t : claimed) {
-            assertThat(store.finishCancelled(t.id(), t.revision(), "x", false)).isTrue();
+            assertThat(store.finishCancelled(t.id(), t.revision(), "x", false, null))
+                    .isTrue();
         }
 
         assertThat(jedis.exists(keys.uniqueKey("a"))).isFalse();
@@ -275,21 +277,6 @@ class RedisWave2IT {
     // ---- paused queues -------------------------------------------------------------------------------
 
     @Test
-    void pausedQueuesAreSkippedByClaimUntilResumed() {
-        var other = store.queueId("other");
-        enqueued(1);
-        enqueued(task(2).queueId(other));
-
-        store.pauseQueue(queue, true);
-        var whilePaused = store.claim(new ClaimRequest(List.of(queue, other), 5, LEASE, 1, null));
-        store.pauseQueue(queue, false);
-        var resumed = store.claim(new ClaimRequest(List.of(queue, other), 5, LEASE, 1, null));
-
-        assertThat(whilePaused).extracting(TaskRecord::id).containsExactly(2L);
-        assertThat(resumed).extracting(TaskRecord::id).containsExactly(1L);
-    }
-
-    @Test
     void queuesListPausedFlagsInIdOrder() {
         var other = store.queueId("other");
         store.pauseQueue(other, true);
@@ -310,8 +297,8 @@ class RedisWave2IT {
         var q = enqueued(task(1).startBy(Instant.now().plusSeconds(600)).uniqueKey("k"));
         var s = enqueued(task(2).due(Instant.now().plusSeconds(600)));
 
-        assertThat(store.cancel(1, q.revision(), "no")).isEqualTo(CancelOutcome.CANCELLED);
-        assertThat(store.cancel(2, s.revision(), null)).isEqualTo(CancelOutcome.CANCELLED);
+        assertThat(store.cancel(1, q.revision(), "no", null)).isEqualTo(CancelOutcome.CANCELLED);
+        assertThat(store.cancel(2, s.revision(), null, null)).isEqualTo(CancelOutcome.CANCELLED);
 
         var a = store.getTask(1).orElseThrow();
         assertThat(a.state()).isEqualTo(TaskState.CANCELLED);
@@ -334,7 +321,7 @@ class RedisWave2IT {
     void cancelOfALeasedTaskOnlyStoresTheRequest() {
         var t = leased(1);
 
-        assertThat(store.cancel(1, t.revision(), "why")).isEqualTo(CancelOutcome.REQUESTED);
+        assertThat(store.cancel(1, t.revision(), "why", null)).isEqualTo(CancelOutcome.REQUESTED);
 
         var after = store.getTask(1).orElseThrow();
         assertThat(after.state()).isEqualTo(TaskState.LEASED);
@@ -350,13 +337,13 @@ class RedisWave2IT {
     @Test
     void cancelIsStaleOnRevisionMismatchTerminalStateOrUnknownId() {
         var done = leased(2);
-        store.ack(2, done.revision(), true, false);
+        store.ack(2, done.revision(), true, false, null);
         var t = enqueued(1);
 
-        assertThat(store.cancel(1, t.revision() + 1, "x")).isEqualTo(CancelOutcome.STALE);
-        assertThat(store.cancel(2, store.getTask(2).orElseThrow().revision(), "x"))
+        assertThat(store.cancel(1, t.revision() + 1, "x", null)).isEqualTo(CancelOutcome.STALE);
+        assertThat(store.cancel(2, store.getTask(2).orElseThrow().revision(), "x", null))
                 .isEqualTo(CancelOutcome.STALE);
-        assertThat(store.cancel(99, 0, "x")).isEqualTo(CancelOutcome.STALE);
+        assertThat(store.cancel(99, 0, "x", null)).isEqualTo(CancelOutcome.STALE);
 
         assertThat(store.getTask(1).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
     }
@@ -365,9 +352,9 @@ class RedisWave2IT {
     void retryReturnsTerminalTasksToTheQueue() {
         var failure = new FailureInfo(1, Instant.now().truncatedTo(ChronoUnit.MILLIS), "E", "m", null);
         var dead = leased(1);
-        assertThat(store.fail(1, dead.revision(), failure, null, true)).isEqualTo(FailOutcome.DEAD);
-        var cancelled = enqueued(task(2).data("d"));
-        assertThat(store.cancel(2, cancelled.revision(), "r")).isEqualTo(CancelOutcome.CANCELLED);
+        assertThat(store.fail(1, dead.revision(), failure, null, true, null)).isEqualTo(FailOutcome.DEAD);
+        var cancelled = enqueued(task(2).encodedPayload("d"));
+        assertThat(store.cancel(2, cancelled.revision(), "r", null)).isEqualTo(CancelOutcome.CANCELLED);
         enqueued(task(3).startBy(past()));
         store.expire(10);
 
@@ -385,7 +372,7 @@ class RedisWave2IT {
             assertThat(jedis.zscore(keys.queue(queue), String.valueOf(id))).isNotNull();
         }
         assertThat(store.getTask(1).orElseThrow().failures()).hasSize(1);
-        assertThat(store.getTask(2).orElseThrow().data()).isEqualTo("d");
+        assertThat(store.getTask(2).orElseThrow().encodedPayload()).isEqualTo("d");
         var c = counts();
         assertThat(c.queued()).isEqualTo(3);
         assertThat(c.dead() + c.cancelled() + c.expired()).isZero();
@@ -398,7 +385,7 @@ class RedisWave2IT {
     @Test
     void retryKeepsTheKeyFieldsAndTakesTheWindowedKeyAgainWithoutExpiry() {
         var t = enqueued(task(1).uniqueKey("k").keyKeep(Duration.ofMinutes(5)));
-        assertThat(store.cancel(1, t.revision(), "x")).isEqualTo(CancelOutcome.CANCELLED);
+        assertThat(store.cancel(1, t.revision(), "x", null)).isEqualTo(CancelOutcome.CANCELLED);
         var cancelled = store.getTask(1).orElseThrow();
         assertThat(cancelled.keyUntil()).isNotNull();
         assertThat(jedis.zscore(keys.prefix + "hold:5:" + queue, "1")).isNotNull();
@@ -422,7 +409,7 @@ class RedisWave2IT {
     @Test
     void retryIsRefusedAndChangesNothingWhenAnotherTaskHoldsTheKey() {
         var t = enqueued(task(1).uniqueKey("k").keyKeep(Duration.ofMinutes(5)));
-        assertThat(store.cancel(1, t.revision(), "x")).isEqualTo(CancelOutcome.CANCELLED);
+        assertThat(store.cancel(1, t.revision(), "x", null)).isEqualTo(CancelOutcome.CANCELLED);
         var cancelled = store.getTask(1).orElseThrow();
         var other = enqueued(task(77));
         jedis.set(keys.uniqueKey("k"), "77");
@@ -443,7 +430,7 @@ class RedisWave2IT {
     @Test
     void retryOverwritesAKeyStringWhoseTaskIsGone() {
         var t = enqueued(task(1).uniqueKey("k").keyKeep(Duration.ofMinutes(5)));
-        assertThat(store.cancel(1, t.revision(), "x")).isEqualTo(CancelOutcome.CANCELLED);
+        assertThat(store.cancel(1, t.revision(), "x", null)).isEqualTo(CancelOutcome.CANCELLED);
         var cancelled = store.getTask(1).orElseThrow();
         jedis.set(keys.uniqueKey("k"), "88");
 
@@ -455,7 +442,7 @@ class RedisWave2IT {
     @Test
     void retryRefusesAWrongRevisionAndNonTerminalStates() {
         var t = leased(2);
-        assertThat(store.finishCancelled(2, t.revision(), "x", true)).isTrue();
+        assertThat(store.finishCancelled(2, t.revision(), "x", true, null)).isTrue();
         var cancelled = store.getTask(2).orElseThrow();
         var queued = enqueued(1);
 
@@ -469,26 +456,39 @@ class RedisWave2IT {
 
     @Test
     void deleteRemovesATaskFromWhereverItIs() {
-        var done = leased(3);
-        store.ack(3, done.revision(), true, true);
-        var ended = leased(task(4).uniqueKey("w").keyKeep(Duration.ofMinutes(5)));
-        store.ack(4, ended.revision(), true, true);
-        var queued = enqueued(task(1).startBy(Instant.now().plusSeconds(600)).uniqueKey("k"));
-        var scheduled = enqueued(task(2).due(Instant.now().plusSeconds(600)));
-
-        assertThat(store.delete(1, queued.revision())).isTrue();
-        assertThat(store.delete(2, scheduled.revision())).isTrue();
-        assertThat(store.delete(3, store.getTask(3).orElseThrow().revision())).isTrue();
-        assertThat(store.delete(4, store.getTask(4).orElseThrow().revision())).isTrue();
+        var done = RedisFixtures.leasedWithHistory(store, queue, leased(task(3).encodedPayload("p")));
+        store.ack(3, done.revision(), true, true, null);
+        var ended = RedisFixtures.leasedWithHistory(
+                store,
+                queue,
+                leased(task(4).uniqueKey("w").keyKeep(Duration.ofMinutes(5)).encodedPayload("p")));
+        store.ack(4, ended.revision(), true, true, null);
+        var waiting = leased(
+                task(1).startBy(Instant.now().plusSeconds(600)).uniqueKey("k").encodedPayload("p"));
+        RedisFixtures.addHistory(store, waiting, Instant.now().minusSeconds(5));
+        var later = leased(task(2).encodedPayload("p"));
+        RedisFixtures.addHistory(store, later, Instant.now().plusSeconds(600));
+        assertThat(store.promote(10).moved()).isEqualTo(1);
+        for (var id = 1; id <= 4; id++) {
+            RedisFixtures.assertPopulated(jedis, keys, id);
+        }
+        assertThat(store.getTask(1).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
+        assertThat(store.getTask(2).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
+        assertThat(store.getTask(3).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(store.getTask(4).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(jedis.zscore(keys.startBy, "1")).isNotNull();
+        assertThat(jedis.exists(keys.uniqueKey("k"), keys.uniqueKey("w"))).isEqualTo(2);
 
         for (var id = 1; id <= 4; id++) {
-            assertThat(jedis.exists(keys.task(id), keys.data(id), keys.steps(id), keys.failures(id)))
-                    .isZero();
+            assertThat(store.delete(id, store.getTask(id).orElseThrow().revision(), null))
+                    .as("delete %d", id)
+                    .isTrue();
         }
-        assertThat(jedis.exists(keys.uniqueKey("k"))).isFalse();
-        assertThat(jedis.exists(keys.uniqueKey("w"))).isFalse();
-        assertThat(jedis.zcard(keys.startBy)).isZero();
-        assertThat(jedis.zcard(keys.index(3, queue))).isZero();
+
+        for (var id = 1; id <= 4; id++) {
+            RedisFixtures.assertGone(jedis, keys, id);
+        }
+        assertThat(jedis.exists(keys.uniqueKey("k"), keys.uniqueKey("w"))).isZero();
         assertThat(counts()).isEqualTo(StateCounts.ZERO);
     }
 
@@ -497,9 +497,9 @@ class RedisWave2IT {
         var t = leased(1);
         var q = enqueued(2);
 
-        assertThat(store.delete(1, t.revision())).isFalse();
-        assertThat(store.delete(2, q.revision() + 1)).isFalse();
-        assertThat(store.delete(99, 0)).isFalse();
+        assertThat(store.delete(1, t.revision(), null)).isFalse();
+        assertThat(store.delete(2, q.revision() + 1, null)).isFalse();
+        assertThat(store.delete(99, 0, null)).isFalse();
 
         assertThat(store.getTask(1)).isPresent();
         assertThat(store.getTask(2)).isPresent();
@@ -546,7 +546,7 @@ class RedisWave2IT {
     // ---- recurring -----------------------------------------------------------------------------------
 
     private RecurringDefinition cron(String id) {
-        return new RecurringDefinition(id, event, 2, queue, "acme", "* * * * *", "{\"d\":1}", 5, 0);
+        return new RecurringDefinition(id, type, 2, queue, "acme", "* * * * *", "{\"d\":1}", 5, 0);
     }
 
     @Test
@@ -554,7 +554,7 @@ class RedisWave2IT {
         var fire = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
         var full = new RecurringDefinition(
                 "full",
-                event,
+                type,
                 3,
                 queue,
                 "acme",
@@ -566,13 +566,14 @@ class RedisWave2IT {
                 true,
                 "d",
                 6,
+                null,
                 false,
                 0);
         var delay = new RecurringDefinition(
-                "delay", event, 1, queue, null, null, null, null, 0, 30_000L, false, null, 1, true, 0);
+                "delay", type, 1, queue, null, null, null, null, 0, 30_000L, false, null, 1, null, true, 0);
 
-        store.putRecurring(delay, fire.plusSeconds(1));
-        store.putRecurring(full, fire);
+        store.putRecurring(delay, fire.plusSeconds(1), fire.plusSeconds(1));
+        store.putRecurring(full, fire, fire);
 
         var listed = store.recurringDefinitions();
         assertThat(listed).extracting(r -> r.definition().scheduleId()).containsExactly("delay", "full");
@@ -589,7 +590,7 @@ class RedisWave2IT {
     @Test
     void pausedDefinitionsAreNotDueAndKeepTheirFireTime() {
         var fire = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MILLIS);
-        store.putRecurring(cron("s"), fire);
+        store.putRecurring(cron("s"), fire, fire);
 
         assertThat(store.pauseRecurring("s", true)).isTrue();
 
@@ -612,63 +613,65 @@ class RedisWave2IT {
     void putKeepsTheFireTimeOnlyWhenCronZoneAndFixedDelayAreAllUnchanged() {
         var fire = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
         var later = fire.plusSeconds(600);
-        store.putRecurring(cron("s"), fire);
+        store.putRecurring(cron("s"), fire, fire);
 
-        store.putRecurring(cron("s"), later);
+        store.putRecurring(cron("s"), later, later);
         assertThat(store.recurringSchedules()).containsEntry("s", fire);
 
-        store.putRecurring(zoned("s", "Asia/Kolkata"), later);
+        store.putRecurring(zoned("s", "Asia/Kolkata"), later, later);
         assertThat(store.recurringSchedules()).containsEntry("s", later);
         store.putRecurring(zoned("s", "Asia/Kolkata"), fire, later);
         assertThat(store.recurringSchedules()).containsEntry("s", later);
 
-        store.putRecurring(zoned("s", "Europe/Berlin"), fire);
+        store.putRecurring(zoned("s", "Europe/Berlin"), fire, fire);
         assertThat(store.recurringSchedules()).containsEntry("s", fire);
 
         var delay = fixedDelay("d", 1000L);
-        store.putRecurring(delay, fire);
-        store.putRecurring(delay, later);
+        store.putRecurring(delay, fire, fire);
+        store.putRecurring(delay, later, later);
         assertThat(store.recurringSchedules()).containsEntry("d", fire);
-        store.putRecurring(fixedDelay("d", 2000L), later);
+        store.putRecurring(fixedDelay("d", 2000L), later, later);
         assertThat(store.recurringSchedules()).containsEntry("d", later);
 
-        store.putRecurring(cron("s"), fire.plusSeconds(1));
+        store.putRecurring(cron("s"), fire.plusSeconds(1), fire.plusSeconds(1));
         assertThat(store.recurringSchedules()).containsEntry("s", fire.plusSeconds(1));
     }
 
     @Test
     void definitionRevisionsStayExactBeyondTheLuaDoubleRange() {
         jedis.set(keys.cronRevision, "9007199254740992");
-        store.putRecurring(cron("s"), Instant.now().plusSeconds(60));
+        store.putRecurring(
+                cron("s"), Instant.now().plusSeconds(60), Instant.now().plusSeconds(60));
         assertThat(jedis.hget(keys.cronDefinition("s"), "rev")).isEqualTo("9007199254740993");
         assertThat(store.recurringDefinitions().get(0).definition().revision()).isEqualTo(9007199254740993L);
     }
 
     private RecurringDefinition zoned(String id, String zone) {
         return new RecurringDefinition(
-                id, event, 2, queue, "acme", "* * * * *", zone, null, 0, null, false, null, 5, false, 0);
+                id, type, 2, queue, "acme", "* * * * *", zone, null, 0, null, false, null, 5, null, false, 0);
     }
 
     private RecurringDefinition fixedDelay(String id, long ms) {
-        return new RecurringDefinition(id, event, 2, queue, null, null, null, null, 0, ms, false, null, 5, false, 0);
+        return new RecurringDefinition(
+                id, type, 2, queue, null, null, null, null, 0, ms, false, null, 5, null, false, 0);
     }
 
     @Test
     void replacingADefinitionKeepsItsPausedFlagAndAZsetPlacement() {
         var fire = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
-        store.putRecurring(cron("s").withPaused(true), fire);
+        store.putRecurring(cron("s").withPaused(true), fire, fire);
         assertThat(store.recurringDefinitions().getFirst().definition().paused())
                 .isTrue();
         assertThat(jedis.zscore(keys.cron, "s")).isNull();
 
-        store.putRecurring(cron("s").withPaused(false), fire);
+        store.putRecurring(cron("s").withPaused(false), fire, fire);
 
         assertThat(store.recurringDefinitions().getFirst().definition().paused())
                 .isTrue();
         assertThat(jedis.zscore(keys.cron, "s")).isNull();
 
         store.pauseRecurring("s", false);
-        store.putRecurring(cron("s").withPaused(true), fire);
+        store.putRecurring(cron("s").withPaused(true), fire, fire);
 
         assertThat(store.recurringDefinitions().getFirst().definition().paused())
                 .isFalse();
@@ -679,7 +682,7 @@ class RedisWave2IT {
     @Test
     void commitIsRejectedWhenTheDefinitionWasPausedAfterItWasRead() {
         var fire = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MILLIS);
-        store.putRecurring(cron("s"), fire);
+        store.putRecurring(cron("s"), fire, fire);
         var due = store.dueRecurring(Instant.now(), 10).getFirst();
         store.pauseRecurring("s", true);
 
@@ -712,7 +715,7 @@ class RedisWave2IT {
     @Test
     void setNextFireReArmsAndRefusesUnknownDefinitions() {
         var fire = Instant.now().plusSeconds(3600).truncatedTo(ChronoUnit.MILLIS);
-        store.putRecurring(cron("s"), fire);
+        store.putRecurring(cron("s"), fire, fire);
         var now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
 
         assertThat(store.setNextFire("s", now)).isTrue();
@@ -730,7 +733,8 @@ class RedisWave2IT {
 
     @Test
     void deleteRecurringRemovesItFromTheListing() {
-        store.putRecurring(cron("s"), Instant.now().plusSeconds(60));
+        store.putRecurring(
+                cron("s"), Instant.now().plusSeconds(60), Instant.now().plusSeconds(60));
 
         assertThat(store.deleteRecurring("s")).isTrue();
 
@@ -742,8 +746,8 @@ class RedisWave2IT {
     void commitWithAHeldUniqueKeyAdvancesTheDefinitionWithoutStoringTheOccurrence() {
         var fire = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MILLIS);
         var overlap = new RecurringDefinition(
-                "s", event, 2, queue, null, "* * * * *", null, null, 0, null, true, null, 5, false, 0);
-        store.putRecurring(overlap, fire);
+                "s", type, 2, queue, null, "* * * * *", null, null, 0, null, true, null, 5, null, false, 0);
+        store.putRecurring(overlap, fire, fire);
         var first = store.dueRecurring(Instant.now(), 10).getFirst();
         var next1 = fire.plusSeconds(60);
         var next2 = fire.plusSeconds(120);

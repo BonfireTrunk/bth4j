@@ -161,8 +161,8 @@ const App = {
       <span class="brand">bth4j<small>DASHBOARD</small></span>
       <station-clock></station-clock>
       <span class="spacer"></span>
-      <span class="health" :class="healthClass" :title="health ? 'worker ' + health.workerId + ', running ' + health.running : ''">
-        <i class="dot" aria-hidden="true"></i>{{ healthLabel }}<span v-if="health" class="sub">worker {{ health.workerId }} &middot; {{ health.running }} tasks</span>
+      <span class="health" :class="healthClass" :title="health ? 'worker ' + health.workerId + ', running ' + health.runningTasks : ''">
+        <i class="dot" aria-hidden="true"></i>{{ healthLabel }}<span v-if="health" class="sub">worker {{ health.workerId }} &middot; {{ health.runningTasks }} tasks</span>
       </span>
       <span class="who">{{ session.user }} <span class="role">{{ session.role }}</span></span>
       <button type="button" @click="logout">Log out</button>

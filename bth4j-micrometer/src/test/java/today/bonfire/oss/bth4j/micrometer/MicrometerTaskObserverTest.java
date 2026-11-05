@@ -30,7 +30,7 @@ class MicrometerTaskObserverTest {
 
     private double count(String result, String outcome) {
         return registry.get(MicrometerTaskObserver.TASKS)
-                .tags("event", "send", "queue", "emails", "result", result, "outcome", outcome)
+                .tags("type", "send", "queue", "emails", "result", result, "outcome", outcome)
                 .counter()
                 .count();
     }
@@ -41,7 +41,7 @@ class MicrometerTaskObserverTest {
 
         assertThat(count("succeeded", "applied")).isEqualTo(1);
         var timer = registry.get(MicrometerTaskObserver.DURATION)
-                .tags("event", "send", "queue", "emails")
+                .tags("type", "send", "queue", "emails")
                 .timer();
         assertThat(timer.count()).isEqualTo(1);
         assertThat(timer.totalTime(TimeUnit.MILLISECONDS)).isEqualTo(250);
@@ -74,11 +74,24 @@ class MicrometerTaskObserverTest {
     }
 
     @Test
-    void leaseExpiredHasUnknownEventAndQueue() {
+    void unknownOutcomeIsTaggedUnknown() {
+        observer.onEvent(new TaskEvent.Succeeded(task(), Duration.ofMillis(1), Outcome.UNKNOWN));
+        observer.onEvent(new TaskEvent.Retrying(task(), new RuntimeException(), Instant.now(), Outcome.UNKNOWN));
+
+        assertThat(count("succeeded", "unknown")).isEqualTo(1);
+        assertThat(count("retried", "unknown")).isEqualTo(1);
+        assertThat(registry.find(MicrometerTaskObserver.TASKS)
+                        .tags("outcome", "lost")
+                        .counter())
+                .isNull();
+    }
+
+    @Test
+    void leaseExpiredHasUnknownTypeAndQueue() {
         observer.onEvent(new TaskEvent.LeaseExpired(9, 1, 3, false));
 
         var counter = registry.get(MicrometerTaskObserver.TASKS)
-                .tags("event", "unknown", "queue", "unknown", "result", "lease_lost", "outcome", "applied")
+                .tags("type", "unknown", "queue", "unknown", "result", "lease_lost", "outcome", "applied")
                 .counter();
         assertThat(counter.count()).isEqualTo(1);
     }
@@ -90,7 +103,7 @@ class MicrometerTaskObserverTest {
         observer.onEvent(new TaskEvent.Purged(TaskState.SUCCEEDED, 5));
 
         assertThat(registry.get(MicrometerTaskObserver.DEFERRED)
-                        .tag("event", "send")
+                        .tag("type", "send")
                         .counter()
                         .count())
                 .isEqualTo(1);
@@ -134,18 +147,67 @@ class MicrometerTaskObserverTest {
     }
 
     @Test
-    void registryFailureDoesNotPropagate() {
-        var failing = new SimpleMeterRegistry() {
-            @Override
-            public Counter counter(String name, Iterable<Tag> tags) {
-                throw new IllegalStateException("registry down");
-            }
+    void expiredHasUnknownTypeAndQueue() {
+        observer.onEvent(new TaskEvent.Expired(9));
 
-            @Override
-            public Timer timer(String name, Iterable<Tag> tags) {
+        var counter = registry.get(MicrometerTaskObserver.TASKS)
+                .tags("type", "unknown", "queue", "unknown", "result", "expired", "outcome", "applied")
+                .counter();
+        assertThat(counter.count()).isEqualTo(1);
+    }
+
+    @Test
+    void everyResultKindIsTaggedWithEveryOutcome() {
+        for (var outcome : Outcome.values()) {
+            observer.onEvent(new TaskEvent.Succeeded(task(), Duration.ofMillis(1), outcome));
+            observer.onEvent(new TaskEvent.Retrying(task(), new RuntimeException("x"), Instant.now(), outcome));
+            observer.onEvent(new TaskEvent.Died(task(), new RuntimeException("x"), "r", outcome));
+            observer.onEvent(new TaskEvent.Rescheduled(task(), Instant.now(), outcome));
+            observer.onEvent(new TaskEvent.Cancelled(task(), "why", outcome));
+        }
+
+        assertThat(Outcome.values()).containsExactlyInAnyOrder(Outcome.APPLIED, Outcome.LOST, Outcome.UNKNOWN);
+        for (var result : new String[] {"succeeded", "retried", "died", "rescheduled", "cancelled"}) {
+            for (var outcome : new String[] {"applied", "lost", "unknown"}) {
+                assertThat(count(result, outcome)).as(result + "/" + outcome).isEqualTo(1);
+            }
+        }
+        assertThat(registry.find(MicrometerTaskObserver.TASKS).counters()).hasSize(15);
+    }
+
+    private static final class FailingRegistry extends SimpleMeterRegistry {
+        private final boolean failCounters;
+        private final boolean failTimers;
+        int counterCalls;
+        int timerCalls;
+
+        FailingRegistry(boolean failCounters, boolean failTimers) {
+            this.failCounters = failCounters;
+            this.failTimers = failTimers;
+        }
+
+        @Override
+        public Counter counter(String name, Iterable<Tag> tags) {
+            counterCalls++;
+            if (failCounters) {
                 throw new IllegalStateException("registry down");
             }
-        };
+            return super.counter(name, tags);
+        }
+
+        @Override
+        public Timer timer(String name, Iterable<Tag> tags) {
+            timerCalls++;
+            if (failTimers) {
+                throw new IllegalStateException("registry down");
+            }
+            return super.timer(name, tags);
+        }
+    }
+
+    @Test
+    void counterFailureDoesNotPropagate() {
+        var failing = new FailingRegistry(true, false);
         var safe = new MicrometerTaskObserver(failing);
 
         assertThatCode(() -> {
@@ -153,5 +215,18 @@ class MicrometerTaskObserverTest {
                     safe.onEvent(new TaskEvent.Purged(TaskState.DEAD, 1));
                 })
                 .doesNotThrowAnyException();
+        assertThat(failing.counterCalls).isEqualTo(2);
+    }
+
+    @Test
+    void timerFailureDoesNotPropagateAndTheCountStillLands() {
+        var failing = new FailingRegistry(false, true);
+        var safe = new MicrometerTaskObserver(failing);
+
+        assertThatCode(() -> safe.onEvent(new TaskEvent.Succeeded(task(), Duration.ofMillis(1), Outcome.APPLIED)))
+                .doesNotThrowAnyException();
+
+        assertThat(failing.timerCalls).isEqualTo(1);
+        assertThat(failing.get(MicrometerTaskObserver.TASKS).counter().count()).isEqualTo(1);
     }
 }

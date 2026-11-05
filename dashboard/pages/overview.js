@@ -28,10 +28,10 @@ export default {
       // from the server's largest page; beyond 200 waiting tasks the board is approximate.
       const [waiting, schedules] = await Promise.all([api.tasks({ state: 'SCHEDULED', limit: 200 }), api.schedules()]);
       const rows = [];
-      for (const t of waiting) rows.push({ key: 't' + t.id, at: t.due, what: t.event, queue: t.queue, kind: 'task', href: '#/task/' + t.id, who: '#' + t.id });
+      for (const t of waiting.items) rows.push({ key: 't' + t.id, at: t.due, what: t.type, queue: t.queue, kind: 'task', href: '#/task/' + t.id, who: '#' + t.id });
       for (const s of schedules) {
         if (s.paused || !s.nextFire || Date.parse(s.nextFire) - Date.now() > PARKED_AFTER_MS) continue;
-        rows.push({ key: 's' + s.id, at: s.nextFire, what: s.event, queue: s.queue, kind: 'fire', href: '#/schedules', who: s.id });
+        rows.push({ key: 's' + s.id, at: s.nextFire, what: s.type, queue: s.queue, kind: 'fire', href: '#/schedules', who: s.id });
       }
       rows.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
       return rows.slice(0, 8);
@@ -89,7 +89,7 @@ export default {
           <status-msg :loading="board.loading.value && !board.data.value" :error="board.error.value" :empty="board.data.value && board.data.value.length === 0" empty-text="Nothing is waiting for a time." empty-hint="Delayed tasks and the next schedule fires line up here, soonest first."></status-msg>
           <div class="table-wrap departures" v-if="board.data.value && board.data.value.length">
             <table>
-              <thead><tr><th>Leaves</th><th>Event</th><th>Queue</th><th class="kindcol">What</th></tr></thead>
+              <thead><tr><th>Leaves</th><th>Type</th><th>Queue</th><th class="kindcol">What</th></tr></thead>
               <tbody>
                 <tr v-for="r in board.data.value" :key="r.key">
                   <td class="when"><time-ago :at="r.at" late></time-ago></td>
@@ -107,7 +107,7 @@ export default {
             <p v-if="!health" class="muted">No runner in this process; the server only reads the store.</p>
             <dl v-else class="kv">
               <dt>Status</dt><dd>{{ health.status }}</dd>
-              <dt>Worker</dt><dd>{{ health.workerId }}, {{ health.running }} running</dd>
+              <dt>Worker</dt><dd>{{ health.workerId }}, {{ health.runningTasks }} running</dd>
               <dt>Last claim</dt><dd><time-ago :at="health.lastClaimAt"></time-ago></dd>
               <dt>Last maintenance</dt><dd><time-ago :at="health.lastMaintenanceAt"></time-ago></dd>
               <dt>Last store error</dt>

@@ -14,13 +14,13 @@ public interface ScheduleStore extends TaskStore {
      * {@code keepUntil}, the stored next fire time is kept; otherwise it becomes {@code nextFire}. A stored
      * time later than {@code keepUntil} with no occurrence in flight has skipped fires: a fixed-delay
      * definition whose re-arm was lost, or a time pushed far out by a stale write. Changed timing forgets the
-     * occurrence in flight.
+     * occurrence in flight. A put that would write nothing (every field of the definition is stored already, the
+     * next fire time is kept, and no finished occurrence is recorded as in flight) keeps the revision. The paused
+     * flag of an existing definition is not compared, because a put never changes it.
+     *
+     * @return whether the definition was created, changed or found unchanged
      */
-    void putRecurring(RecurringDefinition definition, Instant nextFire, Instant keepUntil);
-
-    default void putRecurring(RecurringDefinition definition, Instant nextFire) {
-        putRecurring(definition, nextFire, nextFire);
-    }
+    PutRecurringOutcome putRecurring(RecurringDefinition definition, Instant nextFire, Instant keepUntil);
 
     /** @return true when a definition with that id existed */
     boolean deleteRecurring(String scheduleId);

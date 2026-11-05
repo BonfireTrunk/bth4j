@@ -290,11 +290,11 @@ public class DefaultVtExecutor implements BackgroundExecutor {
         return activeTaskCount.get();
     }
 
-    public int getCurrentMaxThreads() {
+    public int currentMaxThreads() {
         return maxConcurrentTasks.get();
     }
 
-    public int getAvailablePermits() {
+    public int availablePermits() {
         return concurrencyLimiter.availablePermits();
     }
 }

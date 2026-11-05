@@ -38,14 +38,14 @@ def make_tasks():
         state = STATES[(i * 3 + i // 7) % len(STATES)]
         tid = str(BASE_ID + i)
         t = {
-            "id": tid, "revision": str(1 + i % 5), "queue": qnames[i % 3], "event": ["send-mail", "build-report", "sync-account"][i % 3],
+            "id": tid, "revision": str(1 + i % 5), "queue": qnames[i % 3], "type": ["send-mail", "build-report", "sync-account"][i % 3],
             "payloadVersion": 1, "state": state, "attempts": 1 if state != "QUEUED" else 0, "maxAttempts": 5,
-            "created": iso(-86400 + i * 600), "due": iso(-86000 + i * 600), "stateChanged": iso(-3600 + i * 20),
+            "createdAt": iso(-86400 + i * 600), "due": iso(-86000 + i * 600), "stateChangedAt": iso(-3600 + i * 20),
             "workerId": 7 if state == "LEASED" else None, "leaseUntil": iso(30) if state == "LEASED" else None,
             "claimedAt": iso(-40) if state in ("LEASED", "SUCCEEDED", "DEAD") else None,
             "account": "acme" if i % 2 else None, "headers": {"trace": "t-%d" % i} if i % 4 == 0 else {},
             "uniqueKey": "uk-%d" % i if i % 5 == 0 else None, "scheduleId": "nightly-report" if i % 11 == 0 else None,
-            "retryOf": None, "startBy": None, "maxRun": "PT15M" if i % 3 == 0 else None,
+            "retryOf": None, "startBy": None, "maxRunTime": "PT15M" if i % 3 == 0 else None,
             "cancelRequestedAt": iso(-100) if state == "CANCELLED" else None,
             "cancelReason": "no longer needed" if state == "CANCELLED" else None,
             "progress": "step 2 of 3" if state == "LEASED" else None,
@@ -68,21 +68,21 @@ def counts():
 
 
 schedules = {
-    "nightly-report": {"id": "nightly-report", "event": "build-report", "queue": "reports", "account": None, "cron": "0 0 2 * * *", "zone": "Europe/Berlin",
-                       "misfire": "FIRE_ONCE", "fixedDelay": None, "overlapSkip": True, "paused": False, "nextFire": iso(7200), "maxAttempts": 3},
-    "mail-pump": {"id": "mail-pump", "event": "send-mail", "queue": "mail", "account": None, "cron": None, "zone": None,
-                  "misfire": "SKIP", "fixedDelay": "PT30S", "overlapSkip": False, "paused": True, "nextFire": iso(25), "maxAttempts": 5},
+    "nightly-report": {"id": "nightly-report", "type": "build-report", "queue": "reports", "account": None, "cron": "0 0 2 * * *", "zone": "Europe/Berlin",
+                       "misfire": "CATCH_UP", "catchUpMaxFires": 3, "fixedDelay": None, "overlap": "SKIP", "paused": False, "nextFire": iso(7200), "maxAttempts": 3},
+    "mail-pump": {"id": "mail-pump", "type": "send-mail", "queue": "mail", "account": None, "cron": None, "zone": None,
+                  "misfire": "SKIP", "fixedDelay": "PT30S", "overlap": "ALLOW", "paused": True, "nextFire": iso(25), "maxAttempts": 5},
 }
 workers = [
     {"id": 7, "label": "host-a/1234", "startedAt": iso(-7200), "lastSeen": iso(-2), "running": 3},
     {"id": 8, "label": "host-b/9876", "startedAt": iso(-9000), "lastSeen": iso(-300), "running": 0},
 ]
 issues = [
-    {"at": iso(-600), "kind": "unknown-event", "detail": "No handler for event 'legacy-export'", "taskId": str(BASE_ID + 3)},
+    {"at": iso(-600), "kind": "unknown-type", "detail": "No handler for type 'legacy-export'", "taskId": str(BASE_ID + 3)},
     {"at": iso(-60), "kind": "store-error", "detail": "Connection refused (retrying)", "taskId": None},
     {"at": iso(-5000), "kind": "lease-lost", "detail": "Lease expired while running", "taskId": str(BASE_ID + 9)},
 ]
-health = {"status": "RUNNING", "workerId": 7, "running": 3, "lastClaimAt": iso(-2), "lastMaintenanceAt": iso(-15),
+health = {"status": "RUNNING", "workerId": 7, "runningTasks": 3, "abandonedAttempts": 0, "lastClaimAt": iso(-2), "lastMaintenanceAt": iso(-15),
           "lastStoreErrorAt": iso(-60), "lastStoreError": "Connection refused", "issueCount": len(issues)}
 
 
@@ -246,7 +246,7 @@ class Handler(BaseHTTPRequestHandler):
                 if holder["state"] in ("SUCCEEDED", "DEAD", "CANCELLED", "EXPIRED"):
                     return self.send_json(409, {"error": "the task holding this key is already finished"})
                 holder.update(state="CANCELLED", cancelReason=self.body().get("reason"), cancelRequestedAt=iso(0),
-                              revision=str(int(holder["revision"]) + 1), stateChanged=iso(0))
+                              revision=str(int(holder["revision"]) + 1), stateChangedAt=iso(0))
                 return self.send_json(200, {"ok": True, "outcome": "CANCELLED"})
             return self.send_json(404, {"error": "not found"})
         t = tasks[segs[1]]
@@ -261,10 +261,10 @@ class Handler(BaseHTTPRequestHandler):
             del tasks[t["id"]]
             return self.send_json(204, None)
         if segs[2] == "retry":
-            t.update(state="QUEUED", attempts=0, revision=str(int(t["revision"]) + 1), stateChanged=iso(0))
+            t.update(state="QUEUED", attempts=0, revision=str(int(t["revision"]) + 1), stateChangedAt=iso(0))
         elif segs[2] == "cancel":
             t.update(state="CANCELLED", cancelReason=self.body().get("reason"), cancelRequestedAt=iso(0),
-                     revision=str(int(t["revision"]) + 1), stateChanged=iso(0))
+                     revision=str(int(t["revision"]) + 1), stateChangedAt=iso(0))
         return self.send_json(200, t)
 
 

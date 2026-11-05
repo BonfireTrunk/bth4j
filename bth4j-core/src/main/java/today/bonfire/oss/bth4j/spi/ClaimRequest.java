@@ -12,7 +12,7 @@ import java.util.Set;
  * @param count         at most this many tasks
  * @param lease         how long each lease lasts unless renewed
  * @param workerId      the claiming worker, recorded with each task
- * @param knownEventIds only tasks of these events are claimed; null means every event
+ * @param knownTypeIds only tasks of these types are claimed; null means every type
  */
 public record ClaimRequest(
-        List<Integer> queueIds, int count, Duration lease, int workerId, Set<Integer> knownEventIds) {}
+        List<Integer> queueIds, int count, Duration lease, int workerId, Set<Integer> knownTypeIds) {}

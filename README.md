@@ -72,7 +72,7 @@ Requires Java 21.
 
 ## Quick start
 
-A payload is converted to text by a `JsonMapper`, a four-method interface that wraps the JSON library you
+A payload is converted to text by a `JsonMapper`, a two-method interface that wraps the JSON library you
 already use. With Jackson (2.12 or newer for records):
 
 ```java
@@ -80,9 +80,7 @@ public class JacksonMapper implements JsonMapper {
     private final ObjectMapper mapper = new ObjectMapper();
 
     @Override public <T> T fromJson(String json, Class<T> type) throws Exception { return mapper.readValue(json, type); }
-    @Override public <T> T fromJson(byte[] json, Class<T> type) throws Exception { return mapper.readValue(json, type); }
     @Override public String toJson(Object o) throws Exception { return mapper.writeValueAsString(o); }
-    @Override public byte[] toJsonAsBytes(Object o) throws Exception { return mapper.writeValueAsBytes(o); }
 }
 ```
 
@@ -156,7 +154,7 @@ enqueue --(no due)--> QUEUED --claim--> LEASED --ack--> SUCCEEDED
 ```
 
 A task also ends CANCELLED (an operator cancelled it, its processor threw `TaskCancelledException` or it ran
-past its `maxRun`) or EXPIRED (its `startBy` passed before it could start). From DEAD, CANCELLED or EXPIRED
+past its `maxRunTime`) or EXPIRED (its `startBy` passed before it could start). From DEAD, CANCELLED or EXPIRED
 an operator can send it back to QUEUED with `AdminOps.retry`.
 
 A runner is made of four services: the task processor (claims in batches and runs the tasks, renews their
@@ -208,7 +206,7 @@ most 8192, and all step names and encoded results of a task together at most 655
 | `uniqueKey(key)` / `uniqueKey(key, Uniqueness.keepFor(d))` | at most one task record holds the key; released when the task finishes, or `d` after; an operator retry within `d` keeps it |
 | `maxAttempts(n)` | attempts before the task is dead; the runner default when absent |
 | `startBy(instant)` | the task expires if it has not started by then, see "Cancelling tasks"; must not be before the run time |
-| `maxRun(duration)` | an attempt running longer is asked to stop, see "Cancelling tasks" |
+| `maxRunTime(duration)` | an attempt running longer is asked to stop, see "Cancelling tasks" |
 | `retryPolicy(name)` | a retry policy registered on the runner with that name, see "Retries" |
 | `account(text)`, `header(name, value)` | application labels, stored with the task (8 KiB of headers) |
 | `id(id)` | an id the client allocated (`client.nextId()` or a retry prepared with `EnqueueFailedException.retryRequests(...)`), see below |
@@ -276,7 +274,7 @@ Ids must be allocated by a client of this namespace: `client.nextId()` or an exc
 that already belongs to a task is accepted again only for the same request, encoded identically: the stored task is compared on type, queue, the
 payload as stored text (when the task still has it; a finished task may have dropped it) and the unique key
 (only while the stored task holds one, even after an operator retry). Headers, account, attempts, retry policy,
-`startBy`, `maxRun`, delay, `at(...)`, the `keepFor` duration and payload version are not compared. Any other
+`startBy`, `maxRunTime`, delay, `at(...)`, the `keepFor` duration and payload version are not compared. Any other
 difference throws `TaskIdReusedException`. Before writing,
 `enqueueAll` rejects duplicate caller ids, checks the high-water mark before reserving fresh ids, rejects caller
 ids inside that fresh range, and compares every caller id with its stored task. These checks add no store reads
@@ -373,25 +371,34 @@ Starting a new `ctx.step` also checks. If the revision fence still accepts it, a
 and returns normally ends the task SUCCEEDED; the request is not applied after a normal return. If the worker dies while a cancel is pending, maintenance
 ends the task CANCELLED when its lease expires instead of retrying it.
 
-`maxRun(duration)` uses the same path: when an attempt has run longer, the lease renewal asks it to stop with
-the reason "max run time ... exceeded". `startBy(instant)` expires a task that did not start in time:
+`maxRunTime(duration)` uses the same path: when an attempt has run longer, the lease renewal asks it to stop with
+the reason "max run time ... exceeded". A task without its own `maxRunTime` gets the runner's
+`defaultMaxRunTime(duration)`, one hour unless the builder sets another; a task that legitimately runs longer
+needs its own `maxRunTime` (at most `TaskRequest.MAX_RUN_TIME`, about 24.8 days). An attempt that is still running one
+renewal period after the request is abandoned: the runner stops renewing its lease, so the lease expires and
+maintenance retries or ends the task, and raises the issue `attempt-abandoned`. The abandoned thread keeps its
+executor and queue slots until the processor returns, which `RunnerHealth.abandonedAttempts` and the gauge
+`bth4j.runner.abandoned` count. A processor that blocks without a timeout therefore costs a slot, not the
+task. `startBy(instant)` expires a task that did not start in time:
 claims skip it, maintenance moves it to EXPIRED and the observer receives `TaskEvent.Expired`.
 
 ```java
 client.enqueue(TaskRequest.of(EXPORT, export)
         .startBy(Instant.now().plus(Duration.ofMinutes(10)))   // expired, not run, if no worker was free by then
-        .maxRun(Duration.ofMinutes(30))                        // asked to stop after 30 minutes
+        .maxRunTime(Duration.ofMinutes(30))                        // asked to stop after 30 minutes
         .build());
 ```
 
 ### Recurring tasks
 
 `client.putSchedule(ScheduleDefinition.of(id, type, payload, cron))` creates or replaces a definition and
-returns the next fire time; `.queue(...)`, `.account(...)` and `.maxAttempts(...)` refine it. The cron
+returns the next fire time; `.queue(...)`, `.account(...)`, `.maxAttempts(...)` and `.maxRunTime(...)` refine it. The cron
 expression has 5 fields (Unix format). Each fire time creates one task, exactly once across all instances.
 Registering the same id with the same timing (expression, zone and delay) keeps the next fire time while a
 fixed-delay occurrence is still running, or while it is not beyond the second fire after now; changed timing, or a
-next fire time beyond that with no occurrence running (a parked or pushed-out definition), resets it. `client.deleteSchedule(id)` and `client.schedules()` remove and list definitions.
+next fire time beyond that with no occurrence running (a parked or pushed-out definition), resets it. Registering a
+definition that is stored already, with its next fire time kept, writes nothing and logs at DEBUG; a new or
+changed one logs at INFO. `client.deleteSchedule(id)` and `client.schedules()` remove and list definitions.
 
 More options on `ScheduleDefinition`:
 
@@ -403,7 +410,7 @@ client.putSchedule(ScheduleDefinition.of("daily-digest", DIGEST, "0 8 * * *")
 
 // misfire: what happens when a fire time was missed by more than the threshold (below)
 client.putSchedule(ScheduleDefinition.of("hourly-sync", SYNC, "0 * * * *")
-        .misfire(Misfire.catchUp(3)));          // Misfire.SKIP, Misfire.FIRE_ONCE_NOW (default), Misfire.catchUp(max)
+        .misfire(Misfire.catchUp(3)));          // Misfire.SKIP, Misfire.FIRE_ONCE_NOW (default), Misfire.catchUp(maxFires)
 
 // overlap: no new occurrence while the previous one has not finished
 client.putSchedule(ScheduleDefinition.of("nightly-report", NIGHTLY_REPORT, "30 2 * * *")
@@ -415,7 +422,7 @@ client.putSchedule(ScheduleDefinition.every("poll-feed", POLL_FEED, Duration.ofM
 
 The misfire threshold is twice `recurringTasksCheckInterval`, at least one minute. `SKIP` creates nothing and
 continues from now, `FIRE_ONCE_NOW` creates one task now, `CATCH_UP` creates one task per missed fire time up
-to `max` (the most recent ones when more were missed) and continues from now. Every misfire is recorded as an
+to `maxFires` (the most recent ones when more were missed) and continues from now. Every misfire is recorded as an
 issue. With `Overlap.SKIP`, an occurrence is skipped (and an issue `schedule-overlap` recorded) while the task
 of the previous one is not finished. This keys only the occurrence (`sched:<id>`); tasks its processor
 enqueues are unique only if the application gives them keys. A fixed-delay definition (at least 1 second)
@@ -487,7 +494,10 @@ A task that names a policy the runner does not have uses the default policy, and
 
 A `TaskObserver` receives `TaskEvent`s (`Started`, `Succeeded`, `Retrying`, `Died`, `Rescheduled`,
 `Cancelled`, `Expired`, `LeaseExpired`, `Deferred`, `ScheduleFired`, `Purged`). It runs on the thread that produced the event,
-after the outcome was applied, and an exception in it never changes a task:
+after the outcome was applied, and an exception in it never changes a task. Events that end an attempt carry an
+`outcome`: `APPLIED` (the store made the change), `LOST` (the store rejected it because the lease had moved on) or
+`UNKNOWN` (the store call failed, so the change may or may not have been made; if it was not, the lease expires and
+the task runs again):
 
 ```java
 BackgroundRunner.builder()
@@ -501,38 +511,41 @@ BackgroundRunner.builder()
 ```
 
 `new LoggingTaskObserver()` is a ready observer that writes one SLF4J line per event (logger `bth4j.tasks`) and
-puts `bth4j.task`, `bth4j.event` and `bth4j.queue` in the MDC; pass your own `Logger` to use another name.
+puts `bth4j.task`, `bth4j.type` and `bth4j.queue` in the MDC; pass your own `Logger` to use another name.
+
+The runner's own log lines go to the logger names in `Loggers`: `RUNNER`, `CLIENT`, `PROCESSOR`, `ATTEMPT`
+(one attempt of a task), `MAINTENANCE`, `RECURRING`, `PROMOTION` and `OBSERVERS`, plus `TASKS` for
+`LoggingTaskObserver`. They follow the class names below `Loggers.ROOT` (`today.bonfire.oss.bth4j`), so a
+level set on that prefix covers them all except `TASKS`, and they do not change when an internal class moves.
 
 ### Inspection
 
 ```java
 client.task(id);                                  // Optional<TaskView>, any state
 client.counts();                                  // per queue name: counts per state
-client.tasks(TaskState.DEAD, "mail", 0, 100);     // oldest state change first; afterId for paging (best effort)
-TaskViewPage page = client.tasks(TaskState.DEAD, "mail", (String) null, 100);
+TaskViewPage page = client.tasks(TaskState.DEAD, "mail", null, 100);   // oldest state change first; null cursor starts
 client.tasks(TaskState.DEAD, "mail", page.next(), 100);   // next is null after the last page
 ```
 
-Paging with `afterId` re-reads the last task of the previous page; if that task changed state in between, the listing
-can end early (PostgreSQL) or repeat (Redis). The cursor form returns a `TaskViewPage` whose `next` is an opaque
-position in the listing, so the walk does not depend on the last task of the previous page. A task whose own position
-moves while the walk runs (for example a deferral) can still be seen twice (moved later) or missed (moved earlier).
-A malformed cursor throws `IllegalArgumentException`.
+The listing returns a `TaskViewPage` whose `next` is an opaque position in the listing, so the walk does not depend on
+the last task of the previous page. A task whose own position moves while the walk runs (for example a deferral) can
+still be seen twice (moved later) or missed (moved earlier). A malformed cursor throws `IllegalArgumentException`.
 
 A `TaskView` carries state, attempts, due time, the last failures, completed steps and progress.
 
 ### Health and issues
 
 ```java
-RunnerHealth health = runner.health();     // status NEW, RUNNING, QUIET or STOPPED; workerId, running tasks,
-                                           // lastClaimAt, lastMaintenanceAt, lastStoreErrorAt, lastStoreError, issueCount
+RunnerHealth health = runner.health();     // status NEW, RUNNING, QUIET or STOPPED; workerId, runningTasks,
+                                           // abandonedAttempts, lastClaimAt, lastMaintenanceAt, lastStoreErrorAt,
+                                           // lastStoreError, issueCount
 List<Issue> issues = runner.issues();      // the last 100 things an operator should look at, oldest first
 boolean drained = runner.drain(Duration.ofSeconds(30));   // quiet, then wait for the running tasks
 ```
 
-An `Issue` has a time, a kind, a detail and the task id when there is one. The kinds are `unknown-event`,
-`store-error`, `lease-lost`, `retry-policy`, `executor-rejected`, `schedule-misfire`, `schedule-overlap` and
-`schedule-paused`. Issues live in the memory of the runner that saw them. `drain` leaves the runner quiet
+An `Issue` has a time, a kind, a detail and the task id when there is one. The kinds are `unknown-type`,
+`store-error`, `lease-lost`, `attempt-abandoned`, `retry-policy`, `executor-rejected`, `schedule-misfire`,
+`schedule-overlap` and `schedule-paused`. Issues live in the memory of the runner that saw them. `drain` leaves the runner quiet
 (call `resume()` to claim again, or `stop()`), and returns whether every running task finished in time; use it
 before a rolling restart.
 
@@ -551,8 +564,7 @@ AdminOps admin = runner.admin();
 
 admin.counts();                                    // Map<queue name, StateCounts>
 admin.queues();                                    // id, name, paused
-admin.tasks(TaskState.DEAD, "mail", 0, 100);       // oldest state change first, afterId for paging (best effort); queue null for all
-admin.tasks(TaskState.DEAD, "mail", cursor, 100);  // TaskViewPage(items, next); cursor null starts, next null ends
+admin.tasks(TaskState.DEAD, "mail", cursor, 100);  // oldest state change first; TaskViewPage(items, next); cursor null starts, next null ends; queue null for all
 admin.task(id);                                    // Optional<TaskView>
 admin.taskByKey("welcome-42");                     // the task holding that unique key, Optional<TaskView>
 admin.retry(id, revision);                         // DEAD, CANCELLED or EXPIRED back to QUEUED, attempts reset
@@ -602,17 +614,18 @@ MicrometerRunnerMetrics metrics = MicrometerRunnerMetrics.bind(runner, registry,
 
 | Meter | Type | Tags |
 |---|---|---|
-| `bth4j.tasks` | counter | `event`, `queue`, `result` (`succeeded`, `retried`, `died`, `rescheduled`, `cancelled`, `expired`, `lease_lost`), `outcome` (`applied`, `lost`) |
-| `bth4j.task.duration` | timer | `event`, `queue` |
-| `bth4j.deferred` | counter | `event` |
+| `bth4j.tasks` | counter | `type`, `queue`, `result` (`succeeded`, `retried`, `died`, `rescheduled`, `cancelled`, `expired`, `lease_lost`), `outcome` (`applied`, `lost`, `unknown`) |
+| `bth4j.task.duration` | timer | `type`, `queue` |
+| `bth4j.deferred` | counter | `type` |
 | `bth4j.schedule.fired` | counter | none |
 | `bth4j.purged` | counter | `state` |
 | `bth4j.runner.running` | gauge | none |
+| `bth4j.runner.abandoned` | gauge | none; attempts past their maximum run time that still hold a slot |
 | `bth4j.runner.up` | gauge | none; 1 while the runner is RUNNING |
 | `bth4j.tasks.state` | gauge | `state`, `queue` |
 
 The observer's tags are only names and results, never ids or messages, so the number of meters stays bounded.
-`expired` and `lease_lost` are counted with `event` and `queue` set to `unknown`. The gauges are refreshed by
+`expired` and `lease_lost` are counted with `type` and `queue` set to `unknown`. The gauges are refreshed by
 one daemon thread every `refresh`, so a scrape never reads the store.
 
 ### Admin HTTP server and dashboard
@@ -638,17 +651,15 @@ as `X-CSRF-Token` on every POST and DELETE. Sessions are kept in memory, last 12
 (`sessionTtl`) and end when the server stops. Five failed logins in a row block that remote address for 10
 seconds (HTTP 429). A stale revision is answered 409, an unknown id 404; task ids and revisions are JSON strings.
 The endpoints are `me`, `session`, `health`, `overview`, `queues` (with `pause` and `resume`), `tasks` (list
-with `state`, `queue`, `cursor` or `after`, and `limit` up to 200; one task, its `payload`, `retry`, `cancel`, delete;
+with `state`, `queue`, `cursor` and `limit` up to 200; one task, its `payload`, `retry`, `cancel`, delete;
 `tasks/by-key/{key}` reads the task that holds a unique key, 404 when none does, and `tasks/by-key/{key}/cancel` cancels it
 with a body of `{"reason"}` and no revision: viewers may read, admins may cancel; a blank key or one over 256 characters
 is answered 400; cancel answers 404 when no task holds the key and 409 when the holder is already finished or changed meanwhile),
 `schedules` (with `pause`, `resume`, `trigger`, delete), `workers` and `issues`.
 
-`GET /api/v1/tasks` pages in two forms. With no `cursor` (with or without `after=<id>`) the reply is a JSON array of tasks, as
-before, and paging by `after` is best effort (see "Inspection"). With `cursor=<value>` the reply is
-`{"items": [...], "next": "<cursor>" | null}`: pass `next` as `cursor` for the following page; `next` is null after the
-last page. An empty `cursor=` starts at the beginning, and a malformed one is answered 400. When both `cursor` and
-`after` are sent, `cursor` wins.
+`GET /api/v1/tasks` answers `{"items": [...], "next": "<cursor>" | null}`: pass `next` as `cursor` for the following
+page; `next` is null after the last page. A missing or empty `cursor` starts at the beginning, and a malformed one is
+answered 400.
 
 The server speaks plain HTTP unless `https(SSLContext)` is set, which also marks the cookie `Secure`; keep it
 on the loopback interface or behind TLS. `corsOrigin("https://dashboard.example.com")` lets a browser app on
@@ -686,7 +697,7 @@ All settings are on `BackgroundRunner.builder()`.
 | `store` | required | `new RedisTaskStore(jedis, "namespace")`, `new PostgresTaskStore(dataSource, "prefix")` or `new InMemoryStore()` |
 | `registry` | new registry | the processor registry; by default created by the runner and reached with `runner.registry()` |
 | `jsonMapper` | none | payloads and step results as JSON; needed unless every task type has its own codec |
-| `clock` | `Clock.systemUTC()` | clock for client-side instants (`created`, delays, retry times) |
+| `clock` | `Clock.systemUTC()` | clock for client-side instants (`createdAt`, delays, retry times) |
 | `concurrency` | `Concurrency.fixed(max(2, 2 x processors))` | how many tasks run at once; `fixed(n)` or `adaptive(min, max)` |
 | `taskExecutor` | built from `concurrency` | a custom `BackgroundExecutor`; the runner shuts it down |
 | `retryPolicy` | exponential, 1 s doubling, capped at 1 h, 20 % jitter | delay after a failed attempt |
@@ -720,7 +731,7 @@ lock that keeps block allocation contiguous, so busy producers serialise on it. 
 PostgreSQL, size 1 reached about one third of the enqueue rate of a larger block (10,743 against 32,379
 enqueues in 60 s).
 
-`start()` fails with `TaskConfigurationError` when no processor is registered. `quiet()` stops claiming while
+`start()` fails with `TaskConfigurationException` when no processor is registered. `quiet()` stops claiming while
 running tasks finish and `resume()` claims again. `stop()` stops the services, waits up to `shutdownTimeout`
 and keeps renewing leases of running tasks meanwhile; tasks still running afterwards are retried when their
 lease expires. A lease that has lapsed is not revived by a later renewal, so `leaseDuration` must sit well above the worst pause of a worker (GC, container freeze, slow store round trip). A process that only produces tasks can use `TaskClient.builder().store(store).jsonMapper(mapper).build()`.
@@ -736,11 +747,18 @@ var store = new RedisTaskStore(jedis, "my-app");   // UnifiedJedis (for example 
 The namespace prefixes every key and carries the Redis Cluster hash tag, so all keys of a store share one
 slot. The store does not close the Jedis client. Redis 7.4 or newer, or Valkey 9 or newer, is required (the
 store expires the key fields of finished tasks with hash field expiry). A namespace written by bth4j 3.0 has
-another layout and is refused by `init`; start 4.0 with a new namespace. Enqueue writes a random per-record
+another layout and is refused by `init`, and so is one written by a 4.0.0 snapshot; start 4.0 with a new
+namespace. Enqueue writes a random per-record
 token in task hash field `wt` with the other fields. A transport resend with that token returns stored again;
 a different token under the same id returns exists, before checking the unique key. The token only helps while
 the task exists: with a zero succeeded retention a task that already ran and was removed is stored again by a
 resend.
+
+Memory: the task hash stays a listpack only while every value is at most `hash-max-listpack-value` bytes
+(default 64). A header map, account, unique key, progress text or cancel reason longer than that makes the
+hash a hashtable, about 5 times larger for that task; raise the setting if your tasks carry such values.
+Zsets (queues, `leased`, the state indexes) leave the listpack encoding above `zset-max-listpack-entries`
+entries (default 128) and cost about 6 times more per entry as a skiplist; raising it trades CPU for memory.
 
 ### PostgreSQL
 
@@ -788,6 +806,10 @@ clock.advance(Duration.ofHours(1));                 // the task is promoted and 
 Redis and PostgreSQL stores, so behaviour in tests matches production. The services still wait in real
 time between their checks, so a test that moves the clock should poll for the result (for example with
 Awaitility) instead of asserting at once.
+
+`new Codecs(jsonMapper)` encodes and decodes payloads (`encode(type, payload)`, `decode(type, text)`) and step
+results (`encodeStep(result)`, `decodeStep(text, class)`) exactly as the runner stores them, so a test can pin
+the stored form of a payload version or a step result against the library's own rules.
 
 The integration tests of the store modules start containers with Testcontainers: `redis:8.8-alpine` and
 `postgres:18-alpine` by default. `./mvnw -pl bth4j-redis -am verify -Pvalkey` runs the Redis suite against

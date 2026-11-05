@@ -24,11 +24,11 @@ final class TaskHashes {
         var f = new ArrayList<String>();
         put(f, F_REVISION, t.revision());
         put(f, F_QUEUE, t.queueId());
-        put(f, F_EVENT, t.eventId());
+        put(f, F_EVENT, t.typeId());
         put(f, F_PAYLOAD_VERSION, t.payloadVersion());
         put(f, F_ATTEMPTS, t.attempts());
         put(f, F_MAX_ATTEMPTS, t.maxAttempts());
-        put(f, F_CREATED, t.created());
+        put(f, F_CREATED, t.createdAt());
         put(f, F_WORKER, t.workerId());
         put(f, F_LEASE, t.leaseUntil());
         put(f, F_CLAIMED_AT, t.claimedAt());
@@ -41,7 +41,7 @@ final class TaskHashes {
         put(f, F_SCHEDULE, t.scheduleId());
         put(f, F_RETRY_OF, t.retryOf());
         put(f, F_START_BY, t.startBy());
-        put(f, F_MAX_RUN, t.maxRun());
+        put(f, F_MAX_RUN_TIME, t.maxRunTime());
         put(f, F_CANCEL_AT, t.cancelRequestedAt());
         put(f, F_CANCEL_REASON, t.cancelReason());
         put(f, F_PROGRESS, t.progress());
@@ -54,22 +54,23 @@ final class TaskHashes {
      * @param steps    the {@code st:<id>} string, or null
      * @param failures the {@code f:<id>} entries in order, empty when there are none
      */
-    static TaskRecord fromHash(long id, Map<String, String> h, String data, String steps, List<String> failures) {
+    static TaskRecord fromHash(
+            long id, Map<String, String> h, String encodedPayload, String steps, List<String> failures) {
         var state = TaskState.fromCode(integer(h, F_STATE));
         var leased = state == TaskState.LEASED;
         return TaskRecord.builder()
                 .id(id)
                 .revision(integer(h, F_REVISION))
                 .queueId(integer(h, F_QUEUE))
-                .eventId(integer(h, F_EVENT))
+                .typeId(integer(h, F_EVENT))
                 .payloadVersion(integer(h, F_PAYLOAD_VERSION))
                 .state(state)
                 .attempts(integer(h, F_ATTEMPTS))
                 .maxAttempts(integer(h, F_MAX_ATTEMPTS))
-                .created(instant(h, F_CREATED))
+                .createdAt(instant(h, F_CREATED))
                 .due(instant(h, F_DUE))
-                .stateChanged(instant(h, F_STATE_CHANGED))
-                .data(data)
+                .stateChangedAt(instant(h, F_STATE_CHANGED))
+                .encodedPayload(encodedPayload)
                 .workerId((leased || state.isTerminal()) && h.containsKey(F_WORKER) ? integer(h, F_WORKER) : null)
                 .leaseUntil(leased ? instant(h, F_LEASE) : null)
                 .claimedAt(instant(h, F_CLAIMED_AT))
@@ -82,7 +83,7 @@ final class TaskHashes {
                 .scheduleId(h.get(F_SCHEDULE))
                 .retryOf(h.containsKey(F_RETRY_OF) ? Long.parseLong(h.get(F_RETRY_OF)) : null)
                 .startBy(instant(h, F_START_BY))
-                .maxRun(duration(h, F_MAX_RUN))
+                .maxRunTime(duration(h, F_MAX_RUN_TIME))
                 .cancelRequestedAt(instant(h, F_CANCEL_AT))
                 .cancelReason(h.get(F_CANCEL_REASON))
                 .progress(h.get(F_PROGRESS))

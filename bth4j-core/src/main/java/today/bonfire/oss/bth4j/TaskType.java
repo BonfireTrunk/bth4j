@@ -1,7 +1,7 @@
 package today.bonfire.oss.bth4j;
 
 import org.apache.commons.lang3.StringUtils;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 
 /**
  * A kind of task: its name (stored with every task and used to pick the processor), its payload class and
@@ -28,10 +28,10 @@ public final class TaskType<T> {
     private TaskType(
             String name, Class<T> payloadClass, PayloadCodec<T> codec, int payloadVersion, boolean interruptOnCancel) {
         if (StringUtils.isBlank(name) || name.length() > 128) {
-            throw new TaskConfigurationError("Task type name must be 1 to 128 characters: " + name);
+            throw new TaskConfigurationException("Task type name must be 1 to 128 characters: " + name);
         }
         if (payloadVersion < 1) {
-            throw new TaskConfigurationError("payloadVersion must be at least 1");
+            throw new TaskConfigurationException("payloadVersion must be at least 1");
         }
         this.name = name;
         this.payloadClass = payloadClass;

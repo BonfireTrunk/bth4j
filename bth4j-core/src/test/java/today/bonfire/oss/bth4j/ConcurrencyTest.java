@@ -4,7 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import org.junit.jupiter.api.Test;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 
 class ConcurrencyTest {
 
@@ -16,9 +16,9 @@ class ConcurrencyTest {
 
     @Test
     void fixedRejectsOutOfRangeLimits() {
-        assertThatThrownBy(() -> Concurrency.fixed(0)).isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> Concurrency.fixed(-1)).isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> Concurrency.fixed(100_001)).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> Concurrency.fixed(0)).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> Concurrency.fixed(-1)).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> Concurrency.fixed(100_001)).isInstanceOf(TaskConfigurationException.class);
     }
 
     @Test
@@ -30,8 +30,8 @@ class ConcurrencyTest {
 
     @Test
     void adaptiveRejectsMinBelowOneAndMaxBelowMin() {
-        assertThatThrownBy(() -> Concurrency.adaptive(0, 4)).isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> Concurrency.adaptive(5, 4)).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> Concurrency.adaptive(0, 4)).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> Concurrency.adaptive(5, 4)).isInstanceOf(TaskConfigurationException.class);
     }
 
     @Test

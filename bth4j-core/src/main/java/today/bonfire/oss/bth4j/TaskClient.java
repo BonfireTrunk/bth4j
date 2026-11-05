@@ -16,17 +16,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.common.Cron;
 import today.bonfire.oss.bth4j.common.JsonMapper;
-import today.bonfire.oss.bth4j.common.QueuesHolder;
 import today.bonfire.oss.bth4j.exceptions.EnqueueFailedException;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
-import today.bonfire.oss.bth4j.service.Codecs;
-import today.bonfire.oss.bth4j.service.DefaultAdminOps;
-import today.bonfire.oss.bth4j.service.IdAllocator;
-import today.bonfire.oss.bth4j.service.Names;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
+import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
@@ -39,7 +35,7 @@ import today.bonfire.oss.bth4j.spi.TaskStoreException;
  * {@link BackgroundRunner#client()}; a process that only produces builds one with {@link #builder()}.
  */
 public final class TaskClient {
-    private static final Logger log = LoggerFactory.getLogger(TaskClient.class);
+    private static final Logger log = LoggerFactory.getLogger(Loggers.CLIENT);
     private static final int ENQUEUE_CHUNK = 500;
     private static final int MAX_ID_TRIES = 3;
     private static final String ID_TAKEN = "generated task ids were already in use after " + MAX_ID_TRIES + " tries";
@@ -282,9 +278,9 @@ public final class TaskClient {
     private boolean requireSameContent(TaskRecord sent) {
         var stored = store.getTask(sent.id()).orElse(null);
         if (stored == null) return false;
-        if (stored.eventId() != sent.eventId()) throw new TaskIdReusedException(sent.id(), "another task type");
+        if (stored.typeId() != sent.typeId()) throw new TaskIdReusedException(sent.id(), "another task type");
         if (stored.queueId() != sent.queueId()) throw new TaskIdReusedException(sent.id(), "another queue");
-        if (stored.data() != null && !stored.data().equals(sent.data())) {
+        if (stored.encodedPayload() != null && !stored.encodedPayload().equals(sent.encodedPayload())) {
             throw new TaskIdReusedException(sent.id(), "another payload");
         }
         var heldKey = stored.uniqueKey();
@@ -308,20 +304,20 @@ public final class TaskClient {
         }
         var b = TaskRecord.builder()
                 .id(id)
-                .queueId(names.queueId(queues.getValidQueue(request.queue())))
-                .eventId(names.eventId(type.name()))
+                .queueId(names.queueId(queues.validQueue(request.queue())))
+                .typeId(names.typeId(type.name()))
                 .payloadVersion(type.payloadVersion())
                 .state(due != null && due.isAfter(now) ? TaskState.SCHEDULED : TaskState.QUEUED)
                 .maxAttempts(request.maxAttempts() != null ? request.maxAttempts() : defaultMaxAttempts)
-                .created(now)
+                .createdAt(now)
                 .due(due)
-                .data(codecs.encode(type, request.payload()))
+                .encodedPayload(codecs.encode(type, request.payload()))
                 .account(request.account())
                 .headers(validHeaders(request.headers()))
                 .uniqueKey(request.uniqueKey())
                 .retryPolicy(request.retryPolicy())
                 .startBy(request.startBy())
-                .maxRun(request.maxRun());
+                .maxRunTime(request.maxRunTime());
         if (request.uniqueKey() != null && request.uniqueness() instanceof Uniqueness.KeepFor k) {
             b.keyKeep(k.duration());
         }
@@ -366,33 +362,35 @@ public final class TaskClient {
             keepUntil = Cron.next(definition.cron(), next, zone).orElse(next);
         }
         var type = definition.type();
-        var misfire = switch (definition.misfire()) {
-            case Misfire.Skip s -> RecurringDefinition.MISFIRE_SKIP;
-            case Misfire.FireOnceNow f -> RecurringDefinition.MISFIRE_FIRE_ONCE_NOW;
-            case Misfire.CatchUp c -> RecurringDefinition.MISFIRE_CATCH_UP;
-        };
         var stored = new RecurringDefinition(
                 definition.id(),
-                names.eventId(type.name()),
+                names.typeId(type.name()),
                 type.payloadVersion(),
-                names.queueId(queues.getValidQueue(definition.queue())),
+                names.queueId(queues.validQueue(definition.queue())),
                 definition.account(),
                 definition.cron(),
                 definition.zone() == null ? null : definition.zone().getId(),
-                misfire,
-                definition.misfire() instanceof Misfire.CatchUp c ? c.max() : 0,
+                RecurringDefinition.misfireCode(definition.misfire()),
+                RecurringDefinition.misfireMaxFires(definition.misfire()),
                 definition.fixedDelay() == null ? null : definition.fixedDelay().toMillis(),
                 definition.overlap() == Overlap.SKIP,
                 codecs.encode(type, definition.payload()),
                 definition.maxAttempts() != null ? definition.maxAttempts() : defaultMaxAttempts,
+                definition.maxRunTime() == null ? null : definition.maxRunTime().toMillis(),
                 false,
                 0);
-        store.putRecurring(stored, next, keepUntil);
-        log.info(
-                "Registered schedule {} ({}) next at {}",
-                definition.id(),
-                definition.isFixedDelay() ? "every " + definition.fixedDelay() : definition.cron(),
-                next);
+        var outcome = store.putRecurring(stored, next, keepUntil);
+        var timing = definition.isFixedDelay() ? "every " + definition.fixedDelay() : definition.cron();
+        if (outcome == PutRecurringOutcome.UNCHANGED) {
+            log.debug("Schedule {} ({}) is registered already", definition.id(), timing);
+        } else {
+            log.info(
+                    "{} schedule {} ({}) next at {}",
+                    outcome == PutRecurringOutcome.CREATED ? "Registered" : "Changed",
+                    definition.id(),
+                    timing,
+                    next);
+        }
         return next;
     }
 
@@ -427,21 +425,6 @@ public final class TaskClient {
     }
 
     /**
-     * Lists tasks in one state, oldest state change first.
-     *
-     * @param queue   a queue name, or null for every queue
-     * @param afterId for paging: only tasks after this one in the listing; 0 starts at the beginning. Best effort:
-     *                a task that changes state between pages can end the listing early or repeat it; page with
-     *                {@link #tasks(TaskState, String, String, int)} for a walk that does not depend on the last task of the previous page
-     */
-    public List<TaskView> tasks(TaskState state, String queue, long afterId, int limit) {
-        var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.getValidQueue(queue)));
-        var result = new ArrayList<TaskView>();
-        for (var r : store.tasks(state, queueId, afterId, limit)) result.add(names.view(r));
-        return result;
-    }
-
-    /**
      * Lists tasks in one state, oldest state change first, paging by a cursor that is a position in the listing.
      *
      * @param queue  a queue name, or null for every queue
@@ -449,34 +432,34 @@ public final class TaskClient {
      * @throws IllegalArgumentException if the cursor is malformed
      */
     public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
-        var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.getValidQueue(queue)));
+        var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.validQueue(queue)));
         var page = store.tasks(state, queueId, cursor, limit);
         var result = new ArrayList<TaskView>();
         for (var r : page.items()) result.add(names.view(r));
         return new TaskViewPage(result, page.next());
     }
 
-    public FullStore store() {
+    FullStore store() {
         return store;
     }
 
-    public Names names() {
+    Names names() {
         return names;
     }
 
-    public Codecs codecs() {
+    Codecs codecs() {
         return codecs;
     }
 
-    public IdAllocator ids() {
+    IdAllocator ids() {
         return ids;
     }
 
-    public QueuesHolder queues() {
+    QueuesHolder queues() {
         return queues;
     }
 
-    public Clock clock() {
+    Clock clock() {
         return clock;
     }
 
@@ -510,22 +493,22 @@ public final class TaskClient {
         }
 
         public Builder clock(Clock clock) {
-            if (clock == null) throw new TaskConfigurationError("clock cannot be null");
+            if (clock == null) throw new TaskConfigurationException("clock cannot be null");
             this.clock = clock;
             return this;
         }
 
         /** How many ids are reserved per store call; 1 means one call per enqueue. Default 64. */
         public Builder idBlockSize(int size) {
-            if (size < 1 || size > 100_000) throw new TaskConfigurationError("idBlockSize must be 1 to 100000");
+            if (size < 1 || size > 100_000) throw new TaskConfigurationException("idBlockSize must be 1 to 100000");
             this.idBlockSize = size;
             return this;
         }
 
         /** Attempts for requests that do not set their own. Default 10. */
         public Builder defaultMaxAttempts(int attempts) {
-            if (attempts < 1 || attempts > Short.MAX_VALUE) {
-                throw new TaskConfigurationError("defaultMaxAttempts must be 1 to " + Short.MAX_VALUE);
+            if (attempts < 1 || attempts > TaskRequest.MAX_ATTEMPTS) {
+                throw new TaskConfigurationException("defaultMaxAttempts must be 1 to " + TaskRequest.MAX_ATTEMPTS);
             }
             this.defaultMaxAttempts = attempts;
             return this;
@@ -537,14 +520,15 @@ public final class TaskClient {
          */
         public Builder queues(List<String> availableQueues, String defaultQueue) {
             if (availableQueues == null || availableQueues.isEmpty()) {
-                throw new TaskConfigurationError("availableQueues cannot be empty");
+                throw new TaskConfigurationException("availableQueues cannot be empty");
             }
             for (var q : availableQueues) {
-                if (StringUtils.isBlank(q)) throw new TaskConfigurationError("queue names cannot be blank");
+                if (StringUtils.isBlank(q)) throw new TaskConfigurationException("queue names cannot be blank");
             }
             Set<String> available = new LinkedHashSet<>(availableQueues);
             var def = StringUtils.isBlank(defaultQueue) ? availableQueues.getFirst() : defaultQueue;
-            if (!available.contains(def)) throw new TaskConfigurationError("default queue is not an available queue");
+            if (!available.contains(def))
+                throw new TaskConfigurationException("default queue is not an available queue");
             this.queues = new QueuesHolder(available, List.copyOf(available), def);
             return this;
         }
@@ -561,7 +545,7 @@ public final class TaskClient {
 
         /** Builds the client and initializes the store schema. */
         public TaskClient build() {
-            if (store == null) throw new TaskConfigurationError("store is required");
+            if (store == null) throw new TaskConfigurationException("store is required");
             store.init();
             return new TaskClient(this);
         }

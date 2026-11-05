@@ -6,14 +6,14 @@ import org.slf4j.MDC;
 
 /**
  * Logs one line per event through SLF4J with the task id, type and queue in the MDC
- * ({@code bth4j.task}, {@code bth4j.event}, {@code bth4j.queue}). Succeeded, Started and Purged log at
+ * ({@code bth4j.task}, {@code bth4j.type}, {@code bth4j.queue}). Succeeded, Started and Purged log at
  * debug, retries and cancellations at info, lost leases and deaths at warn.
  */
 public final class LoggingTaskObserver implements TaskObserver {
     private final Logger log;
 
     public LoggingTaskObserver() {
-        this(LoggerFactory.getLogger("bth4j.tasks"));
+        this(LoggerFactory.getLogger(Loggers.TASKS));
     }
 
     public LoggingTaskObserver(Logger log) {
@@ -56,7 +56,7 @@ public final class LoggingTaskObserver implements TaskObserver {
                     MDC.remove("bth4j.task");
                 }
             }
-            case TaskEvent.Deferred e -> log.warn("task {} ({}) deferred: {}", e.id(), e.event(), e.reason());
+            case TaskEvent.Deferred e -> log.warn("task {} ({}) deferred: {}", e.id(), e.type(), e.reason());
             case TaskEvent.Expired e -> log.info("task {} expired before it could start", e.id());
             case TaskEvent.ScheduleFired e ->
                 log.info("schedule {} fired for {} as task {}", e.scheduleId(), e.fireAt(), e.taskId());
@@ -66,13 +66,13 @@ public final class LoggingTaskObserver implements TaskObserver {
 
     private void withTask(TaskView task, Runnable body) {
         MDC.put("bth4j.task", Long.toString(task.id()));
-        MDC.put("bth4j.event", task.event());
+        MDC.put("bth4j.type", task.type());
         MDC.put("bth4j.queue", task.queue());
         try {
             body.run();
         } finally {
             MDC.remove("bth4j.task");
-            MDC.remove("bth4j.event");
+            MDC.remove("bth4j.type");
             MDC.remove("bth4j.queue");
         }
     }

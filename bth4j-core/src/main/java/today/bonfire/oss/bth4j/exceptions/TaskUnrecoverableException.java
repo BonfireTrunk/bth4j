@@ -4,9 +4,7 @@ package today.bonfire.oss.bth4j.exceptions;
  * Exception thrown by a task processor when the task has failed and must not be retried.
  * The task is moved to the dead queue.
  */
-public class TaskUnrecoverableException extends RuntimeException {
-
-    private TaskUnrecoverableException() {}
+public final class TaskUnrecoverableException extends TaskSignal {
 
     public TaskUnrecoverableException(String message) {
         super(message);

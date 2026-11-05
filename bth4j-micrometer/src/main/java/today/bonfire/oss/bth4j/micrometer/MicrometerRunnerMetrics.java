@@ -22,20 +22,22 @@ import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.spi.TaskState;
 
 /**
- * Gauges for one runner: {@code bth4j.runner.running}, {@code bth4j.runner.up} and {@code bth4j.tasks.state}
- * (tags state, queue). Health and task counts are read by a single daemon thread every {@code refresh}, so
+ * Gauges for one runner: {@code bth4j.runner.running}, {@code bth4j.runner.up}, {@code bth4j.runner.abandoned}
+ * and {@code bth4j.tasks.state} (tags state, queue). Health and task counts are read by a single daemon thread every {@code refresh}, so
  * scraping the registry never touches the store. Call {@link #close()} to stop the thread and remove the meters.
  */
 public final class MicrometerRunnerMetrics implements AutoCloseable {
 
     static final String RUNNING = "bth4j.runner.running";
     static final String UP = "bth4j.runner.up";
+    static final String ABANDONED = "bth4j.runner.abandoned";
     static final String TASKS_STATE = "bth4j.tasks.state";
 
     private final MeterRegistry registry;
     private final AdminOps admin;
     private final Tags commonTags;
     private final AtomicInteger up = new AtomicInteger();
+    private final AtomicInteger abandoned = new AtomicInteger();
     private final Map<StateKey, AtomicLong> stateValues = new ConcurrentHashMap<>();
     private final List<Meter> meters = new ArrayList<>();
     private final ReentrantLock metersLock = new ReentrantLock();
@@ -57,6 +59,11 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
         meters.add(Gauge.builder(UP, up, AtomicInteger::get)
                 .tags(commonTags)
                 .description("1 while the runner reports status RUNNING, otherwise 0")
+                .strongReference(true)
+                .register(registry));
+        meters.add(Gauge.builder(ABANDONED, abandoned, AtomicInteger::get)
+                .tags(commonTags)
+                .description("Attempts past their maximum run time that still hold a slot")
                 .strongReference(true)
                 .register(registry));
         poller = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -98,11 +105,14 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
     /** Reads health and counts once; also called by the poller. A failing store leaves the last counts in place. */
     void refresh() {
         try {
-            var up = admin.health()
-                    .map(RunnerHealth::status)
-                    .filter(s -> s == RunnerHealth.Status.RUNNING)
-                    .isPresent();
-            this.up.set(up ? 1 : 0);
+            var health = admin.health();
+            this.up.set(
+                    health.map(RunnerHealth::status)
+                                    .filter(s -> s == RunnerHealth.Status.RUNNING)
+                                    .isPresent()
+                            ? 1
+                            : 0);
+            this.abandoned.set(health.map(RunnerHealth::abandonedAttempts).orElse(0));
         } catch (RuntimeException e) {
             this.up.set(0);
         }

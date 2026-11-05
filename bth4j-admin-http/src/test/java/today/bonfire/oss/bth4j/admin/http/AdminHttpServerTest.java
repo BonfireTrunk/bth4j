@@ -12,6 +12,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.KeyStore;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -19,11 +20,16 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import today.bonfire.oss.bth4j.Issue;
+import today.bonfire.oss.bth4j.Misfire;
+import today.bonfire.oss.bth4j.Overlap;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.common.Json;
@@ -302,6 +308,132 @@ class AdminHttpServerTest {
     }
 
     @Test
+    void anExpiredSessionCannotMutateWithItsFormerCsrfToken() throws Exception {
+        start(builder().sessionTtl(Duration.ofMinutes(10)));
+        var login = admin();
+        clock.advance(Duration.ofMinutes(11));
+
+        var responses = List.of(
+                mutate("POST", "/api/v1/tasks/1/retry", login, "{\"revision\":\"7\"}"),
+                mutate("POST", "/api/v1/queues/default/pause", login, null),
+                mutate("DELETE", "/api/v1/tasks/1?revision=7", login, null));
+
+        assertThat(responses).extracting(HttpResponse::statusCode).containsOnly(401);
+        assertThat(ops.calls).isEmpty();
+    }
+
+    @Test
+    void aLoggedOutSessionCannotMutateWithItsFormerCsrfToken() throws Exception {
+        start();
+        var login = admin();
+        assertThat(mutate("DELETE", "/api/v1/session", login, null).statusCode())
+                .isEqualTo(200);
+
+        var responses = List.of(
+                mutate("POST", "/api/v1/tasks/1/retry", login, "{\"revision\":\"7\"}"),
+                mutate("POST", "/api/v1/queues/default/pause", login, null),
+                mutate("DELETE", "/api/v1/tasks/1?revision=7", login, null));
+
+        assertThat(responses).extracting(HttpResponse::statusCode).containsOnly(401);
+        assertThat(ops.calls).isEmpty();
+    }
+
+    @Test
+    void cookiesAreSecureWhenTheServerSpeaksHttps(@TempDir Path keys) throws Exception {
+        var keystore = keys.resolve("server.p12");
+        var keytool = Path.of(System.getProperty("java.home"), "bin", "keytool").toString();
+        var process = new ProcessBuilder(
+                        keytool,
+                        "-genkeypair",
+                        "-alias",
+                        "admin",
+                        "-keyalg",
+                        "RSA",
+                        "-keysize",
+                        "2048",
+                        "-dname",
+                        "CN=127.0.0.1",
+                        "-ext",
+                        "san=ip:127.0.0.1",
+                        "-validity",
+                        "2",
+                        "-storetype",
+                        "PKCS12",
+                        "-keystore",
+                        keystore.toString(),
+                        "-storepass",
+                        "changeit")
+                .redirectErrorStream(true)
+                .start();
+        var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertThat(process.waitFor()).as(output).isZero();
+        var store = KeyStore.getInstance("PKCS12");
+        try (var in = Files.newInputStream(keystore)) {
+            store.load(in, "changeit".toCharArray());
+        }
+        var keyManagers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+        keyManagers.init(store, "changeit".toCharArray());
+        var serverSsl = SSLContext.getInstance("TLS");
+        serverSsl.init(keyManagers.getKeyManagers(), null, null);
+        var trust = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        trust.init(store);
+        var clientSsl = SSLContext.getInstance("TLS");
+        clientSsl.init(null, trust.getTrustManagers(), null);
+        start(builder().https(serverSsl));
+        var https = HttpClient.newBuilder().sslContext(clientSsl).build();
+        var base = "https://127.0.0.1:" + server.port() + "/api/v1/session";
+
+        var login = https.send(
+                HttpRequest.newBuilder(URI.create(base))
+                        .POST(HttpRequest.BodyPublishers.ofString(
+                                Json.write(Map.of("user", "alice", "password", "s3cret"))))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        assertThat(login.statusCode()).isEqualTo(200);
+        var cookie = login.headers().firstValue("Set-Cookie").orElseThrow();
+        assertThat(cookie).contains("HttpOnly", "SameSite=Strict", "Path=/", "Secure");
+        var logout = https.send(
+                HttpRequest.newBuilder(URI.create(base))
+                        .method("DELETE", HttpRequest.BodyPublishers.noBody())
+                        .header("Cookie", cookie.substring(0, cookie.indexOf(';')))
+                        .header("X-CSRF-Token", (String) json(login).get("csrf"))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(logout.statusCode()).isEqualTo(200);
+        assertThat(logout.headers().firstValue("Set-Cookie").orElseThrow()).contains("Max-Age=0", "Secure");
+    }
+
+    @Test
+    void taskIdsAbove2Pow53RoundTripExactlyThroughReadsAndMutations() throws Exception {
+        var big = (1L << 53) + 1;
+        var max = Long.MAX_VALUE;
+        ops.tasks.put(big, FakeAdminOps.task(big, 7, TaskState.DEAD, "default", "p"));
+        ops.tasks.put(max, FakeAdminOps.task(max, 7, TaskState.DEAD, "default", "q"));
+        start();
+        var login = admin();
+
+        assertThat(json(get("/api/v1/tasks/" + big, login))).containsEntry("id", String.valueOf(big));
+        assertThat(json(get("/api/v1/tasks/" + max, login))).containsEntry("id", String.valueOf(max));
+        var page = json(get("/api/v1/tasks?state=DEAD&limit=1&cursor=4", login));
+        assertThat(items(page)).extracting(t -> t.get("id")).containsExactly(String.valueOf(big));
+        assertThat(page).containsEntry("next", String.valueOf(big));
+        var next = json(get("/api/v1/tasks?state=DEAD&limit=1&cursor=" + page.get("next"), login));
+        assertThat(items(next)).extracting(t -> t.get("id")).containsExactly(String.valueOf(max));
+        assertThat(mutate("POST", "/api/v1/tasks/" + big + "/retry", login, "{\"revision\":\"7\"}")
+                        .statusCode())
+                .isEqualTo(200);
+        assertThat(mutate("POST", "/api/v1/tasks/" + max + "/cancel", login, "{\"revision\":7,\"reason\":\"r\"}")
+                        .statusCode())
+                .isEqualTo(200);
+        assertThat(mutate("DELETE", "/api/v1/tasks/" + big + "?revision=7", login, null)
+                        .statusCode())
+                .isEqualTo(200);
+
+        assertThat(ops.calls).contains("retry " + big + " 7", "cancel " + max + " 7 r", "delete " + big + " 7");
+    }
+
+    @Test
     void staleRevisionIs409AndUnknownTaskIs404() throws Exception {
         start();
         var login = admin();
@@ -479,7 +611,6 @@ class AdminHttpServerTest {
         assertThat(get("/api/v1/tasks", login).statusCode()).isEqualTo(400);
         assertThat(get("/api/v1/tasks?state=NOPE", login).statusCode()).isEqualTo(400);
         assertThat(get("/api/v1/tasks?state=DEAD&limit=0", login).statusCode()).isEqualTo(400);
-        assertThat(get("/api/v1/tasks?state=DEAD&after=x", login).statusCode()).isEqualTo(400);
     }
 
     @Test
@@ -495,24 +626,28 @@ class AdminHttpServerTest {
     }
 
     @Test
-    void taskListUsesStateQueueAfterAndLimit() throws Exception {
+    void taskListUsesStateQueueAndLimit() throws Exception {
         start();
         var login = admin();
 
-        var all = jsonList(get("/api/v1/tasks?state=DEAD", login));
+        var all = items(json(get("/api/v1/tasks?state=DEAD", login)));
         assertThat(all).extracting(t -> t.get("id")).containsExactly("1", "2", "4");
 
-        var page = jsonList(get("/api/v1/tasks?state=dead&limit=2", login));
+        var page = items(json(get("/api/v1/tasks?state=dead&limit=2", login)));
         assertThat(page).extracting(t -> t.get("id")).containsExactly("1", "2");
-        var next = jsonList(get("/api/v1/tasks?state=DEAD&limit=2&after=2", login));
+        var next = items(json(get("/api/v1/tasks?state=DEAD&limit=2&cursor=2", login)));
         assertThat(next).extracting(t -> t.get("id")).containsExactly("4");
 
-        var mail = jsonList(get("/api/v1/tasks?state=DEAD&queue=mail", login));
+        var mail = items(json(get("/api/v1/tasks?state=DEAD&queue=mail", login)));
         assertThat(mail).extracting(t -> t.get("id")).containsExactly("2");
 
         get("/api/v1/tasks?state=DEAD", login);
         get("/api/v1/tasks?state=DEAD&limit=100000", login);
-        assertThat(ops.calls).contains("tasks DEAD null 0 50", "tasks DEAD null 0 200", "tasks DEAD null 2 2");
+        assertThat(ops.calls)
+                .contains(
+                        "tasks DEAD null cursor=null 50",
+                        "tasks DEAD null cursor=null 200",
+                        "tasks DEAD null cursor=2 2");
     }
 
     @Test
@@ -531,7 +666,7 @@ class AdminHttpServerTest {
         var blank = json(get("/api/v1/tasks?state=DEAD&limit=50&cursor=", login));
         assertThat(items(blank)).hasSize(3);
 
-        assertThat(jsonList(get("/api/v1/tasks?state=DEAD", login))).hasSize(3);
+        assertThat(items(json(get("/api/v1/tasks?state=DEAD", login)))).hasSize(3);
         assertThat(ops.calls).contains("tasks DEAD null cursor=null 2", "tasks DEAD null cursor=2 2");
         assertThat(get("/api/v1/tasks?state=DEAD&cursor=x", login).statusCode()).isEqualTo(400);
     }
@@ -552,15 +687,15 @@ class AdminHttpServerTest {
                 .containsEntry("revision", "7")
                 .containsEntry("state", "DEAD")
                 .containsEntry("queue", "default")
-                .containsEntry("event", "send-mail")
-                .containsEntry("created", "2026-01-01T00:00:00Z")
-                .containsEntry("maxRun", "PT5M")
+                .containsEntry("type", "send-mail")
+                .containsEntry("createdAt", "2026-01-01T00:00:00Z")
+                .containsEntry("maxRunTime", "PT5M")
                 .containsEntry("attempts", 1L)
                 .containsEntry("maxAttempts", 3L)
                 .containsKeys(
                         "payloadVersion",
                         "due",
-                        "stateChanged",
+                        "stateChangedAt",
                         "claimedAt",
                         "leaseUntil",
                         "workerId",
@@ -594,7 +729,7 @@ class AdminHttpServerTest {
         ops.workers.add(new WorkerInfo(1, "w", Instant.EPOCH, Instant.EPOCH, 0));
         ops.issues.add(new Issue(Instant.EPOCH, "store-error", "boom", 5L));
         ops.issues.add(new Issue(Instant.EPOCH, "lease-lost", "x", null));
-        ops.health = new RunnerHealth(RunnerHealth.Status.RUNNING, 1, 2, null, null, null, null, 2);
+        ops.health = new RunnerHealth(RunnerHealth.Status.RUNNING, 1, 2, 0, null, null, null, null, 2);
         start();
 
         var overview = json(get("/api/v1/overview", viewer()));
@@ -616,7 +751,7 @@ class AdminHttpServerTest {
         assertThat(overview).containsEntry("workers", 1L).containsEntry("issues", 2L);
         @SuppressWarnings("unchecked")
         var health = (Map<String, Object>) overview.get("health");
-        assertThat(health).containsEntry("status", "RUNNING").containsEntry("running", 2L);
+        assertThat(health).containsEntry("status", "RUNNING").containsEntry("runningTasks", 2L);
     }
 
     @Test
@@ -630,7 +765,7 @@ class AdminHttpServerTest {
 
     @Test
     void healthEndpointReturnsRunnerHealth() throws Exception {
-        ops.health = new RunnerHealth(RunnerHealth.Status.QUIET, 3, 0, null, null, null, null, 0);
+        ops.health = new RunnerHealth(RunnerHealth.Status.QUIET, 3, 0, 0, null, null, null, null, 0);
         start();
 
         var res = get("/api/v1/health", viewer());
@@ -658,6 +793,10 @@ class AdminHttpServerTest {
         assertThat(schedules.get(0))
                 .containsEntry("id", "nightly")
                 .containsEntry("fixedDelay", "PT1H")
+                .containsEntry("misfire", "SKIP")
+                .containsEntry("overlap", "SKIP")
+                .doesNotContainKey("catchUpMaxFires")
+                .containsEntry("maxRunTime", "PT10M")
                 .containsEntry("nextFire", "2026-02-01T00:00:00Z");
         assertThat(jsonList(get("/api/v1/workers", login)).get(0))
                 .containsEntry("id", 2L)
@@ -816,11 +955,12 @@ class AdminHttpServerTest {
                 null,
                 null,
                 null,
-                "SKIP",
+                Misfire.SKIP,
                 Duration.ofHours(1),
-                true,
+                Overlap.SKIP,
                 false,
                 Instant.parse("2026-02-01T00:00:00Z"),
-                3);
+                3,
+                Duration.ofMinutes(10));
     }
 }

@@ -7,7 +7,7 @@ import static org.mockito.Mockito.mock;
 
 import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 
 class PostgresTaskStoreTest {
 
@@ -15,7 +15,7 @@ class PostgresTaskStoreTest {
 
     @Test
     void nullDataSourceIsRejected() {
-        assertThatThrownBy(() -> new PostgresTaskStore(null, "bth")).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> new PostgresTaskStore(null, "bth")).isInstanceOf(TaskConfigurationException.class);
     }
 
     @Test
@@ -23,7 +23,7 @@ class PostgresTaskStoreTest {
         for (var bad : new String[] {null, "", "Bth", "1bth", "bth-tasks", "bth tasks", "a".repeat(42)}) {
             assertThatThrownBy(() -> new PostgresTaskStore(DATA_SOURCE, bad))
                     .as("prefix %s", bad)
-                    .isInstanceOf(TaskConfigurationError.class);
+                    .isInstanceOf(TaskConfigurationException.class);
         }
         assertThatCode(() -> new PostgresTaskStore(DATA_SOURCE, "bth_2")).doesNotThrowAnyException();
     }
@@ -32,7 +32,7 @@ class PostgresTaskStoreTest {
     void schemaStatementsUseThePrefix() {
         var statements = new PostgresTaskStore(DATA_SOURCE, "app").schemaStatements();
 
-        assertThat(statements).hasSize(18);
+        assertThat(statements).hasSize(17);
         assertThat(statements.getFirst()).startsWith("CREATE TABLE IF NOT EXISTS app_meta (");
         assertThat(statements).allSatisfy(s -> assertThat(s).contains("app_"));
         assertThat(statements).noneSatisfy(s -> assertThat(s).containsIgnoringCase("REFERENCES"));

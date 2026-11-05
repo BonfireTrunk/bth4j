@@ -38,18 +38,18 @@ final class FakeAdminOps implements AdminOps {
     volatile RunnerHealth health;
     volatile RuntimeException failure;
 
-    static TaskView task(long id, int revision, TaskState state, String queue, String data) {
+    static TaskView task(long id, int revision, TaskState state, String queue, String encodedPayload) {
         var record = TaskRecord.builder()
                 .id(id)
                 .revision(revision)
                 .state(state)
                 .attempts(1)
                 .maxAttempts(3)
-                .created(Instant.parse("2026-01-01T00:00:00Z"))
+                .createdAt(Instant.parse("2026-01-01T00:00:00Z"))
                 .due(Instant.parse("2026-01-01T00:00:01Z"))
-                .stateChanged(Instant.parse("2026-01-01T00:00:02Z"))
-                .data(data)
-                .maxRun(Duration.ofMinutes(5))
+                .stateChangedAt(Instant.parse("2026-01-01T00:00:02Z"))
+                .encodedPayload(encodedPayload)
+                .maxRunTime(Duration.ofMinutes(5))
                 .build();
         return new TaskView(record, queue, "send-mail");
     }
@@ -92,18 +92,6 @@ final class FakeAdminOps implements AdminOps {
         if (holder.isEmpty()) return CancelOutcome.NOT_FOUND;
         if (holder.get().state().isTerminal()) return CancelOutcome.FINISHED;
         return staleKeys.contains(key) ? CancelOutcome.STALE : CancelOutcome.REQUESTED;
-    }
-
-    @Override
-    public List<TaskView> tasks(TaskState state, String queue, long afterId, int limit) {
-        calls.add("tasks " + state + ' ' + queue + ' ' + afterId + ' ' + limit);
-        var out = new ArrayList<TaskView>();
-        for (var t : tasks.tailMap(afterId, false).values()) {
-            if (t.state() == state && (queue == null || queue.equals(t.queue())) && out.size() < limit) {
-                out.add(t);
-            }
-        }
-        return out;
     }
 
     @Override
@@ -199,7 +187,7 @@ final class FakeAdminOps implements AdminOps {
     }
 
     @Override
-    public Map<Integer, String> eventNames() {
+    public Map<Integer, String> typeNames() {
         return Map.of();
     }
 }

@@ -17,8 +17,11 @@ package today.bonfire.oss.bth4j.redis;
  * <li>{@code startby} zset of QUEUED and SCHEDULED ids that have a {@code sb}, scored by it, so that expiry finds
  * them without scanning; an id leaves it on claim, cancel, delete and expire and returns when a task goes back to
  * QUEUED or SCHEDULED</li>
- * <li>{@code t:<id>} task hash, only non-null fields and every value under 64 bytes so that it stays a
- * listpack; never expires, only purge removes it. {@code wt} is the enqueue write token, which lets a
+ * <li>{@code t:<id>} task hash, only non-null fields; it stays a listpack while every value is at most
+ * {@code hash-max-listpack-value} bytes (default 64), which a long header map, account or unique key exceeds,
+ * and then it is a hashtable (about 5 times the memory); never expires, only purge removes it. {@code hs} is 1
+ * while {@code st:<id>} exists and {@code fc} is 1 while {@code f:<id>} exists, set by the scripts that write
+ * those keys, so that CLAIM reads them only for tasks that have them. {@code wt} is the enqueue write token, which lets a
  * transport resend return stored without writing again. {@code lease} is only meaningful while LEASED and
  * {@code wid} only while LEASED or terminal: the transitions leave them in place and the reader ignores them</li>
  * <li>{@code d:<id>} string with the payload; {@code st:<id>} string with the steps JSON; {@code f:<id>} list
@@ -65,7 +68,7 @@ public final class Keys {
     public static final String F_SCHEDULE = "sid";
     public static final String F_RETRY_OF = "rof";
     public static final String F_START_BY = "sb";
-    public static final String F_MAX_RUN = "mr";
+    public static final String F_MAX_RUN_TIME = "mr";
     public static final String F_CANCEL_AT = "cra";
     public static final String F_CANCEL_REASON = "crs";
     public static final String F_PROGRESS = "prg";

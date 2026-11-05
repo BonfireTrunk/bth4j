@@ -6,7 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.time.Duration;
 import java.time.ZoneId;
 import org.junit.jupiter.api.Test;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationError;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 class ScheduleDefinitionTest {
@@ -130,7 +130,18 @@ class ScheduleDefinitionTest {
     @Test
     void bothCronAndFixedDelayAreRejected() {
         assertThatThrownBy(() -> new ScheduleDefinition<>(
-                        "id", NO_PAYLOAD, null, "0 2 * * *", Duration.ofMinutes(1), null, null, null, null, null, null))
+                        "id",
+                        NO_PAYLOAD,
+                        null,
+                        "0 2 * * *",
+                        Duration.ofMinutes(1),
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("exactly one");
     }
@@ -151,6 +162,19 @@ class ScheduleDefinitionTest {
         assertThatThrownBy(() -> d.maxAttempts(Short.MAX_VALUE + 1)).isInstanceOf(TaskValidationException.class);
         assertThat(d.maxAttempts(1).maxAttempts()).isEqualTo(1);
         assertThat(d.maxAttempts(Short.MAX_VALUE).maxAttempts()).isEqualTo((int) Short.MAX_VALUE);
+    }
+
+    @Test
+    void maxRunTimeFollowsTheTaskRule() {
+        var d = ScheduleDefinition.of("id", NO_PAYLOAD, "0 2 * * *");
+
+        assertThat(d.maxRunTime()).isNull();
+        assertThatThrownBy(() -> d.maxRunTime(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> d.maxRunTime(TaskRequest.MAX_RUN_TIME.plusMillis(1)))
+                .isInstanceOf(TaskValidationException.class);
+        assertThat(d.maxRunTime(Duration.ofMinutes(5)).maxRunTime()).isEqualTo(Duration.ofMinutes(5));
+        assertThat(d.maxRunTime(Duration.ofMinutes(5)).maxAttempts(2).maxRunTime())
+                .isEqualTo(Duration.ofMinutes(5));
     }
 
     @Test
@@ -211,8 +235,8 @@ class ScheduleDefinitionTest {
 
     @Test
     void catchUpWithMaxBelowOneIsRejected() {
-        assertThatThrownBy(() -> Misfire.catchUp(0)).isInstanceOf(TaskConfigurationError.class);
-        assertThatThrownBy(() -> new Misfire.CatchUp(-3)).isInstanceOf(TaskConfigurationError.class);
+        assertThatThrownBy(() -> Misfire.catchUp(0)).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> new Misfire.CatchUp(-3)).isInstanceOf(TaskConfigurationException.class);
         assertThat(Misfire.catchUp(1)).isEqualTo(new Misfire.CatchUp(1));
     }
 
@@ -235,6 +259,7 @@ class ScheduleDefinitionTest {
                 overlap != null ? overlap : base.overlap(),
                 queue != null ? queue : base.queue(),
                 account != null ? account : base.account(),
-                maxAttempts != null ? maxAttempts : base.maxAttempts());
+                maxAttempts != null ? maxAttempts : base.maxAttempts(),
+                base.maxRunTime());
     }
 }

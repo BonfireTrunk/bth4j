@@ -16,29 +16,29 @@ import today.bonfire.oss.bth4j.TaskRequest;
  */
 public class EnqueueFailedException extends RuntimeException {
     private final List<Long> ids;
-    private final int stored;
+    private final int storedCount;
     private final Set<Integer> notStored;
 
     /**
      * @param ids    the last assigned id of every request, in order; empty to indicate that the call wrote nothing
-     * @param stored the number of requests in completed chunks before the failure; zero for a single enqueue
+     * @param storedCount the number of requests in completed chunks before the failure; zero for a single enqueue
      */
-    public EnqueueFailedException(List<Long> ids, int stored, Throwable cause) {
-        this(ids, stored, Set.of(), cause);
+    public EnqueueFailedException(List<Long> ids, int storedCount, Throwable cause) {
+        this(ids, storedCount, Set.of(), cause);
     }
 
     /**
-     * @param ids       the last assigned id of every request, in order; empty when the call wrote nothing
-     * @param stored    the number of requests in completed chunks before the failure
-     * @param notStored zero-based positions of generated-id requests known not to have been written
+     * @param ids         the last assigned id of every request, in order; empty when the call wrote nothing
+     * @param storedCount the number of requests in completed chunks before the failure
+     * @param notStored   zero-based positions of generated-id requests known not to have been written
      */
-    public EnqueueFailedException(List<Long> ids, int stored, Set<Integer> notStored, Throwable cause) {
+    public EnqueueFailedException(List<Long> ids, int storedCount, Set<Integer> notStored, Throwable cause) {
         super(
                 "Enqueue of " + ids.size() + " task(s)" + (ids.isEmpty() ? "" : " starting at " + ids.getFirst())
                         + " failed: " + cause.getMessage(),
                 cause);
         this.ids = List.copyOf(ids);
-        this.stored = stored;
+        this.storedCount = storedCount;
         this.notStored = Set.copyOf(notStored);
     }
 
@@ -91,7 +91,7 @@ public class EnqueueFailedException extends RuntimeException {
     }
 
     /** @return the number of requests in completed chunks, including duplicate-key results; the failing chunk may also have stored tasks */
-    public int stored() {
-        return stored;
+    public int storedCount() {
+        return storedCount;
     }
 }

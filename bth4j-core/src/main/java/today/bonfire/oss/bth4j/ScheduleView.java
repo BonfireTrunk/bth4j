@@ -2,18 +2,20 @@ package today.bonfire.oss.bth4j;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 
 /** A recurring definition as applications and the admin API see it. */
 public record ScheduleView(
         String id,
-        String event,
+        String type,
         String queue,
         String account,
         String cron,
-        String zone,
-        String misfire,
+        ZoneId zone,
+        Misfire misfire,
         Duration fixedDelay,
-        boolean overlapSkip,
+        Overlap overlap,
         boolean paused,
         Instant nextFire,
-        int maxAttempts) {}
+        int maxAttempts,
+        Duration maxRunTime) {}
