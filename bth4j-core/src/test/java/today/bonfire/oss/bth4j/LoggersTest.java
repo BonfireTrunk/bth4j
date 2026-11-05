@@ -18,13 +18,14 @@ class LoggersTest {
         assertThat(Loggers.MAINTENANCE).isEqualTo("today.bonfire.oss.bth4j.MaintenanceService");
         assertThat(Loggers.RECURRING).isEqualTo("today.bonfire.oss.bth4j.RecurringTaskService");
         assertThat(Loggers.PROMOTION).isEqualTo("today.bonfire.oss.bth4j.ScheduledTaskService");
+        assertThat(Loggers.EXECUTOR).isEqualTo("today.bonfire.oss.bth4j.executor.DefaultVtExecutor");
         assertThat(Loggers.OBSERVERS).isEqualTo("today.bonfire.oss.bth4j.Observers");
         assertThat(Loggers.TASKS).isEqualTo("bth4j.tasks");
     }
 
     @Test
     void everyClassWritesToItsDocumentedName() throws Exception {
-        var expected = Map.of(
+        var expected = Map.<Class<?>, String>of(
                 BackgroundRunner.class, Loggers.RUNNER,
                 TaskClient.class, Loggers.CLIENT,
                 TaskProcessorService.class, Loggers.PROCESSOR,
@@ -32,7 +33,8 @@ class LoggersTest {
                 MaintenanceService.class, Loggers.MAINTENANCE,
                 RecurringTaskService.class, Loggers.RECURRING,
                 ScheduledTaskService.class, Loggers.PROMOTION,
-                Observers.class, Loggers.OBSERVERS);
+                Observers.class, Loggers.OBSERVERS,
+                today.bonfire.oss.bth4j.executor.DefaultVtExecutor.class, Loggers.EXECUTOR);
         for (var e : expected.entrySet()) {
             var field = e.getKey().getDeclaredField("log");
             field.setAccessible(true);

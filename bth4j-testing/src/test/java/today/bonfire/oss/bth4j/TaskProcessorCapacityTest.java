@@ -138,6 +138,28 @@ class TaskProcessorCapacityTest {
     }
 
     @Test
+    void aQuietProcessorReservesNoSlotAndClaimsNothingUntilItIsResumed() throws Exception {
+        var executor = new ManualExecutor(10);
+        var processor = processor(executor, 5, Map.of(queueId, QueuePolicy.maxConcurrent(5)));
+        var ids = enqueue(3, "Q:DEF");
+        processor.quiet(true);
+
+        processOnce(processor);
+        processOnce(processor);
+
+        assertThat(ids).allSatisfy(id -> assertThat(state(id)).isEqualTo(TaskState.QUEUED));
+        assertThat(executor.available()).isEqualTo(10);
+        assertThat(reservations.running(queueId)).isZero();
+        assertThat(status.lastClaimAt()).isNull();
+
+        processor.quiet(false);
+        processOnce(processor);
+
+        assertThat(leased(ids)).isEqualTo(3);
+        assertThat(executor.available()).isEqualTo(7);
+    }
+
+    @Test
     void anotherIterationWhileTheAttemptsStayBlockedClaimsNothingUntilOneFinishes() throws Exception {
         var executor = new ManualExecutor(10);
         var processor = processor(executor, 5, Map.of(queueId, QueuePolicy.maxConcurrent(2)));

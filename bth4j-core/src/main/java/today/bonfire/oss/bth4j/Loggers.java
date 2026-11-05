@@ -35,6 +35,9 @@ public final class Loggers {
     /** Promotion of delayed tasks that became due. */
     public static final String PROMOTION = "today.bonfire.oss.bth4j.ScheduledTaskService";
 
+    /** The adaptive virtual-thread executor: thread limit changes and CPU monitoring, at DEBUG and TRACE. */
+    public static final String EXECUTOR = "today.bonfire.oss.bth4j.executor.DefaultVtExecutor";
+
     /** A {@link TaskObserver} that threw. */
     public static final String OBSERVERS = "today.bonfire.oss.bth4j.Observers";
 
