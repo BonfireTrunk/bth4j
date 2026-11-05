@@ -74,8 +74,8 @@ schedules = {
                   "misfire": "SKIP", "fixedDelay": "PT30S", "overlap": "ALLOW", "paused": True, "nextFire": iso(25), "maxAttempts": 5},
 }
 workers = [
-    {"id": 7, "label": "host-a/1234", "startedAt": iso(-7200), "lastSeen": iso(-2), "running": 3},
-    {"id": 8, "label": "host-b/9876", "startedAt": iso(-9000), "lastSeen": iso(-300), "running": 0},
+    {"id": 7, "label": "host-a/1234", "startedAt": iso(-7200), "lastSeen": iso(-2), "running": 3, "queues": ["default", "mail"], "types": ["send-mail"]},
+    {"id": 8, "label": "host-b/9876", "startedAt": iso(-9000), "lastSeen": iso(-300), "running": 0, "queues": None, "types": None},
 ]
 issues = [
     {"at": iso(-600), "kind": "unknown-type", "detail": "No handler for type 'legacy-export'", "taskId": str(BASE_ID + 3)},
@@ -206,6 +206,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(204, None)
         if head == "workers":
             return self.send_json(200, workers)
+        if head == "unserved":
+            return self.send_json(200, [{"queue": "reports", "type": None, "waiting": 7},
+                                        {"queue": "mail", "type": "build-report", "waiting": 2}])
         if head == "issues":
             return self.send_json(200, issues)
         if head == "schedules":
@@ -232,8 +235,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(400, {"error": "malformed cursor"})
             rows = [t for t in sorted(tasks.values(), key=lambda t: int(t["id"])) if int(t["id"]) > after
                     and (not q.get("state") or t["state"] == q["state"]) and (not q.get("queue") or t["queue"] == q["queue"])]
-            if "cursor" not in q:
-                return self.send_json(200, rows[:limit])
             page = rows[:limit]
             return self.send_json(200, {"items": page, "next": page[-1]["id"] if len(page) == limit else None})
         if segs[1] == "by-key" and len(segs) in (3, 4):

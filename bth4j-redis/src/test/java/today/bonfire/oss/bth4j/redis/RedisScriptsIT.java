@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -266,11 +267,11 @@ class RedisScriptsIT {
         var scores = new HashMap<String, Double>();
         var ids = new ArrayList<Integer>();
         for (var i = 0; i < stale; i++) {
-            var id = store.allocateWorkerId("w" + i);
+            var id = store.allocateWorkerId("w" + i, Set.of(), Set.of());
             ids.add(id);
             scores.put(String.valueOf(id), old);
         }
-        var fresh = store.allocateWorkerId("fresh");
+        var fresh = store.allocateWorkerId("fresh", Set.of(), Set.of());
         jedis.zadd(keys.workers, scores);
 
         assertThat(store.purgeWorkers(Duration.ofMinutes(10))).isEqualTo(stale);
@@ -288,7 +289,7 @@ class RedisScriptsIT {
         var old = (double) Instant.now().minusSeconds(3600).toEpochMilli();
         var scores = new HashMap<String, Double>();
         for (var i = 0; i < RedisScripts.PURGE_WORKERS_PAGE; i++) {
-            scores.put(String.valueOf(store.allocateWorkerId("w" + i)), old);
+            scores.put(String.valueOf(store.allocateWorkerId("w" + i, Set.of(), Set.of())), old);
         }
         jedis.zadd(keys.workers, scores);
 

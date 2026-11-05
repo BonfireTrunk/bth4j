@@ -8,6 +8,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -39,7 +40,7 @@ class IdAllocatorTest {
         public void init() {}
 
         @Override
-        public int allocateWorkerId(String label) {
+        public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
             return 1;
         }
 

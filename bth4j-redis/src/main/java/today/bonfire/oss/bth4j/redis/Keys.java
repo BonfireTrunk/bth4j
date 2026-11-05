@@ -86,6 +86,8 @@ public final class Keys {
     public static final String F_STARTED = "started";
     public static final String F_SEEN = "seen";
     public static final String F_RUNNING = "running";
+    public static final String F_QUEUES = "queues";
+    public static final String F_TYPES = "types";
 
     public final String namespace;
     public final String prefix;

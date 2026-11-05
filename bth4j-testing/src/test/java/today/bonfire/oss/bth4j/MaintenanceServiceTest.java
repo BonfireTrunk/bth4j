@@ -6,6 +6,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -554,7 +555,7 @@ class MaintenanceServiceTest {
 
     @Test
     void aCycleRecordsTheWorkersHeartbeatWithItsRunningCount() throws Exception {
-        workerId = store.allocateWorkerId("worker-a");
+        workerId = store.allocateWorkerId("worker-a", Set.of(), Set.of());
         var startedAt = clock.instant();
         runningTasks = 3;
         clock.advance(Duration.ofMinutes(5));
@@ -574,7 +575,7 @@ class MaintenanceServiceTest {
 
     @Test
     void eachCycleReportsTheRunningCountAtThatMoment() throws Exception {
-        workerId = store.allocateWorkerId("worker-a");
+        workerId = store.allocateWorkerId("worker-a", Set.of(), Set.of());
         runningTasks = 3;
         cycle();
         clock.advance(Duration.ofSeconds(5));
@@ -590,7 +591,7 @@ class MaintenanceServiceTest {
 
     @Test
     void aServiceWithoutAWorkerRecordsNoHeartbeatButStillMarksMaintenance() throws Exception {
-        store.allocateWorkerId("other");
+        store.allocateWorkerId("other", Set.of(), Set.of());
         var before = store.workers();
         clock.advance(Duration.ofMinutes(5));
 
@@ -602,7 +603,7 @@ class MaintenanceServiceTest {
 
     @Test
     void aFailedHeartbeatIsRecordedWithoutMarkingMaintenanceAndTheNextCycleRecovers() throws Exception {
-        workerId = store.allocateWorkerId("worker-a");
+        workerId = store.allocateWorkerId("worker-a", Set.of(), Set.of());
         runningTasks = 2;
         clock.advance(Duration.ofSeconds(5));
         var failing = new AtomicInteger(1);
@@ -635,9 +636,9 @@ class MaintenanceServiceTest {
 
     @Test
     void aWorkerSilentForLongerThanTheThresholdIsRemovedAndAFreshOneIsKept() throws Exception {
-        int stale = store.allocateWorkerId("stale");
+        int stale = store.allocateWorkerId("stale", Set.of(), Set.of());
         clock.advance(Duration.ofMinutes(6));
-        int fresh = store.allocateWorkerId("fresh");
+        int fresh = store.allocateWorkerId("fresh", Set.of(), Set.of());
         clock.advance(Duration.ofMinutes(5));
 
         purge();
@@ -648,7 +649,7 @@ class MaintenanceServiceTest {
 
     @Test
     void aWorkerExactlyAtTheThresholdIsKeptAndOneMillisecondOlderIsRemoved() throws Exception {
-        int id = store.allocateWorkerId("edge");
+        int id = store.allocateWorkerId("edge", Set.of(), Set.of());
         clock.advance(workerStaleAfter);
 
         purge();
@@ -663,7 +664,7 @@ class MaintenanceServiceTest {
 
     @Test
     void aHeartbeatKeepsAWorkerFromBeingPurged() throws Exception {
-        workerId = store.allocateWorkerId("beating");
+        workerId = store.allocateWorkerId("beating", Set.of(), Set.of());
         clock.advance(Duration.ofMinutes(9));
         cycle();
         clock.advance(Duration.ofMinutes(9));
@@ -676,7 +677,7 @@ class MaintenanceServiceTest {
     @Test
     void theStaleThresholdIsTheConfiguredOne() throws Exception {
         workerStaleAfter = Duration.ofSeconds(30);
-        store.allocateWorkerId("short");
+        store.allocateWorkerId("short", Set.of(), Set.of());
         clock.advance(Duration.ofSeconds(31));
 
         purge();
@@ -686,7 +687,7 @@ class MaintenanceServiceTest {
 
     @Test
     void aFailedWorkerPurgeIsRecordedAndTheNextPurgeRemovesTheStaleWorker() throws Exception {
-        store.allocateWorkerId("stale");
+        store.allocateWorkerId("stale", Set.of(), Set.of());
         clock.advance(workerStaleAfter.plusSeconds(1));
         var failing = new AtomicInteger(1);
         serviceStore = StoreInterceptor.around(store, (method, args, real) -> {

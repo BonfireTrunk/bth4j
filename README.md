@@ -553,7 +553,17 @@ before a rolling restart.
 
 Each runner also writes a heartbeat (last seen time and running tasks) to the worker registry every
 `maintenanceCheckInterval`, and maintenance deletes workers that were silent for `workerStaleAfter` (10
-minutes by default). `admin.workers()` lists them.
+minutes by default). `admin.workers()` lists them, including the queue ids they process and their
+registered task type ids. Coverage is recorded at startup and is null for workers using an older library.
+
+`admin.unservedWork()` finds queued work that no worker seen within the last minute can process;
+`admin.unservedWork(Duration)` chooses another heartbeat window using the admin clock. Paused queues
+are skipped. A queue without a live worker produces `UnservedWork(queue, null, waiting)` with its full
+queued count. For queues with live workers, only the first 100 queued tasks are sampled: an unhandled
+type produces `UnservedWork(queue, type, waiting)`, where waiting is a lower bound from that sample.
+A live worker with unknown queue or type coverage suppresses reports during rolling upgrades.
+PostgreSQL adds nullable worker columns during `init`; Redis uses extra worker hash fields. No manual
+migration or schema/layout version change is needed.
 
 ### Admin API
 
@@ -579,6 +589,7 @@ admin.pauseSchedule("poll-feed", false);           // resume; a fixed-delay defi
 admin.triggerSchedule("nightly-report");           // fires at the next recurring check
 admin.deleteSchedule("nightly-report");
 admin.workers();
+admin.unservedWork();
 admin.purgeStaleWorkers(Duration.ofMinutes(10));
 ```
 
@@ -657,7 +668,13 @@ with `state`, `queue`, `cursor` and `limit` up to 200; one task, its `payload`, 
 `tasks/by-key/{key}` reads the task that holds a unique key, 404 when none does, and `tasks/by-key/{key}/cancel` cancels it
 with a body of `{"reason"}` and no revision: viewers may read, admins may cancel; a blank key or one over 256 characters
 is answered 400; cancel answers 404 when no task holds the key and 409 when the holder is already finished or changed meanwhile),
-`schedules` (with `pause`, `resume`, `trigger`, delete), `workers` and `issues`.
+`schedules` (with `pause`, `resume`, `trigger`, delete), `workers`, `unserved` and `issues`.
+
+`GET /api/v1/workers` includes `queues` and `types` as name lists (null for unknown coverage, empty for
+known empty coverage). `GET /api/v1/unserved` returns a list of `{"queue", "type", "waiting"}` using the
+one-minute heartbeat window. A null type means the whole queue is unserved and waiting is its queued
+count; otherwise waiting is a lower bound from at most the first 100 queued tasks in that queue. Both
+endpoints are available to viewers. The dashboard shows coverage on Workers and unserved work on Overview.
 
 `GET /api/v1/tasks` answers `{"items": [...], "next": "<cursor>" | null}`: pass `next` as `cursor` for the following
 page; `next` is null after the last page. A missing or empty `cursor` starts at the beginning, and a malformed one is
@@ -687,9 +704,38 @@ until the window ends.
 ### Concurrency
 
 By default a runner runs twice as many tasks at once as there are processors, each on a virtual thread.
-`concurrency(Concurrency.fixed(n))` sets another limit; `concurrency(Concurrency.adaptive(min, max))` lets
-the limit move with CPU load and throughput, counting only tasks that succeeded. A custom `BackgroundExecutor`
-hears of each succeeded task through `succeeded()`.
+`concurrency(Concurrency.fixed(n))` sets another limit. Adaptive concurrency starts at `min` and stays within
+`[min, max]`, targeting whole-machine CPU and memory usage:
+
+```java
+Concurrency.adaptive(8, 256) // CPU 0.90, memory 0.80, heap only
+Concurrency.adaptive(8, 256, 0.75, 0.70).withMemorySignal(MemorySignal.HEAP_AND_SYSTEM)
+```
+
+A daemon samples every 500 ms with fixed delay and monotonic time, without catch-up after a pause. CPU uses
+`OperatingSystemMXBean.getCpuLoad()` (container-aware on JDK 25), smoothed with EWMA alpha 0.25, without a
+load-average fallback. Heap usage is used / max (committed if max is undefined), taking the lowest reading
+in the last 2 seconds to smooth the GC sawtooth. `HEAP_AND_SYSTEM` takes the greater of heap and system
+usage, each with its own 2-second minimum. It catches native memory such as image buffers, but the system
+figure can count OS file cache as used and hold the limit low on a long-running host.
+
+A claim that fills its executor reservation grants one growth credit; a partial or empty claim clears it.
+Queue caps therefore do not drive growth. With a credit, raw and smoothed CPU and memory at least 0.15
+below their targets grow the limit by 25% (rounded up, at most 16 slots); at least 0.05 below grows by one.
+For targets below 0.2 these margins scale proportionally. Each tick makes at most one increase.
+
+Memory at or above 0.95 resets the limit to `min`. Memory at its target for 1 second reduces the limit by
+25%, at most once per second, and blocks growth for 5 seconds. Smoothed CPU above its target plus 0.03 for
+1 second reduces it by 20%, at most once per second, and blocks growth for 2 seconds. Memory takes priority.
+Invalid or unavailable CPU or memory blocks growth; after 5 seconds without a valid reading, the limit
+decays by 25% per second toward `min`. Two fresh valid samples are needed before growth resumes. After
+30 seconds with nothing running or reserved, the limit returns to `min`.
+
+Shrinking never cancels tasks or blocks waiting for them: permits may remain negative until occupied slots
+finish, and growth waits until occupied slots no longer exceed the limit. `runner.concurrencyLimit()` exposes
+the current limit when supported by the executor. Custom executors can receive demand through
+`BackgroundExecutor.claimed(reserved, claimed)` and expose their limit through `limit()`; both have defaults.
+Limit changes are logged at DEBUG and holds at TRACE under `Loggers.EXECUTOR`.
 
 ## Configuration
 
@@ -701,7 +747,7 @@ All settings are on `BackgroundRunner.builder()`.
 | `registry` | new registry | the processor registry; by default created by the runner and reached with `runner.registry()` |
 | `jsonMapper` | none | payloads and step results as JSON; needed unless every task type has its own codec |
 | `clock` | `Clock.systemUTC()` | clock for client-side instants (`createdAt`, delays, retry times) |
-| `concurrency` | `Concurrency.fixed(max(2, 2 x processors))` | how many tasks run at once; `fixed(n)` or `adaptive(min, max)` |
+| `concurrency` | `Concurrency.fixed(max(2, 2 x processors))` | how many tasks run at once; `fixed(n)` or `adaptive(min, max[, cpuTarget, memoryTarget])`; adaptive defaults: CPU 0.90, memory 0.80, `HEAP` |
 | `taskExecutor` | built from `concurrency` | a custom `BackgroundExecutor`; the runner shuts it down |
 | `retryPolicy` | exponential, 1 s doubling, capped at 1 h, 20 % jitter | delay after a failed attempt |
 | `retryPolicy(name, policy)` | none | adds a named policy that requests choose with `TaskRequest.retryPolicy(name)`; name 1 to 64 characters; may be called several times |

@@ -71,8 +71,6 @@ final class TaskExecution implements Runnable, TaskContext {
     private final ReentrantLock workerLock = new ReentrantLock();
     private Thread worker;
     private boolean leaseLossInterrupted;
-    /** the processor returned normally; written and read by the thread that runs the task */
-    private boolean succeeded;
     /** the fatal error to rethrow from run(), written by the thread that runs the task only */
     private Error fatal;
 
@@ -101,11 +99,6 @@ final class TaskExecution implements Runnable, TaskContext {
         if (reason != null) cancelReason = reason;
         cancelRequested = true;
         interruptWorker(false);
-    }
-
-    /** @return true once the processor returned normally, whether or not the acknowledgement applied */
-    boolean succeeded() {
-        return succeeded;
     }
 
     /** @return when the processor started, or null before that */
@@ -237,7 +230,6 @@ final class TaskExecution implements Runnable, TaskContext {
     }
 
     private void succeed(Instant started) {
-        succeeded = true;
         var rearm = rearmEffect();
         var outcome =
                 apply(() -> s.store().ack(record.id(), record.revision(), s.keepSucceeded(), s.keepPayload(), rearm));

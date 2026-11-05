@@ -19,6 +19,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
@@ -32,6 +33,7 @@ import today.bonfire.oss.bth4j.Misfire;
 import today.bonfire.oss.bth4j.Overlap;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.ScheduleView;
+import today.bonfire.oss.bth4j.UnservedWork;
 import today.bonfire.oss.bth4j.common.Json;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.StateCounts;
@@ -726,7 +728,7 @@ class AdminHttpServerTest {
 
     @Test
     void overviewHasCountsPerQueueTotalsWorkersIssuesAndHealth() throws Exception {
-        ops.workers.add(new WorkerInfo(1, "w", Instant.EPOCH, Instant.EPOCH, 0));
+        ops.workers.add(new WorkerInfo(1, "w", Instant.EPOCH, Instant.EPOCH, 0, null, null));
         ops.issues.add(new Issue(Instant.EPOCH, "store-error", "boom", 5L));
         ops.issues.add(new Issue(Instant.EPOCH, "lease-lost", "x", null));
         ops.health = new RunnerHealth(RunnerHealth.Status.RUNNING, 1, 2, 0, null, null, null, null, 2);
@@ -777,7 +779,7 @@ class AdminHttpServerTest {
     @Test
     void queuesSchedulesWorkersAndIssuesAreListed() throws Exception {
         ops.schedules.add(schedule("nightly"));
-        ops.workers.add(new WorkerInfo(2, "w2", Instant.EPOCH, Instant.EPOCH, 1));
+        ops.workers.add(new WorkerInfo(2, "w2", Instant.EPOCH, Instant.EPOCH, 1, null, null));
         ops.issues.add(new Issue(Instant.EPOCH, "store-error", "boom", 5L));
         start();
         var login = viewer();
@@ -804,6 +806,48 @@ class AdminHttpServerTest {
         assertThat(jsonList(get("/api/v1/issues", login)).get(0))
                 .containsEntry("kind", "store-error")
                 .containsEntry("taskId", "5");
+    }
+
+    @Test
+    void unservedEndpointListsQueueAndTypeReportsForViewers() throws Exception {
+        ops.unserved.add(new UnservedWork("mail", null, 12));
+        ops.unserved.add(new UnservedWork("default", "export", 3));
+        start();
+
+        var response = get("/api/v1/unserved", viewer());
+        assertThat(response.statusCode()).isEqualTo(200);
+        var reports = jsonList(response);
+        assertThat(reports).hasSize(2);
+        assertThat(reports.getFirst())
+                .containsOnlyKeys("queue", "type", "waiting")
+                .containsEntry("queue", "mail")
+                .containsEntry("type", null)
+                .containsEntry("waiting", 12L);
+        assertThat(reports.get(1))
+                .containsEntry("queue", "default")
+                .containsEntry("type", "export")
+                .containsEntry("waiting", 3L);
+        assertThat(ops.calls).contains("unservedWork PT1M");
+        ops.unserved.clear();
+        assertThat(jsonList(get("/api/v1/unserved", viewer()))).isEmpty();
+        assertThat(get("/api/v1/unserved", null).statusCode()).isEqualTo(401);
+    }
+
+    @Test
+    void workersViewIncludesCoverageNamesAndPreservesUnknownAndEmptyCoverage() throws Exception {
+        ops.workers.add(new WorkerInfo(1, "known", Instant.EPOCH, Instant.EPOCH, 2, Set.of(2, 1), Set.of(2, 1)));
+        ops.workers.add(new WorkerInfo(2, "legacy", Instant.EPOCH, Instant.EPOCH, 0, null, null));
+        ops.workers.add(new WorkerInfo(3, "empty", Instant.EPOCH, Instant.EPOCH, 0, Set.of(), Set.of()));
+        start();
+
+        var workers = jsonList(get("/api/v1/workers", viewer()));
+        assertThat(workers).hasSize(3);
+        assertThat(workers.getFirst())
+                .containsOnlyKeys("id", "label", "startedAt", "lastSeen", "running", "queues", "types")
+                .containsEntry("queues", List.of("default", "mail"))
+                .containsEntry("types", List.of("export", "send-mail"));
+        assertThat(workers.get(1)).containsEntry("queues", null).containsEntry("types", null);
+        assertThat(workers.get(2)).containsEntry("queues", List.of()).containsEntry("types", List.of());
     }
 
     @Test

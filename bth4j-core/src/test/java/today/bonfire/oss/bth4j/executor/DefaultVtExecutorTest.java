@@ -9,10 +9,13 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import today.bonfire.oss.bth4j.Concurrency;
 
 @Timeout(30)
 class DefaultVtExecutorTest {
@@ -187,44 +190,66 @@ class DefaultVtExecutorTest {
         assertThat(executor.availablePermits()).isEqualTo(executor.currentMaxThreads());
     }
 
-    /** The limit moves only when the test calls {@link DefaultVtExecutor#adjustThreadCount()}, at 0% CPU. */
-    private DefaultVtExecutor unmonitored(int min, int max) {
-        var executor = new DefaultVtExecutor(min, max, () -> 0.0, false);
+    @Test
+    void shrinkLeavesPermitDebtAndGrowthWaitsForOccupiedSlotsToFall() throws Exception {
+        var now = new AtomicLong();
+        var sample = new AtomicReference<>(new ResourceSampler.Sample(0, 0.1));
+        var executor = new DefaultVtExecutor(Concurrency.adaptive(2, 10), ignored -> sample.get(), now::get);
         created.add(executor);
-        return executor;
-    }
-
-    private static void interval(DefaultVtExecutor executor, int successes) {
-        for (int i = 0; i < successes; i++) executor.succeeded();
         executor.adjustThreadCount();
-    }
-
-    @Test
-    void flatThroughputProbesUpwardsForThreeIntervalsAndAgainOnlyAfterThroughputChanges() {
-        var executor = unmonitored(2, 50);
-
-        for (int i = 0; i < 20; i++) interval(executor, 5);
-        assertThat(executor.currentMaxThreads()).isEqualTo(4);
-
-        interval(executor, 10);
-        interval(executor, 10);
-        assertThat(executor.currentMaxThreads()).isEqualTo(5);
-    }
-
-    @Test
-    void tasksThatFinishWithoutSucceedingDoNotRaiseTheLimit() throws InterruptedException {
-        var executor = unmonitored(2, 50);
-
-        for (int i = 0; i < 10; i++) {
-            int slots = executor.reserve(2, Duration.ofSeconds(5));
-            var done = new CountDownLatch(slots);
-            for (int j = 0; j < slots; j++) executor.execute(done::countDown);
-            done.await();
-            awaitTrue(() -> executor.getActiveTaskCount() == 0);
+        now.addAndGet(TimeUnit.MILLISECONDS.toNanos(500));
+        executor.claimed(2, 2);
+        executor.adjustThreadCount();
+        assertThat(executor.limit()).hasValue(3);
+        assertThat(executor.reserve(3, Duration.ZERO)).isEqualTo(3);
+        sample.set(new ResourceSampler.Sample(0, 0.95));
+        now.addAndGet(TimeUnit.MILLISECONDS.toNanos(500));
+        executor.adjustThreadCount();
+        assertThat(executor.currentMaxThreads()).isEqualTo(2);
+        assertThat(executor.availablePermits()).isEqualTo(-1);
+        assertThat(executor.reserve(1, Duration.ZERO)).isZero();
+        sample.set(new ResourceSampler.Sample(0, 0.1));
+        for (int i = 0; i < 12; i++) {
+            now.addAndGet(TimeUnit.MILLISECONDS.toNanos(500));
+            executor.claimed(2, 2);
             executor.adjustThreadCount();
         }
-
         assertThat(executor.currentMaxThreads()).isEqualTo(2);
+        executor.release(1);
+        executor.adjustThreadCount();
+        assertThat(executor.currentMaxThreads()).isEqualTo(3);
+        assertThat(executor.availablePermits()).isEqualTo(1);
+        executor.release(2);
+        assertThat(executor.availablePermits()).isEqualTo(3);
+    }
+
+    @Test
+    void runningTasksAreNotCancelledByAnEmergencyShrink() throws Exception {
+        var now = new AtomicLong();
+        var sample = new AtomicReference<>(new ResourceSampler.Sample(0, 0.1));
+        var executor = new DefaultVtExecutor(Concurrency.adaptive(1, 3), ignored -> sample.get(), now::get);
+        created.add(executor);
+        executor.adjustThreadCount();
+        now.addAndGet(TimeUnit.MILLISECONDS.toNanos(500));
+        executor.claimed(1, 1);
+        executor.adjustThreadCount();
+        assertThat(executor.reserve(2, Duration.ZERO)).isEqualTo(2);
+        var started = new CountDownLatch(2);
+        var release = new CountDownLatch(1);
+        try {
+            executor.execute(blockOn(started, release));
+            executor.execute(blockOn(started, release));
+            assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
+            sample.set(new ResourceSampler.Sample(0, 1));
+            executor.adjustThreadCount();
+            assertThat(executor.activeCount()).isEqualTo(2);
+            assertThat(executor.availablePermits()).isEqualTo(-1);
+        } finally {
+            release.countDown();
+        }
+        executor.shutdown();
+        assertThat(executor.awaitTermination(Duration.ofSeconds(10))).isTrue();
+        assertThat(executor.availablePermits()).isEqualTo(1);
     }
 
     @Test

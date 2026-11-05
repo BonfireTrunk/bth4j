@@ -3,20 +3,25 @@ package today.bonfire.oss.bth4j.micrometer;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.AdminOps;
+import today.bonfire.oss.bth4j.BackgroundRunner;
+import today.bonfire.oss.bth4j.Concurrency;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.spi.StateCounts;
+import today.bonfire.oss.bth4j.testing.InMemoryStore;
 
 class MicrometerRunnerMetricsTest {
 
@@ -222,6 +227,39 @@ class MicrometerRunnerMetricsTest {
         refresh.join(10_000);
 
         assertThat(refresh.isAlive()).isFalse();
+        assertThat(registry.getMeters()).isEmpty();
+    }
+
+    @Test
+    void limitGaugeTracksChangesUsesTagsAndIsRemovedOnClose() {
+        var limit = new AtomicReference<>(OptionalInt.empty());
+        var metrics = MicrometerRunnerMetrics.bind(
+                admin, () -> 0, limit::get, registry, Tags.of("runner", "one"), Duration.ofHours(1));
+        assertThat(registry.find(MicrometerRunnerMetrics.CONCURRENCY_LIMIT).gauge())
+                .isNull();
+        limit.set(OptionalInt.of(8));
+        metrics.refresh();
+        assertThat(gauge(MicrometerRunnerMetrics.CONCURRENCY_LIMIT, "runner", "one"))
+                .isEqualTo(8);
+        limit.set(OptionalInt.of(16));
+        assertThat(gauge(MicrometerRunnerMetrics.CONCURRENCY_LIMIT, "runner", "one"))
+                .isEqualTo(16);
+        metrics.close();
+        metrics.refresh();
+        assertThat(registry.getMeters()).isEmpty();
+    }
+
+    @Test
+    void bindingARunnerIncludesItsExecutorLimit() {
+        var runner = BackgroundRunner.builder()
+                .store(new InMemoryStore())
+                .concurrency(Concurrency.fixed(7))
+                .build();
+        try (var metrics = MicrometerRunnerMetrics.bind(runner, registry, Duration.ofHours(1))) {
+            assertThat(gauge(MicrometerRunnerMetrics.CONCURRENCY_LIMIT)).isEqualTo(7);
+        } finally {
+            runner.stop();
+        }
         assertThat(registry.getMeters()).isEmpty();
     }
 

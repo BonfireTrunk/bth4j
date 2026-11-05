@@ -1,218 +1,128 @@
 package today.bonfire.oss.bth4j.executor;
 
-import java.lang.management.ManagementFactory;
-import java.lang.management.OperatingSystemMXBean;
 import java.time.Duration;
-import java.util.Timer;
-import java.util.TimerTask;
+import java.util.OptionalInt;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.LongAdder;
-import java.util.function.DoubleSupplier;
+import java.util.function.LongSupplier;
 import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import today.bonfire.oss.bth4j.Concurrency;
+import today.bonfire.oss.bth4j.Loggers;
 
-/**
- * Default executor that runs every task on its own virtual thread.
- * <p>
- * The number of concurrently running tasks is limited by a semaphore. The limit starts at the number
- * of available processors and is tuned once per second based on CPU load and throughput, between the
- * number of processors and {@code maxConcurrency}. Throughput counts only the tasks that succeeded (see
- * {@link #succeeded()}), so fast failures do not look like progress. While throughput stays flat the limit
- * probes upwards for at most three intervals, and again only after throughput has changed.
- */
+/** Runs tasks on virtual threads, adapting a non-blocking semaphore to CPU and memory targets. */
 public class DefaultVtExecutor implements BackgroundExecutor {
-    private static final Logger log = org.slf4j.LoggerFactory.getLogger(today.bonfire.oss.bth4j.Loggers.EXECUTOR);
-
+    private static final Logger log = LoggerFactory.getLogger(Loggers.EXECUTOR);
     private static final int AVAILABLE_PROCESSORS = Runtime.getRuntime().availableProcessors();
-    private static final double CPU_THRESHOLD_HIGH = 0.8; // 80% CPU threshold
-    private static final long MONITOR_INTERVAL_MS = 1000; // 1 second
-
-    private final ExecutorService executor;
+    private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     private final AtomicInteger maxConcurrentTasks;
     private final AdjustableSemaphore concurrencyLimiter;
-    private final AtomicInteger activeTaskCount;
-    private final DoubleSupplier cpuLoad;
-    private final Timer monitor;
-    private final int changingOutputDampenLimit = 1;
-    private final int constantOutputDampeningLimit = 3;
-
-    private long lastCompletedCount;
-    private long lastThroughput;
-    private int consecutiveIncreases = 0;
-    private int consecutiveDecreases = 0;
-    private long consecutiveZeroThroughput = 0;
-    /** number of tasks that succeeded. Written by many threads, so not a plain long. */
-    private final LongAdder totalTasksSucceeded = new LongAdder();
-
-    private int consecutiveStableThroughput = 0;
-
-    private final int maxConcurrency;
-    private final int minConcurrency;
+    private final AtomicInteger activeTaskCount = new AtomicInteger();
+    private final ResourceSampler sampler;
+    private final LongSupplier clock;
+    private final ResourceController controller;
+    private final ScheduledExecutorService monitor;
+    /** written on every reserve, release and finish without the monitor lock, read by the next tick */
+    private volatile long lastActivity;
 
     public DefaultVtExecutor() {
         this(AVAILABLE_PROCESSORS, Math.max(256, AVAILABLE_PROCESSORS * 8));
     }
 
-    /**
-     * @param minConcurrency lower bound and starting value of the adaptive limit, at least 1
-     * @param maxConcurrency upper bound of the adaptive limit, at least {@code minConcurrency}
-     */
+    /** Bounds are normalized to {@code 1 <= minConcurrency <= maxConcurrency}. */
     public DefaultVtExecutor(int minConcurrency, int maxConcurrency) {
-        this(minConcurrency, maxConcurrency, DefaultVtExecutor::systemCpuLoad, true);
+        this(new Concurrency.Adaptive(
+                Math.max(1, minConcurrency), Math.max(Math.max(1, minConcurrency), maxConcurrency)));
     }
 
-    /** With {@code monitor} false nothing tunes the limit unless {@link #adjustThreadCount()} is called. */
-    DefaultVtExecutor(int minConcurrency, int maxConcurrency, DoubleSupplier cpuLoad, boolean monitor) {
-        this.minConcurrency = Math.max(1, minConcurrency);
-        this.maxConcurrency = Math.max(this.minConcurrency, maxConcurrency);
-        this.maxConcurrentTasks = new AtomicInteger(this.minConcurrency);
-        this.concurrencyLimiter = new AdjustableSemaphore(this.minConcurrency);
-        this.activeTaskCount = new AtomicInteger(0);
-        this.cpuLoad = cpuLoad;
-        this.executor = Executors.newVirtualThreadPerTaskExecutor();
-        this.monitor = monitor ? new Timer("bth4j-vt-monitor", true) : null; // daemon timer
-
-        if (monitor) startMonitoring();
+    public DefaultVtExecutor(Concurrency.Adaptive settings) {
+        this(settings, new MxBeanResourceSampler(settings.memorySignal()), System::nanoTime, true);
     }
 
-    private void startMonitoring() {
-        monitor.scheduleAtFixedRate(
-                new TimerTask() {
-                    @Override
-                    public void run() {
+    /** No scheduler: tests advance the clock and call {@link #adjustThreadCount()} explicitly. */
+    DefaultVtExecutor(Concurrency.Adaptive settings, ResourceSampler sampler, LongSupplier clock) {
+        this(settings, sampler, clock, false);
+    }
+
+    private DefaultVtExecutor(
+            Concurrency.Adaptive settings, ResourceSampler sampler, LongSupplier clock, boolean schedule) {
+        this.maxConcurrentTasks = new AtomicInteger(settings.min());
+        this.concurrencyLimiter = new AdjustableSemaphore(settings.min());
+        this.sampler = sampler;
+        this.clock = clock;
+        this.lastActivity = clock.getAsLong();
+        this.controller = new ResourceController(settings, lastActivity);
+        this.monitor = schedule
+                ? Executors.newSingleThreadScheduledExecutor(r -> {
+                    var thread = new Thread(r, "bth4j-vt-monitor");
+                    thread.setDaemon(true);
+                    return thread;
+                })
+                : null;
+        if (monitor != null) {
+            monitor.scheduleWithFixedDelay(
+                    () -> {
                         try {
                             adjustThreadCount();
-                        } catch (Exception e) {
-                            // Log error but don't stop monitoring
-                            log.debug("Error in CPU monitoring", e);
+                        } catch (RuntimeException e) {
+                            log.debug("Error in resource monitoring", e);
                         }
-                    }
-                },
-                MONITOR_INTERVAL_MS,
-                MONITOR_INTERVAL_MS);
-    }
-
-    void adjustThreadCount() {
-        double cpuLoad = this.cpuLoad.getAsDouble();
-        int currentMax = maxConcurrentTasks.get();
-
-        // Calculate throughput metrics
-        long completed = totalTasksSucceeded.sum();
-        long throughput = completed - lastCompletedCount;
-        long throughputChange = throughput - lastThroughput;
-
-        lastCompletedCount = completed;
-        lastThroughput = throughput;
-
-        int newMax = currentMax;
-        String reason = "";
-
-        if (cpuLoad > CPU_THRESHOLD_HIGH) {
-            if (currentMax > minConcurrency) {
-                newMax = Math.max(minConcurrency, currentMax - 1);
-                reason = "high CPU load";
-            }
-            consecutiveIncreases = 0;
-            consecutiveStableThroughput = 0;
-        } else {
-            if (throughput == 0 && activeTaskCount.get() == 0) {
-                consecutiveZeroThroughput++;
-                log.trace(
-                        "Zero throughput detected ({} consecutive intervals). CPU: {}, currentMax: {}",
-                        consecutiveZeroThroughput,
-                        String.format("%.3f", cpuLoad),
-                        currentMax);
-
-                consecutiveStableThroughput = 0;
-                if (consecutiveZeroThroughput >= constantOutputDampeningLimit) {
-                    if (currentMax > minConcurrency) {
-                        newMax = minConcurrency;
-                        reason = "sustained zero throughput";
-                    }
-                }
-                consecutiveIncreases = 0;
-            } else {
-                consecutiveZeroThroughput = 0;
-                if (throughputChange != 0) consecutiveStableThroughput = 0;
-                if (throughputChange > 0) {
-                    newMax = Math.min(maxConcurrency, currentMax + 1);
-                    reason = "increasing throughput";
-                } else if (throughputChange < 0 && currentMax > minConcurrency) {
-                    newMax = Math.max(minConcurrency, currentMax - 1);
-                    reason = "decreasing throughput";
-                } else if (throughputChange == 0 && consecutiveStableThroughput < constantOutputDampeningLimit) {
-                    newMax = Math.min(maxConcurrency, currentMax + 1);
-                    consecutiveStableThroughput++;
-                    reason = "stable throughput, will probe for more";
-                }
-            }
-        }
-
-        if (throughput > 0) {
-            if (newMax > currentMax) {
-                consecutiveIncreases++;
-                consecutiveDecreases = 0;
-                if (consecutiveIncreases > changingOutputDampenLimit) {
-                    updateConcurrencyLimit(currentMax, newMax, reason, cpuLoad, throughput, throughputChange);
-                    consecutiveIncreases = 0;
-                } else {
-                    log.trace(
-                            "Ignoring potential increase, recent increases: {}, throughput: {}",
-                            consecutiveIncreases,
-                            throughput);
-                }
-            } else if (newMax < currentMax) {
-                consecutiveDecreases++;
-                consecutiveIncreases = 0;
-                if (consecutiveDecreases > changingOutputDampenLimit) {
-                    updateConcurrencyLimit(currentMax, newMax, reason, cpuLoad, throughput, throughputChange);
-                    consecutiveDecreases = 0;
-                } else {
-                    log.debug(
-                            "Ignoring potential decrease, recent decreases: {}, throughput: {}, Change: {}",
-                            consecutiveDecreases,
-                            throughput,
-                            throughputChange);
-                }
-            } else {
-                consecutiveIncreases = 0;
-                consecutiveDecreases = 0;
-                log.trace(
-                        "CPU: {}, Throughput: {}, Change: {}, currentMax: {} ",
-                        String.format("%.3f", cpuLoad),
-                        throughput,
-                        throughputChange,
-                        currentMax);
-            }
-        } else if (newMax != currentMax) {
-            updateConcurrencyLimit(currentMax, newMax, reason, cpuLoad, throughput, throughputChange);
+                    },
+                    500,
+                    500,
+                    TimeUnit.MILLISECONDS);
         }
     }
 
-    private void updateConcurrencyLimit(
-            int currentMax, int newMax, String reason, double cpuLoad, long throughput, long throughputChange) {
-        maxConcurrentTasks.set(newMax);
-        // Adjust semaphore permits
-        if (newMax > currentMax) {
-            concurrencyLimiter.release(newMax - currentMax);
+    synchronized void adjustThreadCount() {
+        long now = clock.getAsLong();
+        var sample = sampler.sample(now);
+        int old = maxConcurrentTasks.get();
+        int occupied = old - concurrencyLimiter.availablePermits();
+        controller.occupied(lastActivity);
+        var decision = controller.tick(sample, occupied, now);
+        int next = decision.limit();
+        if (next != old) {
+            maxConcurrentTasks.set(next);
+            if (next > old) concurrencyLimiter.release(next - old);
+            else concurrencyLimiter.shrink(old - next);
+            log.debug(
+                    "Concurrency {} -> {}, reason={}, CPU raw={}, smoothed={}, memory={}, occupied={}",
+                    old,
+                    next,
+                    decision.reason(),
+                    sample.cpu(),
+                    decision.smoothedCpu(),
+                    sample.memory(),
+                    occupied);
         } else {
-            // never blocks: permits held by running tasks are given back and simply not reused,
-            // the available count may go negative until enough tasks finish
-            concurrencyLimiter.shrink(currentMax - newMax);
+            log.trace(
+                    "Concurrency hold {}, reason={}, CPU raw={}, smoothed={}, memory={}, occupied={}",
+                    old,
+                    decision.reason(),
+                    sample.cpu(),
+                    decision.smoothedCpu(),
+                    sample.memory(),
+                    occupied);
         }
+    }
 
-        log.debug(
-                "{} threads: {} -> {} due to {}. CPU: {}, Throughput: {}, Change: {}",
-                newMax > currentMax ? "Increased" : "Decreased",
-                currentMax,
-                newMax,
-                reason,
-                String.format("%.2f", cpuLoad),
-                throughput,
-                throughputChange);
+    private void occupied() {
+        lastActivity = clock.getAsLong();
+    }
+
+    @Override
+    public synchronized void claimed(int reserved, int claimed) {
+        controller.claimed(reserved, claimed);
+    }
+
+    @Override
+    public OptionalInt limit() {
+        return OptionalInt.of(currentMaxThreads());
     }
 
     @Override
@@ -224,12 +134,16 @@ public class DefaultVtExecutor implements BackgroundExecutor {
         while (reserved < max && concurrencyLimiter.tryAcquire()) {
             reserved++;
         }
+        occupied();
         return reserved;
     }
 
     @Override
     public void release(int slots) {
-        if (slots > 0) concurrencyLimiter.release(slots);
+        if (slots > 0) {
+            occupied();
+            concurrencyLimiter.release(slots);
+        }
     }
 
     /** Runs the task in a reserved slot; the slot is released when the task finishes or if it is rejected. */
@@ -242,19 +156,15 @@ public class DefaultVtExecutor implements BackgroundExecutor {
                     task.run();
                 } finally {
                     activeTaskCount.decrementAndGet();
+                    occupied();
                     concurrencyLimiter.release();
                 }
             });
         } catch (RuntimeException e) {
+            occupied();
             concurrencyLimiter.release();
             throw e;
         }
-    }
-
-    /** Counts towards the throughput that tunes the limit. */
-    @Override
-    public void succeeded() {
-        totalTasksSucceeded.increment();
     }
 
     @Override
@@ -269,27 +179,11 @@ public class DefaultVtExecutor implements BackgroundExecutor {
 
     @Override
     public void shutdown() {
-        if (monitor != null) monitor.cancel();
+        if (monitor != null) monitor.shutdownNow();
         executor.shutdown();
     }
 
-    private static double systemCpuLoad() {
-        OperatingSystemMXBean osBean = ManagementFactory.getOperatingSystemMXBean();
-        double load;
-        if (osBean instanceof com.sun.management.OperatingSystemMXBean sunOsBean) {
-            load = sunOsBean.getCpuLoad();
-        } else {
-            // Fallback to the system load average if system-wide CPU load is not available
-            load = osBean.getSystemLoadAverage() / AVAILABLE_PROCESSORS;
-        }
-        // the JDK returns a negative value when the load is not available
-        return Double.isNaN(load) ? 0.0 : Math.max(0.0, load);
-    }
-
-    /**
-     * Semaphore that can lower its permits without blocking.
-     * {@link Semaphore#reducePermits(int)} is protected, so it is exposed here.
-     */
+    /** Held slots remain occupied after a shrink; available permits can be negative until tasks finish. */
     private static final class AdjustableSemaphore extends Semaphore {
         AdjustableSemaphore(int permits) {
             super(permits);

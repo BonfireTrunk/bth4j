@@ -55,7 +55,7 @@ class PostgresTaskStoreIT {
         store = PostgresTestSupport.store(namespace);
         queue = store.queueId("default");
         type = store.typeId("send-mail");
-        worker = store.allocateWorkerId("host:1");
+        worker = store.allocateWorkerId("host:1", Set.of(), Set.of());
     }
 
     private TaskRecord.Builder task(long id) {
@@ -123,6 +123,35 @@ class PostgresTaskStoreIT {
         store.init();
         assertThat(store.info().engine()).isEqualTo("postgresql");
         assertThat(store.info().schemaVersion()).isEqualTo(PostgresTaskStore.SCHEMA_VERSION);
+    }
+
+    @Test
+    void initAddsCoverageToAnExistingWorkerTableWithoutChangingTheSchemaVersion() throws SQLException {
+        sql("ALTER TABLE " + prefix + "_worker DROP COLUMN queue_ids, DROP COLUMN type_ids");
+        store.init();
+        store.init();
+
+        var legacy = store.workers().getFirst();
+        assertThat(legacy.id()).isEqualTo(worker);
+        assertThat(legacy.queueIds()).isNull();
+        assertThat(legacy.typeIds()).isNull();
+        sql("INSERT INTO " + prefix + "_worker (label, started_at, last_seen) VALUES ('old', now(), now())");
+        int registered = store.allocateWorkerId("new", Set.of(queue), Set.of(type));
+        store.heartbeat(registered, 2);
+        assertThat(store.workers())
+                .filteredOn(w -> w.id() == registered)
+                .singleElement()
+                .satisfies(w -> {
+                    assertThat(w.queueIds()).containsExactly(queue);
+                    assertThat(w.typeIds()).containsExactly(type);
+                    assertThat(w.running()).isEqualTo(2);
+                });
+        try (var c = PostgresTestSupport.dataSource().getConnection();
+                var st = c.createStatement();
+                var rs = st.executeQuery("SELECT value FROM " + prefix + "_meta WHERE key = 'schema_version'")) {
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getString(1)).isEqualTo("2");
+        }
     }
 
     @Test
@@ -214,7 +243,7 @@ class PostgresTaskStoreIT {
 
     @Test
     void workerIdsAreNeverReused() {
-        int second = store.allocateWorkerId("host:2");
+        int second = store.allocateWorkerId("host:2", Set.of(), Set.of());
         assertThat(second).isGreaterThan(worker);
     }
 
@@ -1061,7 +1090,7 @@ class PostgresTaskStoreIT {
 
     @Test
     void heartbeatsAreListedAndStaleWorkersPurged() throws Exception {
-        int second = store.allocateWorkerId("host:2");
+        int second = store.allocateWorkerId("host:2", Set.of(), Set.of());
         store.heartbeat(worker, 5);
 
         var workers = store.workers();

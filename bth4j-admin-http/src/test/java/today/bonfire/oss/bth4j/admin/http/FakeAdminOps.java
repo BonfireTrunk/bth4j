@@ -15,6 +15,7 @@ import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.TaskView;
 import today.bonfire.oss.bth4j.TaskViewPage;
+import today.bonfire.oss.bth4j.UnservedWork;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
@@ -31,6 +32,7 @@ final class FakeAdminOps implements AdminOps {
     final Map<String, StateCounts> counts = new ConcurrentHashMap<>();
     final List<QueueInfo> queues = new CopyOnWriteArrayList<>();
     final List<ScheduleView> schedules = new CopyOnWriteArrayList<>();
+    final List<UnservedWork> unserved = new CopyOnWriteArrayList<>();
     final List<WorkerInfo> workers = new CopyOnWriteArrayList<>();
     final List<Issue> issues = new CopyOnWriteArrayList<>();
     final List<String> calls = new CopyOnWriteArrayList<>();
@@ -144,6 +146,12 @@ final class FakeAdminOps implements AdminOps {
     }
 
     @Override
+    public List<UnservedWork> unservedWork(Duration liveWithin) {
+        calls.add("unservedWork " + liveWithin);
+        return unserved;
+    }
+
+    @Override
     public int purgeStaleWorkers(Duration staleAfter) {
         return 0;
     }
@@ -183,11 +191,11 @@ final class FakeAdminOps implements AdminOps {
 
     @Override
     public Map<Integer, String> queueNames() {
-        return Map.of();
+        return Map.of(1, "default", 2, "mail");
     }
 
     @Override
     public Map<Integer, String> typeNames() {
-        return Map.of();
+        return Map.of(1, "send-mail", 2, "export");
     }
 }

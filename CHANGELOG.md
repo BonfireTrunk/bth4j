@@ -9,13 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `BackgroundExecutor.succeeded()`: a default method the runner calls once for each task whose processor returned normally, after its acknowledgement. Custom executors may ignore it.
+- Adaptive concurrency with CPU and memory targets: `Concurrency.adaptive(min, max, cpuTarget, memoryTarget)` (defaults 0.90 and 0.80 with `adaptive(min, max)`), and `Adaptive.withMemorySignal(MemorySignal.HEAP_AND_SYSTEM)` to count system memory as well as the heap (`MemorySignal.HEAP` is the default).
+- `BackgroundExecutor.claimed(reserved, claimed)` tells the executor whether a claim filled its reservation, the demand signal of adaptive concurrency. `BackgroundExecutor.limit()` and `BackgroundRunner.concurrencyLimit()` report the current limit; the Micrometer gauge `bth4j.runner.concurrency.limit` exposes it.
+- Workers record the queues and task types they process. `AdminOps.unservedWork()` (one-minute heartbeat window) and `unservedWork(Duration)` report queued work that no live worker can take: a queue no live worker processes, or a task type none of a queue's live workers registered (a lower bound from the first 100 queued tasks of the queue). Paused queues are skipped, and a live worker that did not record its coverage (an older version) suppresses the reports. `GET /api/v1/unserved` serves them, the Overview page shows them, and the Workers page lists each worker's queues and types.
+
+### Changed
+
+- Adaptive concurrency is a new controller. It starts at `min` and samples every 500 ms: whole-machine CPU (smoothed) and memory (the lowest reading over 2 s, so the GC sawtooth does not count). It grows only after a claim filled its reservation and while both are under their targets: about +25 % per step far below the targets, +1 near them. CPU above target for 1 s takes 20 % off, memory above target for 1 s takes 25 % off and blocks growth for 5 s, memory at 95 % drops straight to `min`, an unavailable signal blocks growth and decays the limit after 5 s, and 30 s without running or reserved tasks resets it to `min`. Running tasks are never stopped; a lower limit admits fewer new ones. The throughput heuristics and the fixed 80 % CPU threshold are gone.
+- Breaking: `Concurrency.Adaptive` has the components `cpuTarget`, `memoryTarget` and `memorySignal` (the two-argument constructor remains); `Concurrency.adaptive(min, max)` returns `Adaptive`; `FixedExecutor.limit()` returns `OptionalInt`.
+- Breaking SPI: `TaskStore.allocateWorkerId(label, queueIds, typeIds)` records coverage and `WorkerInfo` adds nullable `queueIds` and `typeIds`; `AdminOps` implementations must add `unservedWork(Duration)`. `GET /api/v1/workers` adds `queues` and `types` as name lists. PostgreSQL `init` adds two nullable columns to an existing worker table and Redis worker hashes gain two fields; schema version 2 and layout version 3 are unchanged.
 
 ### Fixed
 
 - Queue caps: when a claim found nothing because a queue was at its `QueuePolicy.maxConcurrent`, the runner slept the full `idlePollInterval` (500 ms by default) even after a task of that queue finished. It now claims again as soon as a task of a capped queue finishes.
-- Adaptive concurrency counted failed attempts as throughput, so fast failures (for example HTTP 429 replies) raised the limit. It now counts only succeeded tasks.
-- Adaptive concurrency kept raising the limit while throughput stayed flat, because each increase reset the probe count. It now probes for at most three intervals and again only after throughput changes.
+- Dashboard preview API returns the cursor task-page shape on the first page too.
 
 ## [4.0.0] - 2026-11-05
 

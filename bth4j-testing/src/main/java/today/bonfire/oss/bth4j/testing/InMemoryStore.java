@@ -124,12 +124,12 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public int allocateWorkerId(String label) {
+    public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
         lock.lock();
         try {
             int id = nextWorkerId++;
             Instant now = clock.instant();
-            workers.put(id, new WorkerInfo(id, label, now, now, 0));
+            workers.put(id, new WorkerInfo(id, label, now, now, 0, queueIds, typeIds));
             return id;
         } finally {
             lock.unlock();
@@ -1021,7 +1021,10 @@ public final class InMemoryStore implements FullStore {
         try {
             WorkerInfo w = workers.get(workerId);
             if (w != null) {
-                workers.put(workerId, new WorkerInfo(w.id(), w.label(), w.startedAt(), clock.instant(), running));
+                workers.put(
+                        workerId,
+                        new WorkerInfo(
+                                w.id(), w.label(), w.startedAt(), clock.instant(), running, w.queueIds(), w.typeIds()));
             }
         } finally {
             lock.unlock();

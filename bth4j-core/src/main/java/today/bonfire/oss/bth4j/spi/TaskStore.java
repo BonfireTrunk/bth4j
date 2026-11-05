@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j.spi;
 
 import java.util.Map;
+import java.util.Set;
 
 /**
  * What every store provides: identity, the name registries and schema management. The task operations are
@@ -36,8 +37,10 @@ public interface TaskStore {
      * Registers a worker and returns its id. Ids are never reused.
      *
      * @param label free text that identifies the process, for example host and pid
+     * @param queueIds queues this worker processes; null when coverage is unknown
+     * @param typeIds task types this worker processes; null when coverage is unknown
      */
-    int allocateWorkerId(String label);
+    int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds);
 
     /**
      * Resolves a queue name to its id, registering the name when it is new. Ids are permanent, so callers

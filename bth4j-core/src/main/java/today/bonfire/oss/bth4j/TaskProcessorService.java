@@ -142,6 +142,7 @@ class TaskProcessorService extends CustomThread {
             settings.status().storeError(e);
             throw e;
         }
+        executor.claimed(slots, tasks.size());
         executor.release(slots - tasks.size());
         for (var record : tasks) {
             var execution = new TaskExecution(record, settings, this::finished);
@@ -249,7 +250,6 @@ class TaskProcessorService extends CustomThread {
         if (policies.getOrDefault(execution.queueId(), QueuePolicy.DEFAULT).maxConcurrent() > 0) {
             queueSlotFreed.release();
         }
-        if (execution.succeeded()) executor.succeeded();
     }
 
     /** The queues to process, starting one position later on every call. */

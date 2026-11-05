@@ -8,10 +8,12 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
@@ -23,6 +25,7 @@ import redis.clients.jedis.UnifiedJedis;
 import redis.clients.jedis.exceptions.JedisException;
 import redis.clients.jedis.params.ZAddParams;
 import redis.clients.jedis.resps.Tuple;
+import today.bonfire.oss.bth4j.common.Json;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
@@ -162,8 +165,8 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public int allocateWorkerId(String label) {
-        var args = List.of(label == null ? "" : label);
+    public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
+        var args = List.of(label == null ? "" : label, Json.write(queueIds), Json.write(typeIds));
         return (int) num(guard(() -> scripts.run(RedisScripts.WORKER_REGISTER, args)));
     }
 
@@ -963,10 +966,21 @@ public class RedisTaskStore implements FullStore {
                         h.getOrDefault(F_LABEL, ""),
                         Instant.ofEpochMilli(Long.parseLong(h.get(F_STARTED))),
                         Instant.ofEpochMilli(Long.parseLong(h.get(F_SEEN))),
-                        Integer.parseInt(h.getOrDefault(F_RUNNING, "0"))));
+                        Integer.parseInt(h.getOrDefault(F_RUNNING, "0")),
+                        workerIds(h.get(F_QUEUES)),
+                        workerIds(h.get(F_TYPES))));
             }
             return out;
         });
+    }
+
+    private static Set<Integer> workerIds(String value) {
+        if (value == null) return null;
+        var parsed = Json.parse(value);
+        if (parsed == null) return null;
+        var ids = new HashSet<Integer>();
+        for (var id : (List<?>) parsed) ids.add(((Number) id).intValue());
+        return ids;
     }
 
     // ---- wave 2: schedule controls -------------------------------------------------------------------

@@ -779,11 +779,12 @@ final class RedisScripts {
             return 1 + fx
             """;
 
-    /** ARGV: label. Allocates the worker id and records it as started and seen now. Returns the id. */
+    /** ARGV: label, queue ids JSON, type ids JSON. Records coverage and start time; returns the worker id. */
     static final String WORKER_REGISTER = PRELUDE + """
             local id = redis.call('INCR', P .. 'seq:worker')
             local at = now()
-            redis.call('HSET', P .. 'w:' .. id, 'label', ARGV[2], 'started', at, 'seen', at, 'running', 0)
+            redis.call('HSET', P .. 'w:' .. id, 'label', ARGV[2], 'started', at, 'seen', at, 'running', 0,
+              'queues', ARGV[3], 'types', ARGV[4])
             redis.call('ZADD', P .. 'workers', at, id)
             return id
             """;

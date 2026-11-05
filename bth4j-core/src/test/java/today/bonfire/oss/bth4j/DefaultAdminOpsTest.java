@@ -147,7 +147,7 @@ class DefaultAdminOpsTest {
     @Test
     void queuesAndWorkersAreReturnedAsTheStoreHasThem() {
         var queueInfos = List.of(new QueueInfo(1, "Q:DEF", false), new QueueInfo(2, "Q:OTHER", true));
-        var workerInfos = List.of(new WorkerInfo(4, "w", NOW, NOW, 2));
+        var workerInfos = List.of(new WorkerInfo(4, "w", NOW, NOW, 2, null, null));
         handlers.put("queues", a -> queueInfos);
         handlers.put("workers", a -> workerInfos);
 

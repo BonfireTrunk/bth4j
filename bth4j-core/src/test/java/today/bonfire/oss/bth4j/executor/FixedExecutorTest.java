@@ -17,7 +17,9 @@ class FixedExecutorTest {
     @Test
     void limitMustBePositive() {
         assertThatThrownBy(() -> new FixedExecutor(0)).isInstanceOf(IllegalArgumentException.class);
-        assertThat(new FixedExecutor(3).limit()).isEqualTo(3);
+        var executor = new FixedExecutor(3);
+        assertThat(executor.limit()).hasValue(3);
+        executor.shutdown();
     }
 
     @Test

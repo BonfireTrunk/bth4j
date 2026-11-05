@@ -132,5 +132,6 @@ export const api = {
   triggerSchedule: (id) => request('POST', '/schedules/' + enc(id) + '/trigger', { body: {} }),
   deleteSchedule: (id) => request('DELETE', '/schedules/' + enc(id)),
   workers: () => request('GET', '/workers'),
+  unserved: () => request('GET', '/unserved'),
   issues: () => request('GET', '/issues'),
 };

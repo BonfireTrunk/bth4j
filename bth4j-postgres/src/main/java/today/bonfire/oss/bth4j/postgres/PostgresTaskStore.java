@@ -305,7 +305,11 @@ public class PostgresTaskStore implements FullStore {
                         + " label text NOT NULL,"
                         + " started_at timestamptz NOT NULL,"
                         + " last_seen timestamptz NOT NULL,"
-                        + " running integer NOT NULL DEFAULT 0)",
+                        + " running integer NOT NULL DEFAULT 0,"
+                        + " queue_ids integer[],"
+                        + " type_ids integer[])",
+                "ALTER TABLE " + worker + " ADD COLUMN IF NOT EXISTS queue_ids integer[]",
+                "ALTER TABLE " + worker + " ADD COLUMN IF NOT EXISTS type_ids integer[]",
                 "CREATE TABLE IF NOT EXISTS " + task + " ("
                         + " id bigint PRIMARY KEY,"
                         + " revision integer NOT NULL,"
@@ -460,13 +464,24 @@ public class PostgresTaskStore implements FullStore {
     }
 
     @Override
-    public int allocateWorkerId(String label) {
+    public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
         if (label == null) throw new IllegalArgumentException("label is required");
         return withConnection(c -> {
-            try (var ps = c.prepareStatement("INSERT INTO " + worker
-                    + " (label, started_at, last_seen) VALUES (?, now(), now()) RETURNING id")) {
-                ps.setString(1, label);
-                return (int) single(ps);
+            Array queues = c.createArrayOf("int4", queueIds == null ? null : queueIds.toArray(Integer[]::new));
+            try {
+                Array types = c.createArrayOf("int4", typeIds == null ? null : typeIds.toArray(Integer[]::new));
+                try (var ps = c.prepareStatement(
+                        "INSERT INTO " + worker
+                                + " (label, started_at, last_seen, queue_ids, type_ids) VALUES (?, now(), now(), ?, ?) RETURNING id")) {
+                    ps.setString(1, label);
+                    ps.setArray(2, queues);
+                    ps.setArray(3, types);
+                    return (int) single(ps);
+                } finally {
+                    types.free();
+                }
+            } finally {
+                queues.free();
             }
         });
     }
@@ -1648,15 +1663,32 @@ public class PostgresTaskStore implements FullStore {
         return withConnection(c -> {
             var result = new ArrayList<WorkerInfo>();
             try (var ps = c.prepareStatement(
-                            "SELECT id, label, started_at, last_seen, running FROM " + worker + " ORDER BY id");
+                            "SELECT id, label, started_at, last_seen, running, queue_ids, type_ids FROM " + worker
+                                    + " ORDER BY id");
                     var rs = ps.executeQuery()) {
                 while (rs.next()) {
                     result.add(new WorkerInfo(
-                            rs.getInt(1), rs.getString(2), getInstant(rs, 3), getInstant(rs, 4), rs.getInt(5)));
+                            rs.getInt(1),
+                            rs.getString(2),
+                            getInstant(rs, 3),
+                            getInstant(rs, 4),
+                            rs.getInt(5),
+                            workerIds(rs, 6),
+                            workerIds(rs, 7)));
                 }
             }
             return result;
         });
+    }
+
+    private static Set<Integer> workerIds(ResultSet rs, int column) throws SQLException {
+        var array = rs.getArray(column);
+        if (array == null) return null;
+        try {
+            return Set.of((Integer[]) array.getArray());
+        } finally {
+            array.free();
+        }
     }
 
     @Override

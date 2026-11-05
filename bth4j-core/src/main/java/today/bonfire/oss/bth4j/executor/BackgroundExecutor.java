@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j.executor;
 
 import java.time.Duration;
+import java.util.OptionalInt;
 
 /**
  * Executes the task runners picked up from the queues and bounds how many run at once.
@@ -29,12 +30,13 @@ public interface BackgroundExecutor {
      */
     void execute(Runnable task);
 
-    /**
-     * Called once for each task whose processor returned normally, after its acknowledgement and before its
-     * slot is freed. Failed, rescheduled and cancelled attempts are not reported. An adaptive executor can use
-     * it as its throughput signal. Does nothing by default.
-     */
-    default void succeeded() {}
+    /** Reports the total reservation and claim result of a successful claim attempt, including empty claims. */
+    default void claimed(int reserved, int claimed) {}
+
+    /** @return the current concurrency limit, when the executor exposes one */
+    default OptionalInt limit() {
+        return OptionalInt.empty();
+    }
 
     /** @return the number of tasks running right now */
     int activeCount();

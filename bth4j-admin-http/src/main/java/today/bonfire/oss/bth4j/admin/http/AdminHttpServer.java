@@ -287,7 +287,12 @@ public final class AdminHttpServer {
             case "POST schedules/{}/resume" -> scheduleChange(ex, admin.pauseSchedule(param, false));
             case "POST schedules/{}/trigger" -> scheduleChange(ex, admin.triggerSchedule(param));
             case "DELETE schedules/{}" -> scheduleChange(ex, admin.deleteSchedule(param));
-            case "GET workers" -> sendJson(ex, 200, Views.list(admin.workers(), Views::worker));
+            case "GET workers" -> {
+                var queues = admin.queueNames();
+                var types = admin.typeNames();
+                sendJson(ex, 200, Views.list(admin.workers(), w -> Views.worker(w, queues, types)));
+            }
+            case "GET unserved" -> sendJson(ex, 200, Views.list(admin.unservedWork(), Views::unserved));
             case "GET issues" -> sendJson(ex, 200, Views.list(admin.issues(), Views::issue));
             default -> throw new HttpError(404, "not found");
         }

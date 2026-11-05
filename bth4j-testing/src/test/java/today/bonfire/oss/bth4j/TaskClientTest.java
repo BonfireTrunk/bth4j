@@ -9,6 +9,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
@@ -432,7 +433,7 @@ class TaskClientTest {
                         List.of(store.queueId("Q:DEF")),
                         1,
                         Duration.ofSeconds(30),
-                        store.allocateWorkerId("test"),
+                        store.allocateWorkerId("test", Set.of(), Set.of()),
                         null))
                 .getFirst();
         assertThat(store.ack(id, leased.revision(), true, false, null)).isTrue();

@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -100,9 +101,9 @@ public abstract class StoreContract {
     void setUpStore() {
         store = newStore("contract" + COUNTER.incrementAndGet() + "x" + System.nanoTime() % 100_000);
         store.init();
-        worker = store.allocateWorkerId("contract-test");
         queue = store.queueId("main");
         type = store.typeId("work");
+        worker = store.allocateWorkerId("contract-test", Set.of(queue), Set.of(type));
     }
 
     private Instant now() {
@@ -268,8 +269,8 @@ public abstract class StoreContract {
 
     @Test
     void allocateWorkerIdIsUniqueAcrossCalls() {
-        int a = store.allocateWorkerId("a");
-        int b = store.allocateWorkerId("b");
+        int a = store.allocateWorkerId("a", Set.of(), Set.of());
+        int b = store.allocateWorkerId("b", Set.of(), Set.of());
         assertThat(a).isNotEqualTo(b).isNotEqualTo(worker);
         assertThat(b).isNotEqualTo(worker);
     }
@@ -805,7 +806,7 @@ public abstract class StoreContract {
         }
         int threads = 8;
         List<List<Long>> perThread = runConcurrently(threads, () -> {
-            int w = store.allocateWorkerId("t");
+            int w = store.allocateWorkerId("t", Set.of(), Set.of());
             List<Long> mine = new ArrayList<>();
             while (true) {
                 List<TaskRecord> got = store.claim(new ClaimRequest(List.of(queue), 5, LEASE, w, null));
@@ -2723,6 +2724,8 @@ public abstract class StoreContract {
         WorkerInfo w = before.stream().filter(x -> x.id() == worker).findFirst().orElseThrow();
         assertThat(w.label()).isEqualTo("contract-test");
         assertThat(w.running()).isZero();
+        assertThat(w.queueIds()).containsExactly(queue);
+        assertThat(w.typeIds()).containsExactly(type);
         advance(PAST_SHORT);
         store.heartbeat(worker, 4);
         WorkerInfo after = store.workers().stream()
@@ -2733,11 +2736,51 @@ public abstract class StoreContract {
         assertThat(after.lastSeen()).isAfter(w.lastSeen());
         assertThat(after.startedAt()).isEqualTo(w.startedAt());
         assertThat(after.label()).isEqualTo("contract-test");
+        assertThat(after.queueIds()).containsExactly(queue);
+        assertThat(after.typeIds()).containsExactly(type);
+    }
+
+    @Test
+    void workerCoverageRoundTripsMultipleEmptyAndUnknownSets() {
+        var queues = new HashSet<>(Set.of(queue, store.queueId("other")));
+        var types = new HashSet<>(Set.of(type, store.typeId("other")));
+        int known = store.allocateWorkerId("known", queues, types);
+        int empty = store.allocateWorkerId("empty", Set.of(), Set.of());
+        int unknown = store.allocateWorkerId("unknown", null, null);
+        var expectedQueues = Set.copyOf(queues);
+        var expectedTypes = Set.copyOf(types);
+        queues.clear();
+        types.clear();
+        store.heartbeat(known, 1);
+        store.heartbeat(empty, 0);
+        store.heartbeat(unknown, 0);
+
+        assertThat(store.workers())
+                .filteredOn(w -> w.id() == known)
+                .singleElement()
+                .satisfies(w -> {
+                    assertThat(w.queueIds()).isEqualTo(expectedQueues);
+                    assertThat(w.typeIds()).isEqualTo(expectedTypes);
+                });
+        assertThat(store.workers())
+                .filteredOn(w -> w.id() == empty)
+                .singleElement()
+                .satisfies(w -> {
+                    assertThat(w.queueIds()).isEmpty();
+                    assertThat(w.typeIds()).isEmpty();
+                });
+        assertThat(store.workers())
+                .filteredOn(w -> w.id() == unknown)
+                .singleElement()
+                .satisfies(w -> {
+                    assertThat(w.queueIds()).isNull();
+                    assertThat(w.typeIds()).isNull();
+                });
     }
 
     @Test
     void purgeWorkersDeletesOnlyWorkersNotSeenRecently() {
-        int stale = store.allocateWorkerId("stale");
+        int stale = store.allocateWorkerId("stale", Set.of(), Set.of());
         advance(PAST_SHORT);
         store.heartbeat(worker, 0);
         assertThat(store.purgeWorkers(SHORT)).isEqualTo(1);

@@ -159,12 +159,27 @@ class RedisTaskStoreIT {
 
     @Test
     void workersGetDistinctIdsAndAreRecorded() {
-        var a = store.allocateWorkerId("host-a:1");
-        var b = store.allocateWorkerId("host-b:2");
+        var a = store.allocateWorkerId("host-a:1", Set.of(), Set.of());
+        var b = store.allocateWorkerId("host-b:2", Set.of(), Set.of());
 
         assertThat(a).isNotEqualTo(b);
         assertThat(jedis.hget(keys.worker(a), "label")).isEqualTo("host-a:1");
         assertThat(jedis.hget(keys.worker(a), "started")).isNotNull();
+    }
+
+    @Test
+    void legacyWorkerHashHasUnknownCoverageAndHeartbeatPreservesIt() {
+        var id = store.allocateWorkerId("legacy", Set.of(queue), Set.of(type));
+        jedis.hdel(keys.worker(id), Keys.F_QUEUES, Keys.F_TYPES);
+        store.heartbeat(id, 2);
+
+        assertThat(store.workers()).singleElement().satisfies(w -> {
+            assertThat(w.id()).isEqualTo(id);
+            assertThat(w.queueIds()).isNull();
+            assertThat(w.typeIds()).isNull();
+            assertThat(w.running()).isEqualTo(2);
+        });
+        assertThat(store.info().schemaVersion()).isEqualTo(3);
     }
 
     @Test

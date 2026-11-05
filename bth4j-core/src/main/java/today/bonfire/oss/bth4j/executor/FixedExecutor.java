@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j.executor;
 
 import java.time.Duration;
+import java.util.OptionalInt;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
@@ -21,8 +22,9 @@ public final class FixedExecutor implements BackgroundExecutor {
         this.slots = new Semaphore(limit);
     }
 
-    public int limit() {
-        return limit;
+    @Override
+    public OptionalInt limit() {
+        return OptionalInt.of(limit);
     }
 
     @Override

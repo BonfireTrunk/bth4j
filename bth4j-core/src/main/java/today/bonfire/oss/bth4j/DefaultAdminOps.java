@@ -4,6 +4,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -114,6 +115,41 @@ final class DefaultAdminOps implements AdminOps {
     @Override
     public List<WorkerInfo> workers() {
         return store.workers();
+    }
+
+    @Override
+    public List<UnservedWork> unservedWork(Duration liveWithin) {
+        if (liveWithin.isNegative()) throw new IllegalArgumentException("liveWithin must be non-negative");
+        var cutoff = clock.instant().minus(liveWithin);
+        var live = store.workers().stream()
+                .filter(w -> !w.lastSeen().isBefore(cutoff))
+                .toList();
+        if (live.stream().anyMatch(w -> w.queueIds() == null || w.typeIds() == null)) return List.of();
+        var paused = new HashSet<Integer>();
+        for (var queue : store.queues()) {
+            if (queue.paused()) paused.add(queue.id());
+        }
+        var result = new ArrayList<UnservedWork>();
+        for (var entry : store.counts().entrySet()) {
+            int queueId = entry.getKey();
+            long waiting = entry.getValue().queued();
+            if (waiting == 0 || paused.contains(queueId)) continue;
+            var workers =
+                    live.stream().filter(w -> w.queueIds().contains(queueId)).toList();
+            if (workers.isEmpty()) {
+                result.add(new UnservedWork(names.queueName(queueId), null, waiting));
+                continue;
+            }
+            var types = new HashSet<Integer>();
+            for (var worker : workers) types.addAll(worker.typeIds());
+            var unserved = new LinkedHashMap<Integer, Long>();
+            for (var task : store.tasks(TaskState.QUEUED, queueId, null, 100).items()) {
+                if (!types.contains(task.typeId())) unserved.merge(task.typeId(), 1L, Long::sum);
+            }
+            unserved.forEach((type, count) ->
+                    result.add(new UnservedWork(names.queueName(queueId), names.typeName(type), count)));
+        }
+        return result;
     }
 
     @Override

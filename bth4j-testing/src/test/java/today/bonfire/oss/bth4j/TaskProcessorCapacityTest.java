@@ -145,6 +145,7 @@ class TaskProcessorCapacityTest {
         assertThat(leased(ids)).isEqualTo(2);
         assertThat(reservations.running(queueId)).isEqualTo(2);
         assertThat(executor.available()).isEqualTo(8);
+        assertThat(executor.claims).containsExactly(new Claim(5, 2));
     }
 
     @Test
@@ -321,6 +322,7 @@ class TaskProcessorCapacityTest {
 
         assertThatThrownBy(() -> processOnce(processor)).isInstanceOf(TaskStoreException.class);
 
+        assertThat(executor.claims).isEmpty();
         assertThat(state(id)).isEqualTo(TaskState.QUEUED);
         assertThat(executor.available()).isEqualTo(2);
         assertThat(reservations.running(queueId)).isZero();
@@ -558,17 +560,16 @@ class TaskProcessorCapacityTest {
     }
 
     @Test
-    void theExecutorHearsOfSucceededAttemptsOnly() throws Exception {
-        var executor = new ManualExecutor(10);
-        var processor = processor(executor, 5);
-        client.enqueue(TaskRequest.of(TYPE).build());
-        client.enqueue(TaskRequest.of(FAILING).build());
+    void reportsAFullClaimAndAnEmptyClaim() throws Exception {
+        var executor = new ManualExecutor(2);
+        var processor = processor(executor, 2, Map.of());
+        enqueue(2, "Q:DEF");
         processOnce(processor);
-
+        assertThat(executor.claims).containsExactly(new Claim(2, 2));
         executor.runNext();
         executor.runNext();
-
-        assertThat(executor.succeeded).hasValue(1);
+        processOnce(processor);
+        assertThat(executor.claims).containsExactly(new Claim(2, 2), new Claim(2, 0));
     }
 
     private static void awaitState(Thread thread, Thread.State state) throws InterruptedException {
@@ -687,11 +688,13 @@ class TaskProcessorCapacityTest {
         processor.processOnce();
     }
 
+    private record Claim(int reserved, int claimed) {}
+
     private static final class ManualExecutor implements BackgroundExecutor {
         private final Deque<Runnable> tasks = new ArrayDeque<>();
         private int available;
         boolean reject;
-        final AtomicInteger succeeded = new AtomicInteger();
+        final List<Claim> claims = new ArrayList<>();
 
         ManualExecutor(int slots) {
             this.available = slots;
@@ -732,8 +735,8 @@ class TaskProcessorCapacityTest {
         }
 
         @Override
-        public void succeeded() {
-            succeeded.incrementAndGet();
+        public void claimed(int reserved, int claimed) {
+            claims.add(new Claim(reserved, claimed));
         }
 
         int pending() {

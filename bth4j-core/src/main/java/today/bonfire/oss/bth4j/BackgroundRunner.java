@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -84,7 +85,7 @@ public final class BackgroundRunner {
                 ? b.taskExecutor
                 : switch (b.concurrency) {
                     case Concurrency.Fixed f -> new FixedExecutor(f.limit());
-                    case Concurrency.Adaptive a -> new DefaultVtExecutor(a.min(), a.max());
+                    case Concurrency.Adaptive a -> new DefaultVtExecutor(a);
                 };
         this.client = TaskClient.builder()
                 .store(store)
@@ -125,6 +126,11 @@ public final class BackgroundRunner {
     /** @return the number of tasks running on this instance right now */
     public int runningTasks() {
         return runningTasks.size();
+    }
+
+    /** @return the executor's current concurrency limit, or empty for an executor that does not expose it */
+    public OptionalInt concurrencyLimit() {
+        return taskExecutor == null ? OptionalInt.empty() : taskExecutor.limit();
     }
 
     /**
@@ -184,13 +190,13 @@ public final class BackgroundRunner {
                 return;
             }
             registry.freeze();
-            workerId = store.allocateWorkerId(config.workerLabel);
             var queueIds = new ArrayList<Integer>();
             for (var q : queues.queuesToProcess) queueIds.add(names.queueId(q));
             var policies = new LinkedHashMap<Integer, QueuePolicy>();
             config.queuePolicies.forEach((q, p) -> policies.put(names.queueId(q), p));
             var typeIds = new HashSet<Integer>();
             for (var e : registry.typeNames()) typeIds.add(names.typeId(e));
+            workerId = store.allocateWorkerId(config.workerLabel, Set.copyOf(queueIds), Set.copyOf(typeIds));
             services = new RunnerServices(
                     store,
                     names,

@@ -6,6 +6,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -511,8 +512,8 @@ class RedisWave2IT {
 
     @Test
     void workersAreListedInIdOrderWithHeartbeats() {
-        var a = store.allocateWorkerId("a");
-        var b = store.allocateWorkerId("b");
+        var a = store.allocateWorkerId("a", Set.of(), Set.of());
+        var b = store.allocateWorkerId("b", Set.of(), Set.of());
         assertThat(store.workers()).extracting(WorkerInfo::running).containsOnly(0);
         var registered = store.workers().getFirst();
         assertThat(registered.startedAt()).isNotNull();
@@ -530,8 +531,8 @@ class RedisWave2IT {
 
     @Test
     void purgeWorkersRemovesOnlyStaleOnes() {
-        var stale = store.allocateWorkerId("stale");
-        var fresh = store.allocateWorkerId("fresh");
+        var stale = store.allocateWorkerId("stale", Set.of(), Set.of());
+        var fresh = store.allocateWorkerId("fresh", Set.of(), Set.of());
         jedis.zadd(keys.workers, Instant.now().minusSeconds(3600).toEpochMilli(), String.valueOf(stale));
 
         assertThat(store.purgeWorkers(Duration.ofMinutes(10))).isEqualTo(1);

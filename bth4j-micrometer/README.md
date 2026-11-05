@@ -18,6 +18,7 @@ Written by `MicrometerRunnerMetrics` (gauges, refreshed by one daemon thread):
 
 | Meter | Type | Tags | Notes |
 |---|---|---|---|
+| `bth4j.runner.concurrency.limit` | gauge | none | Current executor limit, registered when available through `bind(runner, ...)`; removed on close. |
 | `bth4j.runner.running` | gauge | none | Tasks running in this runner right now. |
 | `bth4j.runner.abandoned` | gauge | none | Attempts past their maximum run time that were abandoned and still hold a slot. |
 | `bth4j.runner.up` | gauge | none | 1 while the runner health status is `RUNNING`, otherwise 0. |
@@ -39,13 +40,15 @@ BackgroundRunner runner = BackgroundRunner.builder()
 runner.start();
 
 MicrometerRunnerMetrics metrics =
-        MicrometerRunnerMetrics.bind(admin, runner::runningTasks, registry, Duration.ofSeconds(15));
+        MicrometerRunnerMetrics.bind(runner, registry, Duration.ofSeconds(15));
 
 // on shutdown
 metrics.close();
 runner.stop();
 ```
 
-`admin` is the runner's `AdminOps` (the one that reports the runner's health). The poller reads `admin.counts()`
+The runner overload also binds its concurrency limit, with an optional common-tags overload. The overloads
+taking `AdminOps` and a running-task supplier do not expose a concurrency limit. `admin` is the runner's
+`AdminOps` (the one that reports the runner's health). The poller reads `admin.counts()`
 and `admin.health()` every refresh interval, so scraping never queries the store. If reading the counts fails, the last
 counts stay; if reading health fails, `bth4j.runner.up` becomes 0.
