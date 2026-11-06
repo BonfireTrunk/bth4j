@@ -15,6 +15,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Function;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
@@ -760,41 +761,46 @@ public final class InMemoryStore implements FullStore {
         }
     }
 
-    /** The cursor is {@code <stateChanged in epoch nanoseconds>:<id>} of the last task of the page. */
+    /**
+     * The cursor is {@code <sort time in epoch nanoseconds>:<id>} of the last task of the page; the sort time is due
+     * for QUEUED and SCHEDULED, stateChanged otherwise.
+     */
     @Override
     public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
         var position = cursor == null ? null : decodeCursor(cursor);
+        Function<TaskRecord, Instant> sortTime = state == TaskState.QUEUED || state == TaskState.SCHEDULED
+                ? TaskRecord::due
+                : TaskRecord::stateChangedAt;
         lock.lock();
         try {
-            Comparator<TaskRecord> order =
-                    Comparator.comparing(TaskRecord::stateChangedAt).thenComparingLong(TaskRecord::id);
+            Comparator<TaskRecord> order = Comparator.comparing(sortTime).thenComparingLong(TaskRecord::id);
             List<TaskRecord> found = limit <= 0
                     ? List.of()
                     : tasks.values().stream()
                             .filter(t -> t.state() == state)
                             .filter(t -> queueId == null || t.queueId() == queueId)
-                            .filter(t -> position == null || isAfter(t, position))
+                            .filter(t -> position == null || isAfter(sortTime.apply(t), t.id(), position))
                             .sorted(order)
                             .limit((long) limit + 1)
                             .toList();
             if (found.size() <= limit) return new TaskPage(found, null);
             var items = found.subList(0, limit);
-            return new TaskPage(items, encodeCursor(items.getLast()));
+            var last = items.getLast();
+            return new TaskPage(items, encodeCursor(sortTime.apply(last), last.id()));
         } finally {
             lock.unlock();
         }
     }
 
-    private static String encodeCursor(TaskRecord last) {
-        var at = last.stateChangedAt();
-        return (at.getEpochSecond() * 1_000_000_000L + at.getNano()) + ":" + last.id();
+    private static String encodeCursor(Instant at, long id) {
+        return (at.getEpochSecond() * 1_000_000_000L + at.getNano()) + ":" + id;
     }
 
-    private record Position(Instant changed, long id) {}
+    private record Position(Instant at, long id) {}
 
-    private static boolean isAfter(TaskRecord t, Position p) {
-        int c = t.stateChangedAt().compareTo(p.changed());
-        return c > 0 || (c == 0 && t.id() > p.id());
+    private static boolean isAfter(Instant at, long id, Position p) {
+        int c = at.compareTo(p.at());
+        return c > 0 || (c == 0 && id > p.id());
     }
 
     private static Position decodeCursor(String cursor) {

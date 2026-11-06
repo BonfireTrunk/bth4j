@@ -3918,6 +3918,29 @@ public abstract class StoreContract {
     }
 
     @Test
+    void queuedAndScheduledTasksAreListedByDueThenIdWithKeysetPaging() {
+        long queuedLate = put(task().due(now().minus(Duration.ofSeconds(10))));
+        advance(Duration.ofMillis(20));
+        long queuedEarly = put(task().due(now().minus(Duration.ofSeconds(20))));
+        long scheduledLate = put(task().due(now().plus(Duration.ofHours(2))));
+        advance(Duration.ofMillis(20));
+        long scheduledEarly = put(task().due(now().plus(Duration.ofHours(1))));
+
+        var expected = Map.of(
+                TaskState.QUEUED, List.of(queuedEarly, queuedLate),
+                TaskState.SCHEDULED, List.of(scheduledEarly, scheduledLate));
+        expected.forEach((state, ids) -> {
+            TaskPage first = store.tasks(state, queue, null, 1);
+            TaskPage second = store.tasks(state, queue, first.next(), 1);
+            assertThat(Stream.concat(first.items().stream(), second.items().stream())
+                            .map(TaskRecord::id))
+                    .as(state.name())
+                    .containsExactlyElementsOf(ids);
+            assertThat(second.next()).isNull();
+        });
+    }
+
+    @Test
     void cursorWalkListsEachTaskOnceWhileTheCursorTaskIsCancelledBetweenPages() {
         for (int limit : new int[] {1, 2, 4}) {
             int walkQueue = store.queueId("walk" + limit);

@@ -1370,22 +1370,27 @@ public class PostgresTaskStore implements FullStore {
         });
     }
 
-    /** The cursor is {@code <state_changed in epoch microseconds>:<id>} of the last task of the page. */
+    /**
+     * The cursor is {@code <sort time in epoch microseconds>:<id>} of the last task of the page; the sort time is
+     * due for QUEUED and SCHEDULED, state_changed otherwise.
+     */
     @Override
     public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
         var position = cursor == null ? null : decodeCursor(cursor);
         if (limit <= 0) return new TaskPage(List.of(), null);
+        var byDue = listedByDue(state);
+        var column = byDue ? "due" : "state_changed";
         var sql = new StringBuilder("SELECT * FROM " + task + " WHERE state = ?");
         if (queueId != null) sql.append(" AND queue_id = ?");
-        if (position != null) sql.append(" AND (state_changed, id) > (?, ?)");
-        sql.append(" ORDER BY state_changed, id LIMIT ?");
+        if (position != null) sql.append(" AND (" + column + ", id) > (?, ?)");
+        sql.append(" ORDER BY " + column + ", id LIMIT ?");
         var items = withConnection(c -> {
             try (var ps = c.prepareStatement(sql.toString())) {
                 int i = 1;
                 ps.setInt(i++, state.code());
                 if (queueId != null) ps.setInt(i++, queueId);
                 if (position != null) {
-                    setInstant(ps, i++, position.changed());
+                    setInstant(ps, i++, position.at());
                     ps.setLong(i++, position.id());
                 }
                 ps.setLong(i, (long) limit + 1);
@@ -1394,14 +1399,19 @@ public class PostgresTaskStore implements FullStore {
         });
         if (items.size() <= limit) return new TaskPage(items, null);
         var page = items.subList(0, limit);
-        return new TaskPage(page, encodeCursor(page.getLast()));
+        var last = page.getLast();
+        return new TaskPage(page, encodeCursor(byDue ? last.due() : last.stateChangedAt(), last.id()));
     }
 
-    private record Position(Instant changed, long id) {}
+    private static boolean listedByDue(TaskState state) {
+        return state == TaskState.QUEUED || state == TaskState.SCHEDULED;
+    }
 
-    private static String encodeCursor(TaskRecord last) {
-        var at = micros(last.stateChangedAt());
-        return (at.getEpochSecond() * 1_000_000L + at.getNano() / 1000) + ":" + last.id();
+    private record Position(Instant at, long id) {}
+
+    private static String encodeCursor(Instant sortTime, long id) {
+        var at = micros(sortTime);
+        return (at.getEpochSecond() * 1_000_000L + at.getNano() / 1000) + ":" + id;
     }
 
     private static Position decodeCursor(String cursor) {

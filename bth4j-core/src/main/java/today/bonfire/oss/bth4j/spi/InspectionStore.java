@@ -28,10 +28,11 @@ public interface InspectionStore extends TaskStore {
     Map<Integer, Map<Integer, Long>> queuedByType();
 
     /**
-     * Lists tasks in one state, by {@code (stateChanged, id)} ascending, paging by an opaque position that the
-     * store encodes itself. The position does not depend on the task it was taken from, so that task leaving
-     * the listed state neither ends the listing early nor restarts it. A task whose own position moves while
-     * the walk runs can still be seen twice (moved later) or missed (moved earlier).
+     * Lists tasks in one state, QUEUED and SCHEDULED by {@code (due, id)} ascending and the other states by
+     * {@code (stateChanged, id)} ascending, paging by an opaque position that the store encodes itself. The
+     * position does not depend on the task it was taken from, so that task leaving the listed state neither ends
+     * the listing early nor restarts it. A task whose own position moves while the walk runs can still be seen
+     * twice (moved later) or missed (moved earlier).
      *
      * @param queueId null for every queue
      * @param cursor {@link TaskPage#next()} of the previous page; null starts at the beginning
