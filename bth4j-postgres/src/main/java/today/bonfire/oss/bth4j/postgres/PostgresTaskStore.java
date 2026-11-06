@@ -121,6 +121,10 @@ public class PostgresTaskStore implements FullStore {
     private final String dueScheduleSql;
     private final String commitScheduleSql;
 
+    private volatile SortedTypes lastTypes;
+
+    private record SortedTypes(Set<Integer> ids, Integer[] sorted) {}
+
     /**
      * @param dataSource connections to the database; the store does not close it
      * @param prefix     table name prefix, lower case letters, digits and underscores, at most 41 characters.
@@ -278,20 +282,18 @@ public class PostgresTaskStore implements FullStore {
     }
 
     /**
-     * One bounded, index-ordered scan per queue, then the caller's queue order decides between them; a single
-     * ORDER BY array_position(...) would sort every queued row on each claim.
-     */
-    /**
      * Both claim passes in one statement, so a claim is atomic without a transaction. Pass 1 (p1) takes each
      * grant's share; pass 2 (p2) lets the grants that took their share in full take up to their cap, skipping
-     * what pass 1 took. Each pass orders by grant, due and id and stops at the count left.
-     * Parameters: queue ids, shares, caps, [types], count, count, [types], count, worker, lease ms.
+     * what pass 1 took. Each pass is one bounded, index-ordered scan per queue, then orders by grant, due and id
+     * and stops at the count left; a single ORDER BY array_position(...) would sort every queued row on each claim.
+     * Parameters: [types], queue ids, shares, caps, count, count, count, worker, lease ms.
      */
     private String claimSql(boolean filterTypes) {
         var eligible = " state = 0 AND queue_id = g.queue_id AND (start_by IS NULL OR start_by > now())"
                 // as a subquery result the planner does not estimate each of thousands of type ids on every claim
-                + (filterTypes ? " AND type_id = ANY((SELECT ?::int[])::int[])" : "");
-        return "WITH q AS (SELECT u.queue_id, u.take, u.cap, u.prio FROM unnest(?::int[], ?::int[], ?::int[])"
+                + (filterTypes ? " AND type_id = ANY((SELECT types FROM k)::int[])" : "");
+        return "WITH " + (filterTypes ? "k AS (SELECT ?::int[] AS types)," : "")
+                + " q AS (SELECT u.queue_id, u.take, u.cap, u.prio FROM unnest(?::int[], ?::int[], ?::int[])"
                 + " WITH ORDINALITY AS u(queue_id, take, cap, prio)"
                 + "   WHERE u.take > 0 AND NOT EXISTS (SELECT 1 FROM " + queue
                 + " p WHERE p.id = u.queue_id AND p.paused)),"
@@ -310,8 +312,10 @@ public class PostgresTaskStore implements FullStore {
                 + " upd AS (UPDATE " + task + " t SET state = 2, revision = t.revision + 1, attempts = t.attempts + 1,"
                 + "   worker_id = ?, claimed_at = now(), state_changed = now(),"
                 + "   lease_until = now() + ? * interval '1 millisecond'"
-                + "   FROM picked WHERE t.id = picked.id RETURNING t.*, picked.ord)"
-                + " SELECT * FROM upd ORDER BY ord";
+                // ids as one array so the rows are found by primary key: a join with picked lets the planner,
+                // which cannot see the LIMITs, hash the whole task table instead
+                + "   WHERE t.id = ANY((SELECT array_agg(id) FROM picked)::bigint[]) RETURNING t.*)"
+                + " SELECT upd.* FROM upd JOIN picked ON picked.id = upd.id ORDER BY picked.ord";
     }
 
     // ---- schema --------------------------------------------------------------------------------------
@@ -824,24 +828,18 @@ public class PostgresTaskStore implements FullStore {
                 r.grants().stream().map(g -> Math.min(g.share(), r.count())).toArray(Integer[]::new);
         var caps = r.grants().stream().map(QueueGrant::cap).toArray(Integer[]::new);
         var queueIds = r.grants().stream().map(QueueGrant::queueId).toArray(Integer[]::new);
-        var typeIds = r.knownTypeIds() == null ? null : r.knownTypeIds().toArray(Integer[]::new);
+        var typeIds = r.knownTypeIds() == null ? null : sortedTypes(r.knownTypeIds());
         return withConnection(c -> {
             var arrays = new ArrayList<Array>();
             try (var ps = c.prepareStatement(typeIds != null ? claimKnownTypesSql : claimSql)) {
+                if (typeIds != null) arrays.add(c.createArrayOf("int4", typeIds));
                 arrays.add(c.createArrayOf("int4", queueIds));
                 arrays.add(c.createArrayOf("int4", shares));
                 arrays.add(c.createArrayOf("int4", caps));
-                Array types = null;
-                if (typeIds != null) {
-                    types = c.createArrayOf("int4", typeIds);
-                    arrays.add(types);
-                }
                 int i = 1;
-                for (var array : arrays.subList(0, 3)) ps.setArray(i++, array);
-                if (types != null) ps.setArray(i++, types);
+                for (var array : arrays) ps.setArray(i++, array);
                 ps.setInt(i++, r.count());
                 ps.setInt(i++, r.count());
-                if (types != null) ps.setArray(i++, types);
                 ps.setInt(i++, r.count());
                 ps.setInt(i++, r.workerId());
                 ps.setLong(i, r.lease().toMillis());
@@ -850,6 +848,18 @@ public class PostgresTaskStore implements FullStore {
                 for (var array : arrays) array.free();
             }
         });
+    }
+
+    /**
+     * The ids in ascending order, kept for the runner's next claim. Each index scan sorts its array of type ids
+     * unless it is already sorted, which costs milliseconds at thousands of types; a set's own order is random.
+     */
+    private Integer[] sortedTypes(Set<Integer> ids) {
+        var last = lastTypes;
+        if (last != null && (last.ids() == ids || last.ids().equals(ids))) return last.sorted();
+        var made = new SortedTypes(ids, ids.stream().sorted().toArray(Integer[]::new));
+        lastTypes = made;
+        return made.sorted();
     }
 
     @Override
