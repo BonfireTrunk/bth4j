@@ -67,6 +67,7 @@ final class TaskExecution implements Runnable, TaskContext {
     private volatile boolean leaseLost;
     private volatile Instant startedAt;
     private volatile Instant overrunSince;
+    private volatile boolean reporting;
     // Serializes interrupts with detachment so a late signal cannot reach the thread's next task.
     private final ReentrantLock workerLock = new ReentrantLock();
     private Thread worker;
@@ -123,6 +124,14 @@ final class TaskExecution implements Runnable, TaskContext {
         return record.queueId();
     }
 
+    /**
+     * @return true once the attempt has begun writing its outcome; from then on the store may no longer hold
+     *     the lease although nothing took the task over
+     */
+    boolean reporting() {
+        return reporting;
+    }
+
     void leaseLost() {
         leaseLost = true;
         interruptWorker(true);
@@ -165,6 +174,7 @@ final class TaskExecution implements Runnable, TaskContext {
         emit(new TaskEvent.Started(view, record.workerId() == null ? 0 : record.workerId()));
         var registration = s.registry().get(view.type());
         if (registration == null) {
+            reporting = true;
             defer("no processor registered for " + view.type());
             return;
         }
@@ -191,6 +201,7 @@ final class TaskExecution implements Runnable, TaskContext {
                 workerLock.unlock();
             }
         }
+        reporting = true;
         if (leaseLossInterrupted) {
             fail(new TaskLeaseLostException("lease of task " + record.id() + " was lost"));
         } else if (failure == null) {

@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Weighted queue claims made up to two store calls per queue, and a failure after the first call left the tasks already claimed to wait for lease expiry. The runner now sends every queue's share in one claim: one script on Redis, one transaction on PostgreSQL.
 - Queue caps: when a claim found nothing because a queue was at its `QueuePolicy.maxConcurrent`, the runner slept the full `idlePollInterval` (500 ms by default) even after a task of that queue finished. It now claims again as soon as a task of a capped queue finishes, also after the task processor thread was restarted.
 - Dashboard preview API returns the cursor task-page shape on the first page too.
+- A lease renewal round that ran while a finished attempt was still writing its outcome or emitting its events counted that attempt as lost: it logged "N of M leases could not be renewed, those tasks were taken over" and raised a `lease-lost` issue although nothing was taken over. Renewal now ignores such attempts; a real takeover still shows in the outcome write itself (`Outcome.LOST`).
 
 ## [4.0.0] - 2026-11-05
 

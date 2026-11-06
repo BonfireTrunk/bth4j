@@ -299,6 +299,8 @@ class TaskProcessorService extends CustomThread {
                 var status = statuses.get(i);
                 var execution = executions.get(i);
                 if (!status.owned()) {
+                    // its own outcome write moved the task on; a real takeover shows in that write's result
+                    if (execution.reporting()) continue;
                     lost++;
                     execution.leaseLost();
                     settings.status().issue("lease-lost", "lease not renewed", execution.taskId());

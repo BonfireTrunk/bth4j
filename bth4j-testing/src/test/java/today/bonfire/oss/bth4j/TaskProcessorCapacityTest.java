@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -438,6 +439,28 @@ class TaskProcessorCapacityTest {
         executor.runNext();
         assertThat(state(id)).isEqualTo(TaskState.SUCCEEDED);
         assertThat(reservations.running(queueId)).isZero();
+    }
+
+    @Test
+    void aRenewalRoundBetweenTheAckAndTheReleaseReportsNoLostLease() throws Exception {
+        var executor = new ManualExecutor(1);
+        var processor = new AtomicReference<TaskProcessorService>();
+        processor.set(processorOn(
+                StoreInterceptor.around(store, (method, args, real) -> {
+                    var result = real.proceed();
+                    if (method.equals("ack")) processor.get().renewOnce();
+                    return result;
+                }),
+                executor,
+                1));
+        long id = enqueue();
+        processOnce(processor.get());
+
+        executor.runNext();
+
+        assertThat(state(id)).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(status.issues()).noneMatch(i -> i.kind().equals("lease-lost"));
+        assertThat(running).isEmpty();
     }
 
     @Test
