@@ -27,6 +27,9 @@ import redis.clients.jedis.ConnectionPoolConfig;
 import redis.clients.jedis.DefaultJedisClientConfig;
 import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.RedisClient;
+import redis.clients.jedis.UnifiedJedis;
+import redis.clients.jedis.providers.PooledConnectionProvider;
+import redis.clients.jedis.resps.Tuple;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
@@ -1157,6 +1160,39 @@ class RedisTaskStoreIT {
         assertThat(store.purge(TaskState.DEAD, Duration.ofMillis(100), 10)).isEqualTo(1);
         assertThatThrownBy(() -> store.purge(TaskState.QUEUED, Duration.ZERO, 1))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void aListingSeesAFinishedTaskThatPurgeMovesOutOfTheHeldIndexDuringTheRead() {
+        store.enqueue(task(1).uniqueKey("k").keyKeep(Duration.ofMillis(50)).build());
+        store.enqueue(task(2).build());
+        store.enqueue(task(3).build());
+        for (var t : claim(3)) store.ack(t.id(), t.revision(), true, true, null);
+        sleep(150);
+        var reads = new AtomicInteger();
+        var redis = new HostAndPort(REDIS.getHost(), REDIS.getMappedPort(6379));
+        try (var interposed =
+                new UnifiedJedis(
+                        new PooledConnectionProvider(
+                                redis,
+                                DefaultJedisClientConfig.builder().resp3().build()),
+                        1,
+                        Duration.ofSeconds(1)) {
+                    @Override
+                    public List<Tuple> zrangeByScoreWithScores(
+                            String key, String min, String max, int offset, int count) {
+                        var found = super.zrangeByScoreWithScores(key, min, max, offset, count);
+                        // the key window of task 1 has passed: purge moves it from hidx to idx between the two reads
+                        if (reads.getAndIncrement() == 0) store.purge(TaskState.SUCCEEDED, Duration.ofMinutes(1), 10);
+                        return found;
+                    }
+                }) {
+            var page = new RedisTaskStore(interposed, keys.namespace).tasks(TaskState.SUCCEEDED, queue, null, 2);
+
+            assertThat(page.items()).extracting(TaskRecord::id).containsExactly(1L, 2L);
+        }
+        assertThat(jedis.zscore(keys.index(TaskState.SUCCEEDED.code(), queue), "1"))
+                .isNotNull();
     }
 
     @Test

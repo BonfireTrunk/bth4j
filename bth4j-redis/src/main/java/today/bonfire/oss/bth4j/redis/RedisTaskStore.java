@@ -933,8 +933,8 @@ public class RedisTaskStore implements FullStore {
                 entries.addAll(page(zset, after, limit));
             }
         }
-        entries.sort(ORDER);
-        return entries.subList(0, Math.min(limit, entries.size()));
+        var ordered = entries.stream().distinct().sorted(ORDER).toList();
+        return ordered.subList(0, Math.min(limit, ordered.size()));
     }
 
     private record Entry(double score, long id) {}
@@ -950,7 +950,9 @@ public class RedisTaskStore implements FullStore {
                         .toList();
             case SCHEDULED -> List.of(keys.scheduled(qid));
             case LEASED -> List.of(keys.index(state.code(), qid));
-            default -> List.of(keys.index(state.code(), qid), keys.heldIndex(state.code(), qid));
+            // purge moves a task from hidx to idx with its score and never back, so reading hidx first sees a task
+            // moved between the two reads once or twice (listing drops the copy), never not at all
+            default -> List.of(keys.heldIndex(state.code(), qid), keys.index(state.code(), qid));
         };
     }
 
