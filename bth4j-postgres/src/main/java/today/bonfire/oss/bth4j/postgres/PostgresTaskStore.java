@@ -289,7 +289,8 @@ public class PostgresTaskStore implements FullStore {
      */
     private String claimSql(boolean filterTypes) {
         var eligible = " state = 0 AND queue_id = g.queue_id AND (start_by IS NULL OR start_by > now())"
-                + (filterTypes ? " AND type_id = ANY(?::int[])" : "");
+                // as a subquery result the planner does not estimate each of thousands of type ids on every claim
+                + (filterTypes ? " AND type_id = ANY((SELECT ?::int[])::int[])" : "");
         return "WITH q AS (SELECT u.queue_id, u.take, u.cap, u.prio FROM unnest(?::int[], ?::int[], ?::int[])"
                 + " WITH ORDINALITY AS u(queue_id, take, cap, prio)"
                 + "   WHERE u.take > 0 AND NOT EXISTS (SELECT 1 FROM " + queue
