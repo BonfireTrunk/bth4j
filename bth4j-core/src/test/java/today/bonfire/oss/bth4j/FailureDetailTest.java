@@ -7,6 +7,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.classic.spi.ThrowableProxyUtil;
 import ch.qos.logback.core.read.ListAppender;
+import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
 import java.time.Clock;
 import java.time.Duration;
@@ -476,6 +477,7 @@ class FailureDetailTest {
                             }
                             yield true;
                         }
+                        case "ackAll" -> InvocationHandler.invokeDefault(proxy, method, args);
                         case "getTask" -> java.util.Optional.empty();
                         case "finishCancelled" -> {
                             cancelledReason.set((String) args[2]);

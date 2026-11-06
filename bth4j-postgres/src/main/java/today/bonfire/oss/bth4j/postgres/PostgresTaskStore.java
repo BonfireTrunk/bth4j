@@ -106,6 +106,7 @@ public class PostgresTaskStore implements FullStore {
     private final String finishCancelledSql;
     private final String finishCancelledExpiredSql;
     private final String ackSql;
+    private final String ackAllSql;
     private final String failLockSql;
     private final String rescheduleSql;
     private final String unclaimSql;
@@ -164,10 +165,13 @@ public class PostgresTaskStore implements FullStore {
                 + " ON CONFLICT DO NOTHING RETURNING id";
         claimSql = claimSql(false);
         claimKnownTypesSql = claimSql(true);
-        renewSql = "UPDATE " + task + " t SET lease_until = now() + ? * interval '1 millisecond'"
-                + " FROM unnest(?::bigint[], ?::int[]) AS u(id, revision)"
-                + " WHERE t.id = u.id AND t.revision = u.revision AND t.state = 2"
-                + " AND t.lease_until > now()"
+        // renew and ackAll lock their rows in id order, so a renewal and a batch of the same worker's acks that
+        // overlap wait for each other instead of deadlocking
+        renewSql = "WITH l AS (SELECT t.id FROM " + task + " t JOIN unnest(?::bigint[], ?::int[]) AS u(id, revision)"
+                + "   ON t.id = u.id AND t.revision = u.revision WHERE t.state = 2 AND t.lease_until > now()"
+                + "   ORDER BY t.id FOR UPDATE OF t)"
+                + " UPDATE " + task + " t SET lease_until = now() + ? * interval '1 millisecond'"
+                + " FROM l WHERE t.id = l.id"
                 + " RETURNING t.id, t.revision, t.cancel_requested_at IS NOT NULL";
         finishCancelledSql = "UPDATE " + task + " SET state = 5, revision = revision + 1, state_changed = now(),"
                 + " cancel_reason = ?, cancel_requested_at = COALESCE(cancel_requested_at, now()),"
@@ -181,6 +185,15 @@ public class PostgresTaskStore implements FullStore {
                 + "   lease_until = NULL, data = CASE WHEN ? AND ? THEN data ELSE NULL END," + KEY_RELEASE
                 + FENCE + " AND (? OR (key_keep_ms IS NOT NULL AND unique_key IS NOT NULL)) RETURNING id)"
                 + " SELECT (SELECT count(*) FROM d) + (SELECT count(*) FROM u)";
+        ackAllSql = "WITH l AS (SELECT t.id, t.revision, t.key_keep_ms IS NOT NULL AND t.unique_key IS NOT NULL AS held"
+                + "   FROM " + task + " t JOIN unnest(?::bigint[], ?::int[]) AS u(id, revision)"
+                + "   ON t.id = u.id AND t.revision = u.revision WHERE t.state = 2 ORDER BY t.id FOR UPDATE OF t),"
+                + " d AS (DELETE FROM " + task + " t USING l WHERE t.id = l.id AND NOT ? AND NOT l.held"
+                + "   RETURNING t.id, l.revision),"
+                + " u AS (UPDATE " + task + " SET state = 3, revision = l.revision + 1, state_changed = now(),"
+                + "   lease_until = NULL, data = CASE WHEN ? AND ? THEN data ELSE NULL END," + KEY_RELEASE
+                + "   FROM l WHERE " + task + ".id = l.id AND (? OR l.held) RETURNING l.id, l.revision)"
+                + " SELECT id, revision FROM d UNION ALL SELECT id, revision FROM u";
         failLockSql = "SELECT attempts, max_attempts, failures::text,"
                 + " key_keep_ms IS NOT NULL AND unique_key IS NOT NULL, lease_until <= now()"
                 + " FROM " + task + FENCE + " FOR UPDATE";
@@ -268,17 +281,31 @@ public class PostgresTaskStore implements FullStore {
      * One bounded, index-ordered scan per queue, then the caller's queue order decides between them; a single
      * ORDER BY array_position(...) would sort every queued row on each claim.
      */
+    /**
+     * Both claim passes in one statement, so a claim is atomic without a transaction. Pass 1 (p1) takes each
+     * grant's share; pass 2 (p2) lets the grants that took their share in full take up to their cap, skipping
+     * what pass 1 took. Each pass orders by grant, due and id and stops at the count left.
+     * Parameters: queue ids, shares, caps, [types], count, count, [types], count, worker, lease ms.
+     */
     private String claimSql(boolean filterTypes) {
-        return "WITH q AS (SELECT u.queue_id, u.take, u.prio FROM unnest(?::int[], ?::int[])"
-                + " WITH ORDINALITY AS u(queue_id, take, prio)"
+        var eligible = " state = 0 AND queue_id = g.queue_id AND (start_by IS NULL OR start_by > now())"
+                + (filterTypes ? " AND type_id = ANY(?::int[])" : "");
+        return "WITH q AS (SELECT u.queue_id, u.take, u.cap, u.prio FROM unnest(?::int[], ?::int[], ?::int[])"
+                + " WITH ORDINALITY AS u(queue_id, take, cap, prio)"
                 + "   WHERE u.take > 0 AND NOT EXISTS (SELECT 1 FROM " + queue
                 + " p WHERE p.id = u.queue_id AND p.paused)),"
-                + " locked AS (SELECT c.id, q.prio, c.due FROM q, LATERAL (SELECT id, due FROM " + task
-                + "   WHERE state = 0 AND queue_id = q.queue_id AND (start_by IS NULL OR start_by > now())"
-                + (filterTypes ? " AND type_id = ANY(?::int[])" : "")
-                + "   ORDER BY due, id LIMIT q.take FOR UPDATE SKIP LOCKED) c),"
-                + " picked AS (SELECT id, row_number() OVER (ORDER BY prio, due, id) AS ord"
-                + "   FROM (SELECT * FROM locked ORDER BY prio, due, id LIMIT ?) l),"
+                + " l1 AS (SELECT c.id, g.queue_id, g.prio, c.due FROM q g, LATERAL (SELECT id, due FROM " + task
+                + "   WHERE" + eligible + " ORDER BY due, id LIMIT g.take FOR UPDATE SKIP LOCKED) c),"
+                + " p1 AS (SELECT * FROM l1 ORDER BY prio, due, id LIMIT ?),"
+                + " q2 AS (SELECT q.queue_id, q.prio, q.cap - q.take AS take FROM q"
+                + "   WHERE q.cap > q.take AND (SELECT count(*) FROM p1) < ?"
+                + "   AND (SELECT count(*) FROM p1 WHERE p1.queue_id = q.queue_id) = q.take),"
+                + " l2 AS (SELECT c.id, g.prio, c.due FROM q2 g, LATERAL (SELECT id, due FROM " + task + " t"
+                + "   WHERE" + eligible + " AND NOT EXISTS (SELECT 1 FROM p1 WHERE p1.id = t.id)"
+                + "   ORDER BY due, id LIMIT g.take FOR UPDATE SKIP LOCKED) c),"
+                + " p2 AS (SELECT * FROM l2 ORDER BY prio, due, id LIMIT (SELECT ? - count(*) FROM p1)),"
+                + " picked AS (SELECT id, row_number() OVER (ORDER BY pass, prio, due, id) AS ord FROM"
+                + "   (SELECT 1 AS pass, id, prio, due FROM p1 UNION ALL SELECT 2, id, prio, due FROM p2) x),"
                 + " upd AS (UPDATE " + task + " t SET state = 2, revision = t.revision + 1, attempts = t.attempts + 1,"
                 + "   worker_id = ?, claimed_at = now(), state_changed = now(),"
                 + "   lease_until = now() + ? * interval '1 millisecond'"
@@ -794,50 +821,34 @@ public class PostgresTaskStore implements FullStore {
         if (r.count() <= 0 || (r.knownTypeIds() != null && r.knownTypeIds().isEmpty())) return List.of();
         var shares =
                 r.grants().stream().map(g -> Math.min(g.share(), r.count())).toArray(Integer[]::new);
-        boolean refillPossible = false;
-        for (int i = 0; i < shares.length; i++)
-            refillPossible |= r.grants().get(i).cap() > shares[i];
-        // a single statement is atomic on its own; the transaction is only needed when a refill pass may follow
-        if (!refillPossible) return withConnection(c -> claimPass(c, r, shares, r.count()));
-        return inTransaction(c -> {
-            var claimed = new ArrayList<>(claimPass(c, r, shares, r.count()));
-            if (claimed.size() == r.count()) return claimed;
-            // With count still unfilled, no share was truncated by the total limit.
-            var taken = new HashMap<Integer, Integer>();
-            for (var t : claimed) taken.merge(t.queueId(), 1, Integer::sum);
-            var refill = new Integer[shares.length];
-            boolean needed = false;
-            for (int i = 0; i < shares.length; i++) {
-                var grant = r.grants().get(i);
-                int got = taken.getOrDefault(grant.queueId(), 0);
-                refill[i] = shares[i] > 0 && got == shares[i] ? grant.cap() - got : 0;
-                needed |= refill[i] > 0;
+        var caps = r.grants().stream().map(QueueGrant::cap).toArray(Integer[]::new);
+        var queueIds = r.grants().stream().map(QueueGrant::queueId).toArray(Integer[]::new);
+        var typeIds = r.knownTypeIds() == null ? null : r.knownTypeIds().toArray(Integer[]::new);
+        return withConnection(c -> {
+            var arrays = new ArrayList<Array>();
+            try (var ps = c.prepareStatement(typeIds != null ? claimKnownTypesSql : claimSql)) {
+                arrays.add(c.createArrayOf("int4", queueIds));
+                arrays.add(c.createArrayOf("int4", shares));
+                arrays.add(c.createArrayOf("int4", caps));
+                Array types = null;
+                if (typeIds != null) {
+                    types = c.createArrayOf("int4", typeIds);
+                    arrays.add(types);
+                }
+                int i = 1;
+                for (var array : arrays.subList(0, 3)) ps.setArray(i++, array);
+                if (types != null) ps.setArray(i++, types);
+                ps.setInt(i++, r.count());
+                ps.setInt(i++, r.count());
+                if (types != null) ps.setArray(i++, types);
+                ps.setInt(i++, r.count());
+                ps.setInt(i++, r.workerId());
+                ps.setLong(i, r.lease().toMillis());
+                return readAll(ps);
+            } finally {
+                for (var array : arrays) array.free();
             }
-            if (needed) claimed.addAll(claimPass(c, r, refill, r.count() - claimed.size()));
-            return claimed;
         });
-    }
-
-    private List<TaskRecord> claimPass(Connection c, ClaimRequest r, Integer[] limits, int count) throws SQLException {
-        var arrays = new ArrayList<Array>();
-        try (var ps = c.prepareStatement(r.knownTypeIds() != null ? claimKnownTypesSql : claimSql)) {
-            arrays.add(c.createArrayOf(
-                    "int4", r.grants().stream().map(QueueGrant::queueId).toArray(Integer[]::new)));
-            arrays.add(c.createArrayOf("int4", limits));
-            int i = 1;
-            for (var array : arrays) ps.setArray(i++, array);
-            if (r.knownTypeIds() != null) {
-                var types = c.createArrayOf("int4", r.knownTypeIds().toArray(Integer[]::new));
-                arrays.add(types);
-                ps.setArray(i++, types);
-            }
-            ps.setInt(i++, count);
-            ps.setInt(i++, r.workerId());
-            ps.setLong(i, r.lease().toMillis());
-            return readAll(ps);
-        } finally {
-            for (var array : arrays) array.free();
-        }
     }
 
     @Override
@@ -849,9 +860,9 @@ public class PostgresTaskStore implements FullStore {
             Array idArray = c.createArrayOf("int8", ids);
             Array revisionArray = c.createArrayOf("int4", revisions);
             try (var ps = c.prepareStatement(renewSql)) {
-                ps.setLong(1, lease.toMillis());
-                ps.setArray(2, idArray);
-                ps.setArray(3, revisionArray);
+                ps.setArray(1, idArray);
+                ps.setArray(2, revisionArray);
+                ps.setLong(3, lease.toMillis());
                 var result = new HashMap<LeaseRef, Boolean>();
                 try (var rs = ps.executeQuery()) {
                     while (rs.next()) result.put(new LeaseRef(rs.getLong(1), rs.getInt(2)), rs.getBoolean(3));
@@ -879,6 +890,37 @@ public class PostgresTaskStore implements FullStore {
             if (acked) applyEffect(c, effect);
             return acked;
         });
+    }
+
+    /** One statement for the whole batch; the applied (id, revision) pairs come back, each answers its first lease. */
+    @Override
+    public List<Boolean> ackAll(List<LeaseRef> leases, boolean keep, boolean keepPayload) {
+        if (leases.isEmpty()) return List.of();
+        var ids = leases.stream().map(LeaseRef::id).toArray(Long[]::new);
+        var revisions = leases.stream().map(LeaseRef::revision).toArray(Integer[]::new);
+        var applied = withConnection(c -> {
+            Array idArray = c.createArrayOf("int8", ids);
+            Array revisionArray = c.createArrayOf("int4", revisions);
+            try (var ps = c.prepareStatement(ackAllSql)) {
+                ps.setArray(1, idArray);
+                ps.setArray(2, revisionArray);
+                ps.setBoolean(3, keep);
+                ps.setBoolean(4, keep);
+                ps.setBoolean(5, keepPayload);
+                ps.setBoolean(6, keep);
+                var result = new HashSet<LeaseRef>();
+                try (var rs = ps.executeQuery()) {
+                    while (rs.next()) result.add(new LeaseRef(rs.getLong(1), rs.getInt(2)));
+                }
+                return result;
+            } finally {
+                idArray.free();
+                revisionArray.free();
+            }
+        });
+        var out = new ArrayList<Boolean>(leases.size());
+        for (var ref : leases) out.add(applied.remove(ref));
+        return out;
     }
 
     private boolean ackStatement(Connection c, long id, int revision, boolean keep, boolean keepPayload)

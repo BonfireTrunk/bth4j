@@ -1254,6 +1254,57 @@ public abstract class StoreContract {
         assertThat(store.ack(t.id(), t.revision() + 1, true, true, null)).isFalse();
     }
 
+    @Test
+    void ackAllAppliesEachAckOnItsOwnAndAnswersInOrder() {
+        TaskRecord removed = leased(task());
+        TaskRecord stale = leased(task());
+        TaskRecord held = leased(task().uniqueKey("k").keyKeep(SHORT));
+        List<Boolean> applied = store.ackAll(
+                List.of(
+                        new LeaseRef(removed.id(), removed.revision()),
+                        new LeaseRef(stale.id(), stale.revision() + 1),
+                        new LeaseRef(held.id(), held.revision()),
+                        new LeaseRef(removed.id(), removed.revision())),
+                false,
+                false);
+        assertThat(applied).containsExactly(true, false, true, false);
+        assertThat(store.getTask(removed.id())).isEmpty();
+        assertThat(get(stale.id()).state()).isEqualTo(TaskState.LEASED);
+        TaskRecord done = get(held.id());
+        assertThat(done.state()).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(done.encodedPayload()).isNull();
+        assertThat(done.keyUntil()).isNotNull();
+        assertThat(store.enqueue(task().uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(held.id()));
+        assertThat(counts().succeeded()).isEqualTo(1);
+        assertThat(counts().leased()).isEqualTo(1);
+        assertThat(store.tasks(TaskState.SUCCEEDED, queue, null, 10).items())
+                .extracting(TaskRecord::id)
+                .containsExactly(held.id());
+    }
+
+    @Test
+    void ackAllKeepsRecordsAndPayloadsWhenAsked() {
+        TaskRecord a = leased(task());
+        TaskRecord b = leased(task());
+        assertThat(store.ackAll(
+                        List.of(new LeaseRef(a.id(), a.revision()), new LeaseRef(b.id(), b.revision())), true, true))
+                .containsExactly(true, true);
+        for (TaskRecord t : List.of(a, b)) {
+            TaskRecord done = get(t.id());
+            assertThat(done.state()).isEqualTo(TaskState.SUCCEEDED);
+            assertThat(done.revision()).isEqualTo(t.revision() + 1);
+            assertThat(done.encodedPayload()).isEqualTo("payload");
+        }
+        assertThat(store.tasks(TaskState.SUCCEEDED, null, null, 10).items())
+                .extracting(TaskRecord::id)
+                .containsExactly(a.id(), b.id());
+    }
+
+    @Test
+    void ackAllOfNoLeasesAnswersNothing() {
+        assertThat(store.ackAll(List.of(), true, true)).isEmpty();
+    }
+
     // fail
 
     @Test

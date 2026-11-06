@@ -3,12 +3,15 @@ package today.bonfire.oss.bth4j.redis;
 import static today.bonfire.oss.bth4j.redis.Keys.*;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -62,22 +65,47 @@ import today.bonfire.oss.bth4j.spi.WorkerInfo;
  */
 public class RedisTaskStore implements FullStore {
     /**
-     * The key layout this class writes, stored in the namespace's {@code meta} hash. {@link #init} refuses a
-     * namespace written with another one; there is no migration between layouts. 3.0 wrote layout 1; layout 2
-     * was only in 4.0.0 snapshots, whose namespaces lack fields that this layout relies on.
+     * The key layout this class writes, stored in the namespace's {@code meta} hash. {@link #init} migrates a
+     * namespace written with layout {@value #FIRST_MIGRATED_LAYOUT} or later forward and refuses an older or a newer
+     * one. 3.0 wrote layout 1; layout 2 was only in 4.0.0 snapshots; 4.0.0 wrote layout 3, which lacks the worker
+     * coverage this layout relies on; layout 4 was only in 4.1.0 snapshots.
      */
-    public static final int LAYOUT_VERSION = 4;
+    public static final int LAYOUT_VERSION = 5;
+
+    /** The oldest layout {@link #init} migrates from. */
+    public static final int FIRST_MIGRATED_LAYOUT = 4;
+
+    /**
+     * How long one runner's migration holds the lock; a runner that waits for it gives up after this too. Every
+     * step can run again, so a migration that outlives the lock and is taken over does no harm.
+     */
+    private static final long MIGRATION_LOCK_MS = 600_000;
+
+    private static final int MIGRATION_PAGE = 500;
 
     private static final int PAGE_CHUNK = 500;
 
-    /** Leases per RENEW call, so that one call blocks Redis for well under a millisecond or two. */
-    private static final int RENEW_CHUNK = 256;
+    /** Leases per RENEW or ACK_ALL call, so that one call blocks Redis for well under a millisecond or two. */
+    private static final int LEASE_CHUNK = 256;
+
+    /**
+     * Tasks per ENQUEUE_ALL call, and the argument characters after which a call takes no more tasks, so that
+     * one call blocks Redis only briefly even with large payloads.
+     */
+    static final int ENQUEUE_CHUNK = 64;
+
+    private static final int ENQUEUE_CHUNK_CHARS = 256 * 1024;
 
     private final UnifiedJedis jedis;
     private final Keys keys;
     private final ScriptRunner scripts;
     private final Map<String, Integer> queueIds = new ConcurrentHashMap<>();
     private final Map<String, Integer> typeIds = new ConcurrentHashMap<>();
+
+    /** The last known type set a claim named; a runner passes the same set instance on every claim. */
+    private volatile TypeSet lastTypeSet;
+
+    private record TypeSet(Set<Integer> ids, String digest) {}
 
     /**
      * @param jedis     client used for all Redis operations, for example a {@code RedisClient}. The store does not
@@ -136,17 +164,82 @@ public class RedisTaskStore implements FullStore {
         return new StoreInfo("redis", LAYOUT_VERSION);
     }
 
+    /**
+     * Writes the layout version of a new namespace, or migrates an older one forward step by step under the
+     * {@code migrating} lock, recording each version reached. Runners of the older library version must be stopped
+     * first: they would keep writing the old layout.
+     *
+     * @throws TaskStoreException when the namespace has a layout older than {@value #FIRST_MIGRATED_LAYOUT} or newer
+     *     than {@value #LAYOUT_VERSION}, or another runner's migration did not finish in time
+     */
     @Override
     public void init() {
         guard(() -> {
-            var wanted = String.valueOf(LAYOUT_VERSION);
-            jedis.hsetnx(keys.meta, SCHEMA, wanted);
-            var found = jedis.hget(keys.meta, SCHEMA);
-            if (!wanted.equals(found)) {
-                throw new TaskStoreException(
-                        "Redis namespace " + keys.namespace + " has layout version " + found + ", expected " + wanted);
+            jedis.hsetnx(keys.meta, SCHEMA, String.valueOf(LAYOUT_VERSION));
+            var found = layout();
+            if (found == LAYOUT_VERSION) return;
+            if (found < FIRST_MIGRATED_LAYOUT || found > LAYOUT_VERSION) {
+                throw new TaskStoreException("Redis namespace " + keys.namespace + " has layout version "
+                        + jedis.hget(keys.meta, SCHEMA) + ", expected " + LAYOUT_VERSION);
             }
+            migrate();
         });
+    }
+
+    /** The stored layout version; one that is not a number reads as 0, so that init refuses it. */
+    private int layout() {
+        try {
+            return Integer.parseInt(jedis.hget(keys.meta, SCHEMA));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    private void migrate() {
+        var token = Long.toString(ThreadLocalRandom.current().nextLong());
+        var lockArgs = List.of(token, String.valueOf(MIGRATION_LOCK_MS));
+        var deadline = System.nanoTime() + Duration.ofMillis(MIGRATION_LOCK_MS).toNanos();
+        while (num(scripts.run(RedisScripts.MIGRATION_LOCK, lockArgs)) != 1) {
+            if (layout() == LAYOUT_VERSION) return;
+            if (System.nanoTime() > deadline) {
+                throw new TaskStoreException("Redis namespace " + keys.namespace + " is being migrated by another"
+                        + " runner that did not finish within " + Duration.ofMillis(MIGRATION_LOCK_MS));
+            }
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new TaskStoreException("interrupted while waiting for the layout migration", e);
+            }
+        }
+        try {
+            for (var from = layout(); from < LAYOUT_VERSION; from++) {
+                if (from == 4) migrate4To5();
+                jedis.hset(keys.meta, SCHEMA, String.valueOf(from + 1));
+            }
+        } finally {
+            scripts.run(RedisScripts.MIGRATION_UNLOCK, List.of(token));
+        }
+    }
+
+    /**
+     * Fills {@code active:<qid>}, moves held terminal tasks from {@code idx} to {@code hidx} and drops the
+     * {@code rm:<state>:<qid>} zsets, whose entries {@code idx} now holds.
+     */
+    private void migrate4To5() {
+        for (var qid : sortedQueueIds()) {
+            var queue = String.valueOf(qid);
+            scripts.run(RedisScripts.MIGRATE_ACTIVE, List.of(queue));
+            for (var state = TaskState.SUCCEEDED.code(); state <= TaskState.EXPIRED.code(); state++) {
+                var read = MIGRATION_PAGE;
+                for (var offset = 0; read == MIGRATION_PAGE; offset += MIGRATION_PAGE) {
+                    var args = List.of(
+                            String.valueOf(state), queue, String.valueOf(offset), String.valueOf(MIGRATION_PAGE));
+                    read = (int) num(scripts.run(RedisScripts.MIGRATE_HELD, args));
+                }
+                jedis.unlink(keys.prefix + "rm:" + state + ":" + qid);
+            }
+        }
     }
 
     @Override
@@ -222,14 +315,35 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public List<EnqueueOutcome> enqueueAll(List<TaskRecord> tasks) {
         if (tasks.isEmpty()) {
             return List.of();
         }
-        var calls = tasks.stream().map(RedisTaskStore::enqueueArgs).toList();
-        return guard(() -> scripts.runAll(RedisScripts.ENQUEUE, calls)).stream()
-                .map(RedisTaskStore::outcome)
-                .toList();
+        var calls = new ArrayList<List<String>>();
+        List<String> call = null;
+        var count = 0;
+        var chars = 0L;
+        for (var task : tasks) {
+            var args = enqueueArgs(task);
+            var size = 0L;
+            for (var a : args) size += a.length();
+            if (call == null || count == ENQUEUE_CHUNK || chars + size > ENQUEUE_CHUNK_CHARS) {
+                call = new ArrayList<>();
+                calls.add(call);
+                count = 0;
+                chars = 0;
+            }
+            call.add(String.valueOf(args.size()));
+            call.addAll(args);
+            count++;
+            chars += size;
+        }
+        var out = new ArrayList<EnqueueOutcome>(tasks.size());
+        for (var reply : guard(() -> scripts.runAll(RedisScripts.ENQUEUE_ALL, calls))) {
+            for (var r : (List<Object>) reply) out.add(outcome(r));
+        }
+        return out;
     }
 
     static List<String> enqueueArgs(TaskRecord t) {
@@ -280,13 +394,22 @@ public class RedisTaskStore implements FullStore {
         args.add(String.valueOf(request.count()));
         args.add(String.valueOf(request.lease().toMillis()));
         args.add(String.valueOf(request.workerId()));
-        args.add(known == null ? "" : known.stream().map(String::valueOf).collect(Collectors.joining(",")));
+        var types = known == null ? null : typeSet(known);
+        args.add(types == null ? "" : types.digest());
         request.grants().forEach(g -> {
             args.add(String.valueOf(g.queueId()));
             args.add(String.valueOf(g.share()));
             args.add(String.valueOf(g.cap()));
         });
         var r = (List<Object>) guard(() -> scripts.run(RedisScripts.CLAIM, args));
+        if (num(r.get(0)) < 0) {
+            var ids = types.ids().stream().map(String::valueOf).toArray(String[]::new);
+            r = (List<Object>) guard(() -> {
+                jedis.sadd(keys.typeSet(types.digest()), ids);
+                return scripts.run(RedisScripts.CLAIM, args);
+            });
+            if (num(r.get(0)) < 0) throw new TaskStoreException("Redis type set " + types.digest() + " vanished");
+        }
         var at = num(r.get(0));
         var lease = String.valueOf(at + request.lease().toMillis());
         var tasks = new ArrayList<TaskRecord>(r.size() - 1);
@@ -312,6 +435,21 @@ public class RedisTaskStore implements FullStore {
         return tasks;
     }
 
+    /** Names a set of type ids by a digest of the sorted ids, so that runners with the same types share one set. */
+    private TypeSet typeSet(Set<Integer> ids) {
+        var last = lastTypeSet;
+        if (last != null && (last.ids() == ids || last.ids().equals(ids))) return last;
+        var text = ids.stream().sorted().map(String::valueOf).collect(Collectors.joining(","));
+        try {
+            var digest = MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.US_ASCII));
+            var made = new TypeSet(ids, HexFormat.of().formatHex(digest, 0, 16));
+            lastTypeSet = made;
+            return made;
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     @Override
     @SuppressWarnings("unchecked")
     public List<LeaseStatus> renew(List<LeaseRef> leases, Duration lease) {
@@ -319,10 +457,10 @@ public class RedisTaskStore implements FullStore {
             return List.of();
         }
         var calls = new ArrayList<List<String>>();
-        for (var from = 0; from < leases.size(); from += RENEW_CHUNK) {
+        for (var from = 0; from < leases.size(); from += LEASE_CHUNK) {
             var args = new ArrayList<String>();
             args.add(String.valueOf(lease.toMillis()));
-            for (var l : leases.subList(from, Math.min(from + RENEW_CHUNK, leases.size()))) {
+            for (var l : leases.subList(from, Math.min(from + LEASE_CHUNK, leases.size()))) {
                 args.add(String.valueOf(l.id()));
                 args.add(String.valueOf(l.revision()));
             }
@@ -333,7 +471,7 @@ public class RedisTaskStore implements FullStore {
         for (var c = 0; c < replies.size(); c++) {
             var r = (List<Object>) replies.get(c);
             for (var i = 0; i < r.size(); i++) {
-                var ref = leases.get(c * RENEW_CHUNK + i);
+                var ref = leases.get(c * LEASE_CHUNK + i);
                 var code = num(r.get(i));
                 out.add(new LeaseStatus(ref.id(), code > 0, code == 2));
             }
@@ -347,6 +485,30 @@ public class RedisTaskStore implements FullStore {
                 List.of(String.valueOf(id), String.valueOf(revision), keep ? "1" : "0", keepPayload ? "1" : "0"));
         args.addAll(effectArgs(effect));
         return applied(effect, num(guard(() -> scripts.run(RedisScripts.ACK, args))));
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public List<Boolean> ackAll(List<LeaseRef> leases, boolean keep, boolean keepPayload) {
+        if (leases.isEmpty()) {
+            return List.of();
+        }
+        var calls = new ArrayList<List<String>>();
+        for (var from = 0; from < leases.size(); from += LEASE_CHUNK) {
+            var args = new ArrayList<String>();
+            args.add(keep ? "1" : "0");
+            args.add(keepPayload ? "1" : "0");
+            for (var l : leases.subList(from, Math.min(from + LEASE_CHUNK, leases.size()))) {
+                args.add(String.valueOf(l.id()));
+                args.add(String.valueOf(l.revision()));
+            }
+            calls.add(args);
+        }
+        var out = new ArrayList<Boolean>(leases.size());
+        for (var reply : guard(() -> scripts.runAll(RedisScripts.ACK_ALL, calls))) {
+            for (var code : (List<Object>) reply) out.add(num(code) == 1);
+        }
+        return out;
     }
 
     /** Scripts answer 1 for a done transition and 2 when the schedule effect changed the definition too. */
@@ -726,11 +888,12 @@ public class RedisTaskStore implements FullStore {
     }
 
     /**
-     * Lists from the structure that holds the state: {@code idx:<state>:<qid>} for LEASED and the terminal states,
-     * {@code q:<qid>:<tid>} for QUEUED and {@code sched:<qid>} for SCHEDULED. Order is by the zset score, then numeric
+     * Lists from the structures that hold the state: {@code idx:<state>:<qid>} for LEASED, that and
+     * {@code hidx:<state>:<qid>} for the terminal states, {@code q:<qid>:<tid>} of the types in
+     * {@code active:<qid>} for QUEUED and {@code sched:<qid>} for SCHEDULED. Order is by the zset score, then numeric
      * id: stateChanged for the indexed states, due for QUEUED and SCHEDULED. The cursor is
-     * {@code <score>:<id>} of the last entry of the page. QUEUED pages merge the non-empty type zsets of each
-     * queue, preserving the same cursor when a task or an entire type leaves the queue.
+     * {@code <score>:<id>} of the last entry of the page. Pages merge the zsets of each queue, preserving the same
+     * cursor when a task or an entire type leaves the queue.
      */
     @Override
     public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
@@ -765,14 +928,9 @@ public class RedisTaskStore implements FullStore {
     private List<Entry> listing(TaskState state, Integer queueId, Entry after, int limit) {
         var entries = new ArrayList<Entry>();
         var qids = queueId == null ? sortedQueueIds() : List.of(queueId);
-        var tids = state == TaskState.QUEUED ? jedis.hvals(keys.registry("type")) : List.<String>of();
         for (var qid : qids) {
-            if (state == TaskState.QUEUED) {
-                for (var tid : tids) {
-                    entries.addAll(page(keys.queue(qid, Integer.parseInt(tid)), after, limit));
-                }
-            } else {
-                entries.addAll(page(stateZset(state, qid), after, limit));
+            for (var zset : stateZsets(state, qid)) {
+                entries.addAll(page(zset, after, limit));
             }
         }
         entries.sort(ORDER);
@@ -784,11 +942,15 @@ public class RedisTaskStore implements FullStore {
     private static final Comparator<Entry> ORDER =
             Comparator.comparingDouble(Entry::score).thenComparingLong(Entry::id);
 
-    private String stateZset(TaskState state, int qid) {
+    private List<String> stateZsets(TaskState state, int qid) {
         return switch (state) {
-            case QUEUED -> throw new IllegalArgumentException("QUEUED has one zset per type");
-            case SCHEDULED -> keys.scheduled(qid);
-            default -> keys.index(state.code(), qid);
+            case QUEUED ->
+                jedis.smembers(keys.activeTypes(qid)).stream()
+                        .map(tid -> keys.queue(qid, Integer.parseInt(tid)))
+                        .toList();
+            case SCHEDULED -> List.of(keys.scheduled(qid));
+            case LEASED -> List.of(keys.index(state.code(), qid));
+            default -> List.of(keys.index(state.code(), qid), keys.heldIndex(state.code(), qid));
         };
     }
 

@@ -793,7 +793,12 @@ enqueues in 60 s).
 `start()` fails with `TaskConfigurationException` when no processor is registered. `quiet()` stops claiming while
 running tasks finish and `resume()` claims again. `stop()` stops the services, waits up to `shutdownTimeout`
 and keeps renewing leases of running tasks meanwhile; tasks still running afterwards are retried when their
-lease expires. A lease that has lapsed is not revived by a later renewal, so `leaseDuration` must sit well above the worst pause of a worker (GC, container freeze, slow store round trip). A process that only produces tasks can use `TaskClient.builder().store(store).jsonMapper(mapper).build()`.
+lease expires. A lease that has lapsed is not revived by a later renewal, so `leaseDuration` must sit well above the worst pause of a worker (GC, container freeze, slow store round trip).
+
+A runner acknowledges successful tasks in batches without a timer: a task that finishes while no batch is on its
+way is acknowledged at once, and tasks that finish while one is on its way go together in the next
+(`ExecutionStore.ackAll`, one script on Redis, one statement on PostgreSQL). A succeeded occurrence of a
+fixed-delay schedule keeps its own call, because its re-arm is part of the same write. A process that only produces tasks can use `TaskClient.builder().store(store).jsonMapper(mapper).build()`.
 
 ## Stores
 
@@ -813,12 +818,21 @@ a different token under the same id returns exists, before checking the unique k
 the task exists: with a zero succeeded retention a task that already ran and was removed is stored again by a
 resend.
 
-Layout 4 stores queued tasks in `q:<queue-id>:<type-id>` zsets scored by due milliseconds; a claim reads the
-zsets of the worker's known types, counts and listings those of the registered types. A claim runs both grant passes in one atomic script and merges
-only the worker's known types by `(due, lexical id)`, leaving foreign tasks unchanged. Its scan budget is
-`min(count * 4, 1000)` eligible entries per queue across both passes. Queue listings merge the type zsets
-by `(due, numeric id)` and retain their position cursors when a type empties. `queuedByType()` reads exact
-zset cardinalities in one script without task hash reads. Type names use `reg:type` and `seq:type`; task and
+Layout 5 stores queued tasks in `q:<queue-id>:<type-id>` zsets scored by due milliseconds, and keeps in
+`active:<queue-id>` the set of types whose zset in that queue is not empty. A runner's known types are stored
+once as the set `ts:<digest>`, named by a digest of the sorted type ids and shared by runners with the same
+types; it expires a day after the last claim that named it and a claim writes it again when it is missing. A
+claim takes the intersection of the two sets, so its cost grows with the types that have queued tasks, not
+with the types registered. A claim runs both grant passes in one atomic script and merges the eligible types
+by `(due, lexical id)`, leaving foreign tasks unchanged. Its scan budget is `min(count * 4, 1000)` eligible
+entries per queue across both passes. Queue listings merge the active type zsets by `(due, numeric id)` and
+retain their position cursors when a type empties. `queuedByType()` and the counts read exact zset
+cardinalities of the active types in one script without task hash reads. Finished tasks are listed and purged
+from one zset per state and queue, `idx:<state>:<queue-id>`; those whose unique key window is still open are in
+`hidx:` and `hold:` instead until purge finds the window passed. Enqueue batches and acknowledgement batches
+run as one script per group of tasks. `init` migrates a namespace of an older supported layout forward, one
+step per version under a lock in the namespace; stop the runners of the older library version before you start
+the new one, because they would keep writing the old layout. Type names use `reg:type` and `seq:type`; task and
 recurring-definition hashes store the type id in `ty`. Worker registration sets `accepting` to 1, and one
 heartbeat script atomically updates the worker's time, running count and accepting flag.
 

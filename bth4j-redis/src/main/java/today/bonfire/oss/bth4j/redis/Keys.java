@@ -27,14 +27,19 @@ package today.bonfire.oss.bth4j.redis;
  * {@code wid} only while LEASED or terminal: the transitions leave them in place and the reader ignores them</li>
  * <li>{@code d:<id>} string with the payload; {@code st:<id>} string with the steps JSON; {@code f:<id>} list
  * of failures, one JSON object each, the last {@link RedisScripts#MAX_FAILURES} kept</li>
- * <li>{@code q:<qid>:<tid>} zset of QUEUED ids of one queue and type scored by due ms; readers find them from
- * the claim's known types or the type registry, since Redis deletes an emptied zset; {@code sched:<qid>} zset of
- * SCHEDULED ids scored by due ms; {@code leased} zset scored by lease expiry ms. The type id is stored in task and recurring-definition hashes as {@code ty}</li>
- * <li>{@code idx:<state>:<qid>} zset scored by stateChanged ms, for LEASED and the terminal states. Counts
- * are the cardinalities of these zsets, so they cannot drift</li>
- * <li>{@code rm:<state>:<qid>} zset of terminal ids that purge may remove, scored by stateChanged ms;
- * {@code hold:<state>:<qid>} zset of terminal ids whose key window is open, scored by {@code ku} ms. Purge drains
- * {@code hold} when the window has passed, so tasks that are held never sit in front of purgeable ones</li>
+ * <li>{@code q:<qid>:<tid>} zset of QUEUED ids of one queue and type scored by due ms; {@code active:<qid>} set
+ * of the type ids whose zset in that queue is not empty, kept in step by every script that writes one, so that
+ * readers never look at types without queued tasks; {@code sched:<qid>} zset of SCHEDULED ids scored by due ms;
+ * {@code leased} zset scored by lease expiry ms. The type id is stored in task and recurring-definition hashes as
+ * {@code ty}</li>
+ * <li>{@code ts:<digest>} set of the type ids one runner handles, named by a digest of the sorted ids and written
+ * by the store when a claim finds it missing; a claim intersects it with {@code active:<qid>}. It expires a day
+ * after the last claim that named it</li>
+ * <li>{@code idx:<state>:<qid>} zset scored by stateChanged ms, for LEASED and for terminal tasks without an
+ * open key window, which purge reads; {@code hidx:<state>:<qid>} the same for terminal tasks whose key window is
+ * open, and {@code hold:<state>:<qid>} those again scored by {@code ku} ms. Purge drains {@code hold} when the
+ * window has passed, so tasks that are held never sit in front of purgeable ones. Counts are the cardinalities
+ * of these zsets, so they cannot drift</li>
  * <li>{@code k:<key>} string holding the id of the task that owns a unique key, with a PEXPIREAT when the key
  * is kept for a window after the task ended; the {@code uk}, {@code kk} and {@code ku} fields of such a task
  * carry the same expiry (HPEXPIREAT), so the store needs Redis 7.4 or Valkey 9 at least</li>
@@ -147,6 +152,18 @@ public final class Keys {
 
     public String index(int state, int qid) {
         return prefix + "idx:" + state + ":" + qid;
+    }
+
+    public String heldIndex(int state, int qid) {
+        return prefix + "hidx:" + state + ":" + qid;
+    }
+
+    public String activeTypes(int qid) {
+        return prefix + "active:" + qid;
+    }
+
+    public String typeSet(String digest) {
+        return prefix + "ts:" + digest;
     }
 
     public String uniqueKey(String key) {

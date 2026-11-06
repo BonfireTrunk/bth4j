@@ -515,7 +515,9 @@ class TaskExecutionTest {
     private FullStore faulty(String method, Fault fault) {
         return (FullStore) Proxy.newProxyInstance(
                 FullStore.class.getClassLoader(), new Class<?>[] {FullStore.class}, (proxy, m, args) -> {
-                    boolean target = m.getName().equals(method);
+                    // an acknowledgement without a schedule effect goes through ackAll
+                    boolean target = m.getName().equals(method)
+                            || (method.equals("ack") && m.getName().equals("ackAll"));
                     if (target && fault == Fault.BEFORE_COMMIT) throw new TaskStoreException("lost before commit");
                     Object result;
                     try {
@@ -523,7 +525,7 @@ class TaskExecutionTest {
                     } catch (InvocationTargetException e) {
                         throw e.getCause();
                     }
-                    storeCalls.add(m.getName());
+                    storeCalls.add(target ? method : m.getName());
                     if (target) throw new TaskStoreException("reply lost");
                     return result;
                 });

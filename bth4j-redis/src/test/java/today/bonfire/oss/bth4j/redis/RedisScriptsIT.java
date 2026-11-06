@@ -370,11 +370,11 @@ class RedisScriptsIT {
         store.enqueue(task(20).build());
         jedis.scriptFlush();
 
-        var outcomes = spied.enqueueAll(batch(40));
+        var outcomes = spied.enqueueAll(batch(4 * RedisTaskStore.ENQUEUE_CHUNK));
 
-        assertBatchOutcomes(outcomes, 40);
-        assertThat(jedis.exists(keys.task(40))).isTrue();
-        assertThat(spy.events()).containsExactly("pipeline 40", "load", "pipeline 40");
+        assertBatchOutcomes(outcomes, 4 * RedisTaskStore.ENQUEUE_CHUNK);
+        assertThat(jedis.exists(keys.task(4 * RedisTaskStore.ENQUEUE_CHUNK))).isTrue();
+        assertThat(spy.events()).containsExactly("pipeline 4", "load", "pipeline 4");
     }
 
     @Test
@@ -383,10 +383,22 @@ class RedisScriptsIT {
         store.enqueue(task(20).build());
         spy.rejectInNextPipeline(call -> call % 2 == 1);
 
-        var outcomes = spied.enqueueAll(batch(40));
+        var outcomes = spied.enqueueAll(batch(4 * RedisTaskStore.ENQUEUE_CHUNK));
 
-        assertBatchOutcomes(outcomes, 40);
-        assertThat(spy.events()).containsExactly("pipeline 40", "load", "pipeline 20");
+        assertBatchOutcomes(outcomes, 4 * RedisTaskStore.ENQUEUE_CHUNK);
+        assertThat(spy.events()).containsExactly("pipeline 4", "load", "pipeline 2");
+    }
+
+    @Test
+    void largePayloadsSplitAnEnqueueBatchSoThatOneScriptStaysShort() {
+        var big = "x".repeat(200 * 1024);
+
+        var outcomes = spied.enqueueAll(List.of(
+                task(1).encodedPayload(big).build(), task(2).encodedPayload(big).build(), task(3).build()));
+
+        assertThat(outcomes).containsOnly(EnqueueOutcome.STORED).hasSize(3);
+        assertThat(spy.events()).containsExactly("pipeline 2");
+        assertThat(store.getTask(2).orElseThrow().encodedPayload()).isEqualTo(big);
     }
 
     @Test
@@ -394,10 +406,10 @@ class RedisScriptsIT {
         jedis.scriptFlush();
         spy.flushAfterLoads(1);
 
-        var outcomes = spied.enqueueAll(batch(5));
+        var outcomes = spied.enqueueAll(batch(5 * RedisTaskStore.ENQUEUE_CHUNK));
 
-        assertThat(outcomes).containsOnly(EnqueueOutcome.STORED).hasSize(5);
-        assertThat(jedis.exists(keys.task(5))).isTrue();
+        assertThat(outcomes).containsOnly(EnqueueOutcome.STORED).hasSize(5 * RedisTaskStore.ENQUEUE_CHUNK);
+        assertThat(jedis.exists(keys.task(5 * RedisTaskStore.ENQUEUE_CHUNK))).isTrue();
         assertThat(spy.events())
                 .containsExactly(
                         "pipeline 5",
@@ -426,7 +438,7 @@ class RedisScriptsIT {
                 .isInstanceOf(JedisDataException.class)
                 .isNotInstanceOf(JedisNoScriptException.class);
 
-        assertThat(spy.events()).containsExactly("pipeline 3");
+        assertThat(spy.events()).containsExactly("pipeline 1");
         assertThat(jedis.exists(keys.task(1))).isTrue();
     }
 

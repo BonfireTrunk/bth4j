@@ -2,6 +2,7 @@ package today.bonfire.oss.bth4j.spi;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -65,6 +66,18 @@ public interface ExecutionStore extends TaskStore {
      * @return false when the revision did not match
      */
     boolean ack(long id, int revision, boolean keep, boolean keepPayload, ScheduleEffect effect);
+
+    /**
+     * {@link #ack} without a schedule effect for several tasks, each checked and applied as if acknowledged on
+     * its own, in as few round trips as the store allows. When the call throws, any of them may have applied.
+     *
+     * @return per lease whether its ack applied, in the same order
+     */
+    default List<Boolean> ackAll(List<LeaseRef> leases, boolean keep, boolean keepPayload) {
+        var out = new ArrayList<Boolean>(leases.size());
+        for (var lease : leases) out.add(ack(lease.id(), lease.revision(), keep, keepPayload, null));
+        return out;
+    }
 
     /**
      * Records a failed attempt of a LEASED task. The task is SCHEDULED for {@code retryAt}, or DEAD when

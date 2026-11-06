@@ -151,7 +151,61 @@ class RedisTaskStoreIT {
 
         assertThatThrownBy(store::init)
                 .isInstanceOf(TaskStoreException.class)
-                .hasMessageContaining("layout version 3, expected 4");
+                .hasMessageContaining("layout version 3, expected 5");
+    }
+
+    @Test
+    void initMigratesALayout4NamespaceOfAnEarlier41Snapshot() {
+        store.enqueue(task(2).build());
+        var kept = claim(1).getFirst();
+        assertThat(store.ack(kept.id(), kept.revision(), true, true, null)).isTrue();
+        store.enqueue(task(3).uniqueKey("k").keyKeep(Duration.ofHours(1)).build());
+        var held = claim(1).getFirst();
+        assertThat(store.ack(held.id(), held.revision(), true, true, null)).isTrue();
+        store.enqueue(task(1).build());
+        // back to layout 4: no active sets, held tasks in idx, unheld ones in idx and rm
+        var succeeded = TaskState.SUCCEEDED.code();
+        var heldScore = jedis.zscore(keys.heldIndex(succeeded, queue), "3");
+        jedis.del(keys.activeTypes(queue), keys.heldIndex(succeeded, queue));
+        jedis.zadd(keys.index(succeeded, queue), heldScore, "3");
+        var rm = keys.prefix + "rm:" + succeeded + ":" + queue;
+        jedis.zadd(rm, jedis.zscore(keys.index(succeeded, queue), "2"), "2");
+        jedis.hset(keys.meta, "schema", "4");
+
+        store.init();
+
+        assertThat(jedis.hget(keys.meta, "schema")).isEqualTo("5");
+        assertThat(jedis.smembers(keys.activeTypes(queue))).containsExactly(String.valueOf(type));
+        assertThat(jedis.zrange(keys.index(succeeded, queue), 0, -1)).containsExactly("2");
+        assertThat(jedis.zscore(keys.heldIndex(succeeded, queue), "3")).isEqualTo(heldScore);
+        assertThat(jedis.exists(rm)).isFalse();
+        assertThat(jedis.exists(keys.prefix + "migrating")).isFalse();
+        assertThat(store.counts().get(queue).succeeded()).isEqualTo(2);
+        assertThat(claim(5)).extracting(TaskRecord::id).containsExactly(1L);
+        assertThat(store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10)).isEqualTo(1);
+        assertThat(store.getTask(3)).isPresent();
+        store.init();
+        assertThat(jedis.hget(keys.meta, "schema")).isEqualTo("5");
+    }
+
+    @Test
+    void initWaitsForAnotherRunnersMigrationInsteadOfRunningItTwice() throws Exception {
+        jedis.hset(keys.meta, "schema", "4");
+        jedis.set(keys.prefix + "migrating", "other");
+        var other = Thread.ofVirtual().start(() -> {
+            try {
+                Thread.sleep(300);
+            } catch (InterruptedException e) {
+                throw new IllegalStateException(e);
+            }
+            jedis.hset(keys.meta, "schema", "5");
+            jedis.del(keys.prefix + "migrating");
+        });
+
+        store.init();
+
+        other.join();
+        assertThat(jedis.hget(keys.meta, "schema")).isEqualTo("5");
     }
 
     @Test
@@ -481,6 +535,78 @@ class RedisTaskStoreIT {
         assertThat(jedis.zrangeWithScores(keys.queue(queue, foreign), 0, -1)).isEqualTo(before);
         assertThat(store.queuedByType()).isEqualTo(Map.of(queue, Map.of(foreign, 1500L)));
         assertThat(queuedTypes()).containsExactly(foreign);
+    }
+
+    @Test
+    void activeTypesFollowTheTypeQueuesThatHoldTasks() {
+        var second = store.typeId("second");
+        store.enqueue(task(1).build());
+        store.enqueue(task(2).typeId(second).build());
+        assertThat(jedis.smembers(keys.activeTypes(queue)))
+                .containsExactlyInAnyOrder(String.valueOf(type), String.valueOf(second));
+
+        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, 1, Set.of(second))))
+                .extracting(TaskRecord::id)
+                .containsExactly(2L);
+        assertThat(jedis.smembers(keys.activeTypes(queue))).containsExactly(String.valueOf(type));
+
+        var t = claim(5).getFirst();
+        assertThat(jedis.exists(keys.activeTypes(queue))).isFalse();
+        assertThat(store.unclaim(t.id(), t.revision())).isTrue();
+        assertThat(jedis.smembers(keys.activeTypes(queue))).containsExactly(String.valueOf(type));
+    }
+
+    @Test
+    void aClaimWritesAMissingTypeSetAndEqualTypeSetsShareIt() {
+        var known = Set.of(type, store.typeId("idle"));
+        store.enqueue(task(1).build());
+
+        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, 1, known)))
+                .extracting(TaskRecord::id)
+                .containsExactly(1L);
+        var sets = jedis.keys(keys.prefix + "ts:*");
+        assertThat(sets).hasSize(1);
+        var set = sets.iterator().next();
+        assertThat(jedis.smembers(set))
+                .containsExactlyInAnyOrder(
+                        String.valueOf(type),
+                        String.valueOf(known.stream()
+                                .filter(id -> id != type)
+                                .findFirst()
+                                .orElseThrow()));
+        assertThat(jedis.pttl(set)).isPositive();
+
+        jedis.del(set);
+        store.enqueue(task(2).build());
+        assertThat(store.claim(
+                        new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, 2, new HashSet<>(known))))
+                .extracting(TaskRecord::id)
+                .containsExactly(2L);
+        assertThat(jedis.keys(keys.prefix + "ts:*")).containsExactly(set);
+    }
+
+    @Test
+    void aClaimReadsOnlyTheTypesThatHaveQueuedTasks() {
+        var known = new HashSet<Integer>();
+        known.add(type);
+        for (var i = 0; i < 2_000; i++) known.add(store.typeId("idle-" + i));
+        store.enqueue(task(1).build());
+        store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, 1, known));
+        store.enqueue(task(2).build());
+        var before = zrangeCalls();
+
+        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, 1, known)))
+                .extracting(TaskRecord::id)
+                .containsExactly(2L);
+        assertThat(zrangeCalls() - before).isLessThanOrEqualTo(2);
+    }
+
+    private long zrangeCalls() {
+        var stats = jedis.info("commandstats");
+        var at = stats.indexOf("cmdstat_zrange:calls=");
+        if (at < 0) return 0;
+        var from = at + "cmdstat_zrange:calls=".length();
+        return Long.parseLong(stats.substring(from, stats.indexOf(',', from)));
     }
 
     @Test

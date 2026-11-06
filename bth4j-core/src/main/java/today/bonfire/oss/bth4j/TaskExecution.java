@@ -53,7 +53,40 @@ final class TaskExecution implements Runnable, TaskContext {
             boolean keepSucceeded,
             boolean keepPayload,
             boolean keepDead,
-            FailureDetail failureDetail) {}
+            FailureDetail failureDetail,
+            AckBatcher acks) {
+
+        Settings(
+                ExecutionStore store,
+                InspectionStore inspection,
+                Names names,
+                Codecs codecs,
+                TaskProcessorRegistry registry,
+                RetryPolicies retryPolicies,
+                Observers observer,
+                Clock clock,
+                RunnerStatus status,
+                boolean keepSucceeded,
+                boolean keepPayload,
+                boolean keepDead,
+                FailureDetail failureDetail) {
+            this(
+                    store,
+                    inspection,
+                    names,
+                    codecs,
+                    registry,
+                    retryPolicies,
+                    observer,
+                    clock,
+                    status,
+                    keepSucceeded,
+                    keepPayload,
+                    keepDead,
+                    failureDetail,
+                    new AckBatcher(store, keepSucceeded, keepPayload));
+        }
+    }
 
     private final TaskRecord record;
     private final TaskView view;
@@ -242,8 +275,10 @@ final class TaskExecution implements Runnable, TaskContext {
 
     private void succeed(Instant started) {
         var rearm = rearmEffect();
-        var outcome =
-                apply(() -> s.store().ack(record.id(), record.revision(), s.keepSucceeded(), s.keepPayload(), rearm));
+        // a re-arm must stay atomic with its own transition, so it keeps the single call
+        var outcome = apply(() -> rearm == null
+                ? s.acks().ack(record.id(), record.revision())
+                : s.store().ack(record.id(), record.revision(), s.keepSucceeded(), s.keepPayload(), rearm));
         if (outcome == Outcome.LOST) {
             log.warn("Task {} completed but its lease was lost, it may run again", record.id());
         }
