@@ -213,6 +213,25 @@ class TaskProcessorCapacityTest {
     }
 
     @Test
+    void weightsWhoseSumExceedsAnIntShareTheSlotsInTheirRatio() throws Exception {
+        int heavy = names.queueId("Q:HEAVY");
+        int light = names.queueId("Q:LIGHT");
+        var executor = new ManualExecutor(4);
+        var processor = processor(
+                executor,
+                4,
+                List.of(heavy, light),
+                Map.of(heavy, QueuePolicy.weight(3 << 29), light, QueuePolicy.weight(1 << 29)));
+        var heavyIds = enqueue(6, "Q:HEAVY");
+        var lightIds = enqueue(6, "Q:LIGHT");
+
+        processOnce(processor);
+
+        assertThat(leased(heavyIds)).isEqualTo(3);
+        assertThat(leased(lightIds)).isEqualTo(1);
+    }
+
+    @Test
     void aQueueCapGivesItsUnusedShareToTheOtherQueues() throws Exception {
         int capped = names.queueId("Q:CAPPED");
         int open = names.queueId("Q:OPEN");

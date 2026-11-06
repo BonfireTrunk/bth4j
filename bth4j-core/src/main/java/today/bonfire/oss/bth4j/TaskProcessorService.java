@@ -188,7 +188,7 @@ class TaskProcessorService extends CustomThread {
         var order = rotatedDistinctQueues();
         var caps = new int[order.size()];
         capBlocked = false;
-        int totalWeight = 0;
+        long totalWeight = 0;
         for (int i = 0; i < order.size(); i++) {
             var policy = policies.getOrDefault(order.get(i), QueuePolicy.DEFAULT);
             int cap = policy.maxConcurrent() == 0
@@ -205,7 +205,7 @@ class TaskProcessorService extends CustomThread {
             if (caps[i] == 0) continue;
             int weight =
                     policies.getOrDefault(order.get(i), QueuePolicy.DEFAULT).weight();
-            shares[i] = Math.min(caps[i], slots * weight / totalWeight);
+            shares[i] = (int) Math.min(caps[i], (long) slots * weight / totalWeight);
             given += shares[i];
         }
         for (int i = 0; given < slots && i < order.size(); i++) {
