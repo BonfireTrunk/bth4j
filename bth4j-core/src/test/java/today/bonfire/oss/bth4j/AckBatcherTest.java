@@ -84,6 +84,36 @@ class AckBatcherTest {
     }
 
     @Test
+    void manyConcurrentAcknowledgementsEachGetTheirOwnResultAndGoOutOnce() throws Exception {
+        var batcher = new AckBatcher(
+                store(leases -> {
+                    try {
+                        Thread.sleep(1);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return leases.stream().map(l -> l.id() % 7 != 0).toList();
+                }),
+                true,
+                false);
+        var results = new ArrayList<Future<Boolean>>();
+        try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (var id = 1; id <= 2_000; id++) {
+                var task = id;
+                results.add(pool.submit(() -> batcher.ack(task, 1)));
+            }
+            for (var id = 1; id <= 2_000; id++) {
+                assertThat(results.get(id - 1).get()).as("ack %d", id).isEqualTo(id % 7 != 0);
+            }
+        }
+        assertThat(batches.stream().flatMap(List::stream).map(LeaseRef::id))
+                .hasSize(2_000)
+                .doesNotHaveDuplicates();
+        assertThat(batches.size()).isLessThan(2_000);
+        assertThat(batcher.waitingCount()).isZero();
+    }
+
+    @Test
     void aFailedBatchCallLeavesEveryAcknowledgementInItUnknown() throws Exception {
         var firstSent = new CountDownLatch(1);
         var release = new CountDownLatch(1);

@@ -798,7 +798,12 @@ lease expires. A lease that has lapsed is not revived by a later renewal, so `le
 A runner acknowledges successful tasks in batches without a timer: a task that finishes while no batch is on its
 way is acknowledged at once, and tasks that finish while one is on its way go together in the next
 (`ExecutionStore.ackAll`, one script on Redis, one statement on PostgreSQL). A succeeded occurrence of a
-fixed-delay schedule keeps its own call, because its re-arm is part of the same write. A process that only produces tasks can use `TaskClient.builder().store(store).jsonMapper(mapper).build()`.
+fixed-delay schedule keeps its own call, because its re-arm is part of the same write. A task's executor slot is freed
+when its processor returns, so the slot takes the next task while the outcome is written; the task keeps its lease
+renewed until the store answers, and its queue's `maxConcurrent` counts it until then. The built-in executors let at
+most twice their limit (twice `max` for adaptive) run or write their outcome at once, so a slow store holds back
+claims. Observers of outcome events run after the slot is freed. A custom `BackgroundExecutor` keeps the slot until
+the task ends unless it overrides `executeWithSlot`. A process that only produces tasks can use `TaskClient.builder().store(store).jsonMapper(mapper).build()`.
 
 ## Stores
 

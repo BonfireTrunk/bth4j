@@ -500,6 +500,38 @@ class TaskExecutionTest {
         assertThat(store.getTask(execution.taskId()).orElseThrow().state()).isEqualTo(transition.committedState);
     }
 
+    @ParameterizedTest
+    @EnumSource(Transition.class)
+    void theSlotIsFreedOnceTheProcessorReturnsAndBeforeTheOutcomeIsWritten(Transition transition) {
+        var order = new ArrayList<String>();
+        executionStore = recording(order);
+        var execution = execution(TaskType.of("slot-" + transition), (ctx, payload) -> {
+            order.add("processor");
+            transition.exit();
+        });
+
+        execution.run(() -> order.add("slot freed"));
+
+        assertThat(order).containsSubsequence("processor", "slot freed", transition.storeMethod);
+        assertThat(order).containsOnlyOnce("slot freed");
+        assertThat(store.getTask(execution.taskId()).orElseThrow().state()).isEqualTo(transition.committedState);
+    }
+
+    @Test
+    void aTaskWithoutAProcessorFreesItsSlotBeforeItIsDeferred() {
+        var order = new ArrayList<String>();
+        executionStore = recording(order);
+        client.enqueue(TaskRequest.of(TaskType.of("unregistered")).build());
+        var record = store.claim(
+                        new ClaimRequest(List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)), 1, LEASE, 1, null))
+                .getFirst();
+
+        new TaskExecution(record, settings(), e -> {}).run(() -> order.add("slot freed"));
+
+        assertThat(order).containsSubsequence("slot freed", "reschedule");
+        assertThat(store.getTask(record.id()).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
+    }
+
     private TaskEvent.Outcome lastOutcome() {
         return switch (events.getLast()) {
             case TaskEvent.Succeeded e -> e.outcome();
@@ -528,6 +560,19 @@ class TaskExecutionTest {
                     storeCalls.add(target ? method : m.getName());
                     if (target) throw new TaskStoreException("reply lost");
                     return result;
+                });
+    }
+
+    /** The real store, noting each outcome call in {@code order}; an acknowledgement goes through ackAll. */
+    private FullStore recording(List<String> order) {
+        return (FullStore) Proxy.newProxyInstance(
+                FullStore.class.getClassLoader(), new Class<?>[] {FullStore.class}, (proxy, m, args) -> {
+                    if (!m.getName().equals("getTask")) order.add(m.getName().equals("ackAll") ? "ack" : m.getName());
+                    try {
+                        return m.invoke(store, args);
+                    } catch (InvocationTargetException e) {
+                        throw e.getCause();
+                    }
                 });
     }
 

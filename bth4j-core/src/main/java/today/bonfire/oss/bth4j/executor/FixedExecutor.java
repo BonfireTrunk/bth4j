@@ -12,14 +12,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class FixedExecutor implements BackgroundExecutor {
 
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-    private final Semaphore slots;
+    private final SlotGate gate;
     private final AtomicInteger active = new AtomicInteger();
     private final int limit;
 
     public FixedExecutor(int limit) {
         if (limit < 1) throw new IllegalArgumentException("limit must be at least 1");
         this.limit = limit;
-        this.slots = new Semaphore(limit);
+        this.gate = new SlotGate(new Semaphore(limit), SlotGate.inFlightFor(limit));
     }
 
     @Override
@@ -29,35 +29,33 @@ public final class FixedExecutor implements BackgroundExecutor {
 
     @Override
     public int reserve(int max, Duration wait) throws InterruptedException {
-        if (!slots.tryAcquire(wait.toNanos(), TimeUnit.NANOSECONDS)) {
-            return 0;
-        }
-        int reserved = 1;
-        while (reserved < max && slots.tryAcquire()) {
-            reserved++;
-        }
-        return reserved;
+        return gate.reserve(max, wait);
     }
 
     @Override
     public void release(int count) {
-        if (count > 0) slots.release(count);
+        gate.release(count);
     }
 
     @Override
     public void execute(Runnable task) {
+        executeWithSlot(freeSlot -> task.run());
+    }
+
+    /** The slot may be freed early; at most {@code 2 * limit} tasks run or write their outcome at once. */
+    @Override
+    public void executeWithSlot(SlotTask task) {
         try {
             executor.execute(() -> {
                 active.incrementAndGet();
                 try {
-                    task.run();
+                    gate.run(task);
                 } finally {
                     active.decrementAndGet();
-                    slots.release();
                 }
             });
         } catch (RuntimeException e) {
-            slots.release();
+            gate.release(1);
             throw e;
         }
     }

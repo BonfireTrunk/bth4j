@@ -187,8 +187,17 @@ final class TaskExecution implements Runnable, TaskContext {
 
     @Override
     public void run() {
+        run(() -> {});
+    }
+
+    /**
+     * Runs the attempt; {@code freeSlot} runs once the processor has returned, before the outcome is written, so the
+     * slot can take the next task while the outcome is on its way to the store. The task stays running, and its
+     * lease renewed, until the finished callback has seen it.
+     */
+    void run(Runnable freeSlot) {
         try {
-            runAttempt();
+            runAttempt(freeSlot);
         } catch (Throwable t) {
             if (fatal != null && fatal != t) {
                 fatal.addSuppressed(t);
@@ -201,12 +210,13 @@ final class TaskExecution implements Runnable, TaskContext {
         if (fatal != null) throw fatal;
     }
 
-    private void runAttempt() {
+    private void runAttempt(Runnable freeSlot) {
         var started = s.clock().instant();
         startedAt = started;
         emit(new TaskEvent.Started(view, record.workerId() == null ? 0 : record.workerId()));
         var registration = s.registry().get(view.type());
         if (registration == null) {
+            freeSlot.run();
             reporting = true;
             defer("no processor registered for " + view.type());
             return;
@@ -234,6 +244,7 @@ final class TaskExecution implements Runnable, TaskContext {
                 workerLock.unlock();
             }
         }
+        freeSlot.run();
         reporting = true;
         if (leaseLossInterrupted) {
             fail(new TaskLeaseLostException("lease of task " + record.id() + " was lost"));

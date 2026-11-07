@@ -150,7 +150,7 @@ class TaskProcessorService extends CustomThread {
                                     .maxConcurrent()
                             > 0);
             try {
-                executor.execute(execution);
+                executor.executeWithSlot(execution::run);
             } catch (RuntimeException e) {
                 finished(execution);
                 returnToQueue(execution, e);

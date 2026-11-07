@@ -102,6 +102,25 @@ class DefaultVtExecutorTest {
     }
 
     @Test
+    void aTaskThatFreesItsSlotEarlyGivesItBackWhileItStillRuns() throws InterruptedException {
+        var executor = newExecutor();
+        int permits = executor.availablePermits();
+        assertThat(executor.reserve(permits, Duration.ofSeconds(1))).isEqualTo(permits);
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+
+        executor.executeWithSlot(freeSlot -> {
+            freeSlot.run();
+            blockOn(started, release).run();
+        });
+
+        assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
+        assertThat(executor.activeCount()).isEqualTo(1);
+        assertThat(executor.reserve(1, Duration.ofSeconds(1))).isEqualTo(1);
+        release.countDown();
+    }
+
+    @Test
     void executeConsumesOneReservedSlotAndFreesItWhenTheTaskFinishes() throws InterruptedException {
         var executor = newExecutor();
         int permits = executor.availablePermits();

@@ -21,6 +21,7 @@ public class DefaultVtExecutor implements BackgroundExecutor {
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     private final AtomicInteger maxConcurrentTasks;
     private final AdjustableSemaphore concurrencyLimiter;
+    private final SlotGate gate;
     private final AtomicInteger activeTaskCount = new AtomicInteger();
     private final ResourceSampler sampler;
     private final LongSupplier clock;
@@ -50,6 +51,7 @@ public class DefaultVtExecutor implements BackgroundExecutor {
             Concurrency.Adaptive settings, ResourceSampler sampler, LongSupplier clock, boolean schedule) {
         this.maxConcurrentTasks = new AtomicInteger(settings.min());
         this.concurrencyLimiter = new AdjustableSemaphore(settings.min());
+        this.gate = new SlotGate(concurrencyLimiter, SlotGate.inFlightFor(settings.max()));
         this.sampler = sampler;
         this.clock = clock;
         this.controller = new ResourceController(settings, clock.getAsLong());
@@ -119,38 +121,36 @@ public class DefaultVtExecutor implements BackgroundExecutor {
 
     @Override
     public int reserve(int max, Duration wait) throws InterruptedException {
-        if (!concurrencyLimiter.tryAcquire(wait.toNanos(), TimeUnit.NANOSECONDS)) {
-            return 0;
-        }
-        int reserved = 1;
-        while (reserved < max && concurrencyLimiter.tryAcquire()) {
-            reserved++;
-        }
-        return reserved;
+        return gate.reserve(max, wait);
     }
 
     @Override
     public void release(int slots) {
-        if (slots > 0) {
-            concurrencyLimiter.release(slots);
-        }
+        gate.release(slots);
     }
 
     /** Runs the task in a reserved slot; the slot is released when the task finishes or if it is rejected. */
     @Override
     public void execute(Runnable task) {
+        executeWithSlot(freeSlot -> task.run());
+    }
+
+    /**
+     * The slot may be freed early; at most twice the maximum concurrency run or write their outcome at once.
+     */
+    @Override
+    public void executeWithSlot(SlotTask task) {
         try {
             executor.execute(() -> {
                 activeTaskCount.incrementAndGet();
                 try {
-                    task.run();
+                    gate.run(task);
                 } finally {
                     activeTaskCount.decrementAndGet();
-                    concurrencyLimiter.release();
                 }
             });
         } catch (RuntimeException e) {
-            concurrencyLimiter.release();
+            gate.release(1);
             throw e;
         }
     }

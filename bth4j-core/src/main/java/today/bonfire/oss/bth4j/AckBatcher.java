@@ -13,7 +13,8 @@ import today.bonfire.oss.bth4j.spi.TaskStoreException;
  * {@link ExecutionStore#ackAll} call. It has no thread and no timer: a finishing thread that finds no batch on its
  * way sends everything waiting, its own acknowledgement included, so a quiet runner acknowledges at once. One that
  * finds a batch on its way waits; when that batch returns, the first thread still waiting sends the next. Each
- * thread sends at most one batch, so a task waits for at most the batch before its own.
+ * thread sends at most one batch, so a task waits for at most the batch before its own. A returning batch wakes
+ * only its own threads and the next sender; the threads waiting for that next batch stay asleep.
  */
 final class AckBatcher {
 
@@ -21,7 +22,6 @@ final class AckBatcher {
     private final boolean keep;
     private final boolean keepPayload;
     private final ReentrantLock lock = new ReentrantLock();
-    private final Condition changed = lock.newCondition();
     private final List<Pending> waiting = new ArrayList<>();
     private boolean sending;
 
@@ -33,13 +33,17 @@ final class AckBatcher {
 
     private static final class Pending {
         final LeaseRef lease;
+        /** Signalled when this acknowledgement is done or is to send the next batch. */
+        final Condition woken;
+
         boolean send;
         boolean done;
         boolean applied;
         Throwable failure;
 
-        Pending(LeaseRef lease) {
+        Pending(LeaseRef lease, Condition woken) {
             this.lease = lease;
+            this.woken = woken;
         }
     }
 
@@ -50,7 +54,7 @@ final class AckBatcher {
      * @throws RuntimeException when the batch call failed; the outcome is unknown then
      */
     boolean ack(long id, int revision) {
-        var mine = new Pending(new LeaseRef(id, revision));
+        var mine = new Pending(new LeaseRef(id, revision), lock.newCondition());
         List<Pending> batch;
         lock.lock();
         try {
@@ -59,7 +63,7 @@ final class AckBatcher {
                 sending = true;
                 mine.send = true;
             }
-            while (!mine.done && !mine.send) changed.awaitUninterruptibly();
+            while (!mine.done && !mine.send) mine.woken.awaitUninterruptibly();
             if (mine.done) return result(mine);
             batch = new ArrayList<>(waiting);
             waiting.clear();
@@ -84,10 +88,15 @@ final class AckBatcher {
                 p.done = true;
                 if (failure != null) p.failure = failure;
                 else p.applied = applied.get(i);
+                if (p != mine) p.woken.signal();
             }
-            if (waiting.isEmpty()) sending = false;
-            else waiting.getFirst().send = true;
-            changed.signalAll();
+            if (waiting.isEmpty()) {
+                sending = false;
+            } else {
+                var next = waiting.getFirst();
+                next.send = true;
+                next.woken.signal();
+            }
         } finally {
             lock.unlock();
         }
