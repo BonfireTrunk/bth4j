@@ -377,19 +377,19 @@ final class RedisScripts {
                 g.budget = g.budget - 1
                 local tkey = P .. 't:' .. id
                 local v = redis.call('HMGET', tkey, unpack(F))
-                if v[2] ~= '0' or v[1] ~= source.tid or v[8] ~= g.qid then
+                if v[@state@] ~= '0' or v[@ty@] ~= source.tid or v[@q@] ~= g.qid then
                   zrem(queueKey(id, g.qid, source.tid), id)
-                elseif v[3] and tonumber(v[3]) <= at then
-                  finish(tkey, id, g.qid, 0, 6, at, tonumber(v[4]), v[6], v[7], {}, true)
+                elseif v[@sb@] and tonumber(v[@sb@]) <= at then
+                  finish(tkey, id, g.qid, 0, 6, at, tonumber(v[@rev@]), v[@uk@], v[@kk@], {}, true)
                   zrem(P .. 'startby', id)
                 else
                   move(id, g.qid, 0, 2, at, lease, nil, source.tid)
-                  if v[3] then zrem(P .. 'startby', id) end
-                  redis.call('HSET', tkey, 'state', 2, 'sc', at, 'rev', tonumber(v[4]) + 1,
-                    'att', tonumber(v[5]) + 1, 'ca', at, 'lease', lease, 'wid', ARGV[4])
+                  if v[@sb@] then zrem(P .. 'startby', id) end
+                  redis.call('HSET', tkey, 'state', 2, 'sc', at, 'rev', tonumber(v[@rev@]) + 1,
+                    'att', tonumber(v[@att@]) + 1, 'ca', at, 'lease', lease, 'wid', ARGV[4])
                   local entry = {id, redis.call('GET', P .. 'd:' .. id),
-                    v[23] == '1' and redis.call('GET', P .. 'st:' .. id) or false,
-                    v[24] == '1' and redis.call('LRANGE', P .. 'f:' .. id, 0, -1) or {}}
+                    v[@hs@] == '1' and redis.call('GET', P .. 'st:' .. id) or false,
+                    v[@fc@] == '1' and redis.call('LRANGE', P .. 'f:' .. id, 0, -1) or {}}
                   for j = 1, #F do entry[#entry + 1] = v[j] end
                   result[#result + 1] = entry
                   got = got + 1
@@ -423,7 +423,16 @@ final class RedisScripts {
             """.replace(
                             "@FIELDS@",
                             Arrays.stream(CLAIM_FIELDS).map(f -> "'" + f + "'").collect(Collectors.joining(", ")))
-                    .replace("@TTL@", String.valueOf(TYPE_SET_TTL_MS));
+                    .replace("@TTL@", String.valueOf(TYPE_SET_TTL_MS))
+                    .transform(RedisScripts::withClaimFieldPositions);
+
+    /** Replaces each {@code @field@} with that field's 1-based position in {@code F}, so reordering stays safe. */
+    private static String withClaimFieldPositions(String script) {
+        for (var i = 0; i < CLAIM_FIELDS.length; i++) {
+            script = script.replace("@" + CLAIM_FIELDS[i] + "@", String.valueOf(i + 1));
+        }
+        return script;
+    }
 
     /** Returns {queue id, {{type id, count}...}} rows for non-empty registered queues. */
     static final String QUEUED_BY_TYPE = PRELUDE + """

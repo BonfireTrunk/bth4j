@@ -9,7 +9,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -401,38 +400,41 @@ public class RedisTaskStore implements FullStore {
             args.add(String.valueOf(g.share()));
             args.add(String.valueOf(g.cap()));
         });
-        var r = (List<Object>) guard(() -> scripts.run(RedisScripts.CLAIM, args));
+        var r = claimReply(guard(() -> scripts.run(RedisScripts.CLAIM, args)));
         if (num(r.get(0)) < 0) {
             var ids = types.ids().stream().map(String::valueOf).toArray(String[]::new);
-            r = (List<Object>) guard(() -> {
+            r = claimReply(guard(() -> {
                 jedis.sadd(keys.typeSet(types.digest()), ids);
                 return scripts.run(RedisScripts.CLAIM, args);
-            });
+            }));
             if (num(r.get(0)) < 0) throw new TaskStoreException("Redis type set " + types.digest() + " vanished");
         }
         var at = num(r.get(0));
-        var lease = String.valueOf(at + request.lease().toMillis());
+        var leaseUntil = at + request.lease().toMillis();
         var tasks = new ArrayList<TaskRecord>(r.size() - 1);
         for (var entry : r.subList(1, r.size())) {
-            var e = (List<Object>) entry;
-            var fields = RedisScripts.CLAIM_FIELDS;
-            var h = new HashMap<String, String>();
-            for (var i = 0; i < fields.length; i++) {
-                var v = e.get(4 + i);
-                if (v != null) h.put(fields[i], (String) v);
-            }
-            h.put(F_STATE, String.valueOf(TaskState.LEASED.code()));
-            h.put(F_STATE_CHANGED, String.valueOf(at));
-            h.put(F_REVISION, String.valueOf(Integer.parseInt(h.get(F_REVISION)) + 1));
-            h.put(F_ATTEMPTS, String.valueOf(Integer.parseInt(h.getOrDefault(F_ATTEMPTS, "0")) + 1));
-            h.put(F_CLAIMED_AT, String.valueOf(at));
-            h.put(F_LEASE, lease);
-            h.put(F_WORKER, String.valueOf(request.workerId()));
-            tasks.add(TaskHashes.fromHash(
-                    Long.parseLong((String) e.get(0)), h, (String) e.get(1), (String) e.get(2), (List<String>)
-                            (List<?>) e.get(3)));
+            tasks.add(TaskHashes.fromClaim(entry, at, leaseUntil, request.workerId()));
         }
         return tasks;
+    }
+
+    /** The CLAIM reply as a list whose first value is a number: the claim time, or -1 for a missing type set. */
+    private static List<?> claimReply(Object reply) {
+        if (reply instanceof List<?> r
+                && !r.isEmpty()
+                && (r.getFirst() instanceof Long || r.getFirst() instanceof String)) {
+            try {
+                num(r.getFirst());
+                return r;
+            } catch (NumberFormatException e) {
+                throw new TaskStoreException(
+                        "claim reply starts with " + r.getFirst() + ", expected the claim time", e);
+            }
+        }
+        throw new TaskStoreException("claim reply is not a list starting with the claim time: "
+                + (reply instanceof List<?> l
+                        ? l.size() + " values"
+                        : reply == null ? "null" : reply.getClass().getSimpleName()));
     }
 
     /** Names a set of type ids by a digest of the sorted ids, so that runners with the same types share one set. */
