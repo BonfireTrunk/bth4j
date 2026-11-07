@@ -6,8 +6,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -18,20 +18,21 @@ class SlotGateTest {
 
     @Test
     void reserveTakesASlotAndAnInFlightPermitForEachTask() throws InterruptedException {
-        var slots = new Semaphore(3);
-        var gate = new SlotGate(slots, 6);
+        var gate = new SlotGate(3);
 
         assertThat(gate.reserve(5, SHORT)).isEqualTo(3);
-        assertThat(slots.availablePermits()).isZero();
+        assertThat(gate.availableSlots()).isZero();
+        assertThat(gate.availableInFlight()).isEqualTo(3);
 
         gate.release(2);
-        assertThat(slots.availablePermits()).isEqualTo(2);
+        assertThat(gate.availableSlots()).isEqualTo(2);
+        assertThat(gate.availableInFlight()).isEqualTo(5);
         assertThat(gate.reserve(5, SHORT)).isEqualTo(2);
     }
 
     @Test
     void aTaskThatFreesItsSlotLetsTheNextOneReserveWhileItStillRuns() throws Exception {
-        var gate = new SlotGate(new Semaphore(1), 2);
+        var gate = new SlotGate(1);
         assertThat(gate.reserve(1, SHORT)).isEqualTo(1);
         var slotFreed = new CountDownLatch(1);
         var finish = new CountDownLatch(1);
@@ -51,8 +52,7 @@ class SlotGateTest {
 
     @Test
     void freeingASlotTwiceGivesItBackOnce() throws Exception {
-        var slots = new Semaphore(1);
-        var gate = new SlotGate(slots, 2);
+        var gate = new SlotGate(1);
         assertThat(gate.reserve(1, SHORT)).isEqualTo(1);
 
         gate.run(freeSlot -> {
@@ -60,14 +60,14 @@ class SlotGateTest {
             freeSlot.run();
         });
 
-        assertThat(slots.availablePermits()).isEqualTo(1);
+        assertThat(gate.availableSlots()).isEqualTo(1);
+        assertThat(gate.availableInFlight()).isEqualTo(2);
         assertThat(gate.reserve(2, SHORT)).isEqualTo(1);
     }
 
     @Test
     void tasksWritingTheirOutcomeHoldBackReservesOnceTheInFlightBoundIsReached() throws Exception {
-        var slots = new Semaphore(1);
-        var gate = new SlotGate(slots, 2);
+        var gate = new SlotGate(1);
         var freed = new CountDownLatch(2);
         var finish = new CountDownLatch(1);
 
@@ -81,10 +81,11 @@ class SlotGateTest {
                 }));
             }
             assertThat(freed.await(10, TimeUnit.SECONDS)).isTrue();
-            assertThat(slots.availablePermits()).isEqualTo(1);
+            assertThat(gate.availableSlots()).isEqualTo(1);
+            assertThat(gate.usable()).isZero();
 
             assertThat(gate.reserve(1, SHORT)).isZero();
-            assertThat(slots.availablePermits()).isEqualTo(1);
+            assertThat(gate.availableSlots()).isEqualTo(1);
 
             finish.countDown();
             assertThat(gate.reserve(1, Duration.ofSeconds(10))).isEqualTo(1);
@@ -93,8 +94,7 @@ class SlotGateTest {
 
     @Test
     void aTaskThatThrowsGivesBackItsSlotAndItsInFlightPermit() throws InterruptedException {
-        var slots = new Semaphore(1);
-        var gate = new SlotGate(slots, 1);
+        var gate = new SlotGate(1);
         assertThat(gate.reserve(1, SHORT)).isEqualTo(1);
 
         assertThatThrownBy(() -> gate.run(freeSlot -> {
@@ -102,19 +102,59 @@ class SlotGateTest {
                 }))
                 .hasMessage("task failure");
 
-        assertThat(slots.availablePermits()).isEqualTo(1);
-        assertThat(gate.reserve(1, SHORT)).isEqualTo(1);
+        assertThat(gate.availableSlots()).isEqualTo(1);
+        assertThat(gate.availableInFlight()).isEqualTo(2);
     }
 
     @Test
     void aReserveThatFindsNoSlotGivesBackTheInFlightPermitItTook() throws InterruptedException {
-        var slots = new Semaphore(0);
-        var gate = new SlotGate(slots, 1);
+        var gate = new SlotGate(1);
+        assertThat(gate.reserve(1, SHORT)).isEqualTo(1);
 
         assertThat(gate.reserve(1, SHORT)).isZero();
 
-        slots.release();
+        assertThat(gate.availableInFlight()).isEqualTo(1);
+    }
+
+    @Test
+    void aReserveInterruptedWhileWaitingForASlotGivesBackTheInFlightPermitItTook() throws Exception {
+        var gate = new SlotGate(1);
         assertThat(gate.reserve(1, SHORT)).isEqualTo(1);
+        var thrown = new AtomicReference<Throwable>();
+
+        var reserver = Thread.ofVirtual().start(() -> {
+            try {
+                gate.reserve(1, Duration.ofSeconds(20));
+            } catch (Throwable t) {
+                thrown.set(t);
+            }
+        });
+        while (gate.availableInFlight() != 0) Thread.onSpinWait();
+        reserver.interrupt();
+        reserver.join(10_000);
+
+        assertThat(thrown.get()).isInstanceOf(InterruptedException.class);
+        assertThat(gate.availableInFlight()).isEqualTo(1);
+        assertThat(gate.availableSlots()).isZero();
+    }
+
+    @Test
+    void resizingMovesTheSlotLimitAndTheInFlightBoundTogether() throws InterruptedException {
+        var gate = new SlotGate(4);
+        assertThat(gate.reserve(3, SHORT)).isEqualTo(3);
+
+        gate.resize(4, 2);
+        assertThat(gate.availableSlots()).isEqualTo(-1);
+        assertThat(gate.availableInFlight()).isEqualTo(1);
+        assertThat(gate.reserve(1, SHORT)).isZero();
+
+        gate.resize(2, 6);
+        assertThat(gate.availableSlots()).isEqualTo(3);
+        assertThat(gate.availableInFlight()).isEqualTo(9);
+
+        gate.release(3);
+        assertThat(gate.availableSlots()).isEqualTo(6);
+        assertThat(gate.availableInFlight()).isEqualTo(12);
     }
 
     @Test

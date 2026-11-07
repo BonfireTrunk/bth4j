@@ -633,7 +633,7 @@ MicrometerRunnerMetrics metrics = MicrometerRunnerMetrics.bind(runner, registry,
 | `bth4j.deferred` | counter | `type` |
 | `bth4j.schedule.fired` | counter | none |
 | `bth4j.purged` | counter | `state` |
-| `bth4j.runner.running` | gauge | none |
+| `bth4j.runner.running` | gauge | none; includes tasks whose outcome is still being written, up to twice the concurrency limit with the built-in executors |
 | `bth4j.runner.abandoned` | gauge | none; attempts past their maximum run time that still hold a slot |
 | `bth4j.runner.up` | gauge | none; 1 while the runner is RUNNING |
 | `bth4j.tasks.state` | gauge | `state`, `queue` |
@@ -801,8 +801,10 @@ way is acknowledged at once, and tasks that finish while one is on its way go to
 fixed-delay schedule keeps its own call, because its re-arm is part of the same write. A task's executor slot is freed
 when its processor returns, so the slot takes the next task while the outcome is written; the task keeps its lease
 renewed until the store answers, and its queue's `maxConcurrent` counts it until then. The built-in executors let at
-most twice their limit (twice `max` for adaptive) run or write their outcome at once, so a slow store holds back
-claims. Observers of outcome events run after the slot is freed. A custom `BackgroundExecutor` keeps the slot until
+most twice their current limit run or write their outcome at once, so a slow store holds back claims; adaptive
+concurrency counts the slots this bound holds back as occupied. `runningTasks` and `bth4j.runner.running`
+count a task until its outcome is written, so they can reach twice the limit. Observers of outcome events run after
+the slot is freed. A custom `BackgroundExecutor` keeps the slot until
 the task ends unless it overrides `executeWithSlot`. A process that only produces tasks can use `TaskClient.builder().store(store).jsonMapper(mapper).build()`.
 
 ## Stores

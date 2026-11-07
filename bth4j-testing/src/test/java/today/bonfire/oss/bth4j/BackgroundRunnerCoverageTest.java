@@ -88,6 +88,29 @@ class BackgroundRunnerCoverageTest {
     }
 
     @Test
+    void stopPublishesAtOnceThatTheRunnerTakesNoMoreWork() throws Exception {
+        var store = new InMemoryStore(new MutableClock());
+        var published = new LinkedBlockingQueue<Boolean>();
+        var observed = StoreInterceptor.around(store, (method, args, real) -> {
+            var result = real.proceed();
+            if (method.equals("heartbeat")) published.add((boolean) args[2]);
+            return result;
+        });
+        var runner = BackgroundRunner.builder()
+                .store(observed)
+                .maintenanceCheckInterval(Duration.ofHours(1))
+                .build();
+        runner.registry().register(TaskType.of("work"), (context, payload) -> {});
+        runner.start();
+        assertThat(published.poll(2, TimeUnit.SECONDS)).isEqualTo(true);
+
+        runner.stop();
+
+        assertThat(published.poll(2, TimeUnit.SECONDS)).isEqualTo(false);
+        assertThat(store.workers().getFirst().accepting()).isFalse();
+    }
+
+    @Test
     void quietBeforeStartIsPublishedByTheInitialHeartbeat() throws Exception {
         var store = new InMemoryStore(new MutableClock());
         var published = new LinkedBlockingQueue<Boolean>();

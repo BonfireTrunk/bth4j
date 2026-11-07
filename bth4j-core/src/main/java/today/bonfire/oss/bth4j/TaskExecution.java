@@ -475,12 +475,19 @@ final class TaskExecution implements Runnable, TaskContext {
     }
 
     private void logStoreError(Throwable e) {
-        s.status().storeError(e);
-        log.error(
-                "Unable to update the state of task {}, the outcome is unknown. If it was not applied, the lease"
-                        + " expires and maintenance retries the task",
-                record.id(),
-                e);
+        if (s.status().storeError(e)) {
+            log.error(
+                    "Unable to update the state of task {}, the outcome is unknown. If it was not applied, the lease"
+                            + " expires and maintenance retries the task",
+                    record.id(),
+                    e);
+        } else {
+            log.error(
+                    "Unable to update the state of task {}, the outcome is unknown (the store error logged before:"
+                            + " {})",
+                    record.id(),
+                    e.toString());
+        }
     }
 
     private FailureInfo failure(Throwable e) {

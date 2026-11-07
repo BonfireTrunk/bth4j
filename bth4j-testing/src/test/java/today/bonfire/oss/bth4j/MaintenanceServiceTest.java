@@ -50,6 +50,7 @@ class MaintenanceServiceTest {
     private int runningTasks;
     private boolean accepting = true;
     private Duration workerStaleAfter = Duration.ofMinutes(10);
+    private Duration checkInterval = Duration.ofSeconds(5);
 
     // ---- expired leases -------------------------------------------------------------------------------
 
@@ -69,6 +70,28 @@ class MaintenanceServiceTest {
             assertThat(f.message()).isEqualTo("lease expired after attempt 1");
         });
         assertThat(events).containsExactly(new TaskEvent.LeaseExpired(id, 1, 3, false));
+    }
+
+    @Test
+    void aCycleThatThrowsAnErrorRunsAgainAtItsNextInterval() throws Exception {
+        var reclaims = new AtomicInteger();
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("reclaim") && reclaims.incrementAndGet() == 1) throw new AssertionError("first cycle");
+            return real.proceed();
+        });
+        checkInterval = Duration.ofMillis(10);
+        var service = service();
+
+        service.start();
+        try {
+            var deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (reclaims.get() < 3 && System.nanoTime() < deadline) Thread.sleep(5);
+        } finally {
+            service.stopThread();
+            service.waitTillDone(Duration.ofSeconds(5));
+        }
+
+        assertThat(reclaims.get()).isGreaterThanOrEqualTo(3);
     }
 
     @Test
@@ -816,6 +839,7 @@ class MaintenanceServiceTest {
                 .worker(workerId, () -> runningTasks)
                 .accepting(() -> accepting)
                 .workerStaleAfter(workerStaleAfter)
+                .checkInterval(checkInterval)
                 .create();
     }
 }

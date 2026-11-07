@@ -123,7 +123,10 @@ public final class BackgroundRunner {
         return workerId;
     }
 
-    /** @return the number of tasks running on this instance right now */
+    /**
+     * @return the number of tasks running on this instance right now, including those whose outcome is still being
+     *     written; with the built-in executors up to twice the concurrency limit
+     */
     public int runningTasks() {
         return runningTasks.size();
     }
@@ -135,7 +138,7 @@ public final class BackgroundRunner {
 
     /**
      * @return the running attempts that passed their maximum run time without stopping; each still holds its
-     *     executor and queue slot until its processor returns
+     *     slots until it ends
      */
     public int abandonedAttempts() {
         return queueReservations.abandoned();
@@ -333,7 +336,10 @@ public final class BackgroundRunner {
             processor = taskProcessorService;
             scheduled = scheduledTaskService;
             recurring = recurringTaskService;
-            maintenance = maintenanceService;
+            var maintenanceNow = maintenanceService;
+            maintenance = maintenanceNow;
+            // tells other runners at once that this one takes no more work
+            if (maintenanceNow != null) maintenanceNow.heartbeatNow();
             for (var service : new CustomThread[] {processor, scheduled, recurring, maintenance}) {
                 if (service != null) service.stopThread();
             }
@@ -457,7 +463,7 @@ public final class BackgroundRunner {
                 .batchSize(config.claimBatchSize * 4)
                 .purgeBatchSize(config.purgeBatchSize)
                 .worker(workerId, runningTasks::size)
-                .accepting(() -> !quiet)
+                .accepting(() -> !quiet && !stopRequested)
                 .workerStaleAfter(config.workerStaleAfter)
                 .create();
         service.start();

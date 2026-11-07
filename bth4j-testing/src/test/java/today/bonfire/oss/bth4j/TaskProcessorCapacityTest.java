@@ -19,9 +19,11 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import today.bonfire.oss.bth4j.executor.BackgroundExecutor;
+import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
+import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
@@ -355,6 +357,38 @@ class TaskProcessorCapacityTest {
 
         assertThat(state(id)).isEqualTo(TaskState.LEASED);
         assertThat(reservations.running(queueId)).isEqualTo(1);
+    }
+
+    @Test
+    void tasksBeyondTheReservedSlotsAreReturnedToTheirQueueUnrun() throws Exception {
+        var executor = new ManualExecutor(1);
+        var processor = processorOn(
+                StoreInterceptor.around(store, (method, args, real) -> {
+                    if (!method.equals("claim")) return real.proceed();
+                    var asked = (ClaimRequest) args[0];
+                    // a store that ignores the count it was given
+                    return store.claim(new ClaimRequest(
+                            asked.grants().stream()
+                                    .map(g -> new QueueGrant(g.queueId(), 3, 3))
+                                    .toList(),
+                            3,
+                            asked.lease(),
+                            asked.workerId(),
+                            asked.knownTypeIds()));
+                }),
+                executor,
+                1);
+        var ids = List.of(enqueue(), enqueue(), enqueue());
+
+        processOnce(processor);
+
+        assertThat(executor.pending()).isEqualTo(1);
+        assertThat(executor.available()).isZero();
+        assertThat(ids.stream().filter(id -> state(id) == TaskState.LEASED)).hasSize(1);
+        assertThat(ids.stream().filter(id -> state(id) == TaskState.QUEUED)).hasSize(2);
+        assertThat(status.issues())
+                .anyMatch(i ->
+                        i.kind().equals("store-error") && i.detail().equals("store returned 3 tasks for a claim of 1"));
     }
 
     @Test

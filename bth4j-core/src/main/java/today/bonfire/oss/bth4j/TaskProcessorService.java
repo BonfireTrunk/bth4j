@@ -139,6 +139,7 @@ class TaskProcessorService extends CustomThread {
             settings.status().storeError(e);
             throw e;
         }
+        if (tasks.size() > slots) tasks = withinSlots(tasks, slots);
         executor.claimed(slots, tasks.size());
         executor.release(slots - tasks.size());
         for (var record : tasks) {
@@ -219,6 +220,22 @@ class TaskProcessorService extends CustomThread {
             grants.add(new QueueGrant(order.get(i), shares[i], caps[i]));
         }
         return settings.store().claim(new ClaimRequest(grants, slots, lease, workerId, knownTypeIds));
+    }
+
+    /** A store that returned more tasks than asked for: the extra ones go back to their queue, unrun. */
+    private List<TaskRecord> withinSlots(List<TaskRecord> tasks, int slots) {
+        var detail = "store returned " + tasks.size() + " tasks for a claim of " + slots;
+        settings.status().issue("store-error", detail, null);
+        log.error("The {}, returning the extra ones to their queue", detail);
+        for (var extra : tasks.subList(slots, tasks.size())) {
+            try {
+                settings.store().unclaim(extra.id(), extra.revision());
+            } catch (RuntimeException e) {
+                settings.status().storeError(e);
+                log.error("Task {} could not be returned to its queue; its lease expires", extra.id(), e);
+            }
+        }
+        return tasks.subList(0, slots);
     }
 
     private void returnToQueue(TaskExecution execution, RuntimeException cause) {
@@ -334,7 +351,7 @@ class TaskProcessorService extends CustomThread {
 
     /**
      * An attempt still running one renewal period after its maximum run time stops being renewed, so its lease
-     * expires and maintenance retries or ends the task. Its thread and slots stay held until it returns.
+     * expires and maintenance retries or ends the task. Its thread and slots stay held until it ends.
      *
      * @return true when the attempt is abandoned
      */
@@ -343,7 +360,7 @@ class TaskProcessorService extends CustomThread {
         if (since == null || now.isBefore(since.plus(renewInterval))) return false;
         if (reservations.abandon(e)) {
             var detail = "task " + e.taskId() + " ran past its maximum run time of " + maxRunTime(e)
-                    + " and did not stop; its lease is no longer renewed and its slot stays held until it returns ("
+                    + " and did not stop; its lease is no longer renewed and its slots stay held until it ends ("
                     + reservations.abandoned() + " abandoned attempts hold slots)";
             settings.status().issue("attempt-abandoned", detail, e.taskId());
             log.warn(detail);

@@ -4,7 +4,6 @@ import java.time.Duration;
 import java.util.OptionalInt;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -19,7 +18,7 @@ public final class FixedExecutor implements BackgroundExecutor {
     public FixedExecutor(int limit) {
         if (limit < 1) throw new IllegalArgumentException("limit must be at least 1");
         this.limit = limit;
-        this.gate = new SlotGate(new Semaphore(limit), SlotGate.inFlightFor(limit));
+        this.gate = new SlotGate(limit);
     }
 
     @Override

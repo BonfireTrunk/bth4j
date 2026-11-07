@@ -255,6 +255,41 @@ class DefaultVtExecutorTest {
     }
 
     @Test
+    void tasksWritingTheirOutcomeCountAsOccupiedAndTheInFlightBoundFollowsTheLimit() throws Exception {
+        var now = new AtomicLong();
+        var executor = new DefaultVtExecutor(
+                Concurrency.adaptive(2, 10), ignored -> new ResourceSampler.Sample(0, 0.1), now::get);
+        created.add(executor);
+        executor.adjustThreadCount();
+        var freed = new CountDownLatch(4);
+        var release = new CountDownLatch(1);
+        try {
+            for (int claim = 0; claim < 2; claim++) {
+                assertThat(executor.reserve(2, Duration.ofSeconds(1))).isEqualTo(2);
+                for (int i = 0; i < 2; i++) {
+                    executor.executeWithSlot(freeSlot -> {
+                        freeSlot.run();
+                        blockOn(freed, release).run();
+                    });
+                }
+                awaitTrue(() -> executor.availablePermits() == 2);
+            }
+            assertThat(freed.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(executor.reserve(1, Duration.ZERO)).isZero();
+
+            now.addAndGet(TimeUnit.MILLISECONDS.toNanos(500));
+            executor.claimed(2, 2);
+            executor.adjustThreadCount();
+
+            assertThat(executor.currentMaxThreads()).isEqualTo(3);
+            assertThat(executor.reserve(3, Duration.ZERO)).isEqualTo(2);
+            executor.release(2);
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
     void runningTasksAreNotCancelledByAnEmergencyShrink() throws Exception {
         var now = new AtomicLong();
         var sample = new AtomicReference<>(new ResourceSampler.Sample(0, 0.1));

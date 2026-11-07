@@ -80,8 +80,20 @@ class MaintenanceService extends CustomThread {
     @Override
     public void run() {
         var delay = checkInterval.toMillis();
-        executor.scheduleWithFixedDelay(this::cycle, delay, delay, TimeUnit.MILLISECONDS);
-        executor.scheduleWithFixedDelay(this::purge, delay, purgeInterval.toMillis(), TimeUnit.MILLISECONDS);
+        executor.scheduleWithFixedDelay(survivingErrors(this::cycle), delay, delay, TimeUnit.MILLISECONDS);
+        executor.scheduleWithFixedDelay(
+                survivingErrors(this::purge), delay, purgeInterval.toMillis(), TimeUnit.MILLISECONDS);
+    }
+
+    /** A periodic job that throws is never run again by its executor, so an Error must not leave the job. */
+    private static Runnable survivingErrors(Runnable job) {
+        return () -> {
+            try {
+                job.run();
+            } catch (Error e) {
+                log.error("Maintenance job failed, it runs again at its next interval", e);
+            }
+        };
     }
 
     void cycle() {
@@ -198,7 +210,7 @@ class MaintenanceService extends CustomThread {
 
     void heartbeatNow() {
         try {
-            executor.execute(this::heartbeat);
+            executor.execute(survivingErrors(this::heartbeat));
         } catch (RejectedExecutionException e) {
             // A concurrent stop leaves the next service generation to publish the state.
             if (!executor.isShutdown()) throw e;

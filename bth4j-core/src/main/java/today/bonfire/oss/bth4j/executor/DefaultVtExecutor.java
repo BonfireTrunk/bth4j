@@ -5,7 +5,6 @@ import java.util.OptionalInt;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.LongSupplier;
@@ -20,7 +19,6 @@ public class DefaultVtExecutor implements BackgroundExecutor {
     private static final int AVAILABLE_PROCESSORS = Runtime.getRuntime().availableProcessors();
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     private final AtomicInteger maxConcurrentTasks;
-    private final AdjustableSemaphore concurrencyLimiter;
     private final SlotGate gate;
     private final AtomicInteger activeTaskCount = new AtomicInteger();
     private final ResourceSampler sampler;
@@ -50,8 +48,7 @@ public class DefaultVtExecutor implements BackgroundExecutor {
     private DefaultVtExecutor(
             Concurrency.Adaptive settings, ResourceSampler sampler, LongSupplier clock, boolean schedule) {
         this.maxConcurrentTasks = new AtomicInteger(settings.min());
-        this.concurrencyLimiter = new AdjustableSemaphore(settings.min());
-        this.gate = new SlotGate(concurrencyLimiter, SlotGate.inFlightFor(settings.max()));
+        this.gate = new SlotGate(settings.min());
         this.sampler = sampler;
         this.clock = clock;
         this.controller = new ResourceController(settings, clock.getAsLong());
@@ -69,6 +66,9 @@ public class DefaultVtExecutor implements BackgroundExecutor {
                             adjustThreadCount();
                         } catch (RuntimeException e) {
                             log.debug("Error in resource monitoring", e);
+                        } catch (Error e) {
+                            // a periodic task that throws is never run again, which would freeze the limit
+                            log.error("Error in resource monitoring, the next sample runs as scheduled", e);
                         }
                     },
                     500,
@@ -81,13 +81,13 @@ public class DefaultVtExecutor implements BackgroundExecutor {
         long now = clock.getAsLong();
         var sample = sampler.sample(now);
         int old = maxConcurrentTasks.get();
-        int occupied = old - concurrencyLimiter.availablePermits();
+        // slots the in-flight bound keeps a claim from using count as occupied
+        int occupied = old - gate.usable();
         var decision = controller.tick(sample, occupied, activeCount(), now);
         int next = decision.limit();
         if (next != old) {
             maxConcurrentTasks.set(next);
-            if (next > old) concurrencyLimiter.release(next - old);
-            else concurrencyLimiter.shrink(old - next);
+            gate.resize(old, next);
             log.debug(
                     "Concurrency {} -> {}, reason={}, CPU raw={}, smoothed={}, memory={}, occupied={}",
                     old,
@@ -135,9 +135,7 @@ public class DefaultVtExecutor implements BackgroundExecutor {
         executeWithSlot(freeSlot -> task.run());
     }
 
-    /**
-     * The slot may be freed early; at most twice the maximum concurrency run or write their outcome at once.
-     */
+    /** The slot may be freed early; at most twice the current limit run or write their outcome at once. */
     @Override
     public void executeWithSlot(SlotTask task) {
         try {
@@ -171,17 +169,6 @@ public class DefaultVtExecutor implements BackgroundExecutor {
         executor.shutdown();
     }
 
-    /** Held slots remain occupied after a shrink; available permits can be negative until tasks finish. */
-    private static final class AdjustableSemaphore extends Semaphore {
-        AdjustableSemaphore(int permits) {
-            super(permits);
-        }
-
-        void shrink(int permits) {
-            reducePermits(permits);
-        }
-    }
-
     public int getActiveTaskCount() {
         return activeTaskCount.get();
     }
@@ -191,6 +178,6 @@ public class DefaultVtExecutor implements BackgroundExecutor {
     }
 
     public int availablePermits() {
-        return concurrencyLimiter.availablePermits();
+        return gate.availableSlots();
     }
 }
