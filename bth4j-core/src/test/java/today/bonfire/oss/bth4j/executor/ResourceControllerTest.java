@@ -2,6 +2,8 @@ package today.bonfire.oss.bth4j.executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.Concurrency;
@@ -234,6 +236,21 @@ class ResourceControllerTest {
         assertThat(grow(Double.NaN, 0.1)).isEqualTo(13);
         assertThat(grow(0, 0.1)).isEqualTo(13);
         assertThat(grow(0, 0.1)).isEqualTo(17);
+    }
+
+    @Test
+    void aSignalWithoutAValidReadingForFiveSecondsIsReportedOnceInTheControllersLife() {
+        configure(Concurrency.adaptive(8, 200).withMemorySignal(MemorySignal.HEAP_AND_SYSTEM));
+        var lost = new ResourceSampler.Sample(Double.NaN, 0.1, Double.NaN);
+        var reports = new ArrayList<List<String>>();
+        for (int i = 0; i < 12; i++) reports.add(tick(lost, 1, 1).unavailable());
+
+        assertThat(reports.subList(0, 9)).allSatisfy(r -> assertThat(r).isEmpty());
+        assertThat(reports.get(9)).containsExactly("CPU load", "system memory usage");
+        assertThat(reports.subList(10, 12)).allSatisfy(r -> assertThat(r).isEmpty());
+
+        tick(new ResourceSampler.Sample(0, 0.1, 0.1), 1, 1);
+        for (int i = 0; i < 12; i++) assertThat(tick(lost, 1, 1).unavailable()).isEmpty();
     }
 
     @Test

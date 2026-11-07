@@ -255,6 +255,28 @@ class DefaultVtExecutorTest {
     }
 
     @Test
+    void anUnavailableSignalIsReportedAsAnIssueOnce() {
+        var now = new AtomicLong();
+        var issues = new ArrayList<String>();
+        var executor = new DefaultVtExecutor(
+                Concurrency.adaptive(2, 10),
+                ignored -> new ResourceSampler.Sample(Double.NaN, 0.1),
+                now::get,
+                issues::add);
+        created.add(executor);
+
+        for (int i = 0; i < 20; i++) {
+            now.addAndGet(TimeUnit.MILLISECONDS.toNanos(500));
+            executor.adjustThreadCount();
+        }
+
+        assertThat(issues)
+                .containsExactly("The CPU load reading is unavailable: adaptive concurrency cannot grow and decays"
+                        + " to its minimum while it lasts");
+        assertThat(executor.currentMaxThreads()).isEqualTo(2);
+    }
+
+    @Test
     void tasksWritingTheirOutcomeCountAsOccupiedAndTheInFlightBoundFollowsTheLimit() throws Exception {
         var now = new AtomicLong();
         var executor = new DefaultVtExecutor(

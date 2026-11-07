@@ -548,7 +548,9 @@ boolean drained = runner.drain(Duration.ofSeconds(30));   // quiet, then wait fo
 
 An `Issue` has a time, a kind, a detail and the task id when there is one. The kinds are `unknown-type`,
 `store-error`, `lease-lost`, `attempt-abandoned`, `retry-policy`, `executor-rejected`, `schedule-misfire`,
-`schedule-overlap` and `schedule-paused`. Issues live in the memory of the runner that saw them. `drain` leaves the runner quiet
+`schedule-overlap`, `schedule-paused`, `corrupt-task` and `resource-signal-unavailable`. A `corrupt-task` is a
+task with a stored value the store cannot read, such as a hand-edited row: a claim leaves it out and ends its
+lease, and maintenance ends it DEAD with the failure `unreadable-record` within one check interval. Issues live in the memory of the runner that saw them. `drain` leaves the runner quiet
 (call `resume()` to claim again, or `stop()`), and returns whether every running task finished in time; use it
 before a rolling restart.
 
@@ -736,7 +738,9 @@ Memory at or above 0.95 resets the limit to `min`. Memory at its target for 1 se
 1 second reduces it by 20%, at most once per second, and blocks growth for 2 seconds. Memory takes priority.
 Invalid or unavailable CPU or any configured memory component blocks growth; after 5 seconds without a
 valid reading for that signal, the limit decays by 25% per second toward `min`. Two fresh valid samples of
-each configured signal are needed before growth resumes. After 30 seconds without a running task seen
+each configured signal are needed before growth resumes. The first time a signal goes 5 seconds without a
+valid reading, the executor logs a WARN and the runner raises the issue `resource-signal-unavailable`; a JVM or
+container that never provides the reading keeps the limit at `min`, where `Concurrency.fixed` fits better. After 30 seconds without a running task seen
 at a sampling tick or a nonempty claim, the limit returns to `min`. Reservations, releases and empty polls
 do not restart that idle timer.
 

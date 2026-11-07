@@ -32,6 +32,7 @@ import redis.clients.jedis.providers.PooledConnectionProvider;
 import redis.clients.jedis.resps.Tuple;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
+import today.bonfire.oss.bth4j.spi.ExpiredLease;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
@@ -44,6 +45,7 @@ import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
+import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 
 /** {@link RedisTaskStore} against a real Redis, including the checks that read Redis keys directly. Needs Docker. */
 @Testcontainers
@@ -475,6 +477,44 @@ class RedisTaskStoreIT {
         assertThat(jedis.zscore(keys.queue(queue, type), "1")).isNull();
         assertThat(counts().queued()).isEqualTo(1);
         assertThat(counts().leased()).isEqualTo(2);
+    }
+
+    @Test
+    void aClaimLeavesOutATaskItCannotReadAndEndsItsLeaseSoMaintenanceCanEndIt() {
+        var now = Instant.now().minusSeconds(100);
+        store.enqueue(task(1).due(now).build());
+        store.enqueue(task(2).due(now.plusSeconds(1)).build());
+        store.enqueue(task(3).due(now.plusSeconds(2)).build());
+        jedis.hset(keys.task(2), Keys.F_HEADERS, "{\"tenant\":42}");
+
+        var claimed = claim(3);
+
+        assertThat(claimed).extracting(TaskRecord::id).containsExactly(1L, 3L);
+        assertThatThrownBy(() -> store.getTask(2))
+                .isInstanceOfSatisfying(
+                        UnreadableTaskException.class,
+                        e -> assertThat(e.taskId()).isEqualTo(2))
+                .hasMessage("task 2 has a stored value that cannot be read");
+        var expired = store.reclaim(10);
+        assertThat(expired).extracting(ExpiredLease::id).containsExactly(2L);
+        assertThat(store.failExpired(2, expired.getFirst().revision(), failure(1), null, true, null))
+                .isEqualTo(FailOutcome.DEAD);
+        assertThat(counts().dead()).isEqualTo(1);
+        assertThat(counts().leased()).isEqualTo(2);
+    }
+
+    @Test
+    void endingTheLeasesOfUnreadableTasksLeavesTasksOfAnotherClaimAlone() {
+        var leased = claimOne(1);
+        long claimedAt = leased.claimedAt().toEpochMilli();
+        var scripts = new ScriptRunner(jedis, keys.meta, keys.prefix);
+
+        scripts.run(RedisScripts.END_LEASES, List.of(String.valueOf(claimedAt + 1), "1", "1"));
+        scripts.run(RedisScripts.END_LEASES, List.of(String.valueOf(claimedAt), "2", "1"));
+
+        assertThat(store.reclaim(10)).isEmpty();
+        assertThat(jedis.zscore(keys.leased, "1"))
+                .isEqualTo((double) leased.leaseUntil().toEpochMilli());
     }
 
     @Test

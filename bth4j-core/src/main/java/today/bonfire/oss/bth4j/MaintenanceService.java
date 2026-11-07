@@ -21,6 +21,7 @@ import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
+import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 
 /**
  * Housekeeping, every check interval: ends tasks whose lease expired (retried, dead, or cancelled when a
@@ -105,17 +106,21 @@ class MaintenanceService extends CustomThread {
     private void reclaimExpiredLeases() {
         try {
             int count;
+            int handled;
             do {
                 var expired = store.reclaim(batchSize);
                 count = expired.size();
+                handled = 0;
                 for (var e : expired) {
                     try {
                         handleExpired(e);
+                        handled++;
                     } catch (RuntimeException ex) {
                         log.error("Could not handle the expired lease of task {}", e.id(), ex);
                     }
                 }
-            } while (count == batchSize && canContinueProcessing);
+                // a lease that could not be handled stays expired, so a batch of only those would come back at once
+            } while (count == batchSize && handled > 0 && canContinueProcessing);
         } catch (Exception e) {
             status.storeError(e);
             log.error("Error in reclaiming expired leases", e);
@@ -123,12 +128,18 @@ class MaintenanceService extends CustomThread {
     }
 
     private void handleExpired(ExpiredLease e) {
+        TaskRecord record;
+        try {
+            record = store.getTask(e.id()).orElse(null);
+        } catch (UnreadableTaskException unreadable) {
+            endUnreadable(e, unreadable);
+            return;
+        }
         if (e.cancelRequested()) {
-            cancelExpired(e);
+            cancelExpired(e, record);
             return;
         }
         Instant retryAt = null;
-        var record = store.getTask(e.id()).orElse(null);
         if (e.attempts() < e.maxAttempts()
                 && record != null
                 && decide(record) instanceof RetryPolicy.Decision.RetryAfter r) {
@@ -157,9 +168,22 @@ class MaintenanceService extends CustomThread {
         log.warn(detail);
     }
 
+    /**
+     * A task with a stored value that cannot be read could never run, so it ends DEAD whatever attempts it has
+     * left. A claim leaves such a task out and ends its lease, which brings it here.
+     */
+    private void endUnreadable(ExpiredLease e, UnreadableTaskException unreadable) {
+        var failure =
+                new FailureInfo(e.attempts(), clock.instant(), "unreadable-record", unreadable.getMessage(), null);
+        var outcome = store.failExpired(e.id(), e.revision(), failure, null, keepDead, null);
+        if (outcome == FailOutcome.LOST) return;
+        status.issue("corrupt-task", unreadable.getMessage(), e.id());
+        log.error("Task {} has a stored value that cannot be read, it ended {}", e.id(), outcome, unreadable);
+        observer.emit(new TaskEvent.LeaseExpired(e.id(), e.attempts(), e.maxAttempts(), true));
+    }
+
     /** A cancelled task whose worker died must not run again. */
-    private void cancelExpired(ExpiredLease e) {
-        var record = store.getTask(e.id()).orElse(null);
+    private void cancelExpired(ExpiredLease e, TaskRecord record) {
         var reason = record != null && record.cancelReason() != null ? record.cancelReason() : "cancel requested";
         var pause = RecurringTaskService.pauseEffect(record);
         var applied = store.finishCancelledExpired(e.id(), e.revision(), reason, true, pause);

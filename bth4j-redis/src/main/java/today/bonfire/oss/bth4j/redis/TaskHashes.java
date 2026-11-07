@@ -15,6 +15,7 @@ import today.bonfire.oss.bth4j.spi.RecordJson;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
+import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 
 /** Maps {@link TaskRecord} to and from the task hash; instants are epoch milliseconds, durations milliseconds. */
 final class TaskHashes {
@@ -72,7 +73,7 @@ final class TaskHashes {
      * @param data     the {@code d:<id>} string, or null
      * @param steps    the {@code st:<id>} string, or null
      * @param failures the {@code f:<id>} entries in order, empty when there are none
-     * @throws TaskStoreException if a stored value cannot be read
+     * @throws UnreadableTaskException if a stored value cannot be read
      */
     static TaskRecord fromHash(
             long id, Map<String, String> h, String encodedPayload, String steps, List<String> failures) {
@@ -87,8 +88,8 @@ final class TaskHashes {
      *
      * @param at         the claim time the script returned, epoch milliseconds
      * @param leaseUntil the lease end the script wrote, epoch milliseconds
-     * @throws TaskStoreException if the entry does not have the shape the script returns, or a value cannot be
-     *                            read
+     * @throws TaskStoreException      if the entry does not have the shape the script returns
+     * @throws UnreadableTaskException if a stored value cannot be read
      */
     static TaskRecord fromClaim(Object entry, long at, long leaseUntil, int workerId) {
         return fromClaim(entry, CLAIM_POSITIONS, CLAIM_ENTRY_SIZE, at, leaseUntil, workerId);
@@ -141,8 +142,8 @@ final class TaskHashes {
         try {
             return decode.get();
         } catch (IllegalArgumentException | DateTimeException e) {
-            throw new TaskStoreException(
-                    "task " + id + " has a stored value that cannot be read: " + e.getMessage(), e);
+            // the cause's message may quote the stored value, so it stays out of issues and stored failures
+            throw new UnreadableTaskException(id, "task " + id + " has a stored value that cannot be read", e);
         }
     }
 

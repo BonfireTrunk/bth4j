@@ -45,6 +45,10 @@ public interface ExecutionStore extends TaskStore {
      * decimal text (the Redis store does). Tasks outside {@link ClaimRequest#knownTypeIds()} are left
      * unchanged, including their due time; null accepts every type. Each claim adds one to {@code attempts},
      * sets {@code claimedAt} and keeps {@code due}, returning the new revision, lease and worker.
+     * <p>
+     * A claimed task with a stored value that cannot be read is left out of the result, and its lease ends at
+     * once, so that {@link MaintenanceStore#reclaim} hands it to maintenance, which ends it DEAD. The other tasks
+     * of the claim are returned as usual.
      */
     List<TaskRecord> claim(ClaimRequest request);
 
@@ -82,7 +86,9 @@ public interface ExecutionStore extends TaskStore {
     /**
      * Records a failed attempt of a LEASED task. The task is SCHEDULED for {@code retryAt}, or DEAD when
      * {@code retryAt} is null or the attempts are exhausted. The failure is appended to
-     * {@link TaskRecord#failures()}, which the store bounds to the last 20.
+     * {@link TaskRecord#failures()}, which the store bounds to the last 20. It must work for a task with stored
+     * values that cannot be read, so that such a task can still end; the store may drop stored failures it
+     * cannot read.
      *
      * @param keepDead false removes a dead task at once instead of keeping it for inspection
      * @param effect applied to a recurring definition in the same atomic step, only when the outcome is

@@ -7,6 +7,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,6 +25,7 @@ public class DefaultVtExecutor implements BackgroundExecutor {
     private final ResourceSampler sampler;
     private final LongSupplier clock;
     private final ResourceController controller;
+    private final Consumer<String> issues;
     private final ScheduledExecutorService monitor;
 
     public DefaultVtExecutor() {
@@ -37,21 +39,39 @@ public class DefaultVtExecutor implements BackgroundExecutor {
     }
 
     public DefaultVtExecutor(Concurrency.Adaptive settings) {
-        this(settings, new MxBeanResourceSampler(settings.memorySignal()), System::nanoTime, true);
+        this(settings, detail -> {});
+    }
+
+    /**
+     * @param issues told once per signal, besides a WARN log, when the CPU or a configured memory reading goes 5
+     *     seconds without a valid value: the limit cannot grow and decays to {@code min} while it lasts
+     */
+    public DefaultVtExecutor(Concurrency.Adaptive settings, Consumer<String> issues) {
+        this(settings, new MxBeanResourceSampler(settings.memorySignal()), System::nanoTime, true, issues);
     }
 
     /** No scheduler: tests advance the clock and call {@link #adjustThreadCount()} explicitly. */
     DefaultVtExecutor(Concurrency.Adaptive settings, ResourceSampler sampler, LongSupplier clock) {
-        this(settings, sampler, clock, false);
+        this(settings, sampler, clock, detail -> {});
+    }
+
+    DefaultVtExecutor(
+            Concurrency.Adaptive settings, ResourceSampler sampler, LongSupplier clock, Consumer<String> issues) {
+        this(settings, sampler, clock, false, issues);
     }
 
     private DefaultVtExecutor(
-            Concurrency.Adaptive settings, ResourceSampler sampler, LongSupplier clock, boolean schedule) {
+            Concurrency.Adaptive settings,
+            ResourceSampler sampler,
+            LongSupplier clock,
+            boolean schedule,
+            Consumer<String> issues) {
         this.maxConcurrentTasks = new AtomicInteger(settings.min());
         this.gate = new SlotGate(settings.min());
         this.sampler = sampler;
         this.clock = clock;
         this.controller = new ResourceController(settings, clock.getAsLong());
+        this.issues = issues;
         this.monitor = schedule
                 ? Executors.newSingleThreadScheduledExecutor(r -> {
                     var thread = new Thread(r, "bth4j-vt-monitor");
@@ -84,6 +104,12 @@ public class DefaultVtExecutor implements BackgroundExecutor {
         // slots the in-flight bound keeps a claim from using count as occupied
         int occupied = old - gate.usable();
         var decision = controller.tick(sample, occupied, activeCount(), now);
+        for (var signal : decision.unavailable()) {
+            var detail = "The " + signal + " reading is unavailable: adaptive concurrency cannot grow and decays to"
+                    + " its minimum while it lasts";
+            log.warn(detail);
+            issues.accept(detail);
+        }
         int next = decision.limit();
         if (next != old) {
             maxConcurrentTasks.set(next);

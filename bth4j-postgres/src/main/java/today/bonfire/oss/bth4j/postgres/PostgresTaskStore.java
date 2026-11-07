@@ -6,6 +6,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -50,6 +51,7 @@ import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
+import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /**
@@ -115,6 +117,7 @@ public class PostgresTaskStore implements FullStore {
     private final String promoteSql;
     private final String nextDueSql;
     private final String reclaimSql;
+    private final String endLeasesSql;
     private final String purgeSql;
     private final String releaseKeysSql;
     private final String putScheduleSql;
@@ -212,6 +215,8 @@ public class PostgresTaskStore implements FullStore {
                 + " UPDATE " + task + " t SET state = 0, revision = t.revision + 1, state_changed = now()"
                 + " FROM due WHERE t.id = due.id";
         nextDueSql = "SELECT min(due) FROM " + task + " WHERE state = 1";
+        endLeasesSql =
+                "UPDATE " + task + " SET lease_until = claimed_at WHERE id = ANY(?) AND state = 2 AND worker_id = ?";
         reclaimSql = "SELECT id, revision, attempts, max_attempts, type_id, cancel_requested_at IS NOT NULL" + " FROM "
                 + task + " WHERE state = 2 AND lease_until <= now() ORDER BY lease_until LIMIT ?";
         purgeSql = "DELETE FROM " + task + " WHERE id IN (SELECT id FROM " + task
@@ -843,11 +848,41 @@ public class PostgresTaskStore implements FullStore {
                 ps.setInt(i++, r.count());
                 ps.setInt(i++, r.workerId());
                 ps.setLong(i, r.lease().toMillis());
-                return readAll(ps);
+                return readClaimed(c, ps, r.workerId());
             } finally {
                 for (var array : arrays) array.free();
             }
         });
+    }
+
+    /**
+     * The claimed tasks, without those it cannot read: their leases end at once, so maintenance takes them over.
+     * A failure of that statement fails the claim, since it may have ended the transaction that holds the claim.
+     */
+    private List<TaskRecord> readClaimed(Connection c, PreparedStatement ps, int workerId) throws SQLException {
+        var result = new ArrayList<TaskRecord>();
+        List<Long> unreadable = null;
+        try (var rs = ps.executeQuery()) {
+            while (rs.next()) {
+                try {
+                    result.add(read(rs));
+                } catch (UnreadableTaskException e) {
+                    if (unreadable == null) unreadable = new ArrayList<>();
+                    unreadable.add(e.taskId());
+                }
+            }
+        }
+        if (unreadable != null) {
+            var ids = c.createArrayOf("int8", unreadable.toArray());
+            try (var end = c.prepareStatement(endLeasesSql)) {
+                end.setArray(1, ids);
+                end.setInt(2, workerId);
+                end.executeUpdate();
+            } finally {
+                ids.free();
+            }
+        }
+        return result;
     }
 
     /**
@@ -1044,8 +1079,12 @@ public class PostgresTaskStore implements FullStore {
             return FailOutcome.DEAD;
         }
         var failures = new ArrayList<FailureInfo>();
-        var old = RecordJson.decodeFailures(failuresJson);
-        if (old != null) failures.addAll(old);
+        try {
+            var old = RecordJson.decodeFailures(failuresJson);
+            if (old != null) failures.addAll(old);
+        } catch (IllegalArgumentException | DateTimeException unreadable) {
+            // dropped, so that the task can still end
+        }
         failures.add(failure);
         var json = RecordJson.encodeFailures(
                 failures.subList(Math.max(0, failures.size() - MAX_FAILURES), failures.size()));
@@ -1505,8 +1544,18 @@ public class PostgresTaskStore implements FullStore {
     }
 
     private static TaskRecord read(ResultSet rs) throws SQLException {
+        long id = rs.getLong("id");
+        try {
+            return readFields(rs, id);
+        } catch (IllegalArgumentException | DateTimeException e) {
+            // the cause's message may quote the stored value, so it stays out of issues and stored failures
+            throw new UnreadableTaskException(id, "task " + id + " has a stored value that cannot be read", e);
+        }
+    }
+
+    private static TaskRecord readFields(ResultSet rs, long id) throws SQLException {
         return TaskRecord.builder()
-                .id(rs.getLong("id"))
+                .id(id)
                 .revision(rs.getInt("revision"))
                 .queueId(rs.getInt("queue_id"))
                 .typeId(rs.getInt("type_id"))

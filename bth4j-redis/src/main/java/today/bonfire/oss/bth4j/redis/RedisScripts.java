@@ -465,6 +465,25 @@ final class RedisScripts {
             """;
 
     /**
+     * ARGV: claim time ms, worker id, then task ids. Ends the lease of each task that is still LEASED by the claim
+     * of that worker at that time, so reclaim returns it at once.
+     */
+    static final String END_LEASES = PRELUDE + """
+            local at = ARGV[2]
+            for i = 4, #ARGV do
+              local id = ARGV[i]
+              local tkey = P .. 't:' .. id
+              local v = redis.call('HMGET', tkey, 'state', 'wid', 'ca')
+              if v[1] == '2' and v[2] == ARGV[3] and v[3] == at then
+                redis.call('HSET', tkey, 'lease', at)
+                zadd(P .. 'leased', tonumber(at), id)
+              end
+            end
+            flush()
+            return 0
+            """;
+
+    /**
      * ARGV: lease ms, then id/revision pairs. Returns per pair 0 (not owned), 1 (owned) or 2 (owned, cancel
      * requested). A lease at or before now is not owned: the sweeper may take it over and a late extension
      * must not undo that.

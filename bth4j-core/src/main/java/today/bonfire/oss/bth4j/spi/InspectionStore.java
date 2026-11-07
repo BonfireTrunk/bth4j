@@ -6,7 +6,10 @@ import java.util.Optional;
 /** Read-only views for clients, the runner and the admin API. */
 public interface InspectionStore extends TaskStore {
 
-    /** @return the task with that id, in whatever state it is */
+    /**
+     * @return the task with that id, in whatever state it is
+     * @throws UnreadableTaskException when a stored value of the task cannot be read
+     */
     Optional<TaskRecord> getTask(long id);
 
     /**

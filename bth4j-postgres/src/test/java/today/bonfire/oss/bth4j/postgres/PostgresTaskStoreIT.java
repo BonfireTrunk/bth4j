@@ -23,6 +23,7 @@ import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
+import today.bonfire.oss.bth4j.spi.ExpiredLease;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
@@ -37,6 +38,7 @@ import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
+import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 
 /** Every {@link PostgresTaskStore} operation against a real PostgreSQL, each test on its own tables. Needs Docker. */
 class PostgresTaskStoreIT {
@@ -400,6 +402,31 @@ class PostgresTaskStoreIT {
         assertThat(t.due()).isEqualTo(now.minusSeconds(30).truncatedTo(ChronoUnit.MICROS));
         assertThat(claim(5)).extracting(TaskRecord::id).containsExactly(base);
         assertThat(claim(5)).isEmpty();
+    }
+
+    @Test
+    void aClaimLeavesOutATaskItCannotReadAndEndsItsLeaseSoMaintenanceCanEndIt() throws SQLException {
+        long base = store.allocateIds(3);
+        var now = Instant.now();
+        for (int i = 0; i < 3; i++)
+            store.enqueue(task(base + i).due(now.minusSeconds(30 - i)).build());
+        sql("UPDATE " + prefix + "_task SET failures = '[{\"tenant\": 42}]' WHERE id = " + (base + 1));
+
+        var claimed = claim(3);
+
+        assertThat(claimed).extracting(TaskRecord::id).containsExactly(base, base + 2);
+        assertThatThrownBy(() -> store.getTask(base + 1))
+                .isInstanceOfSatisfying(
+                        UnreadableTaskException.class,
+                        e -> assertThat(e.taskId()).isEqualTo(base + 1))
+                .hasMessage("task " + (base + 1) + " has a stored value that cannot be read");
+        var expired = store.reclaim(10);
+        assertThat(expired).extracting(ExpiredLease::id).containsExactly(base + 1);
+        var failure = failure(1);
+        assertThat(store.failExpired(base + 1, expired.getFirst().revision(), failure, null, true, null))
+                .isEqualTo(FailOutcome.DEAD);
+        assertThat(get(base + 1).failures()).containsExactly(failure);
+        assertThat(store.counts().get(queue).leased()).isEqualTo(2);
     }
 
     @Test

@@ -19,6 +19,7 @@ import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
+import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
 import today.bonfire.oss.bth4j.testing.MutableClock;
 
@@ -70,6 +71,59 @@ class MaintenanceServiceTest {
             assertThat(f.message()).isEqualTo("lease expired after attempt 1");
         });
         assertThat(events).containsExactly(new TaskEvent.LeaseExpired(id, 1, 3, false));
+    }
+
+    @Test
+    void anExpiredTaskWhoseRecordCannotBeReadEndsDeadWithAttemptsLeftAndIsAnIssue() throws Exception {
+        long id = leased(request().maxAttempts(3).build());
+        serviceStore = unreadable(id);
+        clock.advance(LEASE.plusSeconds(1));
+
+        cycle();
+
+        var task = store.getTask(id).orElseThrow();
+        assertThat(task.state()).isEqualTo(TaskState.DEAD);
+        assertThat(task.failures()).singleElement().satisfies(f -> {
+            assertThat(f.type()).isEqualTo("unreadable-record");
+            assertThat(f.attempt()).isEqualTo(1);
+            assertThat(f.message()).isEqualTo("task " + id + " has a stored value that cannot be read");
+        });
+        assertThat(status.issues()).singleElement().satisfies(i -> {
+            assertThat(i.kind()).isEqualTo("corrupt-task");
+            assertThat(i.taskId()).isEqualTo(id);
+        });
+        assertThat(events).containsExactly(new TaskEvent.LeaseExpired(id, 1, 3, true));
+    }
+
+    @Test
+    void anUnreadableTaskWithACancelRequestEndsDeadToo() throws Exception {
+        long id = leased(request().maxAttempts(3).build());
+        store.cancel(id, store.getTask(id).orElseThrow().revision(), "stop", null);
+        serviceStore = unreadable(id);
+        clock.advance(LEASE.plusSeconds(1));
+
+        cycle();
+
+        assertThat(state(id)).isEqualTo(TaskState.DEAD);
+        assertThat(status.issues()).extracting(Issue::kind).containsExactly("corrupt-task");
+    }
+
+    @Test
+    void aFullBatchOfExpiredLeasesThatAllFailIsNotReadAgainInTheSameCycle() throws Exception {
+        batchSize = 2;
+        leased(request().build());
+        leased(request().build());
+        var reclaims = new AtomicInteger();
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("reclaim")) reclaims.incrementAndGet();
+            if (method.equals("failExpired")) throw new TaskStoreException("rejected");
+            return real.proceed();
+        });
+        clock.advance(LEASE.plusSeconds(1));
+
+        cycle();
+
+        assertThat(reclaims).hasValue(1);
     }
 
     @Test
@@ -811,6 +865,16 @@ class MaintenanceServiceTest {
                 for (var e : (List<ExpiredLease>) result) store.unclaim(e.id(), e.revision());
             }
             return result;
+        });
+    }
+
+    /** The store as maintenance sees it when a stored value of the task cannot be read. */
+    private FullStore unreadable(long id) {
+        return StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("getTask") && (long) args[0] == id) {
+                throw new UnreadableTaskException(id, "task " + id + " has a stored value that cannot be read", null);
+            }
+            return real.proceed();
         });
     }
 

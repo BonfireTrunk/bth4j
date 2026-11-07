@@ -52,6 +52,7 @@ import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
+import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /**
@@ -412,10 +413,33 @@ public class RedisTaskStore implements FullStore {
         var at = num(r.get(0));
         var leaseUntil = at + request.lease().toMillis();
         var tasks = new ArrayList<TaskRecord>(r.size() - 1);
+        List<String> unreadable = null;
         for (var entry : r.subList(1, r.size())) {
-            tasks.add(TaskHashes.fromClaim(entry, at, leaseUntil, request.workerId()));
+            try {
+                tasks.add(TaskHashes.fromClaim(entry, at, leaseUntil, request.workerId()));
+            } catch (UnreadableTaskException e) {
+                if (unreadable == null) unreadable = new ArrayList<>();
+                unreadable.add(String.valueOf(e.taskId()));
+            }
         }
+        if (unreadable != null) endLeases(at, request.workerId(), unreadable);
         return tasks;
+    }
+
+    /**
+     * Ends the leases this claim just took on tasks it cannot read, so maintenance takes them over at once. When
+     * that fails the leases lapse on their own; the readable tasks of the claim are returned either way.
+     */
+    private void endLeases(long claimedAt, int workerId, List<String> ids) {
+        var args = new ArrayList<String>(ids.size() + 2);
+        args.add(String.valueOf(claimedAt));
+        args.add(String.valueOf(workerId));
+        args.addAll(ids);
+        try {
+            guard(() -> scripts.run(RedisScripts.END_LEASES, args));
+        } catch (TaskStoreException ignored) {
+            // the leases lapse on their own
+        }
     }
 
     /** The CLAIM reply as a list whose first value is a number: the claim time, or -1 for a missing type set. */

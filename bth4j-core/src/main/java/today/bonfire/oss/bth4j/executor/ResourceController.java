@@ -1,5 +1,7 @@
 package today.bonfire.oss.bth4j.executor;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import today.bonfire.oss.bth4j.Concurrency;
 import today.bonfire.oss.bth4j.MemorySignal;
@@ -11,6 +13,7 @@ final class ResourceController {
     private final Signal cpu;
     private final Signal heap;
     private final Signal system;
+    private final List<Signal> signals;
     private int limit;
     private Long demand;
     private boolean demandUsed;
@@ -22,15 +25,19 @@ final class ResourceController {
     private Long memoryReduction;
     private Long unknownReduction;
     private long lastActivity;
+    private List<String> unavailable = List.of();
 
-    record Decision(int limit, String reason, double smoothedCpu) {}
+    /** @param unavailable the signals that went 5 seconds without a valid reading for the first time this tick */
+    record Decision(int limit, String reason, double smoothedCpu, List<String> unavailable) {}
 
     ResourceController(Concurrency.Adaptive settings, long now) {
         this.settings = settings;
         limit = settings.min();
-        cpu = new Signal(now);
-        heap = new Signal(now);
-        system = settings.memorySignal() == MemorySignal.HEAP_AND_SYSTEM ? new Signal(now) : null;
+        cpu = new Signal("CPU load", now);
+        heap = new Signal("heap usage", now);
+        system =
+                settings.memorySignal() == MemorySignal.HEAP_AND_SYSTEM ? new Signal("system memory usage", now) : null;
+        signals = system == null ? List.of(cpu, heap) : List.of(cpu, heap, system);
         lastActivity = now;
     }
 
@@ -51,6 +58,7 @@ final class ResourceController {
         cpuHighSince = since(validCpu && smoothedCpu > settings.cpuTarget() + 0.03, cpuHighSince, now);
         memoryHighSince = since(validMemory && sample.memory() >= settings.memoryTarget(), memoryHighSince, now);
         if (active > 0) lastActivity = now;
+        unavailable = firstUnavailable(now);
 
         if (validMemory && sample.memory() >= 0.95) {
             memoryReduction = now;
@@ -96,6 +104,17 @@ final class ResourceController {
         return decision("hold");
     }
 
+    private List<String> firstUnavailable(long now) {
+        List<String> names = List.of();
+        for (var signal : signals) {
+            if (signal.firstUnavailable(now)) {
+                if (names.isEmpty()) names = new ArrayList<>(signals.size());
+                names.add(signal.name);
+            }
+        }
+        return names;
+    }
+
     private boolean below(ResourceSampler.Sample sample, double margin) {
         double cpuBand = settings.cpuTarget() - margin * Math.min(1, settings.cpuTarget() / 0.2);
         double memoryBand = settings.memoryTarget() - margin * Math.min(1, settings.memoryTarget() / 0.2);
@@ -117,7 +136,7 @@ final class ResourceController {
     }
 
     private Decision decision(String reason) {
-        return new Decision(limit, reason, smoothedCpu);
+        return new Decision(limit, reason, smoothedCpu, unavailable);
     }
 
     private static Long since(boolean high, Long start, long now) {
@@ -133,11 +152,21 @@ final class ResourceController {
     }
 
     private static final class Signal {
+        final String name;
         long lastValid;
         int fresh;
+        boolean reported;
 
-        Signal(long now) {
+        Signal(String name, long now) {
+            this.name = name;
             lastValid = now;
+        }
+
+        /** True once in the controller's life: at the first tick 5 seconds or more after the last valid reading. */
+        boolean firstUnavailable(long now) {
+            if (reported || now - lastValid < 5 * SECOND) return false;
+            reported = true;
+            return true;
         }
 
         boolean update(double value, long now) {

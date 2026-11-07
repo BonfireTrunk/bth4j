@@ -85,7 +85,8 @@ public final class BackgroundRunner {
                 ? b.taskExecutor
                 : switch (b.concurrency) {
                     case Concurrency.Fixed f -> new FixedExecutor(f.limit());
-                    case Concurrency.Adaptive a -> new DefaultVtExecutor(a);
+                    case Concurrency.Adaptive a ->
+                        new DefaultVtExecutor(a, detail -> status.issue("resource-signal-unavailable", detail, null));
                 };
         this.client = TaskClient.builder()
                 .store(store)
