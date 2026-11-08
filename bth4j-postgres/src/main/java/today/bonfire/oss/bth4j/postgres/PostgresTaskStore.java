@@ -1666,11 +1666,10 @@ public class PostgresTaskStore implements FullStore {
         try (var c = dataSource.getConnection()) {
             boolean autoCommit = c.getAutoCommit();
             if (autoCommit) c.setAutoCommit(false);
+            T result;
             try {
-                var result = fn.apply(c);
+                result = fn.apply(c);
                 c.commit();
-                if (autoCommit) c.setAutoCommit(true);
-                return result;
             } catch (Throwable e) {
                 if (rollback(c, e) && autoCommit) {
                     try {
@@ -1681,6 +1680,15 @@ public class PostgresTaskStore implements FullStore {
                 }
                 throw e;
             }
+            if (autoCommit) {
+                try {
+                    c.setAutoCommit(true);
+                } catch (SQLException | RuntimeException restore) {
+                    // the work is committed, so the call succeeded; a connection that cannot even switch modes
+                    // is broken, and the pool drops it when it is closed below
+                }
+            }
+            return result;
         } catch (SQLException e) {
             throw new TaskStoreException("PostgreSQL task store operation failed", e);
         }

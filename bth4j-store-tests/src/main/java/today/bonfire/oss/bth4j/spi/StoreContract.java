@@ -1116,6 +1116,13 @@ public abstract class StoreContract {
                     .as("%s", state)
                     .isEmpty();
         }
+        for (int revision : new int[] {t.revision(), t.revision() + 1}) {
+            assertThat(store.retry(t.id(), revision)).isEqualTo(RetryOutcome.STALE);
+            assertThat(store.cancel(t.id(), revision, "no", null)).isEqualTo(CancelOutcome.STALE);
+            assertThat(store.delete(t.id(), revision, null))
+                    .as("a delete would free the key early")
+                    .isFalse();
+        }
         assertThat(store.enqueue(task().uniqueKey(key).build())).isEqualTo(new EnqueueOutcome.DuplicateKey(t.id()));
     }
 
@@ -1830,16 +1837,16 @@ public abstract class StoreContract {
 
     @Test
     void purgeRemovesATaskPastRetentionWhoseKeyIsStillHeldAndTheKeyStaysTaken() {
-        TaskRecord t = leased(task().uniqueKey("k").keyKeep(Duration.ofMillis(500)));
+        Duration retention = Duration.ofMillis(500);
+        TaskRecord t = leased(task().uniqueKey("k").keyKeep(Duration.ofSeconds(2)));
         assertThat(store.ack(t.id(), t.revision(), true, true, null)).isTrue();
-        advance(Duration.ofMillis(50));
-        assertThat(store.purge(TaskState.SUCCEEDED, Duration.ofMillis(100), 10)).isZero();
+        assertThat(store.purge(TaskState.SUCCEEDED, retention, 10)).isZero();
         assertThat(store.getTask(t.id())).isPresent();
-        advance(Duration.ofMillis(100));
-        assertThat(store.purge(TaskState.SUCCEEDED, Duration.ofMillis(100), 10)).isEqualTo(1);
+        advance(Duration.ofMillis(600));
+        assertThat(store.purge(TaskState.SUCCEEDED, retention, 10)).isEqualTo(1);
         assertRemovedButKeyTaken(t, "k");
-        assertThat(store.purge(TaskState.SUCCEEDED, Duration.ofMillis(100), 10)).isZero();
-        advance(Duration.ofMillis(500));
+        assertThat(store.purge(TaskState.SUCCEEDED, retention, 10)).isZero();
+        advance(Duration.ofSeconds(2));
         put(task().uniqueKey("k"));
     }
 

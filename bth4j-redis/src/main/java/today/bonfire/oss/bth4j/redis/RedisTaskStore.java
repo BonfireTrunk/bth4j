@@ -568,6 +568,7 @@ public class RedisTaskStore implements FullStore {
             }
             var out = new ArrayList<ExpiredLease>(ids.size());
             var orphans = new ArrayList<String>();
+            var unfenced = new ArrayList<String>();
             for (var i = 0; i < ids.size(); i++) {
                 var v = fields.get(i).get();
                 if (v.get(0) == null) {
@@ -578,11 +579,15 @@ public class RedisTaskStore implements FullStore {
                 if (lease != null) {
                     out.add(lease);
                 } else {
-                    orphans.add(ids.get(i));
+                    unfenced.add(ids.get(i));
                 }
             }
-            // a leased entry whose hash is gone, or whose revision cannot be read, cannot be reclaimed
+            // a leased entry whose hash is gone cannot be reclaimed
             if (!orphans.isEmpty()) jedis.zrem(keys.leased, orphans.toArray(String[]::new));
+            // one whose revision cannot be read gets a readable one and stays, so the next reclaim ends it
+            if (!unfenced.isEmpty()) {
+                scripts.run(RedisScripts.REPAIR_REVISION, unfenced);
+            }
             return out;
         });
     }
@@ -590,8 +595,8 @@ public class RedisTaskStore implements FullStore {
     /**
      * One reclaimed lease from its hash fields (rev, att, max, ty, cra). A task whose other numbers cannot be read
      * comes back with its revision and zero counts, so that maintenance finds it unreadable and ends it. One whose
-     * revision cannot be read cannot be fenced: it is null, and leaves the {@code leased} zset so that it does not
-     * take a place in every later batch.
+     * revision cannot be read cannot be fenced: it is null, and reclaim gives it a readable revision for the next
+     * round.
      */
     private static ExpiredLease expiredLease(long id, List<String> v) {
         int revision;

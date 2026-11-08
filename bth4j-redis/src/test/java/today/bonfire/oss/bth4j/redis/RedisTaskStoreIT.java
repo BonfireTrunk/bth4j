@@ -475,7 +475,7 @@ class RedisTaskStoreIT {
     }
 
     @Test
-    void reclaimReturnsALeaseWithUnreadableCountsAndDropsOneWithoutAReadableRevision() {
+    void reclaimReturnsALeaseWithUnreadableCountsAndRepairsAnUnreadableRevisionForTheNextRound() {
         for (var id = 1L; id <= 3; id++) {
             store.enqueue(task(id).build());
         }
@@ -492,8 +492,58 @@ class RedisTaskStoreIT {
         assertThat(expired)
                 .extracting(ExpiredLease::id, ExpiredLease::revision, ExpiredLease::attempts)
                 .containsExactlyInAnyOrder(tuple(1L, revision, 0), tuple(3L, revision, 1));
-        assertThat(jedis.zscore(keys.leased, "2")).isNull();
-        assertThat(store.reclaim(10)).extracting(ExpiredLease::id).containsExactlyInAnyOrder(1L, 3L);
+        assertThat(jedis.zscore(keys.leased, "2")).isNotNull();
+        assertThat(jedis.hget(keys.task(2), "rev")).isEqualTo("0");
+        assertThat(store.reclaim(10))
+                .extracting(ExpiredLease::id, ExpiredLease::revision)
+                .containsExactlyInAnyOrder(tuple(1L, revision), tuple(2L, 0), tuple(3L, revision));
+        assertThat(store.failExpired(2, 0, failure(1), null, true, null)).isEqualTo(FailOutcome.DEAD);
+    }
+
+    @Test
+    void promoteMovesATaskWithAnUnreadableDueOrRevisionAndStillPromotesTheOthers() {
+        for (var id = 1L; id <= 3; id++) {
+            store.enqueue(task(id).due(Instant.now().plusSeconds(3600)).build());
+            assertThat(jedis.hget(keys.task(id), "state")).isEqualTo("1");
+            jedis.zadd(keys.scheduled(queue), 1, String.valueOf(id));
+        }
+        jedis.hset(keys.task(1), "due", "x");
+        jedis.hset(keys.task(2), "rev", "y");
+
+        store.promote(10);
+
+        for (var id = 1L; id <= 3; id++) {
+            assertThat(jedis.hget(keys.task(id), "state")).isEqualTo("0");
+            assertThat(jedis.zscore(keys.queue(queue, type), String.valueOf(id)))
+                    .isNotNull();
+        }
+        assertThat(jedis.hget(keys.task(2), "rev")).isEqualTo("1");
+        assertThat(jedis.zcard(keys.scheduled(queue))).isZero();
+    }
+
+    @Test
+    void expireAndDeleteHandleUnreadableFieldsWithoutStrandingOtherTasks() {
+        var startBy = Instant.now().minusSeconds(1);
+        for (var id = 1L; id <= 3; id++) {
+            store.enqueue(task(id).startBy(startBy)
+                    .uniqueKey("k" + id)
+                    .keyKeep(Duration.ofMinutes(1))
+                    .build());
+        }
+        jedis.hset(keys.task(1), "rev", "x");
+        jedis.hset(keys.task(2), "kk", "y");
+        jedis.hset(keys.task(3), "state", "z");
+
+        assertThat(store.expire(10)).containsExactlyInAnyOrder(1L, 2L);
+        assertThat(jedis.zscore(keys.index(6, queue), "1")).isNotNull();
+        assertThat(jedis.zscore(keys.index(6, queue), "2")).isNotNull();
+        assertThat(jedis.pttl(keys.uniqueKey("k1"))).isPositive();
+        assertThat(jedis.exists(keys.uniqueKey("k2")))
+                .as("an unreadable keep window counts as none")
+                .isFalse();
+        assertThat(store.delete(3, Integer.parseInt(jedis.hget(keys.task(3), "rev")), null))
+                .isTrue();
+        assertThat(jedis.exists(keys.task(3))).isFalse();
     }
 
     @Test

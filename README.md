@@ -436,8 +436,8 @@ client.putSchedule(ScheduleDefinition.every("poll-feed", POLL_FEED, Duration.ofM
 The misfire threshold is twice `recurringTasksCheckInterval`, at least one minute. `SKIP` creates nothing and
 continues from now, `FIRE_ONCE_NOW` creates one task now, `CATCH_UP` creates one task per missed fire time up
 to `maxFires` (the most recent ones when more were missed) and continues from now. After a downtime of more than
-`maxFires` fires, `CATCH_UP` moves in one step to the last `maxFires` missed fires and creates them in the same
-check; beyond 100,000 missed fires it creates one task now, as `FIRE_ONCE_NOW` does. Every misfire is recorded as an
+`maxFires` fires, `CATCH_UP` moves in one step to the last `maxFires` missed fires and creates them from that
+check on, up to about 100 per check, including those late by less than the threshold; beyond 100,000 missed fires it creates one task now, as `FIRE_ONCE_NOW` does. Every misfire is recorded as an
 issue. With `Overlap.SKIP`, an occurrence is skipped (and an issue `schedule-overlap`
 recorded) while the task of the previous one is not finished. The check creates an occurrence up to one
 `recurringTasksCheckInterval` before its fire time and decides the overlap then. This keys only the occurrence (`sched:<id>`); tasks its processor

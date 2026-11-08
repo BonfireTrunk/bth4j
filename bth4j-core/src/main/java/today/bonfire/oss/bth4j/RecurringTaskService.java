@@ -176,7 +176,11 @@ class RecurringTaskService extends CustomThread {
             if (late.compareTo(misfireThreshold) > 0) {
                 return misfired(d, now, zone, late);
             }
-            var after = d.fireAt().isAfter(now) ? d.fireAt() : now;
+            // catch-up gives every missed fire its own occurrence, also the ones that are late by less than the
+            // threshold; the other policies continue from now
+            var catchesUp =
+                    RecurringDefinition.misfire(def.misfire(), def.catchUpMaxFires()) instanceof Misfire.CatchUp;
+            var after = d.fireAt().isAfter(now) || catchesUp ? d.fireAt() : now;
             return commitOccurrence(d, nextOrPark(def, after, zone, d.fireAt()));
         } catch (TaskStoreException e) {
             throw e;
@@ -235,7 +239,7 @@ class RecurringTaskService extends CustomThread {
      */
     private Progress catchUp(DueSchedule d, Instant now, ZoneId zone, Duration late, int maxFires) {
         var def = d.definition();
-        var window = new ArrayDeque<Instant>(maxFires + 1);
+        var window = new ArrayDeque<Instant>(Math.min(maxFires, MAX_CATCH_UP_SCAN) + 1);
         var fire = d.fireAt();
         int scanned = 0;
         while (fire != null && !fire.isAfter(now) && scanned < MAX_CATCH_UP_SCAN) {

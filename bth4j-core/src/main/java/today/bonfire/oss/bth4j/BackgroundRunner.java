@@ -242,11 +242,19 @@ public final class BackgroundRunner {
                 policies,
                 Set.copyOf(typeIds),
                 workerId);
-        taskProcessorService = startTaskProcessorService();
+        var storeInfo = store.info();
         scheduledTaskService = startScheduledTaskService();
         recurringTaskService = startRecurringTaskService();
         maintenanceService = startMaintenanceService();
-        log.info("Background runner {} started as worker {} on {}", threadGroup.getName(), workerId, store.info());
+        // the processor goes last, so that a failed start never leaves claimed tasks behind, and only while no
+        // stop() has given up on the lifecycle lock in the meantime
+        if (stopRequested) {
+            log.warn("Background runner {} was stopped while it started", threadGroup.getName());
+            abandonStart();
+            return;
+        }
+        taskProcessorService = startTaskProcessorService();
+        log.info("Background runner {} started as worker {} on {}", threadGroup.getName(), workerId, storeInfo);
         monitoringTask = scheduler.scheduleWithFixedDelay(
                 this::checkServices,
                 config.serviceCheckInterval.toMillis(),

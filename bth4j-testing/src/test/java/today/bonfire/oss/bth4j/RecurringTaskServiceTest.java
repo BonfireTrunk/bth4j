@@ -137,6 +137,27 @@ class RecurringTaskServiceTest {
     }
 
     @Test
+    void aCatchUpCreatesTheMissedFiresThatAreLateByLessThanTheThresholdToo() throws Exception {
+        clock.set(T0.plusSeconds(60));
+        register(definition("* * * * *", RecurringDefinition.MISFIRE_CATCH_UP, 5), T0);
+
+        round();
+
+        assertThat(occurrences()).extracting(TaskRecord::due).containsExactly(T0, T0.plusSeconds(60));
+        assertThat(store.recurringSchedules()).containsEntry(ID, T0.plusSeconds(120));
+    }
+
+    @Test
+    void aCatchUpWithAHugeMaxFiresDoesNotSizeItsWindowByIt() throws Exception {
+        clock.set(T0.plus(Duration.ofMinutes(10)));
+        register(definition("* * * * *", RecurringDefinition.MISFIRE_CATCH_UP, Integer.MAX_VALUE - 1), T0);
+
+        round();
+
+        assertThat(occurrences()).hasSize(11);
+    }
+
+    @Test
     void moreMissedFiresThanTheScanLimitFireOnceNowWithAnIssue() throws Exception {
         clock.set(T0.plus(Duration.ofDays(100)));
         register(definition("* * * * *", RecurringDefinition.MISFIRE_CATCH_UP, 3), T0);

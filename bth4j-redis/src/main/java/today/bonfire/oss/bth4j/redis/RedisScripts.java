@@ -155,11 +155,13 @@ final class RedisScripts {
             -- Ends a task in the terminal state to. Kept: one HSET of state, sc, rev, ku and the extra
             -- field/value pairs; the lease field stays and readers ignore it outside LEASED. Not kept: every
             -- key of the task is removed, and a key window lives on in the k: string alone. Either way the
-            -- unique key is settled.
+            -- unique key is settled. A keep window or revision that cannot be read counts as none and 0, so that
+            -- a corrupt field cannot stop the script after it wrote the hash but before the flush.
             local function finish(tkey, id, qid, from, to, at, rev, uk, kk, extra, kept)
+              if kk and not tonumber(kk) then kk = nil end
               if kept then
                 move(id, qid, from, to, at, at)
-                local f = {'state', to, 'sc', at, 'rev', rev + 1}
+                local f = {'state', to, 'sc', at, 'rev', (rev or 0) + 1}
                 if kk then f[#f + 1] = 'ku'; f[#f + 1] = at + tonumber(kk) end
                 for _, x in ipairs(extra) do f[#f + 1] = x end
                 redis.call('HSET', tkey, unpack(f))
@@ -679,9 +681,11 @@ final class RedisScripts {
                   for _, id in ipairs(ids) do
                     local tkey = P .. 't:' .. id
                     local v = redis.call('HMGET', tkey, 'state', 'due', 'rev', 'ty')
-                    if v[1] == '1' then
-                      move(id, qid, 1, 0, at, tonumber(v[2]), v[4])
-                      redis.call('HSET', tkey, 'state', 0, 'sc', at, 'rev', tonumber(v[3]) + 1)
+                    -- an unreadable due is promoted as due now and an unreadable revision restarts at 1, as a
+                    -- claim does, so that one corrupt task cannot stop promotion for every queue
+                    if v[1] == '1' and v[4] then
+                      move(id, qid, 1, 0, at, tonumber(v[2]) or at, v[4])
+                      redis.call('HSET', tkey, 'state', 0, 'sc', at, 'rev', (tonumber(v[3]) or 0) + 1)
                       moved = moved + 1
                     else
                       zrem(skey, id)
@@ -841,6 +845,24 @@ final class RedisScripts {
             return 1
             """;
 
+    /**
+     * ARGV: ids. Sets the revision of a LEASED task to 0 when it is not a 32-bit integer, so that reclaim can fence
+     * it again; the lease has expired, so no worker holds a revision that 0 could wrongly match. Returns the count.
+     */
+    static final String REPAIR_REVISION = PRELUDE + """
+            local n = 0
+            for i = 2, #ARGV do
+              local tkey = P .. 't:' .. ARGV[i]
+              local v = redis.call('HMGET', tkey, 'rev', 'state')
+              local r = tonumber(v[1])
+              if v[1] and v[2] == '2' and (not r or r ~= math.floor(r) or r < -2147483648 or r > 2147483647) then
+                redis.call('HSET', tkey, 'rev', 0)
+                n = n + 1
+              end
+            end
+            return n
+            """;
+
     /** ARGV: limit. Expires QUEUED and SCHEDULED tasks whose start-by time passed, oldest first; returns their ids. */
     static final String EXPIRE = PRELUDE + """
             local at = now()
@@ -848,9 +870,9 @@ final class RedisScripts {
             local out = {}
             for _, id in ipairs(ids) do
               local tkey = P .. 't:' .. id
-              local v = redis.call('HMGET', tkey, 'state', 'q', 'rev', 'uk', 'kk')
+              local v = redis.call('HMGET', tkey, 'state', 'q', 'rev', 'uk', 'kk', 'ty')
               local state = tonumber(v[1])
-              if state == 0 or state == 1 then
+              if (state == 0 or state == 1) and v[2] and v[6] then
                 finish(tkey, id, v[2], state, 6, at, tonumber(v[3]), v[4], v[5], {}, true)
                 out[#out + 1] = id
               end
@@ -960,7 +982,9 @@ final class RedisScripts {
             if v[1] ~= ARGV[3] then return 0 end
             local state = tonumber(v[2])
             if state == 2 then return 0 end
-            leave(id, v[3], state)
+            -- with an unreadable state or queue the zset entry is left behind; every reader drops an entry whose
+            -- hash is gone
+            if state and v[3] then leave(id, v[3], state) end
             zrem(P .. 'startby', id)
             if v[4] then
               local kkey = P .. 'k:' .. v[4]
