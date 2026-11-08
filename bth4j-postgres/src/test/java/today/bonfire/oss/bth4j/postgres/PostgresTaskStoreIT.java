@@ -29,6 +29,7 @@ import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
+import today.bonfire.oss.bth4j.spi.PutRecurringResult;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
@@ -1001,18 +1002,18 @@ class PostgresTaskStoreIT {
     void putRecurringKeepsTheFireTimeForAnUnchangedCronAndTheRevisionForAnUnchangedDefinition() {
         var first = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MICROS);
         assertThat(store.putRecurring(definition("job", "0 * * * *"), first, first))
-                .isEqualTo(PutRecurringOutcome.CREATED);
+                .isEqualTo(new PutRecurringResult(PutRecurringOutcome.CREATED, first));
         long revision = store.dueRecurring(first, 10).getFirst().definition().revision();
 
         assertThat(store.putRecurring(definition("job", "0 * * * *"), first.plusSeconds(600), first.plusSeconds(600)))
-                .isEqualTo(PutRecurringOutcome.UNCHANGED);
+                .isEqualTo(new PutRecurringResult(PutRecurringOutcome.UNCHANGED, first));
         assertThat(store.recurringSchedules()).containsEntry("job", first);
         assertThat(store.dueRecurring(first, 10).getFirst().definition().revision())
                 .isEqualTo(revision);
 
         var otherData = new RecurringDefinition("job", type, 1, queue, "acme", "0 * * * *", "{\"x\":2}", 4, 0);
         assertThat(store.putRecurring(otherData, first.plusSeconds(600), first.plusSeconds(600)))
-                .isEqualTo(PutRecurringOutcome.CHANGED);
+                .isEqualTo(new PutRecurringResult(PutRecurringOutcome.CHANGED, first));
         assertThat(store.recurringSchedules()).containsEntry("job", first);
         var d = store.dueRecurring(first, 10).getFirst();
         assertThat(d.definition().revision()).isGreaterThan(revision);
@@ -1376,7 +1377,7 @@ class PostgresTaskStoreIT {
         store.putRecurring(definition("p", "0 * * * *"), fireAt, fireAt);
         var due = store.dueRecurring(Instant.now(), 10).getFirst();
 
-        assertThat(store.pauseRecurring("p", true)).isTrue();
+        assertThat(store.pauseRecurring("p")).isTrue();
         assertThat(store.dueRecurring(Instant.now(), 10)).isEmpty();
         assertThat(store.recurringDefinitions().getFirst().definition().paused())
                 .isTrue();
@@ -1385,23 +1386,24 @@ class PostgresTaskStoreIT {
                         due, fireAt.plusSeconds(3600), task(newId()).build()))
                 .isFalse();
 
-        assertThat(store.pauseRecurring("p", false)).isTrue();
+        assertThat(store.resumeRecurring("p", null)).isTrue();
         assertThat(store.dueRecurring(Instant.now(), 10)).hasSize(1);
-        assertThat(store.pauseRecurring("missing", true)).isFalse();
+        assertThat(store.pauseRecurring("missing")).isFalse();
+        assertThat(store.resumeRecurring("missing", null)).isFalse();
     }
 
     @Test
     void reputtingADefinitionKeepsItsPausedFlag() {
         var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MICROS);
         store.putRecurring(definition("kept", "0 * * * *"), fireAt, fireAt);
-        store.pauseRecurring("kept", true);
+        store.pauseRecurring("kept");
 
         store.putRecurring(definition("kept", "0 * * * *"), fireAt, fireAt);
         assertThat(store.recurringDefinitions().getFirst().definition().paused())
                 .isTrue();
         assertThat(store.dueRecurring(Instant.now(), 10)).isEmpty();
 
-        store.pauseRecurring("kept", false);
+        store.resumeRecurring("kept", null);
         store.putRecurring(definition("kept", "0 * * * *").withPaused(true), fireAt, fireAt);
         assertThat(store.recurringDefinitions().getFirst().definition().paused())
                 .isFalse();
@@ -1751,7 +1753,8 @@ class PostgresTaskStoreIT {
             awaitLockWaiters(1);
             holder.commit();
 
-            assertThat(put.get(10, TimeUnit.SECONDS)).isEqualTo(PutRecurringOutcome.UNCHANGED);
+            assertThat(put.get(10, TimeUnit.SECONDS))
+                    .isEqualTo(new PutRecurringResult(PutRecurringOutcome.UNCHANGED, parked));
         } finally {
             pool.shutdownNow();
         }

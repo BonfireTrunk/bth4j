@@ -37,6 +37,7 @@ import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
 import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
+import today.bonfire.oss.bth4j.spi.PutRecurringResult;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecordJson;
@@ -293,7 +294,7 @@ public class PostgresTaskStore implements FullStore {
                 + " next_fire = CASE WHEN " + keepFire + " THEN " + schedule + ".next_fire ELSE EXCLUDED.next_fire END"
                 + " WHERE NOT (" + sameDefinition + " AND " + keepFire + " AND (" + schedule
                 + ".occurrence_id IS NULL OR " + occurrenceRunning + "))"
-                + " RETURNING xmax = 0";
+                + " RETURNING xmax = 0, next_fire";
         dueScheduleSql =
                 "SELECT * FROM " + schedule + " WHERE NOT paused AND next_fire <= ? ORDER BY next_fire LIMIT ?";
         // a definition paused between dueRecurring and the commit does not fire
@@ -1301,7 +1302,7 @@ public class PostgresTaskStore implements FullStore {
      * Waiting for the row inside the upsert would read a snapshot from before that commit.
      */
     @Override
-    public PutRecurringOutcome putRecurring(RecurringDefinition d, Instant nextFire, Instant keepUntil) {
+    public PutRecurringResult putRecurring(RecurringDefinition d, Instant nextFire, Instant keepUntil) {
         return inTransaction(c -> {
             try (var ps = c.prepareStatement("SELECT 1 FROM " + schedule + " WHERE id = ? FOR UPDATE")) {
                 ps.setString(1, d.scheduleId());
@@ -1329,8 +1330,19 @@ public class PostgresTaskStore implements FullStore {
                 setInstant(ps, 17, keepUntil);
                 setInstant(ps, 18, keepUntil);
                 try (var rs = ps.executeQuery()) {
-                    if (!rs.next()) return PutRecurringOutcome.UNCHANGED;
-                    return rs.getBoolean(1) ? PutRecurringOutcome.CREATED : PutRecurringOutcome.CHANGED;
+                    if (rs.next()) {
+                        return new PutRecurringResult(
+                                rs.getBoolean(1) ? PutRecurringOutcome.CREATED : PutRecurringOutcome.CHANGED,
+                                getInstant(rs, 2));
+                    }
+                }
+            }
+            // unchanged: the row is locked above, so this is the next fire time the put found and kept
+            try (var ps = c.prepareStatement("SELECT next_fire FROM " + schedule + " WHERE id = ?")) {
+                ps.setString(1, d.scheduleId());
+                try (var rs = ps.executeQuery()) {
+                    rs.next();
+                    return new PutRecurringResult(PutRecurringOutcome.UNCHANGED, getInstant(rs, 1));
                 }
             }
         });
@@ -2015,10 +2027,28 @@ public class PostgresTaskStore implements FullStore {
     }
 
     @Override
-    public boolean pauseRecurring(String scheduleId, boolean paused) {
-        return update("UPDATE " + schedule + " SET paused = ? WHERE id = ?", ps -> {
-            ps.setBoolean(1, paused);
-            ps.setString(2, scheduleId);
+    public boolean pauseRecurring(String scheduleId) {
+        return update("UPDATE " + schedule + " SET paused = true WHERE id = ?", ps -> ps.setString(1, scheduleId));
+    }
+
+    /** Only a paused row is written; the existence check reads the same statement's snapshot. */
+    @Override
+    public boolean resumeRecurring(String scheduleId, Instant nextFire) {
+        return withConnection(c -> {
+            try (var ps = c.prepareStatement("WITH u AS (UPDATE " + schedule + " SET paused = false,"
+                    + "   next_fire = COALESCE(?::timestamptz, next_fire),"
+                    + "   rev = CASE WHEN ?::timestamptz IS NULL THEN rev ELSE nextval('" + scheduleSeq + "') END"
+                    + "   WHERE id = ? AND paused RETURNING 1)"
+                    + " SELECT EXISTS (SELECT 1 FROM u) OR EXISTS (SELECT 1 FROM " + schedule + " WHERE id = ?)")) {
+                setInstant(ps, 1, nextFire);
+                setInstant(ps, 2, nextFire);
+                ps.setString(3, scheduleId);
+                ps.setString(4, scheduleId);
+                try (var rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getBoolean(1);
+                }
+            }
         });
     }
 
@@ -2026,7 +2056,9 @@ public class PostgresTaskStore implements FullStore {
     @Override
     public boolean setNextFire(String scheduleId, Instant nextFire) {
         return update(
-                "UPDATE " + schedule + " SET next_fire = ?, rev = nextval('" + scheduleSeq + "') WHERE id = ?", ps -> {
+                "UPDATE " + schedule + " SET next_fire = ?, rev = nextval('" + scheduleSeq + "'), occurrence_id = NULL"
+                        + " WHERE id = ?",
+                ps -> {
                     setInstant(ps, 1, nextFire);
                     ps.setString(2, scheduleId);
                 });
