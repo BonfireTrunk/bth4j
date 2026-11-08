@@ -35,7 +35,9 @@ public interface InspectionStore extends TaskStore {
      * {@code (stateChanged, id)} ascending, paging by an opaque position that the store encodes itself. The
      * position does not depend on the task it was taken from, so that task leaving the listed state neither ends
      * the listing early nor restarts it. A task whose own position moves while the walk runs can still be seen
-     * twice (moved later) or missed (moved earlier).
+     * twice (moved later) or missed (moved earlier). A task with a stored value that cannot be read is left out,
+     * so that it does not break the listing; it still takes its place in the walk, so a page can hold fewer than
+     * {@code limit} tasks while {@code next} is not null, and it is still counted by {@link #counts()}.
      *
      * @param queueId null for every queue
      * @param cursor {@link TaskPage#next()} of the previous page; null starts at the beginning

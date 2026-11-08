@@ -4063,6 +4063,27 @@ public abstract class StoreContract {
     }
 
     @Test
+    void aListingLeavesOutAnUnreadableTaskAndWalksOnPastIt() {
+        long bad = put(task());
+        long good = put(task());
+        assumeTrue(corruptStoredValue(namespace, bad), "the store cannot hold an unreadable value");
+
+        assertThat(store.tasks(TaskState.QUEUED, queue, null, 10).items())
+                .extracting(TaskRecord::id)
+                .containsExactly(good);
+        assertThat(store.tasks(TaskState.QUEUED, null, null, 10).items())
+                .extracting(TaskRecord::id)
+                .containsExactly(good);
+        var first = store.tasks(TaskState.QUEUED, queue, null, 1);
+        assertThat(first.items()).isEmpty();
+        assertThat(first.next()).isNotNull();
+        assertThat(store.tasks(TaskState.QUEUED, queue, first.next(), 1).items())
+                .extracting(TaskRecord::id)
+                .containsExactly(good);
+        assertThat(store.counts().get(queue).queued()).isEqualTo(2);
+    }
+
+    @Test
     void aClaimLeavesOutAnUnreadableTaskAndEndsItsLeaseSoItCanBeEndedAndDeleted() {
         long bad = put(task());
         long good = put(task());

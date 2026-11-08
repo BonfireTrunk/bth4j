@@ -774,7 +774,7 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public Optional<TaskRecord> getTask(long id) {
-        var found = load(List.of(id));
+        var found = load(List.of(id), false);
         return found.isEmpty() ? Optional.empty() : Optional.of(found.getFirst());
     }
 
@@ -798,7 +798,8 @@ public class RedisTaskStore implements FullStore {
     }
 
     /** Reads the hash, payload, steps and failures of every id in one pipeline; ids without a hash are left out. */
-    private List<TaskRecord> load(List<Long> ids) {
+    /** @param skipUnreadable leave out a task with a stored value that cannot be read instead of throwing */
+    private List<TaskRecord> load(List<Long> ids, boolean skipUnreadable) {
         return guard(() -> {
             var hashes = new ArrayList<Response<Map<String, String>>>(ids.size());
             var data = new ArrayList<Response<String>>(ids.size());
@@ -817,12 +818,16 @@ public class RedisTaskStore implements FullStore {
             for (var i = 0; i < ids.size(); i++) {
                 var h = hashes.get(i).get();
                 if (h.isEmpty()) continue;
-                out.add(TaskHashes.fromHash(
-                        ids.get(i),
-                        h,
-                        data.get(i).get(),
-                        steps.get(i).get(),
-                        failures.get(i).get()));
+                try {
+                    out.add(TaskHashes.fromHash(
+                            ids.get(i),
+                            h,
+                            data.get(i).get(),
+                            steps.get(i).get(),
+                            failures.get(i).get()));
+                } catch (UnreadableTaskException e) {
+                    if (!skipUnreadable) throw e;
+                }
             }
             return out;
         });
@@ -889,7 +894,7 @@ public class RedisTaskStore implements FullStore {
             var probe = (int) Math.min((long) limit + 1, Integer.MAX_VALUE);
             var found = listing(state, queueId, position, probe);
             var entries = found.subList(0, Math.min(limit, found.size()));
-            var items = load(entries.stream().map(Entry::id).toList());
+            var items = load(entries.stream().map(Entry::id).toList(), true);
             var last = entries.isEmpty() ? null : entries.getLast();
             var next = found.size() > limit ? (long) last.score() + ":" + last.id() : null;
             return new TaskPage(items, next);

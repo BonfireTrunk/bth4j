@@ -292,21 +292,26 @@ reservation returns empty ids; after reservation, failures carry every request's
 order. A single `enqueue` retains its caller id even if the high-water read fails, and carries a generated id
 only once it tried to write it.
 
-For a failed batch, call `retryRequests` with the list that just failed, in the same order. If the retry fails
-too, prepare the next one from the retry list, not the original, or the ids of tasks the first call may have
-stored are lost and those tasks are stored twice:
+For a failed batch, `settled()` holds the results of the chunks that completed, and `retryRequests`, called with
+the list that just failed in the same order, returns the requests after them. The settled requests are not sent
+again, so a settled `Duplicate` cannot start a task once its key's holder has finished. If the retry fails too,
+prepare the next one from the retry list, not the original, or the ids of tasks the first call may have stored are
+lost and those tasks are stored twice. The batch's results are the settled ones followed by the retry's:
 
 ```java
+var results = new ArrayList<EnqueueResult>();
 List<? extends TaskRequest<?>> batch = requests;
 for (int attempt = 1; ; attempt++) {
     try {
-        client.enqueueAll(batch);
+        results.addAll(client.enqueueAll(batch));
         break;
     } catch (EnqueueFailedException e) {
         if (attempt == 3) throw e;
+        results.addAll(e.settled());
         batch = e.retryRequests(batch);
     }
 }
+// results has one entry per request, in order
 ```
 
 `notStored()` contains zero-based positions of generated-id requests this call knows it did not write:
@@ -551,6 +556,8 @@ client.tasks(TaskState.DEAD, "mail", page.next(), 100);   // next is null after 
 The listing returns a `TaskViewPage` whose `next` is an opaque position in the listing, so the walk does not depend on
 the last task of the previous page. A task whose own position moves while the walk runs (for example a deferral) can
 still be seen twice (moved later) or missed (moved earlier). A malformed cursor throws `IllegalArgumentException`.
+A task whose stored value cannot be read is left out, so a page can hold fewer tasks than asked for while `next`
+is not null; `counts()` still counts it.
 
 A `TaskView` carries state, attempts, due time, the last failures, completed steps and progress.
 

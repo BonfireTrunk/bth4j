@@ -1551,7 +1551,7 @@ public class PostgresTaskStore implements FullStore {
                     "SELECT t.* FROM unnest((SELECT array_agg(id) FROM " + queue + ")) AS q(id) CROSS JOIN LATERAL (");
             sql.append(") t ORDER BY t." + column + ", t.id LIMIT ?");
         }
-        var items = withConnection(c -> {
+        var rows = withConnection(c -> {
             try (var ps = c.prepareStatement(sql.toString())) {
                 int i = 1;
                 if (queueId != null) ps.setInt(i++, queueId);
@@ -1561,13 +1561,31 @@ public class PostgresTaskStore implements FullStore {
                 }
                 ps.setLong(i++, (long) limit + 1);
                 if (perQueue) ps.setLong(i, (long) limit + 1);
-                return readAll(ps);
+                var out = new ArrayList<Listed>();
+                try (var rs = ps.executeQuery()) {
+                    while (rs.next()) out.add(listed(rs, column));
+                }
+                return out;
             }
         });
-        if (items.size() <= limit) return new TaskPage(items, null);
-        var page = items.subList(0, limit);
+        var page = rows.subList(0, Math.min(limit, rows.size()));
+        var items = page.stream().map(Listed::task).filter(Objects::nonNull).toList();
+        if (rows.size() <= limit) return new TaskPage(items, null);
         var last = page.getLast();
-        return new TaskPage(page, encodeCursor(byDue ? last.due() : last.stateChangedAt(), last.id()));
+        return new TaskPage(items, encodeCursor(last.at(), last.id()));
+    }
+
+    /** A listed row; an unreadable task is left out of the page (null) but still positions the cursor. */
+    private record Listed(Instant at, long id, TaskRecord task) {}
+
+    private static Listed listed(ResultSet rs, String column) throws SQLException {
+        var at = getInstant(rs, column);
+        long id = rs.getLong("id");
+        try {
+            return new Listed(at, id, read(rs));
+        } catch (UnreadableTaskException e) {
+            return new Listed(at, id, null);
+        }
     }
 
     private static boolean listedByDue(TaskState state) {
@@ -1684,16 +1702,6 @@ public class PostgresTaskStore implements FullStore {
             rs.next();
             return rs.getLong(1);
         }
-    }
-
-    private static List<TaskRecord> readAll(PreparedStatement ps) throws SQLException {
-        var result = new ArrayList<TaskRecord>();
-        try (var rs = ps.executeQuery()) {
-            while (rs.next()) {
-                result.add(read(rs));
-            }
-        }
-        return result;
     }
 
     private static TaskRecord read(ResultSet rs) throws SQLException {

@@ -83,7 +83,7 @@ public final class AdminHttpServer {
     private final boolean ownExecutor;
     private final Sessions sessions;
     private final LoginThrottle throttle;
-    private final byte[] dummyDigest = sha256(randomBytes());
+    private final byte[] dummyDigest = digest(randomBytes());
     private final boolean secureCookie;
     private HttpServer server;
     private boolean stopped;
@@ -368,7 +368,7 @@ public final class AdminHttpServer {
         }
         var user = users.get(name);
         var expected = user == null ? dummyDigest : user.digest();
-        var matches = MessageDigest.isEqual(sha256(password.getBytes(StandardCharsets.UTF_8)), expected);
+        var matches = MessageDigest.isEqual(digest(password.getBytes(StandardCharsets.UTF_8)), expected);
         if (user == null || !matches) {
             throw new HttpError(401, "invalid credentials");
         }
@@ -673,11 +673,11 @@ public final class AdminHttpServer {
         return bytes;
     }
 
-    private static byte[] sha256(byte[] input) {
+    private static byte[] digest(byte[] input) {
         try {
-            return MessageDigest.getInstance("SHA-256").digest(input);
+            return MessageDigest.getInstance("SHA3-384").digest(input);
         } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 is required of every JDK", e);
+            throw new IllegalStateException("SHA3-384 is provided by the JDK since Java 9", e);
         }
     }
 
@@ -710,12 +710,12 @@ public final class AdminHttpServer {
             return this;
         }
 
-        /** Adds a user; at least one is required. Only the SHA-256 digest of the password is kept. */
+        /** Adds a user; at least one is required. Only the SHA3-384 digest of the password is kept. */
         public Builder user(String name, String password, Role role) {
             if (name == null || name.isEmpty() || password == null || role == null) {
                 throw new IllegalArgumentException("name, password and role are required");
             }
-            users.put(name, new User(sha256(password.getBytes(StandardCharsets.UTF_8)), role));
+            users.put(name, new User(digest(password.getBytes(StandardCharsets.UTF_8)), role));
             return this;
         }
 

@@ -22,7 +22,7 @@ class EnqueueFailedExceptionTest {
                 TaskRequest.of(VOID).id(30).build());
         var ids = new ArrayList<>(List.of(10L, 20L, 30L));
         var notStored = new HashSet<>(Set.of(1));
-        var failure = new EnqueueFailedException(ids, 0, notStored, new TaskStoreException("failed"));
+        var failure = new EnqueueFailedException(ids, List.of(), notStored, new TaskStoreException("failed"));
         ids.clear();
         notStored.clear();
 
@@ -44,7 +44,7 @@ class EnqueueFailedExceptionTest {
     void emptyIdsReturnEveryRequestUnchangedIncludingCallerIds() {
         var requests =
                 List.of(TaskRequest.of(VOID).build(), TaskRequest.of(VOID).id(7).build());
-        var failure = new EnqueueFailedException(List.of(), 0, Set.of(0), new TaskStoreException("failed"));
+        var failure = new EnqueueFailedException(List.of(), List.of(), Set.of(0), new TaskStoreException("failed"));
 
         var retry = failure.retryRequests(requests);
 
@@ -54,12 +54,33 @@ class EnqueueFailedExceptionTest {
 
     @Test
     void existingConstructorKeepsAllIdsForRetry() {
-        var failure = new EnqueueFailedException(List.of(7L), 0, new TaskStoreException("failed"));
+        var failure = new EnqueueFailedException(List.of(7L), List.of(), new TaskStoreException("failed"));
 
         assertThat(failure.notStored()).isEmpty();
         assertThat(failure.retryRequests(List.of(TaskRequest.of(VOID).build()))
                         .getFirst()
                         .id())
                 .isEqualTo(7L);
+    }
+
+    @Test
+    void retryRequestsLeaveOutTheSettledRequestsSoASettledDuplicateIsNotSentAgain() {
+        var requests = List.of(
+                TaskRequest.of(VOID).uniqueKey("k").build(),
+                TaskRequest.of(VOID).build(),
+                TaskRequest.of(VOID).build());
+        List<EnqueueResult> settled = List.of(new EnqueueResult.Duplicate(99L), new EnqueueResult.Accepted(20L));
+        var failure =
+                new EnqueueFailedException(List.of(10L, 20L, 30L), settled, Set.of(), new TaskStoreException("failed"));
+
+        var retry = failure.retryRequests(requests);
+
+        assertThat(failure.settled()).containsExactlyElementsOf(settled);
+        assertThat(failure.storedCount()).isEqualTo(2);
+        assertThat(retry).hasSize(1);
+        assertThat(retry.getFirst().id()).isEqualTo(30L);
+        assertThatThrownBy(() ->
+                        new EnqueueFailedException(List.of(10L), settled, Set.of(), new TaskStoreException("failed")))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

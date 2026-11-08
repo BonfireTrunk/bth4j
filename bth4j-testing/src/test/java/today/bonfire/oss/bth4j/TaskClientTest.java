@@ -567,10 +567,15 @@ class TaskClientTest {
                 throw new TaskStoreException("second chunk failed");
             }
         }));
+        long holder = builder()
+                .build()
+                .enqueue(TaskRequest.of(VOID).uniqueKey("held").build())
+                .id();
         long callerId = failing.nextId();
         long laterCallerId = failing.nextId();
         var requests = new ArrayList<TaskRequest<Void>>();
         for (int i = 0; i < 1002; i++) requests.add(TaskRequest.of(VOID).build());
+        requests.set(0, TaskRequest.of(VOID).uniqueKey("held").build());
         requests.set(500, TaskRequest.of(VOID).id(callerId).build());
         requests.set(1001, TaskRequest.of(VOID).id(laterCallerId).build());
 
@@ -579,17 +584,19 @@ class TaskClientTest {
                     assertThat(e.ids()).hasSize(requests.size()).doesNotHaveDuplicates();
                     assertThat(e.ids().get(500)).isEqualTo(callerId);
                     assertThat(e.storedCount()).isEqualTo(500);
+                    assertThat(e.settled()).hasSize(500);
+                    assertThat(e.settled().getFirst()).isEqualTo(new EnqueueResult.Duplicate(holder));
+                    assertThat(e.settled().subList(1, 500)).allMatch(EnqueueResult::accepted);
                     assertThat(e.notStored()).containsExactly(1000);
                     assertThat(store.counts().get(store.queueId("Q:DEF")).queued())
                             .isEqualTo(501);
                     var retry = e.retryRequests(requests);
-                    for (int i = 0; i < 1000; i++)
-                        assertThat(retry.get(i).id()).isEqualTo(e.ids().get(i));
-                    assertThat(retry.get(1000).id()).isNull();
-                    assertThat(retry.get(1001).id()).isEqualTo(laterCallerId);
-                    assertThat(failing.enqueueAll(retry))
-                            .hasSize(requests.size())
-                            .allMatch(EnqueueResult::accepted);
+                    assertThat(retry).hasSize(502);
+                    for (int i = 0; i < 500; i++)
+                        assertThat(retry.get(i).id()).isEqualTo(e.ids().get(500 + i));
+                    assertThat(retry.get(500).id()).isNull();
+                    assertThat(retry.get(501).id()).isEqualTo(laterCallerId);
+                    assertThat(failing.enqueueAll(retry)).hasSize(502).allMatch(EnqueueResult::accepted);
                 });
         assertThat(store.counts().get(store.queueId("Q:DEF")).queued()).isEqualTo(requests.size());
     }
