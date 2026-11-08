@@ -4,7 +4,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
-import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,6 +17,7 @@ import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.ScheduleStore;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
+import today.bonfire.oss.bth4j.spi.TaskStoreException;
 
 /**
  * Creates the occurrences of recurring definitions as they come due. Any number of instances may run it;
@@ -33,6 +34,17 @@ class RecurringTaskService extends CustomThread {
     private static final int MAX_ROUNDS_PER_CYCLE = 100;
     private static final Duration NEVER = Duration.ofDays(365L * 100);
     private static final Duration MIN_MISFIRE_THRESHOLD = Duration.ofMinutes(1);
+    /** Fires walked to find the last ones a catch-up may create, per definition and check. */
+    private static final int MAX_CATCH_UP_SCAN = 100_000;
+    /** How far a definition that cannot be evaluated is pushed ahead, at least. */
+    private static final Duration BROKEN_RETRY = Duration.ofHours(1);
+
+    /** What a definition's turn achieved: nothing, a moved fire time without an occurrence, or an occurrence. */
+    private enum Progress {
+        NONE,
+        ADVANCED,
+        QUEUED
+    }
 
     /** Header of a fixed-delay occurrence holding the delay as an ISO-8601 duration. */
     static final String FIXED_DELAY_HEADER = "bth4j.fixed-delay";
@@ -122,15 +134,21 @@ class RecurringTaskService extends CustomThread {
         try {
             for (var round = 0; round < MAX_ROUNDS_PER_CYCLE && this.canContinueProcessing; round++) {
                 var due = store.dueRecurring(clock.instant().plus(checkInterval), batchSize);
-                var committed = 0;
+                var progressed = 0;
                 for (var d : due) {
-                    if (commit(d)) {
-                        committed++;
+                    Progress progress;
+                    try {
+                        progress = commit(d);
+                    } catch (TaskStoreException e) {
+                        status.storeError(e);
+                        log.error("Recurring task service could not reach the store, ending this round", e);
+                        return;
                     }
+                    if (progress == Progress.QUEUED) queued++;
+                    if (progress != Progress.NONE) progressed++;
                 }
-                queued += committed;
-                // nothing committed means every due definition is broken or was taken by another instance
-                if (committed == 0) {
+                // no progress means every due definition was taken by another instance or could not be moved
+                if (progressed == 0) {
                     break;
                 }
             }
@@ -142,12 +160,11 @@ class RecurringTaskService extends CustomThread {
     }
 
     /**
-     * A bad definition (for example an unparseable cron expression) is logged and skipped so that it
-     * cannot block the others.
-     *
-     * @return true when an occurrence was committed
+     * A definition that cannot be evaluated (for example an unparseable cron expression or a removed zone) is
+     * pushed ahead and reported, so that it cannot block the others behind it. A store failure is not the
+     * definition's fault: it ends the round and moves nothing.
      */
-    private boolean commit(DueSchedule d) {
+    private Progress commit(DueSchedule d) {
         try {
             var def = d.definition();
             var now = clock.instant();
@@ -161,13 +178,34 @@ class RecurringTaskService extends CustomThread {
             }
             var after = d.fireAt().isAfter(now) ? d.fireAt() : now;
             return commitOccurrence(d, nextOrPark(def, after, zone, d.fireAt()));
+        } catch (TaskStoreException e) {
+            throw e;
         } catch (Exception e) {
-            log.error("Skipping recurring task {}", d.scheduleId(), e);
-            return false;
+            log.error("Recurring task {} cannot be evaluated", d.scheduleId(), e);
+            return pushAhead(d, e);
         }
     }
 
-    private boolean misfired(DueSchedule d, Instant now, ZoneId zone, Duration late) {
+    private Progress pushAhead(DueSchedule d, Exception cause) {
+        var twice = checkInterval.multipliedBy(2);
+        var next = clock.instant().plus(twice.compareTo(BROKEN_RETRY) > 0 ? twice : BROKEN_RETRY);
+        try {
+            if (!store.setNextFire(d.scheduleId(), d.definition().revision(), d.fireAt(), next)) {
+                return Progress.NONE;
+            }
+        } catch (TaskStoreException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            log.error("Recurring task {} could not be moved ahead", d.scheduleId(), e);
+            return Progress.NONE;
+        }
+        var detail = "schedule " + d.scheduleId() + " cannot be evaluated ("
+                + cause.getClass().getSimpleName() + "), its next fire moved from " + d.fireAt() + " to " + next;
+        status.issue("schedule-broken", detail, null);
+        return Progress.ADVANCED;
+    }
+
+    private Progress misfired(DueSchedule d, Instant now, ZoneId zone, Duration late) {
         var def = d.definition();
         var misfire = RecurringDefinition.misfire(def.misfire(), def.catchUpMaxFires());
         switch (misfire) {
@@ -175,31 +213,51 @@ class RecurringTaskService extends CustomThread {
                 var next = nextOrPark(def, now, zone, d.fireAt());
                 if (store.setNextFire(d.scheduleId(), def.revision(), d.fireAt(), next)) {
                     misfireIssue(d, late, "skipped, next at " + next);
+                    return Progress.ADVANCED;
                 }
-                return false;
+                return Progress.NONE;
             }
             case Misfire.CatchUp c -> {
-                var fires = new ArrayList<Instant>();
-                var fire = d.fireAt();
-                while (fire != null && !fire.isAfter(now) && fires.size() <= c.maxFires()) {
-                    fires.add(fire);
-                    fire = Cron.next(def.cron(), fire, zone).orElse(null);
-                }
-                if (fires.size() > c.maxFires()) {
-                    var resume = fires.get(fires.size() - c.maxFires());
-                    if (store.setNextFire(d.scheduleId(), def.revision(), d.fireAt(), resume)) {
-                        misfireIssue(d, late, "catching up the last " + c.maxFires() + " fires from " + resume);
-                    }
-                    return false;
-                }
-                // each missed fire gets its own occurrence; the next round picks the following one up
-                return commitOccurrence(d, nextOrPark(def, d.fireAt(), zone, d.fireAt()));
+                return catchUp(d, now, zone, late, c.maxFires());
             }
             case Misfire.FireOnceNow f -> {
                 misfireIssue(d, late, "firing once now");
                 return commitOccurrence(d, nextOrPark(def, now, zone, d.fireAt()));
             }
         }
+    }
+
+    /**
+     * Walks the missed fires keeping the last {@code maxFires}. When more were missed the next fire moves to the
+     * first of those at once, in one step whatever the downtime; the following rounds create their occurrences.
+     * Past the scan limit the missed fires are not counted: the definition fires once now, like
+     * {@code FireOnceNow}.
+     */
+    private Progress catchUp(DueSchedule d, Instant now, ZoneId zone, Duration late, int maxFires) {
+        var def = d.definition();
+        var window = new ArrayDeque<Instant>(maxFires + 1);
+        var fire = d.fireAt();
+        int scanned = 0;
+        while (fire != null && !fire.isAfter(now) && scanned < MAX_CATCH_UP_SCAN) {
+            window.addLast(fire);
+            if (window.size() > maxFires) window.removeFirst();
+            scanned++;
+            fire = Cron.next(def.cron(), fire, zone).orElse(null);
+        }
+        if (fire != null && !fire.isAfter(now)) {
+            misfireIssue(d, late, "more than " + MAX_CATCH_UP_SCAN + " fires missed, firing once now");
+            return commitOccurrence(d, nextOrPark(def, now, zone, d.fireAt()));
+        }
+        if (scanned > maxFires) {
+            var resume = window.getFirst();
+            if (store.setNextFire(d.scheduleId(), def.revision(), d.fireAt(), resume)) {
+                misfireIssue(d, late, "catching up the last " + maxFires + " fires from " + resume);
+                return Progress.ADVANCED;
+            }
+            return Progress.NONE;
+        }
+        // each missed fire gets its own occurrence; the next round picks the following one up
+        return commitOccurrence(d, nextOrPark(def, d.fireAt(), zone, d.fireAt()));
     }
 
     private void misfireIssue(DueSchedule d, Duration late, String action) {
@@ -219,7 +277,7 @@ class RecurringTaskService extends CustomThread {
         });
     }
 
-    private boolean commitOccurrence(DueSchedule d, Instant next) {
+    private Progress commitOccurrence(DueSchedule d, Instant next) {
         var def = d.definition();
         var builder = TaskRecord.builder()
                 .id(ids.nextId())
@@ -255,7 +313,7 @@ class RecurringTaskService extends CustomThread {
                 observer.emit(new TaskEvent.ScheduleFired(d.scheduleId(), occurrence.id(), d.fireAt()));
             }
         }
-        return committed;
+        return committed ? Progress.QUEUED : Progress.NONE;
     }
 
     static class Builder {

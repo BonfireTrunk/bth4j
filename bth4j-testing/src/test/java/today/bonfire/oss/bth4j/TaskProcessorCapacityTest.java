@@ -10,7 +10,6 @@ import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -66,7 +65,7 @@ class TaskProcessorCapacityTest {
     private final int queueId = names.queueId("Q:DEF");
     private final int typeId = names.typeId(TYPE.name());
     private final int failingTypeId = names.typeId(FAILING.name());
-    private final Map<Long, TaskExecution> running = new ConcurrentHashMap<>();
+    private final Admission admission = new Admission();
     private final QueueReservations reservations = new QueueReservations();
     private final RunnerStatus status = new RunnerStatus(clock);
     private final TaskProcessorRegistry registry = new TaskProcessorRegistry()
@@ -83,10 +82,10 @@ class TaskProcessorCapacityTest {
         long inheritedId = enqueue();
 
         processOnce(predecessor);
-        assertThat(running).containsKey(inheritedId);
+        assertThat(attempt(inheritedId)).isNotNull();
         var replacement = processor(executor, 1);
         executor.runNext();
-        assertThat(running).isEmpty();
+        assertThat(admission.attempts()).isEmpty();
         assertThat(store.getTask(inheritedId).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
         assertThat(reservations.running(queueId)).isZero();
 
@@ -103,7 +102,7 @@ class TaskProcessorCapacityTest {
         long id = enqueue();
 
         processOnce(processor);
-        var stale = running.get(id);
+        var stale = attempt(id);
         clock.advance(LEASE.plusMillis(1));
         var failure = new FailureInfo(1, clock.instant(), "lease-expired", "lease expired", null);
         assertThat(store.failExpired(id, stale.revision(), failure, clock.instant(), true, null))
@@ -111,13 +110,13 @@ class TaskProcessorCapacityTest {
         store.promote(10);
 
         processOnce(processor);
-        var current = running.get(id);
+        var current = attempt(id);
         assertThat(current).isNotSameAs(stale);
         assertThat(reservations.running(queueId)).isEqualTo(2);
 
         executor.runNext();
 
-        assertThat(running).containsEntry(id, current);
+        assertThat(attempt(id)).isSameAs(current);
         assertThat(reservations.running(queueId)).isEqualTo(1);
         var leased = store.getTask(id).orElseThrow();
         assertThat(leased.state()).isEqualTo(TaskState.LEASED);
@@ -129,7 +128,7 @@ class TaskProcessorCapacityTest {
 
         executor.runNext();
         assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
-        assertThat(running).isEmpty();
+        assertThat(admission.attempts()).isEmpty();
         assertThat(reservations.running(queueId)).isZero();
 
         long first = enqueue();
@@ -158,7 +157,7 @@ class TaskProcessorCapacityTest {
         var executor = new ManualExecutor(10);
         var processor = processor(executor, 5, Map.of(queueId, QueuePolicy.maxConcurrent(5)));
         var ids = enqueue(3, "Q:DEF");
-        processor.quiet(true);
+        admission.quiet(true);
 
         processOnce(processor);
         processOnce(processor);
@@ -168,7 +167,7 @@ class TaskProcessorCapacityTest {
         assertThat(reservations.running(queueId)).isZero();
         assertThat(status.lastClaimAt()).isNull();
 
-        processor.quiet(false);
+        admission.quiet(false);
         processOnce(processor);
 
         assertThat(leased(ids)).isEqualTo(3);
@@ -306,7 +305,7 @@ class TaskProcessorCapacityTest {
         var processor = processor(executor, 1);
         long id = enqueue();
         processOnce(processor);
-        var abandoned = running.get(id);
+        var abandoned = attempt(id);
         assertThat(reservations.abandon(abandoned)).isTrue();
         clock.advance(LEASE.plusMillis(1));
         var failure = new FailureInfo(1, clock.instant(), "lease-expired", "lease expired", null);
@@ -350,7 +349,7 @@ class TaskProcessorCapacityTest {
         assertThat(state(id)).isEqualTo(TaskState.QUEUED);
         assertThat(executor.available()).isEqualTo(2);
         assertThat(reservations.running(queueId)).isZero();
-        assertThat(running).isEmpty();
+        assertThat(admission.attempts()).isEmpty();
         assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
 
         processOnce(processor);
@@ -410,7 +409,7 @@ class TaskProcessorCapacityTest {
         assertThatThrownBy(() -> processOnce(processor)).isInstanceOf(TaskStoreException.class);
 
         assertThat(state(id)).isEqualTo(TaskState.LEASED);
-        assertThat(running).isEmpty();
+        assertThat(admission.attempts()).isEmpty();
         assertThat(executor.available()).isEqualTo(2);
         assertThat(reservations.running(queueId)).isZero();
 
@@ -425,7 +424,7 @@ class TaskProcessorCapacityTest {
         processOnce(processor);
 
         assertThat(state(id)).isEqualTo(TaskState.LEASED);
-        assertThat(running).containsKey(id);
+        assertThat(attempt(id)).isNotNull();
         assertThat(reservations.running(queueId)).isEqualTo(1);
     }
 
@@ -454,7 +453,7 @@ class TaskProcessorCapacityTest {
         assertThat(claims).hasValue(1);
         assertThat(leased(firstIds)).isEqualTo(2);
         assertThat(leased(secondIds)).isEqualTo(2);
-        assertThat(running).hasSize(4);
+        assertThat(admission.attempts()).hasSize(4);
         assertThat(executor.available()).isZero();
         assertThat(reservations.running(first)).isEqualTo(2);
         assertThat(reservations.running(second)).isEqualTo(2);
@@ -480,7 +479,7 @@ class TaskProcessorCapacityTest {
 
         processor.renewOnce();
 
-        assertThat(running).containsKey(id);
+        assertThat(attempt(id)).isNotNull();
         assertThat(store.getTask(id).orElseThrow().leaseUntil()).isEqualTo(leaseBefore);
         assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
         assertThat(reservations.running(queueId)).isEqualTo(1);
@@ -513,7 +512,7 @@ class TaskProcessorCapacityTest {
 
         assertThat(state(id)).isEqualTo(TaskState.SUCCEEDED);
         assertThat(status.issues()).noneMatch(i -> i.kind().equals("lease-lost"));
-        assertThat(running).isEmpty();
+        assertThat(admission.attempts()).isEmpty();
     }
 
     @Test
@@ -532,7 +531,7 @@ class TaskProcessorCapacityTest {
         processOnce(processor);
 
         assertThat(state(id)).isEqualTo(TaskState.LEASED);
-        assertThat(running).isEmpty();
+        assertThat(admission.attempts()).isEmpty();
         assertThat(executor.available()).isEqualTo(1);
         assertThat(reservations.running(queueId)).isZero();
         assertThat(status.issues()).anyMatch(i -> i.kind().equals("executor-rejected"));
@@ -554,8 +553,9 @@ class TaskProcessorCapacityTest {
         processOnce(processor);
 
         assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
-        assertThat(running).isEmpty();
+        assertThat(admission.attempts()).isEmpty();
         assertThat(reservations.running(queueId)).isZero();
+        assertThat(executor.available()).isEqualTo(1);
 
         executor.reject = false;
         processOnce(processor);
@@ -654,6 +654,203 @@ class TaskProcessorCapacityTest {
         executor.runNext();
         processOnce(processor);
         assertThat(executor.claims).containsExactly(new Claim(2, 2), new Claim(2, 0));
+    }
+
+    // ---- slots on every exit ----------------------------------------------------------------------------
+
+    @Test
+    void anErrorFromTheClaimReleasesTheSlotsSoAReplacementProcessorStillClaims() throws Exception {
+        var executor = new ManualExecutor(1);
+        var fail = new AtomicInteger(1);
+        var failing = processorOn(
+                StoreInterceptor.around(store, (method, args, real) -> {
+                    if (method.equals("claim") && fail.getAndDecrement() > 0) throw new AssertionError("claim");
+                    return real.proceed();
+                }),
+                executor,
+                1);
+        long id = enqueue();
+
+        assertThatThrownBy(() -> processOnce(failing)).isInstanceOf(AssertionError.class);
+
+        assertThat(executor.available()).isEqualTo(1);
+        assertThat(admission.idle()).isTrue();
+        var replacement = processorOn(store, executor, 1);
+        processOnce(replacement);
+        assertThat(state(id)).isEqualTo(TaskState.LEASED);
+    }
+
+    @Test
+    void anExecutionThatCannotBeBuiltReturnsEveryClaimedTaskAndReleasesTheirSlots() throws Exception {
+        var executor = new ManualExecutor(3);
+        var unreachable = new Names(StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("typeNames")) throw new TaskStoreException("registry unreachable");
+            return real.proceed();
+        }));
+        var processor = processor(
+                new TaskExecution.Settings(
+                        store,
+                        store,
+                        unreachable,
+                        new Codecs(null),
+                        registry,
+                        RetryPolicies.of(RetryPolicy.defaultPolicy()),
+                        new Observers(null),
+                        clock,
+                        status,
+                        true,
+                        true,
+                        true,
+                        FailureDetail.FULL),
+                executor,
+                3,
+                List.of(queueId),
+                Map.of());
+        var ids = enqueue(3, "Q:DEF");
+
+        assertThatThrownBy(() -> processOnce(processor))
+                .isInstanceOf(TaskStoreException.class)
+                .hasMessageContaining("registry unreachable");
+
+        assertThat(ids).allSatisfy(id -> assertThat(state(id)).isEqualTo(TaskState.QUEUED));
+        assertThat(executor.available()).isEqualTo(3);
+        assertThat(executor.pending()).isZero();
+        assertThat(admission.idle()).isTrue();
+        assertThat(reservations.running(queueId)).isZero();
+    }
+
+    @Test
+    void anErrorFromTheExecutorOnTheSecondTaskKeepsTheFirstAndReturnsTheRest() throws Exception {
+        var executor = new ManualExecutor(3);
+        executor.failAt = 1;
+        executor.failWith = new AssertionError("executor");
+        var processor = processor(executor, 3);
+        var ids = enqueue(3, "Q:DEF");
+
+        assertThatThrownBy(() -> processOnce(processor)).isSameAs(executor.failWith);
+
+        assertThat(ids.stream().filter(id -> state(id) == TaskState.LEASED)).hasSize(1);
+        assertThat(ids.stream().filter(id -> state(id) == TaskState.QUEUED)).hasSize(2);
+        assertThat(executor.pending()).isEqualTo(1);
+        assertThat(executor.available()).isEqualTo(2);
+        assertThat(admission.attempts()).hasSize(1);
+        assertThat(reservations.running(queueId)).isEqualTo(1);
+    }
+
+    @Test
+    void aCallbackThatFailsAfterTheClaimReturnsTheTasksAndTheSlots() throws Exception {
+        var executor = new ManualExecutor(2);
+        executor.claimedFails = new IllegalStateException("callback");
+        var processor = processor(executor, 2);
+        var ids = enqueue(2, "Q:DEF");
+
+        assertThatThrownBy(() -> processOnce(processor)).isInstanceOf(IllegalStateException.class);
+
+        assertThat(ids).allSatisfy(id -> assertThat(state(id)).isEqualTo(TaskState.QUEUED));
+        assertThat(executor.available()).isEqualTo(2);
+        assertThat(admission.idle()).isTrue();
+    }
+
+    // ---- admission ----------------------------------------------------------------------------------------
+
+    @Test
+    void aClaimInFlightWhenTheRunnerGoesQuietKeepsItNotIdleUntilItsTasksHaveRun() throws Exception {
+        var executor = new ManualExecutor(1);
+        var claimed = new java.util.concurrent.CountDownLatch(1);
+        var proceed = new java.util.concurrent.CountDownLatch(1);
+        var processor = processorOn(
+                StoreInterceptor.around(store, (method, args, real) -> {
+                    var result = real.proceed();
+                    if (method.equals("claim")) {
+                        claimed.countDown();
+                        proceed.await();
+                    }
+                    return result;
+                }),
+                executor,
+                1);
+        long id = enqueue();
+        var thread = new Thread(() -> {
+            try {
+                processOnce(processor);
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        });
+        thread.start();
+        claimed.await();
+
+        admission.quiet(true);
+
+        assertThat(state(id)).isEqualTo(TaskState.LEASED);
+        assertThat(admission.attempts()).isEmpty();
+        assertThat(admission.idle()).isFalse();
+
+        proceed.countDown();
+        thread.join();
+
+        assertThat(admission.attempts()).hasSize(1);
+        assertThat(admission.idle()).isFalse();
+        executor.runNext();
+        assertThat(admission.idle()).isTrue();
+    }
+
+    @Test
+    void aProcessorBuiltBeforeQuietAndStartedAfterItReadsTheSharedQuietFlag() throws Exception {
+        var executor = new ManualExecutor(2);
+        var replacement = processor(executor, 2);
+        var ids = enqueue(2, "Q:DEF");
+
+        admission.quiet(true);
+        processOnce(replacement);
+
+        assertThat(ids).allSatisfy(id -> assertThat(state(id)).isEqualTo(TaskState.QUEUED));
+        assertThat(executor.available()).isEqualTo(2);
+    }
+
+    @Test
+    void quietRaisedWhileTheProcessorWaitsForASlotStopsTheClaimAndReturnsTheSlot() throws Exception {
+        var executor = new ManualExecutor(2);
+        executor.afterReserve = () -> admission.quiet(true);
+        var processor = processor(executor, 2);
+        var ids = enqueue(2, "Q:DEF");
+
+        processOnce(processor);
+
+        assertThat(ids).allSatisfy(id -> assertThat(state(id)).isEqualTo(TaskState.QUEUED));
+        assertThat(executor.available()).isEqualTo(2);
+        assertThat(admission.idle()).isTrue();
+        assertThat(status.lastClaimAt()).isNull();
+    }
+
+    @Test
+    void aLaterAttemptOfTheSameTaskDoesNotHideAnOlderOneThatIsStillRunning() throws Exception {
+        var executor = new ManualExecutor(2);
+        var processor = processor(executor, 2);
+        long id = enqueue();
+        processOnce(processor);
+        var stale = attempt(id);
+        clock.advance(LEASE.plusMillis(1));
+        var failure = new FailureInfo(1, clock.instant(), "lease-expired", "lease expired", null);
+        assertThat(store.failExpired(id, stale.revision(), failure, clock.instant(), true, null))
+                .isEqualTo(FailOutcome.RETRY);
+        store.promote(10);
+        processOnce(processor);
+        var current = attempt(id);
+        assertThat(current).isNotSameAs(stale);
+        assertThat(admission.attempts()).containsExactlyInAnyOrder(stale, current);
+
+        executor.runLast();
+
+        assertThat(admission.attempts()).containsExactly(stale);
+        assertThat(admission.running()).isEqualTo(1);
+        assertThat(admission.idle()).isFalse();
+        assertThat(reservations.running(queueId)).isEqualTo(1);
+
+        executor.runNext();
+
+        assertThat(admission.idle()).isTrue();
+        assertThat(reservations.running(queueId)).isZero();
     }
 
     private static void awaitState(Thread thread, Thread.State state) throws InterruptedException {
@@ -755,7 +952,7 @@ class TaskProcessorCapacityTest {
                 .group(new ThreadGroup("capacity-test"))
                 .threadName("capacity-test")
                 .settings(processorSettings)
-                .running(running)
+                .admission(admission)
                 .reservations(reservations)
                 .executor(executor)
                 .queueIds(queueIds)
@@ -778,6 +975,14 @@ class TaskProcessorCapacityTest {
         private final Deque<Runnable> tasks = new ArrayDeque<>();
         private int available;
         boolean reject;
+        /** runs after a reservation was granted, to act between the reservation and the claim */
+        Runnable afterReserve = () -> {};
+        /** the execute call (counting from 0) that throws {@code failWith} without freeing the slot */
+        int failAt = -1;
+
+        Error failWith;
+        private int executeCalls;
+        RuntimeException claimedFails;
         final List<Claim> claims = new ArrayList<>();
 
         ManualExecutor(int slots) {
@@ -788,6 +993,7 @@ class TaskProcessorCapacityTest {
         public synchronized int reserve(int max, Duration wait) {
             int given = Math.min(max, available);
             available -= given;
+            afterReserve.run();
             return given;
         }
 
@@ -798,11 +1004,21 @@ class TaskProcessorCapacityTest {
 
         @Override
         public synchronized void execute(Runnable task) {
+            if (failWith != null && executeCalls++ == failAt) throw failWith;
             if (reject) {
                 available++;
                 throw new RejectedExecutionException("rejected by the test");
             }
             tasks.add(task);
+        }
+
+        synchronized void runLast() {
+            var last = tasks.removeLast();
+            try {
+                last.run();
+            } finally {
+                available++;
+            }
         }
 
         synchronized void runNext() {
@@ -820,6 +1036,7 @@ class TaskProcessorCapacityTest {
 
         @Override
         public void claimed(int reserved, int claimed) {
+            if (claimedFails != null) throw claimedFails;
             claims.add(new Claim(reserved, claimed));
         }
 
@@ -839,5 +1056,13 @@ class TaskProcessorCapacityTest {
         public boolean awaitTermination(Duration timeout) {
             return tasks.isEmpty();
         }
+    }
+
+    /** The latest attempt of the task still tracked. */
+    private TaskExecution attempt(long id) {
+        return admission.attempts().stream()
+                .filter(a -> a.taskId() == id)
+                .max(java.util.Comparator.comparingInt(TaskExecution::revision))
+                .orElse(null);
     }
 }

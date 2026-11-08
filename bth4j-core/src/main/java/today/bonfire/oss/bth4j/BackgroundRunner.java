@@ -11,7 +11,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -58,11 +57,10 @@ public final class BackgroundRunner {
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final AtomicBoolean stopped = new AtomicBoolean(false);
     private final ReentrantLock lifecycleLock = new ReentrantLock();
-    private final Map<Long, TaskExecution> runningTasks = new ConcurrentHashMap<>();
+    private final Admission admission = new Admission();
     private final QueueReservations queueReservations = new QueueReservations();
 
     private volatile boolean stopRequested;
-    private volatile boolean quiet;
     private volatile int workerId;
     private volatile Set<Integer> workerQueueIds;
     private volatile Set<Integer> workerTypeIds;
@@ -131,7 +129,7 @@ public final class BackgroundRunner {
      *     written; with the built-in executors up to twice the concurrency limit
      */
     public int runningTasks() {
-        return runningTasks.size();
+        return admission.running();
     }
 
     /** @return the executor's current concurrency limit, or empty for an executor that does not expose it */
@@ -157,11 +155,11 @@ public final class BackgroundRunner {
                 ? RunnerHealth.Status.STOPPED
                 : !started.get()
                         ? RunnerHealth.Status.NEW
-                        : quiet ? RunnerHealth.Status.QUIET : RunnerHealth.Status.RUNNING;
+                        : admission.quiet() ? RunnerHealth.Status.QUIET : RunnerHealth.Status.RUNNING;
         return new RunnerHealth(
                 s,
                 workerId,
-                runningTasks.size(),
+                admission.running(),
                 queueReservations.abandoned(),
                 status.lastClaimAt(),
                 status.lastMaintenanceAt(),
@@ -177,17 +175,19 @@ public final class BackgroundRunner {
 
     /**
      * Starts all services and the monitor that restarts a service if its thread dies. Returns after
-     * starting. Calling it a second time, or after {@link #stop()}, logs a warning and does nothing.
+     * starting. Calling it a second time, or after {@link #stop()}, logs a warning and does nothing. When the
+     * start fails, for example because the store cannot be reached, what was started is stopped again and the
+     * exception is rethrown; {@code start()} can then be called again.
      *
      * @throws TaskConfigurationException when no processor is registered
      */
     public void start() {
+        if (registry.isEmpty()) {
+            throw new TaskConfigurationException("No task processor registered; register processors before start()");
+        }
         if (!started.compareAndSet(false, true)) {
             log.warn("Background runner {} is already started, ignoring start()", threadGroup.getName());
             return;
-        }
-        if (registry.isEmpty()) {
-            throw new TaskConfigurationException("No task processor registered; register processors before start()");
         }
         lifecycleLock.lock();
         try {
@@ -195,54 +195,92 @@ public final class BackgroundRunner {
                 log.warn("Background runner {} was stopped before it started", threadGroup.getName());
                 return;
             }
-            registry.freeze();
-            var queueIds = new ArrayList<Integer>();
-            for (var q : queues.queuesToProcess) queueIds.add(names.queueId(q));
-            var policies = new LinkedHashMap<Integer, QueuePolicy>();
-            config.queuePolicies.forEach((q, p) -> policies.put(names.queueId(q), p));
-            var typeIds = new HashSet<Integer>();
-            for (var e : registry.typeNames()) typeIds.add(names.typeId(e));
-            workerQueueIds = Set.copyOf(queueIds);
-            workerTypeIds = Set.copyOf(typeIds);
-            workerId = store.allocateWorkerId(config.workerLabel, workerQueueIds, workerTypeIds);
-            services = new RunnerServices(
-                    store,
-                    names,
-                    client.codecs(),
-                    client.ids(),
-                    registry,
-                    retryPolicies,
-                    observer,
-                    config.clock,
-                    status,
-                    !config.succeededRetention.isZero(),
-                    config.keepSucceededPayload,
-                    !config.deadRetention.isZero(),
-                    config.failureDetail,
-                    List.copyOf(queueIds),
-                    policies,
-                    Set.copyOf(typeIds),
-                    workerId);
-            taskProcessorService = startTaskProcessorService();
-            scheduledTaskService = startScheduledTaskService();
-            recurringTaskService = startRecurringTaskService();
-            maintenanceService = startMaintenanceService();
-            log.info("Background runner {} started as worker {} on {}", threadGroup.getName(), workerId, store.info());
-            monitoringTask = scheduler.scheduleWithFixedDelay(
-                    this::checkServices,
-                    config.serviceCheckInterval.toMillis(),
-                    config.serviceCheckInterval.toMillis(),
-                    TimeUnit.MILLISECONDS);
+            try {
+                startServices();
+            } catch (RuntimeException | Error e) {
+                abandonStart();
+                started.set(false);
+                throw e;
+            }
         } finally {
             lifecycleLock.unlock();
         }
     }
 
+    private void startServices() {
+        registry.freeze();
+        var queueIds = new ArrayList<Integer>();
+        for (var q : queues.queuesToProcess) queueIds.add(names.queueId(q));
+        var policies = new LinkedHashMap<Integer, QueuePolicy>();
+        config.queuePolicies.forEach((q, p) -> policies.put(names.queueId(q), p));
+        var typeIds = new HashSet<Integer>();
+        for (var e : registry.typeNames()) typeIds.add(names.typeId(e));
+        workerQueueIds = Set.copyOf(queueIds);
+        workerTypeIds = Set.copyOf(typeIds);
+        workerId = store.allocateWorkerId(config.workerLabel, workerQueueIds, workerTypeIds);
+        // stop() gives up waiting for the lifecycle lock when a store call here hangs; it cannot stop what is not
+        // started yet
+        if (stopRequested) {
+            log.warn("Background runner {} was stopped before it started", threadGroup.getName());
+            return;
+        }
+        services = new RunnerServices(
+                store,
+                names,
+                client.codecs(),
+                client.ids(),
+                registry,
+                retryPolicies,
+                observer,
+                config.clock,
+                status,
+                !config.succeededRetention.isZero(),
+                config.keepSucceededPayload,
+                !config.deadRetention.isZero(),
+                config.failureDetail,
+                List.copyOf(queueIds),
+                policies,
+                Set.copyOf(typeIds),
+                workerId);
+        taskProcessorService = startTaskProcessorService();
+        scheduledTaskService = startScheduledTaskService();
+        recurringTaskService = startRecurringTaskService();
+        maintenanceService = startMaintenanceService();
+        log.info("Background runner {} started as worker {} on {}", threadGroup.getName(), workerId, store.info());
+        monitoringTask = scheduler.scheduleWithFixedDelay(
+                this::checkServices,
+                config.serviceCheckInterval.toMillis(),
+                config.serviceCheckInterval.toMillis(),
+                TimeUnit.MILLISECONDS);
+    }
+
+    /** Stops the services a failed {@link #start()} got going, so that nothing runs and the next start is clean. */
+    private void abandonStart() {
+        var deadline = System.nanoTime() + config.shutdownTimeout.toNanos();
+        var processor = taskProcessorService;
+        var threads = new CustomThread[] {processor, scheduledTaskService, recurringTaskService, maintenanceService};
+        for (var service : threads) {
+            if (service != null) service.stopThread();
+        }
+        for (var service : threads) {
+            awaitStop(service, "Service of the failed start", remaining(deadline));
+        }
+        if (processor != null) processor.stopLeaseRenewal();
+        taskProcessorService = null;
+        scheduledTaskService = null;
+        recurringTaskService = null;
+        maintenanceService = null;
+        services = null;
+        workerId = 0;
+    }
+
+    private static Duration remaining(long deadline) {
+        return Duration.ofNanos(Math.max(0, deadline - System.nanoTime()));
+    }
+
     /** Stops claiming new tasks; running tasks finish and every other service keeps going. */
     public void quiet() {
-        quiet = true;
-        var p = taskProcessorService;
-        if (p != null) p.quiet(true);
+        admission.quiet(true);
         var maintenance = maintenanceService;
         if (maintenance != null) maintenance.heartbeatNow();
         log.info("Background runner {} is quiet", threadGroup.getName());
@@ -250,34 +288,33 @@ public final class BackgroundRunner {
 
     /** Resumes claiming after {@link #quiet()}. */
     public void resume() {
-        quiet = false;
-        var p = taskProcessorService;
-        if (p != null) p.quiet(false);
+        admission.quiet(false);
         var maintenance = maintenanceService;
         if (maintenance != null) maintenance.heartbeatNow();
         log.info("Background runner {} resumed", threadGroup.getName());
     }
 
     public boolean isQuiet() {
-        return quiet;
+        return admission.quiet();
     }
 
     /**
-     * {@link #quiet()}, then waits until no task runs on this instance or the timeout passes. The runner
-     * stays quiet afterwards; call {@link #resume()} or {@link #stop()}.
+     * {@link #quiet()}, then waits until no task runs on this instance and no claim that began before is still
+     * in progress, or the timeout passes. The runner stays quiet afterwards; call {@link #resume()} or
+     * {@link #stop()}.
      *
      * @return true when every running task finished within the timeout
      */
     public boolean drain(Duration timeout) {
         quiet();
         var deadline = System.nanoTime() + timeout.toNanos();
-        while (!runningTasks.isEmpty()) {
+        while (!admission.idle()) {
             if (System.nanoTime() >= deadline) return false;
             try {
                 Thread.sleep(20);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return runningTasks.isEmpty();
+                return admission.idle();
             }
         }
         return true;
@@ -296,6 +333,8 @@ public final class BackgroundRunner {
                     log.error("Task processor thread is not alive, restarting it");
                     taskProcessorService.stopLeaseRenewal();
                     taskProcessorService = startTaskProcessorService();
+                } else if (taskProcessorService.ensureRenewer()) {
+                    log.error("Lease renewal thread is not alive, restarted it");
                 }
                 if (!scheduledTaskService.isAlive()) {
                     log.error("ScheduledTaskService thread is not alive, restarting it");
@@ -328,14 +367,29 @@ public final class BackgroundRunner {
             return;
         }
         log.info("Stopping background runner {}", threadGroup.getName());
+        // one monotonic deadline for every wait below: the shutdown timeout bounds the whole of stop()
+        var deadline = System.nanoTime() + config.shutdownTimeout.toNanos();
+        // before the lock: a start() that is stuck in a store call checks it when the call returns
+        stopRequested = true;
         final TaskProcessorService processor;
         final CustomThread scheduled;
         final CustomThread recurring;
         final CustomThread maintenance;
         // under the lock so that the monitor cannot restart a service that is being stopped
-        lifecycleLock.lock();
+        boolean locked = false;
         try {
-            stopRequested = true;
+            locked = lifecycleLock.tryLock(remaining(deadline).toNanos(), TimeUnit.NANOSECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        try {
+            if (!locked) {
+                log.warn(
+                        "Background runner {} is starting or restarting a service and did not release the lifecycle"
+                                + " lock within {}, stopping without it",
+                        threadGroup.getName(),
+                        config.shutdownTimeout);
+            }
             var task = monitoringTask;
             if (task != null) task.cancel(false);
             processor = taskProcessorService;
@@ -349,17 +403,16 @@ public final class BackgroundRunner {
                 if (service != null) service.stopThread();
             }
         } finally {
-            lifecycleLock.unlock();
+            if (locked) lifecycleLock.unlock();
         }
-        var timeout = config.shutdownTimeout;
-        awaitStop(processor, "Task processor", timeout);
-        awaitStop(scheduled, "Scheduled task service", timeout);
-        awaitStop(recurring, "Recurring task service", timeout);
-        awaitStop(maintenance, "Maintenance service", timeout);
+        awaitStop(processor, "Task processor", remaining(deadline));
+        awaitStop(scheduled, "Scheduled task service", remaining(deadline));
+        awaitStop(recurring, "Recurring task service", remaining(deadline));
+        awaitStop(maintenance, "Maintenance service", remaining(deadline));
 
         scheduler.shutdown();
         try {
-            if (!scheduler.awaitTermination(timeout.toNanos(), TimeUnit.NANOSECONDS)) {
+            if (!scheduler.awaitTermination(remaining(deadline).toNanos(), TimeUnit.NANOSECONDS)) {
                 scheduler.shutdownNow();
             }
         } catch (InterruptedException e) {
@@ -370,12 +423,12 @@ public final class BackgroundRunner {
         // no service submits tasks anymore, let the running ones finish while their leases are still renewed
         taskExecutor.shutdown();
         try {
-            if (taskExecutor.awaitTermination(timeout)) {
+            if (taskExecutor.awaitTermination(remaining(deadline))) {
                 log.info("Background runner {} stopped", threadGroup.getName());
             } else {
                 log.warn(
                         "Tasks still running after {}. They keep their lease until it expires and are then retried",
-                        timeout);
+                        config.shutdownTimeout);
             }
         } catch (InterruptedException e) {
             log.warn("Interrupted while waiting for running tasks to finish");
@@ -404,13 +457,12 @@ public final class BackgroundRunner {
                 .group(threadGroup)
                 .threadName("taskProcessor")
                 .executor(taskExecutor)
-                .running(runningTasks)
+                .admission(admission)
                 .reservations(queueReservations)
                 .lease(config.leaseDuration)
                 .defaultMaxRunTime(config.defaultMaxRunTime)
                 .idlePollInterval(config.idlePollInterval)
                 .claimBatchSize(config.claimBatchSize)
-                .quiet(quiet)
                 .create();
         service.start();
         return service;
@@ -467,8 +519,8 @@ public final class BackgroundRunner {
                 .failureDetail(config.failureDetail)
                 .batchSize(config.claimBatchSize * 4)
                 .purgeBatchSize(config.purgeBatchSize)
-                .worker(workerId, config.workerLabel, workerQueueIds, workerTypeIds, runningTasks::size)
-                .accepting(() -> !quiet && !stopRequested)
+                .worker(workerId, config.workerLabel, workerQueueIds, workerTypeIds, admission::running)
+                .accepting(() -> !admission.quiet() && !stopRequested)
                 .workerStaleAfter(config.workerStaleAfter)
                 .create();
         service.start();

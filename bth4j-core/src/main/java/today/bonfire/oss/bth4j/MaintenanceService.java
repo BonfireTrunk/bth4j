@@ -204,7 +204,11 @@ class MaintenanceService extends CustomThread {
     /** An Error from the policy, fatal or not, is logged and answered with an immediate retry; it never ends the maintenance thread. */
     private RetryPolicy.Decision decide(TaskRecord record) {
         var policy = retryPolicies.named(record.retryPolicy());
-        if (policy == null) policy = retryPolicies.defaultPolicy();
+        if (policy == null) {
+            status.issue("retry-policy", "unknown retry policy " + record.retryPolicy(), record.id());
+            log.warn("Task {} names unknown retry policy {}, using the default", record.id(), record.retryPolicy());
+            policy = retryPolicies.defaultPolicy();
+        }
         try {
             var d = policy.decide(names.view(record), null);
             return d != null ? d : RetryPolicy.Decision.retryAfter(Duration.ZERO);
