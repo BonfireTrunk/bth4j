@@ -18,13 +18,16 @@ public interface MaintenanceStore extends TaskStore {
      * {@code retention}, oldest first, up to the limit. A task whose unique key is still held
      * ({@link TaskRecord#keyUntil()} in the future) is kept.
      *
+     * @param limit at least 1
      * @return how many were removed
      */
     long purge(TaskState state, Duration retention, int limit);
 
     /**
-     * Releases unique keys of finished tasks whose {@link TaskRecord#keyUntil()} has passed.
+     * Releases unique keys of finished tasks whose {@link TaskRecord#keyUntil()} has passed, including the keys
+     * that removed tasks left taken.
      *
+     * @param limit at least 1; the most keys one call releases
      * @return how many were released
      */
     int releaseKeys(int limit);

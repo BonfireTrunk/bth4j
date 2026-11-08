@@ -59,7 +59,7 @@ The metrics and the admin HTTP server are separate modules; add them when you us
 |---|---|
 | `bth4j-core` | task model, runner, services, the store interface (`today.bonfire.oss.bth4j.spi`) |
 | `bth4j-redis` | `RedisTaskStore`: Redis 7.4 or newer or Valkey 9 or newer; uses Jedis. Tested on standalone Redis 8.8 and Valkey 9.1.3; Redis Cluster is not tested (see "Redis") |
-| `bth4j-postgres` | `PostgresTaskStore`: PostgreSQL 10 or newer, tested on 18; uses only `java.sql`, the application supplies the JDBC driver and a pooled `DataSource` |
+| `bth4j-postgres` | `PostgresTaskStore`: PostgreSQL 16 or newer, 17 or newer recommended, tested on 18; uses only `java.sql`, the application supplies the JDBC driver and a pooled `DataSource` |
 | `bth4j-testing` | `InMemoryStore` and `MutableClock` for tests of applications |
 | `bth4j-micrometer` | `MicrometerTaskObserver` and `MicrometerRunnerMetrics`; `micrometer-core` is a provided dependency, the application supplies it |
 | `bth4j-admin-http` | `AdminHttpServer`: a JSON admin API over `AdminOps` on the JDK HTTP server, with users, roles and sessions; no dependencies besides `bth4j-core` |
@@ -331,7 +331,7 @@ with a caller id, the colliding positions remain marked in `notStored()`; exhaus
 replacement ids. A caller id taken by another writer after preflight also fails with `EnqueueFailedException`,
 carrying a `TaskIdReusedException` cause. Such caller-id reuse still requires caller correction.
 
-On PostgreSQL the id check reads the id sequence with `pg_sequence_last_value` (PostgreSQL 10 or newer), which
+On PostgreSQL the id check reads the id sequence with `pg_sequence_last_value`, which
 needs only the USAGE privilege on `<prefix>_task_id` that `allocateIds` already uses.
 
 ### Cancelling tasks
@@ -913,9 +913,9 @@ var store = new PostgresTaskStore(dataSource, "bth");   // tables bth_task, bth_
 
 The tables are created when the runner or client is built, or run `store.schemaStatements()` from your
 migration tool. The prefix is lower case letters, digits and underscores, at most 41 characters; runners with
-the same prefix on the same database share the work. There are no foreign keys. PostgreSQL 10 or newer is
-required (`SKIP LOCKED`, `ON CONFLICT`, `pg_sequence_last_value`); the tests run on 18. The store runs at the
-connection's isolation level and is written for READ COMMITTED, PostgreSQL's default: under REPEATABLE READ or
+the same prefix on the same database share the work. There are no foreign keys. PostgreSQL 16 or newer is
+supported, 17 or newer recommended; the tests run on 18. The store runs at the connection's isolation level
+and is written for READ COMMITTED, PostgreSQL's default: under REPEATABLE READ or
 SERIALIZABLE, concurrent claims and fenced writes fail with serialization errors. Tables written by bth4j 3.0 or 4.0.0 (schema
 version 1 or 2) are refused by `init`; start with a new prefix or drop the tables.
 
@@ -1026,9 +1026,9 @@ changes is in [CHANGELOG.md](CHANGELOG.md).
 - Issues are kept in the memory of the runner that recorded them (the last 100) and are lost on restart.
 - Admin sessions of `AdminHttpServer` are in memory and the server has no user store beyond the users given to
   the builder; put TLS (`https`) or a TLS-terminating proxy in front of it when it is not on the loopback interface.
-- The Redis store needs Redis 7.4 or newer or Valkey 9 or newer, the PostgreSQL store PostgreSQL 10 or
-  newer, and Java 21 or later is required. Redis Cluster is not tested, and a namespace's slot must not be
-  resharded while runners use it.
+- The Redis store needs Redis 7.4 or newer or Valkey 9 or newer, the PostgreSQL store PostgreSQL 16 or
+  newer (17 or newer recommended), and Java 21 or later is required. Redis Cluster is not tested, and a
+  namespace's slot must not be resharded while runners use it.
 
 ## Contributing
 

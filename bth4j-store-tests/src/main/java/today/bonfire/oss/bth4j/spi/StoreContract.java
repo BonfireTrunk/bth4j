@@ -2016,6 +2016,29 @@ public abstract class StoreContract {
     }
 
     @Test
+    void releaseKeysReleasesAtMostTheLimitAcrossFinishedAndRemovedTasks() {
+        for (var key : List.of("kept-1", "kept-2")) {
+            TaskRecord t = leased(task().uniqueKey(key).keyKeep(SHORT));
+            assertThat(store.ack(t.id(), t.revision(), true, true, null)).isTrue();
+        }
+        for (var key : List.of("removed-1", "removed-2")) {
+            TaskRecord t = leased(task().uniqueKey(key).keyKeep(SHORT));
+            assertThat(store.ack(t.id(), t.revision(), false, false, null)).isTrue();
+        }
+        advance(PAST_SHORT);
+        if (releasesKeysOnItsOwn()) {
+            assertThat(store.releaseKeys(3)).isZero();
+        } else {
+            assertThat(store.releaseKeys(3)).isEqualTo(3);
+            assertThat(store.releaseKeys(3)).isEqualTo(1);
+            assertThat(store.releaseKeys(3)).isZero();
+        }
+        for (var key : List.of("kept-1", "kept-2", "removed-1", "removed-2")) {
+            put(task().uniqueKey(key));
+        }
+    }
+
+    @Test
     void nextDueIsTheEarliestScheduledDue() {
         assertThat(store.nextDue()).isNull();
         putNew();

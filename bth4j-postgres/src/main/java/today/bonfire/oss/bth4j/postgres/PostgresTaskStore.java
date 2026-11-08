@@ -56,9 +56,8 @@ import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /**
- * {@link FullStore} on PostgreSQL (10 or newer for {@code SKIP LOCKED}, {@code ON CONFLICT} and
- * {@code pg_sequence_last_value}; tested
- * on 18): one row per task in {@code <prefix>_task} with a state column, name registries in
+ * {@link FullStore} on PostgreSQL (16 or newer, 17 or newer recommended, tested on 18): one row per task in
+ * {@code <prefix>_task} with a state column, name registries in
  * {@code <prefix>_queue} and {@code <prefix>_type}, workers in {@code <prefix>_worker}, recurring
  * definitions in {@code <prefix>_schedule}. Each transition's check and writes commit together: claims use
  * {@code FOR UPDATE SKIP LOCKED}, the fenced transitions are {@code UPDATE ... WHERE id = ? AND revision = ?
