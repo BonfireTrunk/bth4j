@@ -11,11 +11,11 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -69,7 +69,7 @@ public final class AdminHttpServer {
             + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; "
             + "base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
 
-    private record User(PasswordHash password, Role role) {}
+    private record User(byte[] digest, Role role) {}
 
     private final AdminOps admin;
     private final String host;
@@ -83,7 +83,7 @@ public final class AdminHttpServer {
     private final boolean ownExecutor;
     private final Sessions sessions;
     private final LoginThrottle throttle;
-    private final PasswordHash dummyPassword = PasswordHash.create(randomSecret());
+    private final byte[] dummyDigest = sha256(randomBytes());
     private final boolean secureCookie;
     private HttpServer server;
     private boolean stopped;
@@ -367,7 +367,8 @@ public final class AdminHttpServer {
             throw new HttpError(400, "user and password are required");
         }
         var user = users.get(name);
-        var matches = (user == null ? dummyPassword : user.password()).matches(password);
+        var expected = user == null ? dummyDigest : user.digest();
+        var matches = MessageDigest.isEqual(sha256(password.getBytes(StandardCharsets.UTF_8)), expected);
         if (user == null || !matches) {
             throw new HttpError(401, "invalid credentials");
         }
@@ -666,10 +667,18 @@ public final class AdminHttpServer {
         ex.getResponseBody().write(bytes);
     }
 
-    private static String randomSecret() {
+    private static byte[] randomBytes() {
         var bytes = new byte[32];
         new SecureRandom().nextBytes(bytes);
-        return Base64.getEncoder().encodeToString(bytes);
+        return bytes;
+    }
+
+    private static byte[] sha256(byte[] input) {
+        try {
+            return MessageDigest.getInstance("SHA-256").digest(input);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is required of every JDK", e);
+        }
     }
 
     /** Collects the settings of an {@link AdminHttpServer}. */
@@ -701,12 +710,12 @@ public final class AdminHttpServer {
             return this;
         }
 
-        /** Adds a user; at least one is required. Only a salted PBKDF2-HMAC-SHA256 hash of the password is kept. */
+        /** Adds a user; at least one is required. Only the SHA-256 digest of the password is kept. */
         public Builder user(String name, String password, Role role) {
             if (name == null || name.isEmpty() || password == null || role == null) {
                 throw new IllegalArgumentException("name, password and role are required");
             }
-            users.put(name, new User(PasswordHash.create(password), role));
+            users.put(name, new User(sha256(password.getBytes(StandardCharsets.UTF_8)), role));
             return this;
         }
 

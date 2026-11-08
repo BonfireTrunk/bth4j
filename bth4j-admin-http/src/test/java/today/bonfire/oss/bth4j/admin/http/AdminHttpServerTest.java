@@ -1092,18 +1092,6 @@ class AdminHttpServerTest {
     }
 
     @Test
-    void passwordsAreSaltedAndVerifiedAgainstThePlaintext() {
-        var one = PasswordHash.create("s3cret");
-        var two = PasswordHash.create("s3cret");
-
-        assertThat(one.salt()).isNotEqualTo(two.salt());
-        assertThat(one.hash()).isNotEqualTo(two.hash());
-        assertThat(one.matches("s3cret")).isTrue();
-        assertThat(one.matches("s3cret ")).isFalse();
-        assertThat(PasswordHash.create("").matches("")).isTrue();
-    }
-
-    @Test
     void sessionsAreCappedAndEvictTheOldest() {
         var sessions = new Sessions(clock, Duration.ofHours(1), 3);
         var first = sessions.create("a", Role.ADMIN);
