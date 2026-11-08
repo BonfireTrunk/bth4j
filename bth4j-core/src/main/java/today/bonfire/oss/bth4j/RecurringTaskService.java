@@ -281,6 +281,7 @@ class RecurringTaskService extends CustomThread {
         var def = d.definition();
         var builder = TaskRecord.builder()
                 .id(ids.nextId())
+                .revision(IdAllocator.firstRevision())
                 .queueId(def.queueId())
                 .typeId(def.typeId())
                 .payloadVersion(def.payloadVersion())

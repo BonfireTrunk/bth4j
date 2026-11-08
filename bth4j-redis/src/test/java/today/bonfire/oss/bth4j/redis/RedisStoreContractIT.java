@@ -63,6 +63,12 @@ class RedisStoreContractIT extends StoreContract {
     }
 
     @Override
+    protected boolean corruptStoredValue(String namespace, long taskId) {
+        jedis.hset(new Keys(namespace).task(taskId), Keys.F_HEADERS, "{\"a\":null}");
+        return true;
+    }
+
+    @Override
     protected void fillRegistry(TaskStore fresh, String namespace, Registry registry, int lastId) {
         var counter = new Keys(namespace).prefix + "seq:" + (registry == Registry.QUEUE ? "queue" : "type");
         jedis.set(counter, Integer.toString(lastId));

@@ -470,17 +470,17 @@ class MaintenanceServiceTest {
     // ---- purge ----------------------------------------------------------------------------------------
 
     @Test
-    void aFinishedTaskIsPurgedOnlyOnceItIsOlderThanTheRetention() throws Exception {
+    void aFinishedTaskIsPurgedOnceItIsAsOldAsTheRetention() throws Exception {
         retention = Map.of(TaskState.SUCCEEDED, Duration.ofHours(1));
-        long old = succeeded(request().build());
-        clock.advance(Duration.ofMillis(1));
         long boundary = succeeded(request().build());
-        clock.advance(Duration.ofHours(1));
+        clock.advance(Duration.ofMillis(1));
+        long younger = succeeded(request().build());
+        clock.advance(Duration.ofHours(1).minusMillis(1));
 
         purge();
 
-        assertThat(store.getTask(old)).isEmpty();
-        assertThat(store.getTask(boundary)).isPresent();
+        assertThat(store.getTask(boundary)).isEmpty();
+        assertThat(store.getTask(younger)).isPresent();
         assertThat(events).containsExactly(new TaskEvent.Purged(TaskState.SUCCEEDED, 1));
     }
 
@@ -534,7 +534,7 @@ class MaintenanceServiceTest {
     }
 
     @Test
-    void aTaskHoldingItsUniqueKeyIsNotPurgedBeforeTheKeyWindowEnds() throws Exception {
+    void aTaskPastRetentionIsPurgedWhileItsKeyStaysTakenUntilTheWindowEnds() throws Exception {
         retention = Map.of(TaskState.SUCCEEDED, Duration.ofMinutes(1));
         long id = succeeded(request()
                 .uniqueKey("k", Uniqueness.keepFor(Duration.ofHours(1)))
@@ -543,14 +543,14 @@ class MaintenanceServiceTest {
 
         purge();
 
-        assertThat(store.getTask(id)).isPresent();
-        assertThat(events).isEmpty();
+        assertThat(store.getTask(id)).isEmpty();
+        assertThat(events).containsExactly(new TaskEvent.Purged(TaskState.SUCCEEDED, 1));
+        assertThat(client.enqueue(request().uniqueKey("k").build()).accepted()).isFalse();
 
         clock.advance(Duration.ofHours(1));
         purge();
 
-        assertThat(store.getTask(id)).isEmpty();
-        assertThat(events).containsExactly(new TaskEvent.Purged(TaskState.SUCCEEDED, 1));
+        assertThat(client.enqueue(request().uniqueKey("k").build()).accepted()).isTrue();
     }
 
     @Test

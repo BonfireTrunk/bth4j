@@ -31,6 +31,7 @@ import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
+import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 class DefaultAdminOpsTest {
@@ -442,6 +443,21 @@ class DefaultAdminOpsTest {
     }
 
     @Test
+    void aTaskThatCannotBeReadCanStillBeCancelledAndDeleted() {
+        handlers.put("getTask", a -> {
+            throw new UnreadableTaskException(
+                    (Long) a[0], "task " + a[0] + " has a stored value that cannot be read", null);
+        });
+        handlers.put("cancel", a -> CancelOutcome.CANCELLED);
+        handlers.put("delete", a -> true);
+
+        assertThat(ops.cancel(7, 1, "stop")).isEqualTo(CancelOutcome.CANCELLED);
+        assertThat(ops.delete(7, 2)).isTrue();
+
+        assertThat(calls).containsExactly("getTask[7]", "cancel[7, 1, stop, null]", "getTask[7]", "delete[7, 2, null]");
+    }
+
+    @Test
     void cancelOfAnOrdinaryTaskDoesNotTouchSchedules() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
         handlers.put("getTask", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
@@ -544,49 +560,44 @@ class DefaultAdminOpsTest {
 
         assertThat(ops.pauseSchedule("poll", true)).isTrue();
 
-        assertThat(calls).containsExactly("pauseRecurring[poll, true]");
+        assertThat(calls).containsExactly("pauseRecurring[poll]");
     }
 
     @Test
-    void pausingAnUnknownScheduleReturnsFalseAndDoesNothingElse() {
-        handlers.put("pauseRecurring", a -> false);
+    void resumingAnUnknownScheduleReturnsFalseAndDoesNothingElse() {
+        handlers.put("resumeRecurring", a -> false);
         handlers.put("recurringDefinitions", a -> List.of());
 
         assertThat(ops.pauseSchedule("missing", false)).isFalse();
 
-        assertThat(calls).containsExactly("recurringDefinitions[]", "pauseRecurring[missing, false]");
+        assertThat(calls).containsExactly("recurringDefinitions[]", "resumeRecurring[missing, null]");
     }
 
     @Test
-    void resumingAFixedDelayScheduleRearmsItsNextFireFromNow() {
-        handlers.put("pauseRecurring", a -> true);
+    void resumingAFixedDelayScheduleRearmsItsNextFireFromNowInTheSameStoreCall() {
+        handlers.put("resumeRecurring", a -> true);
         handlers.put(
                 "recurringDefinitions",
                 a -> List.of(
                         new RecurringSchedule(definition("other", null, 1_000L, false), NOW),
                         new RecurringSchedule(definition("poll", null, 90_000L, false), NOW.plusSeconds(999))));
-        handlers.put("setNextFire", a -> true);
 
         assertThat(ops.pauseSchedule("poll", false)).isTrue();
 
         assertThat(calls)
-                .containsExactly(
-                        "recurringDefinitions[]",
-                        "setNextFire[poll, " + NOW.plusSeconds(90) + "]",
-                        "pauseRecurring[poll, false]");
+                .containsExactly("recurringDefinitions[]", "resumeRecurring[poll, " + NOW.plusSeconds(90) + "]");
     }
 
     @Test
     void resumingACronScheduleKeepsItsNextFire() {
-        handlers.put("pauseRecurring", a -> true);
+        handlers.put("resumeRecurring", a -> true);
         handlers.put(
                 "recurringDefinitions",
                 a -> List.of(new RecurringSchedule(definition("nightly", "0 2 * * *", null, false), NOW)));
-        handlers.put("setNextFire", a -> true);
 
         assertThat(ops.pauseSchedule("nightly", false)).isTrue();
 
-        assertThat(calls).noneMatch(c -> c.startsWith("setNextFire"));
+        assertThat(calls).containsExactly("recurringDefinitions[]", "resumeRecurring[nightly, null]");
     }
 
     @Test

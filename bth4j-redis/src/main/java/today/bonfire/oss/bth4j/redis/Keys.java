@@ -35,14 +35,12 @@ package today.bonfire.oss.bth4j.redis;
  * <li>{@code ts:<digest>} set of the type ids one runner handles, named by a digest of the sorted ids and written
  * by the store when a claim finds it missing; a claim intersects it with {@code active:<qid>}. It expires a day
  * after the last claim that named it</li>
- * <li>{@code idx:<state>:<qid>} zset scored by stateChanged ms, for LEASED and for terminal tasks without an
- * open key window, which purge reads; {@code hidx:<state>:<qid>} the same for terminal tasks whose key window is
- * open, and {@code hold:<state>:<qid>} those again scored by {@code ku} ms. Purge drains {@code hold} when the
- * window has passed, so tasks that are held never sit in front of purgeable ones. Counts are the cardinalities
- * of these zsets, so they cannot drift</li>
+ * <li>{@code idx:<state>:<qid>} zset scored by stateChanged ms, for LEASED and terminal tasks, which purge reads.
+ * Counts are the cardinalities of these zsets, so they cannot drift</li>
  * <li>{@code k:<key>} string holding the id of the task that owns a unique key, with a PEXPIREAT when the key
- * is kept for a window after the task ended; the {@code uk}, {@code kk} and {@code ku} fields of such a task
- * carry the same expiry (HPEXPIREAT), so the store needs Redis 7.4 or Valkey 9 at least</li>
+ * is kept for a window after the task ended. It outlives the task when the task is removed inside the window,
+ * and keeps the key taken on its own. The {@code uk}, {@code kk} and {@code ku} fields of a kept task carry the
+ * same expiry (HPEXPIREAT), so the store needs Redis 7.4 or Valkey 9 at least</li>
  * <li>{@code cron} zset of next fire ms of the definitions that are not paused, {@code cron:<sid>} hash (field
  * {@code next} always holds the next fire, also while paused), {@code crondefs} set of every definition id,
  * {@code cronrev} counter</li>
@@ -152,10 +150,6 @@ public final class Keys {
 
     public String index(int state, int qid) {
         return prefix + "idx:" + state + ":" + qid;
-    }
-
-    public String heldIndex(int state, int qid) {
-        return prefix + "hidx:" + state + ":" + qid;
     }
 
     public String activeTypes(int qid) {

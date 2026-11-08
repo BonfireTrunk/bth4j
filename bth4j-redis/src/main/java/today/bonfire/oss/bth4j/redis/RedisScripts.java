@@ -96,17 +96,14 @@ final class RedisScripts {
               return counts
             end
 
-            -- A terminal task whose key window is open is listed in hidx (scored by stateChanged) and waits in
-            -- hold (scored by ku); any other one is in idx, which PURGE reads, so it never walks past held tasks.
+            -- A terminal task is in idx scored by stateChanged, which PURGE reads, whether or not its key window is
+            -- open: the k: string keeps the key taken on its own once the task is gone.
             -- tid is optional: callers that already know the type pass it and save an HGET.
-            local function enter(id, qid, state, score, at, ku, tid)
+            local function enter(id, qid, state, score, at, tid)
               if state == 0 then
                 zadd(queueKey(id, qid, tid), score, id)
               elseif state == 1 then
                 zadd(P .. 'sched:' .. qid, score, id)
-              elseif state >= 3 and ku then
-                zadd(P .. 'hidx:' .. state .. ':' .. qid, at, id)
-                zadd(P .. 'hold:' .. state .. ':' .. qid, ku, id)
               else
                 if state == 2 then zadd(P .. 'leased', score, id) end
                 zadd(P .. 'idx:' .. state .. ':' .. qid, at, id)
@@ -121,17 +118,13 @@ final class RedisScripts {
               else
                 if state == 2 then zrem(P .. 'leased', id) end
                 zrem(P .. 'idx:' .. state .. ':' .. qid, id)
-                if state >= 3 then
-                  zrem(P .. 'hidx:' .. state .. ':' .. qid, id)
-                  zrem(P .. 'hold:' .. state .. ':' .. qid, id)
-                end
               end
             end
 
             -- The zset side of a state change; the caller writes state, sc and the new rev with its own HSET.
-            local function move(id, qid, from, to, at, score, ku, tid)
+            local function move(id, qid, from, to, at, score, tid)
               leave(id, qid, from, tid)
-              enter(id, qid, to, score, at, ku, tid)
+              enter(id, qid, to, score, at, tid)
             end
 
             -- Reads rev, state, q and the given fields; nil unless the task is LEASED at that revision.
@@ -161,10 +154,11 @@ final class RedisScripts {
 
             -- Ends a task in the terminal state to. Kept: one HSET of state, sc, rev, ku and the extra
             -- field/value pairs; the lease field stays and readers ignore it outside LEASED. Not kept: every
-            -- key of the task is removed. Either way the unique key is settled.
+            -- key of the task is removed, and a key window lives on in the k: string alone. Either way the
+            -- unique key is settled.
             local function finish(tkey, id, qid, from, to, at, rev, uk, kk, extra, kept)
               if kept then
-                move(id, qid, from, to, at, at, kk and at + tonumber(kk))
+                move(id, qid, from, to, at, at)
                 local f = {'state', to, 'sc', at, 'rev', rev + 1}
                 if kk then f[#f + 1] = 'ku'; f[#f + 1] = at + tonumber(kk) end
                 for _, x in ipairs(extra) do f[#f + 1] = x end
@@ -241,7 +235,7 @@ final class RedisScripts {
               fields[#fields + 1] = at
               redis.call('HSET', tkey, unpack(fields))
               if data then redis.call('SET', P .. 'd:' .. id, data) end
-              enter(id, qid, state, due, at, nil, tid)
+              enter(id, qid, state, due, at, tid)
               track(id, sb)
               return {1, ''}
             end
@@ -377,16 +371,17 @@ final class RedisScripts {
                 g.budget = g.budget - 1
                 local tkey = P .. 't:' .. id
                 local v = redis.call('HMGET', tkey, unpack(F))
+                -- an unreadable number must not stop the script after it leased other tasks: such a task is
+                -- leased anyway, the store finds the field unreadable and ends the lease, and maintenance ends it
+                local sb = v[@sb@] and tonumber(v[@sb@])
                 if v[@state@] ~= '0' or v[@ty@] ~= source.tid or v[@q@] ~= g.qid then
                   zrem(queueKey(id, g.qid, source.tid), id)
-                elseif v[@sb@] and tonumber(v[@sb@]) <= at then
-                  finish(tkey, id, g.qid, 0, 6, at, tonumber(v[@rev@]), v[@uk@], v[@kk@], {}, true)
-                  zrem(P .. 'startby', id)
-                else
-                  move(id, g.qid, 0, 2, at, lease, nil, source.tid)
+                elseif not (sb and sb <= at) then
+                  -- a task past its start-by deadline stays queued: maintenance expires it and reports the expiry
+                  move(id, g.qid, 0, 2, at, lease, source.tid)
                   if v[@sb@] then zrem(P .. 'startby', id) end
-                  redis.call('HSET', tkey, 'state', 2, 'sc', at, 'rev', tonumber(v[@rev@]) + 1,
-                    'att', tonumber(v[@att@]) + 1, 'ca', at, 'lease', lease, 'wid', ARGV[4])
+                  redis.call('HSET', tkey, 'state', 2, 'sc', at, 'rev', (tonumber(v[@rev@]) or 0) + 1,
+                    'att', (tonumber(v[@att@]) or 0) + 1, 'ca', at, 'lease', lease, 'wid', ARGV[4])
                   local entry = {id, redis.call('GET', P .. 'd:' .. id),
                     v[@hs@] == '1' and redis.call('GET', P .. 'st:' .. id) or false,
                     v[@fc@] == '1' and redis.call('LRANGE', P .. 'f:' .. id, 0, -1) or {}}
@@ -434,6 +429,17 @@ final class RedisScripts {
         return script;
     }
 
+    /**
+     * ARGV: digest, then type ids. Writes the {@code ts:<digest>} set that CLAIM asked for together with its expiry,
+     * so that a set is never left without one.
+     */
+    static final String TYPE_SET = PRELUDE + """
+            local key = P .. 'ts:' .. ARGV[2]
+            for i = 3, #ARGV, 1000 do redis.call('SADD', key, unpack(ARGV, i, math.min(i + 999, #ARGV))) end
+            redis.call('PEXPIRE', key, @TTL@)
+            return 1
+            """.replace("@TTL@", String.valueOf(TYPE_SET_TTL_MS));
+
     /** Returns {queue id, {{type id, count}...}} rows for non-empty registered queues. */
     static final String QUEUED_BY_TYPE = PRELUDE + """
             local out = {}
@@ -457,7 +463,6 @@ final class RedisScripts {
                 redis.call('ZCARD', P .. 'idx:2:' .. qid)}
               for state = 3, 6 do
                 row[#row + 1] = redis.call('ZCARD', P .. 'idx:' .. state .. ':' .. qid)
-                  + redis.call('ZCARD', P .. 'hidx:' .. state .. ':' .. qid)
               end
               out[#out + 1] = row
             end
@@ -520,9 +525,9 @@ final class RedisScripts {
               if not v then return false end
               local qid, uk, kk = tonumber(v[3]), v[4], v[5]
               at = at or now()
-              if keep == '1' or kk then
+              if keep == '1' then
                 finish(tkey, id, qid, 2, 3, at, tonumber(v[1]), uk, kk, {}, true)
-                if keep ~= '1' or keepPayload ~= '1' then redis.call('UNLINK', P .. 'd:' .. id) end
+                if keepPayload ~= '1' then redis.call('UNLINK', P .. 'd:' .. id) end
               else
                 finish(tkey, id, qid, 2, 3, at, tonumber(v[1]), uk, kk, {}, false)
               end
@@ -532,9 +537,8 @@ final class RedisScripts {
 
     /**
      * ARGV: id, revision, keep (1/0), keep payload (1/0), then the schedule effect: schedule id or '', the
-     * occurrence id, next fire ms or '' to pause. Returns 2 when the effect changed the definition. Returns 1, or 0 when the fence fails. A task with a
-     * key window is kept as SUCCEEDED even when keep is 0 (its payload is dropped), so purge removes it after
-     * the window; only a task without a window is removed here.
+     * occurrence id, next fire ms or '' to pause. Returns 2 when the effect changed the definition. Returns 1, or 0 when the fence fails. With keep
+     * 0 the task is removed; a key window lives on in its {@code k:} string.
      */
     static final String ACK = PRELUDE + SUCCEED + """
             if not succeed(ARGV[2], ARGV[3], ARGV[4], ARGV[5]) then return 0 end
@@ -561,8 +565,8 @@ final class RedisScripts {
      * the schedule effect as for ACK, applied only when the task dies. Returns RETRY, DEAD or LOST; DEAD+ when the
      * effect changed the definition. With expired only the stored lease must be at or before now. The failure
      * is appended to {@code f:<id>} (trimmed to the last MAX_FAILURES, only when the push exceeded it) when the task stays, and the hash
-     * field fc marks that the list exists; a task with a key
-     * window is kept as DEAD even when keep dead is 0.
+     * field fc marks that the list exists. With keep dead 0 the task is removed; a key window lives on in its
+     * {@code k:} string.
      */
     static final String FAIL = PRELUDE + """
             local id = ARGV[2]
@@ -585,7 +589,7 @@ final class RedisScripts {
               flush()
               return 'RETRY'
             end
-            if ARGV[5] == '1' or kk then
+            if ARGV[5] == '1' then
               record()
               finish(tkey, id, qid, 2, 4, at, rev, uk, kk, {'fc', 1}, true)
             else
@@ -676,7 +680,7 @@ final class RedisScripts {
                     local tkey = P .. 't:' .. id
                     local v = redis.call('HMGET', tkey, 'state', 'due', 'rev', 'ty')
                     if v[1] == '1' then
-                      move(id, qid, 1, 0, at, tonumber(v[2]), nil, v[4])
+                      move(id, qid, 1, 0, at, tonumber(v[2]), v[4])
                       redis.call('HSET', tkey, 'state', 0, 'sc', at, 'rev', tonumber(v[3]) + 1)
                       moved = moved + 1
                     else
@@ -698,93 +702,30 @@ final class RedisScripts {
             """;
 
     /**
-     * ARGV: state, retention ms, limit. Per queue: first the {@code hold} zset, whose window has passed, then the
-     * {@code idx} zset up to the cutoff. A held task whose retention has not elapsed yet moves from {@code hidx}
-     * to {@code idx}, so every entry read leaves the zset it was read from and the next read starts at offset 0;
-     * held tasks that are still open are never read. One call reads at most max(4*limit, 1000) hold entries.
+     * ARGV: state, retention ms, limit. Removes the tasks of {@code idx:<state>:<qid>} up to the cutoff, queue by
+     * queue. A task whose key window is still open goes too; its {@code k:} string, which carries the window as
+     * its expiry, keeps the key taken.
      */
     static final String PURGE = PRELUDE + """
-            local state = tonumber(ARGV[2])
-            local at = now()
-            local cutoff = at - tonumber(ARGV[3])
+            local cutoff = now() - tonumber(ARGV[3])
             local remaining = tonumber(ARGV[4])
-            local budget = math.max(remaining * 4, 1000)
             local removed = 0
-            local function purge(id)
-              redis.call('UNLINK', P .. 't:' .. id, P .. 'd:' .. id, P .. 'st:' .. id, P .. 'f:' .. id)
-              removed = removed + 1
-              remaining = remaining - 1
-            end
             for _, qid in ipairs(redis.call('HVALS', P .. 'reg:queue')) do
-              local ikey = P .. 'idx:' .. state .. ':' .. qid
-              local hikey = P .. 'hidx:' .. state .. ':' .. qid
-              local hkey = P .. 'hold:' .. state .. ':' .. qid
-              while remaining > 0 and budget > 0 do
-                local ids = redis.call('ZRANGE', hkey, '-inf', at, 'BYSCORE', 'LIMIT', 0, math.min(remaining, budget, 500))
-                if #ids == 0 then break end
-                budget = budget - #ids
-                for _, id in ipairs(ids) do
-                  zrem(hkey, id)
-                  zrem(hikey, id)
-                  local v = redis.call('HMGET', P .. 't:' .. id, 'state', 'sc')
-                  if v[1] == ARGV[2] then
-                    if tonumber(v[2]) <= cutoff then purge(id) else zadd(ikey, tonumber(v[2]), id) end
-                  end
-                end
-                flush()
-              end
+              local ikey = P .. 'idx:' .. ARGV[2] .. ':' .. qid
               while remaining > 0 do
                 local ids = redis.call('ZRANGE', ikey, '-inf', cutoff, 'BYSCORE', 'LIMIT', 0, math.min(remaining, 500))
                 if #ids == 0 then break end
                 for _, id in ipairs(ids) do
                   zrem(ikey, id)
-                  purge(id)
+                  redis.call('UNLINK', P .. 't:' .. id, P .. 'd:' .. id, P .. 'st:' .. id, P .. 'f:' .. id)
                 end
+                removed = removed + #ids
+                remaining = remaining - #ids
                 flush()
               end
               if remaining <= 0 then break end
             end
             return removed
-            """;
-
-    /** ARGV: token, ms. Takes the migration lock {@code migrating} for that long; returns 1 when taken. */
-    static final String MIGRATION_LOCK = PRELUDE + """
-            return redis.call('SET', P .. 'migrating', ARGV[2], 'NX', 'PX', ARGV[3]) and 1 or 0
-            """;
-
-    /** ARGV: token. Releases the migration lock if that token still holds it. */
-    static final String MIGRATION_UNLOCK = PRELUDE + """
-            if redis.call('GET', P .. 'migrating') == ARGV[2] then redis.call('DEL', P .. 'migrating') end
-            return 1
-            """;
-
-    /** Layout 4 to 5, ARGV: queue id. Fills {@code active:<qid>} from the type zsets of the queue that exist. */
-    static final String MIGRATE_ACTIVE = PRELUDE + """
-            local qid = ARGV[2]
-            for _, tid in ipairs(redis.call('HVALS', P .. 'reg:type')) do
-              if redis.call('EXISTS', P .. 'q:' .. qid .. ':' .. tid) == 1 then
-                redis.call('SADD', P .. 'active:' .. qid, tid)
-              end
-            end
-            return 1
-            """;
-
-    /**
-     * Layout 4 to 5, ARGV: state, queue id, offset, limit. Moves the held tasks of one page of
-     * {@code hold:<state>:<qid>} from {@code idx} to {@code hidx} with their score; a task moved before is left
-     * alone. Returns how many hold entries were read.
-     */
-    static final String MIGRATE_HELD = PRELUDE + """
-            local suffix = ARGV[2] .. ':' .. ARGV[3]
-            local ids = redis.call('ZRANGE', P .. 'hold:' .. suffix, ARGV[4], tonumber(ARGV[4]) + tonumber(ARGV[5]) - 1)
-            for _, id in ipairs(ids) do
-              local score = redis.call('ZSCORE', P .. 'idx:' .. suffix, id)
-              if score then
-                redis.call('ZREM', P .. 'idx:' .. suffix, id)
-                redis.call('ZADD', P .. 'hidx:' .. suffix, score, id)
-              end
-            end
-            return #ids
             """;
 
     /** ARGV: kind (queue or type), name. Returns the id; fails when the 32767 ids are used up. */
@@ -807,7 +748,7 @@ final class RedisScripts {
      * field is not finished or the stored time is not later than keep-until; otherwise occ is dropped. A put that
      * finds every definition field stored already, keeps the fire time and keeps occ writes nothing and returns
      * UNCHANGED. Otherwise the revision comes from the counter, so no two definitions under the same id share one,
-     * and it returns CREATED or CHANGED. The fire time is also stored in the hash as {@code next}; a paused
+     * and it returns CREATED or CHANGED. The reply is {outcome, next fire ms stored after the put}. The fire time is also stored in the hash as {@code next}; a paused
      * definition is left out of the {@code cron} zset and keeps it there. Replacing an existing definition keeps
      * its paused flag and ignores the given one; a new definition stores the flag as given.
      */
@@ -838,7 +779,7 @@ final class RedisScripts {
               running = st and tonumber(st) < 3 or false
               keep = running or tonumber(kept) <= tonumber(ARGV[4])
             end
-            if same and keep and (running or not occ) then return 'UNCHANGED' end
+            if same and keep and (running or not occ) then return {'UNCHANGED', kept} end
             -- counter first, so a counter failure leaves the old definition intact; read back as a string
             -- because the INCR reply would pass through a Lua double
             redis.call('INCR', P .. 'cronrev')
@@ -857,7 +798,7 @@ final class RedisScripts {
             else
               redis.call('ZADD', P .. 'cron', nextFire, ARGV[2])
             end
-            return existed and 'CHANGED' or 'CREATED'
+            return {existed and 'CHANGED' or 'CREATED', nextFire}
             """;
 
     /** ARGV: schedule id. Returns 1 when a definition was removed. */
@@ -1075,31 +1016,46 @@ final class RedisScripts {
             """;
 
     /**
-     * ARGV: schedule id, paused (1/0). A paused definition leaves the {@code cron} zset; its next fire stays in
-     * the hash and returns to the zset on resume. Returns 1, or 0 when there is no such definition.
+     * ARGV: schedule id. A paused definition leaves the {@code cron} zset; its next fire stays in the hash and
+     * returns to the zset on resume. Returns 1, or 0 when there is no such definition.
      */
     static final String CRON_PAUSE = PRELUDE + """
             local ckey = P .. 'cron:' .. ARGV[2]
             if redis.call('EXISTS', ckey) == 0 then return 0 end
-            if ARGV[3] == '1' then
-              redis.call('HSET', ckey, 'paused', 1)
-              redis.call('ZREM', P .. 'cron', ARGV[2])
-            else
-              redis.call('HDEL', ckey, 'paused')
-              redis.call('ZADD', P .. 'cron', redis.call('HGET', ckey, 'next'), ARGV[2])
+            redis.call('HSET', ckey, 'paused', 1)
+            redis.call('ZREM', P .. 'cron', ARGV[2])
+            return 1
+            """;
+
+    /**
+     * ARGV: schedule id, next fire ms or ''. Resumes a paused definition; a next fire time replaces the stored one
+     * under a new revision. A definition that is not paused is left alone. Returns 1, or 0 when there is no such
+     * definition.
+     */
+    static final String CRON_RESUME = PRELUDE + """
+            local ckey = P .. 'cron:' .. ARGV[2]
+            if redis.call('EXISTS', ckey) == 0 then return 0 end
+            if redis.call('HGET', ckey, 'paused') ~= '1' then return 1 end
+            redis.call('HDEL', ckey, 'paused')
+            if ARGV[3] ~= '' then
+              redis.call('INCR', P .. 'cronrev')
+              redis.call('HSET', ckey, 'next', ARGV[3], 'rev', redis.call('GET', P .. 'cronrev'))
             end
+            redis.call('ZADD', P .. 'cron', redis.call('HGET', ckey, 'next'), ARGV[2])
             return 1
             """;
 
     /**
      * ARGV: schedule id, next fire ms. Operator write: assigns a new revision, so that a runner write based on
-     * the old one does nothing. Returns 1, or 0 when there is no such definition.
+     * the old one does nothing, and drops occ, so that the effect of an occurrence still running does nothing
+     * either. Returns 1, or 0 when there is no such definition.
      */
     static final String CRON_SET_NEXT = PRELUDE + """
             local ckey = P .. 'cron:' .. ARGV[2]
             if redis.call('EXISTS', ckey) == 0 then return 0 end
             redis.call('INCR', P .. 'cronrev')
             redis.call('HSET', ckey, 'next', ARGV[3], 'rev', redis.call('GET', P .. 'cronrev'))
+            redis.call('HDEL', ckey, 'occ')
             if redis.call('HGET', ckey, 'paused') ~= '1' then
               redis.call('ZADD', P .. 'cron', ARGV[3], ARGV[2])
             end

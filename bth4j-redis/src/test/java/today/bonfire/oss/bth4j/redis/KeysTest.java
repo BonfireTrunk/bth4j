@@ -26,7 +26,6 @@ class KeysTest {
                 keys.queue(2, 3),
                 keys.scheduled(2),
                 keys.index(3, 2),
-                keys.heldIndex(3, 2),
                 keys.activeTypes(2),
                 keys.typeSet("d"),
                 keys.uniqueKey("k"),
@@ -46,7 +45,6 @@ class KeysTest {
         assertThat(keys.queue(2, 3)).isEqualTo("{NS}:q:2:3");
         assertThat(keys.scheduled(2)).isEqualTo("{NS}:sched:2");
         assertThat(keys.index(4, 2)).isEqualTo("{NS}:idx:4:2");
-        assertThat(keys.heldIndex(4, 2)).isEqualTo("{NS}:hidx:4:2");
         assertThat(keys.activeTypes(2)).isEqualTo("{NS}:active:2");
         assertThat(keys.typeSet("d")).isEqualTo("{NS}:ts:d");
         assertThat(keys.uniqueKey("k")).isEqualTo("{NS}:k:k");

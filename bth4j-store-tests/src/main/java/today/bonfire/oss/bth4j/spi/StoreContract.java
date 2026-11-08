@@ -2,6 +2,7 @@ package today.bonfire.oss.bth4j.spi;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -21,6 +22,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -45,6 +47,7 @@ public abstract class StoreContract {
     protected FullStore store;
     private int worker;
     private int queue;
+    private String namespace;
     private int type;
 
     /** @return a store with no state, isolated from every other namespace */
@@ -57,6 +60,16 @@ public abstract class StoreContract {
 
     /** @return whether finished keys are released by the store itself, so that {@link MaintenanceStore#releaseKeys} has nothing to count */
     protected boolean releasesKeysOnItsOwn() {
+        return false;
+    }
+
+    /**
+     * Overwrites a stored value of a task in the store made with {@code namespace} by one the store cannot read,
+     * for example headers JSON with a null value.
+     *
+     * @return false when the store cannot hold an unreadable value; the tests that need one are skipped then
+     */
+    protected boolean corruptStoredValue(String namespace, long taskId) {
         return false;
     }
 
@@ -99,7 +112,8 @@ public abstract class StoreContract {
 
     @BeforeEach
     void setUpStore() {
-        store = newStore("contract" + COUNTER.incrementAndGet() + "x" + System.nanoTime() % 100_000);
+        namespace = "contract" + COUNTER.incrementAndGet() + "x" + System.nanoTime() % 100_000;
+        store = newStore(namespace);
         store.init();
         queue = store.queueId("main");
         type = store.typeId("work");
@@ -187,7 +201,7 @@ public abstract class StoreContract {
             start.countDown();
             List<T> results = new ArrayList<>();
             for (Future<T> f : futures) {
-                results.add(f.get());
+                results.add(f.get(30, TimeUnit.SECONDS));
             }
             return results;
         } finally {
@@ -1183,7 +1197,8 @@ public abstract class StoreContract {
                 .isAfter(oldUntil)
                 .isEqualTo(finished.stateChangedAt().plus(MID));
         assertThat(store.enqueue(task().uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(t.id()));
-        assertThat(store.purge(TaskState.SUCCEEDED, MID, 10)).isZero();
+        assertThat(store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10)).isEqualTo(1);
+        assertRemovedButKeyTaken(finished, "k");
 
         advance(PAST_MID);
         assertThat(store.taskByKey("k")).isEmpty();
@@ -2043,9 +2058,12 @@ public abstract class StoreContract {
     @Test
     void putRecurringAssignsANewRevisionToEveryChange() {
         Instant fire = millis(now().plusSeconds(60));
-        assertThat(store.putRecurring(definition("a", "* * * * *"), fire, fire)).isEqualTo(PutRecurringOutcome.CREATED);
+        assertThat(store.putRecurring(definition("a", "* * * * *"), fire, fire))
+                .extracting(PutRecurringResult::outcome)
+                .isEqualTo(PutRecurringOutcome.CREATED);
         long first = store.dueRecurring(fire, 10).get(0).definition().revision();
         assertThat(store.putRecurring(changedData("a", "* * * * *"), fire, fire))
+                .extracting(PutRecurringResult::outcome)
                 .isEqualTo(PutRecurringOutcome.CHANGED);
         long second = store.dueRecurring(fire, 10).get(0).definition().revision();
         assertThat(second).isNotEqualTo(first);
@@ -2060,8 +2078,10 @@ public abstract class StoreContract {
         long revision = store.dueRecurring(fire, 10).get(0).definition().revision();
 
         assertThat(store.putRecurring(fullDefinition("a"), fire.plusSeconds(5), fire))
+                .extracting(PutRecurringResult::outcome)
                 .isEqualTo(PutRecurringOutcome.UNCHANGED);
         assertThat(store.putRecurring(fullDefinition("a").withPaused(true), fire, fire))
+                .extracting(PutRecurringResult::outcome)
                 .isEqualTo(PutRecurringOutcome.UNCHANGED);
 
         var due = store.dueRecurring(fire, 10).get(0);
@@ -2079,6 +2099,7 @@ public abstract class StoreContract {
         long revision = revisionOf("nightly");
 
         assertThat(store.putRecurring(definition("nightly", "* * * * *"), fire.plusSeconds(5), fire))
+                .extracting(PutRecurringResult::outcome)
                 .isEqualTo(PutRecurringOutcome.UNCHANGED);
         assertThat(revisionOf("nightly")).isEqualTo(revision);
 
@@ -2095,7 +2116,9 @@ public abstract class StoreContract {
         store.putRecurring(fullDefinition("a"), fire, fire);
         long revision = store.dueRecurring(fire, 10).get(0).definition().revision();
 
-        assertThat(store.putRecurring(fullDefinition("a"), sooner, sooner)).isEqualTo(PutRecurringOutcome.CHANGED);
+        assertThat(store.putRecurring(fullDefinition("a"), sooner, sooner))
+                .extracting(PutRecurringResult::outcome)
+                .isEqualTo(PutRecurringOutcome.CHANGED);
 
         var due = store.dueRecurring(fire, 10).get(0);
         assertThat(due.fireAt()).isEqualTo(sooner);
@@ -2109,6 +2132,7 @@ public abstract class StoreContract {
         long revision = store.dueRecurring(fire, 10).get(0).definition().revision();
 
         assertThat(store.putRecurring(fullDefinition("a"), fire, fire.minusSeconds(1)))
+                .extracting(PutRecurringResult::outcome)
                 .isEqualTo(PutRecurringOutcome.CHANGED);
         assertThat(store.dueRecurring(fire, 10).get(0).definition().revision()).isNotEqualTo(revision);
     }
@@ -2136,7 +2160,9 @@ public abstract class StoreContract {
                 base.paused(),
                 0);
 
-        assertThat(store.putRecurring(longer, fire, fire)).isEqualTo(PutRecurringOutcome.CHANGED);
+        assertThat(store.putRecurring(longer, fire, fire))
+                .extracting(PutRecurringResult::outcome)
+                .isEqualTo(PutRecurringOutcome.CHANGED);
         assertThat(store.dueRecurring(fire, 10).get(0).definition().maxRunTimeMs())
                 .isEqualTo(base.maxRunTimeMs() * 2);
     }
@@ -2208,7 +2234,9 @@ public abstract class StoreContract {
     private void assertEveryChangeIsReported(RecurringDefinition base, Consumer<Fields>... changes) {
         Instant fire = millis(now().plusSeconds(60));
         store.deleteRecurring(base.scheduleId());
-        assertThat(store.putRecurring(base, fire, fire)).isEqualTo(PutRecurringOutcome.CREATED);
+        assertThat(store.putRecurring(base, fire, fire))
+                .extracting(PutRecurringResult::outcome)
+                .isEqualTo(PutRecurringOutcome.CREATED);
         for (Consumer<Fields> change : changes) {
             RecurringDefinition variant = edited(base, change);
             assertThat(variant).isNotEqualTo(base);
@@ -2216,15 +2244,19 @@ public abstract class StoreContract {
 
             assertThat(store.putRecurring(variant, fire, fire))
                     .as("to %s", variant)
+                    .extracting(PutRecurringResult::outcome)
                     .isEqualTo(PutRecurringOutcome.CHANGED);
 
             assertThat(revisionOf("a")).isNotEqualTo(before);
             assertThat(storedDefinition("a").withRevision(0)).isEqualTo(variant);
-            assertThat(store.putRecurring(variant, fire, fire)).isEqualTo(PutRecurringOutcome.UNCHANGED);
+            assertThat(store.putRecurring(variant, fire, fire))
+                    .extracting(PutRecurringResult::outcome)
+                    .isEqualTo(PutRecurringOutcome.UNCHANGED);
             before = revisionOf("a");
 
             assertThat(store.putRecurring(base, fire, fire))
                     .as("back to %s", base)
+                    .extracting(PutRecurringResult::outcome)
                     .isEqualTo(PutRecurringOutcome.CHANGED);
 
             assertThat(revisionOf("a")).isNotEqualTo(before);
@@ -3136,11 +3168,11 @@ public abstract class StoreContract {
     void putRecurringKeepsAnOperatorsPauseAndAnUnpauseSurvivesToo() {
         Instant fire = millis(now().plusSeconds(1));
         store.putRecurring(definition("a", "* * * * *"), fire, fire);
-        assertThat(store.pauseRecurring("a", true)).isTrue();
+        assertThat(store.pauseRecurring("a")).isTrue();
         store.putRecurring(definition("a", "* * * * *"), fire, fire);
         assertThat(store.recurringDefinitions().get(0).definition().paused()).isTrue();
         assertThat(store.dueRecurring(fire, 10)).isEmpty();
-        assertThat(store.pauseRecurring("a", false)).isTrue();
+        assertThat(store.resumeRecurring("a", null)).isTrue();
         store.putRecurring(definition("a", "* * * * *").withPaused(true), fire, fire);
         assertThat(store.recurringDefinitions().get(0).definition().paused()).isFalse();
         assertThat(store.dueRecurring(fire, 10)).hasSize(1);
@@ -3151,7 +3183,7 @@ public abstract class StoreContract {
         Instant fire = millis(now().plusSeconds(1));
         store.putRecurring(definition("nightly", "* * * * *"), fire, fire);
         DueSchedule due = store.dueRecurring(fire, 10).get(0);
-        assertThat(store.pauseRecurring("nightly", true)).isTrue();
+        assertThat(store.pauseRecurring("nightly")).isTrue();
         TaskRecord occurrence = occurrence(fire);
         assertThat(store.commitRecurring(due, fire.plusSeconds(60), occurrence)).isFalse();
         assertThat(store.getTask(occurrence.id())).isEmpty();
@@ -3174,7 +3206,7 @@ public abstract class StoreContract {
         Instant fire = millis(now().plusSeconds(1));
         store.putRecurring(definition("a", "* * * * *"), fire, fire);
         store.putRecurring(definition("b", "* * * * *"), fire, fire);
-        assertThat(store.pauseRecurring("a", true)).isTrue();
+        assertThat(store.pauseRecurring("a")).isTrue();
         assertThat(store.dueRecurring(fire, 10))
                 .extracting(DueSchedule::scheduleId)
                 .containsExactly("b");
@@ -3182,7 +3214,7 @@ public abstract class StoreContract {
         assertThat(paused.definition().paused()).isTrue();
         assertThat(paused.nextFire()).isEqualTo(fire);
         assertThat(store.recurringSchedules()).containsEntry("a", fire);
-        assertThat(store.pauseRecurring("a", false)).isTrue();
+        assertThat(store.resumeRecurring("a", null)).isTrue();
         assertThat(store.dueRecurring(fire, 10))
                 .extracting(DueSchedule::scheduleId)
                 .containsExactlyInAnyOrder("a", "b");
@@ -3191,7 +3223,9 @@ public abstract class StoreContract {
 
     @Test
     void pauseRecurringAndSetNextFireReportUnknownDefinitions() {
-        assertThat(store.pauseRecurring("missing", true)).isFalse();
+        assertThat(store.pauseRecurring("missing")).isFalse();
+        assertThat(store.resumeRecurring("missing", null)).isFalse();
+        assertThat(store.resumeRecurring("missing", millis(now()))).isFalse();
         assertThat(store.setNextFire("missing", millis(now()))).isFalse();
         assertThat(store.recurringSchedules()).isEmpty();
     }
@@ -3220,8 +3254,86 @@ public abstract class StoreContract {
         store.setNextFire("a", fire.plusSeconds(5));
         long triggered = revisionOf("a");
         assertThat(triggered).isNotEqualTo(revision);
-        store.pauseRecurring("a", true);
+        store.pauseRecurring("a");
         assertThat(revisionOf("a")).isEqualTo(triggered);
+    }
+
+    @Test
+    void resumingADefinitionThatIsNotPausedChangesNothing() {
+        Instant fire = millis(now().plusSeconds(60));
+        store.putRecurring(definition("a", "* * * * *"), fire, fire);
+        long revision = revisionOf("a");
+
+        assertThat(store.resumeRecurring("a", fire.plusSeconds(500))).isTrue();
+
+        assertThat(nextFireOf("a")).isEqualTo(fire);
+        assertThat(revisionOf("a")).isEqualTo(revision);
+        assertThat(pausedOf("a")).isFalse();
+    }
+
+    @Test
+    void resumingWithANextFireReplacesItUnderANewRevisionAndWithoutKeepsTheStoredOne() {
+        Instant fire = millis(now().plusSeconds(60));
+        store.putRecurring(definition("a", "* * * * *"), fire, fire);
+        store.putRecurring(definition("b", "* * * * *"), fire, fire);
+        store.pauseRecurring("a");
+        store.pauseRecurring("b");
+        long revision = revisionOf("a");
+
+        assertThat(store.resumeRecurring("a", fire.plusSeconds(500))).isTrue();
+        assertThat(store.resumeRecurring("b", null)).isTrue();
+
+        assertThat(pausedOf("a")).isFalse();
+        assertThat(nextFireOf("a")).isEqualTo(fire.plusSeconds(500));
+        assertThat(revisionOf("a")).isNotEqualTo(revision);
+        assertThat(store.dueRecurring(fire.plusSeconds(500), 10))
+                .extracting(DueSchedule::scheduleId)
+                .contains("a");
+        assertThat(pausedOf("b")).isFalse();
+        assertThat(nextFireOf("b")).isEqualTo(fire);
+    }
+
+    @Test
+    void anOperatorTriggerForgetsTheRunningOccurrenceSoItsEffectDoesNotUndoTheTrigger() {
+        TaskRecord running = runningFixedDelayOccurrence("a");
+        Instant trigger = millis(now().plusSeconds(30));
+        assertThat(store.setNextFire("a", trigger)).isTrue();
+
+        ScheduleEffect rearm = ScheduleEffect.rearm("a", running.id(), millis(now().plusSeconds(90)));
+        assertThat(store.ack(running.id(), running.revision(), true, true, rearm))
+                .isTrue();
+
+        assertThat(rearm.applied()).isFalse();
+        assertThat(nextFireOf("a")).isEqualTo(trigger);
+        assertThat(pausedOf("a")).isFalse();
+    }
+
+    @Test
+    void anOperatorTriggerForgetsTheRunningOccurrenceSoItsDeathDoesNotPause() {
+        TaskRecord running = runningFixedDelayOccurrence("a");
+        Instant trigger = millis(now().plusSeconds(30));
+        assertThat(store.setNextFire("a", trigger)).isTrue();
+
+        ScheduleEffect pause = ScheduleEffect.pause("a", running.id());
+        assertThat(store.fail(running.id(), running.revision(), failure(1), null, true, pause))
+                .isEqualTo(FailOutcome.DEAD);
+
+        assertThat(pause.applied()).isFalse();
+        assertThat(pausedOf("a")).isFalse();
+        assertThat(nextFireOf("a")).isEqualTo(trigger);
+    }
+
+    @Test
+    void putRecurringReportsTheNextFireItStores() {
+        Instant fire = millis(now().plusSeconds(60));
+        assertThat(store.putRecurring(definition("a", "* * * * *"), fire, fire))
+                .isEqualTo(new PutRecurringResult(PutRecurringOutcome.CREATED, fire));
+        assertThat(store.putRecurring(definition("a", "* * * * *"), fire.plusSeconds(5), fire))
+                .isEqualTo(new PutRecurringResult(PutRecurringOutcome.UNCHANGED, fire));
+        assertThat(store.putRecurring(definition("a", "0 * * * *"), fire.plusSeconds(5), fire.plusSeconds(5)))
+                .isEqualTo(new PutRecurringResult(PutRecurringOutcome.CHANGED, fire.plusSeconds(5)));
+        assertThat(store.putRecurring(changedData("a", "0 * * * *"), fire.plusSeconds(9), fire.plusSeconds(9)))
+                .isEqualTo(new PutRecurringResult(PutRecurringOutcome.CHANGED, fire.plusSeconds(5)));
     }
 
     private long revisionOf(String scheduleId) {
@@ -3280,7 +3392,7 @@ public abstract class StoreContract {
         Instant fire = millis(now().plusSeconds(60));
         store.putRecurring(definition("a", "* * * * *"), fire, fire);
         long revision = revisionOf("a");
-        assertThat(store.pauseRecurring("a", true)).isTrue();
+        assertThat(store.pauseRecurring("a")).isTrue();
         assertThat(store.setNextFire("a", revision, fire, fire.plusSeconds(500)))
                 .isFalse();
         assertThat(nextFireOf("a")).isEqualTo(fire);
@@ -3441,7 +3553,7 @@ public abstract class StoreContract {
     @Test
     void anEffectOnAPausedDefinitionStoresTheNextFireAndResumingMakesItDue() {
         TaskRecord running = runningFixedDelayOccurrence("a");
-        assertThat(store.pauseRecurring("a", true)).isTrue();
+        assertThat(store.pauseRecurring("a")).isTrue();
         Instant rearmed = millis(now().plusSeconds(90));
         assertThat(store.ack(
                         running.id(), running.revision(), true, true, ScheduleEffect.rearm("a", running.id(), rearmed)))
@@ -3450,7 +3562,7 @@ public abstract class StoreContract {
         assertThat(nextFireOf("a")).isEqualTo(rearmed);
         assertThat(store.dueRecurring(rearmed, 10)).isEmpty();
 
-        assertThat(store.pauseRecurring("a", false)).isTrue();
+        assertThat(store.resumeRecurring("a", null)).isTrue();
         assertThat(store.dueRecurring(rearmed, 10))
                 .extracting(DueSchedule::scheduleId)
                 .containsExactly("a");
@@ -3749,7 +3861,9 @@ public abstract class StoreContract {
         Instant parked = nextFireOf("a");
         long revision = revisionOf("a");
         Instant next = millis(now().plusSeconds(90));
-        assertThat(store.putRecurring(fullDefinition("a"), next, next)).isEqualTo(PutRecurringOutcome.UNCHANGED);
+        assertThat(store.putRecurring(fullDefinition("a"), next, next))
+                .extracting(PutRecurringResult::outcome)
+                .isEqualTo(PutRecurringOutcome.UNCHANGED);
         assertThat(nextFireOf("a")).isEqualTo(parked);
         assertThat(revisionOf("a")).isEqualTo(revision);
 
@@ -3782,7 +3896,9 @@ public abstract class StoreContract {
         long revision = revisionOf("a");
         Instant next = millis(now().plusSeconds(90));
 
-        assertThat(store.putRecurring(fullDefinition("a"), next, next)).isEqualTo(PutRecurringOutcome.CHANGED);
+        assertThat(store.putRecurring(fullDefinition("a"), next, next))
+                .extracting(PutRecurringResult::outcome)
+                .isEqualTo(PutRecurringOutcome.CHANGED);
 
         assertThat(nextFireOf("a")).isEqualTo(next);
         assertThat(revisionOf("a")).isNotEqualTo(revision);
@@ -3793,6 +3909,7 @@ public abstract class StoreContract {
         assertThat(nextFireOf("a")).isEqualTo(next);
         long recovered = revisionOf("a");
         assertThat(store.putRecurring(fullDefinition("a"), next.plusSeconds(60), next.plusSeconds(60)))
+                .extracting(PutRecurringResult::outcome)
                 .isEqualTo(PutRecurringOutcome.UNCHANGED);
         assertThat(revisionOf("a")).isEqualTo(recovered);
     }
@@ -3932,6 +4049,36 @@ public abstract class StoreContract {
 
         assertThat(store.taskByKey("k")).isEmpty();
         assertThat(get(t.id()).uniqueKey()).isNull();
+    }
+
+    @Test
+    void getTaskReportsATaskWithAnUnreadableStoredValue() {
+        long id = put(task());
+        assumeTrue(corruptStoredValue(namespace, id), "the store cannot hold an unreadable value");
+
+        assertThatThrownBy(() -> store.getTask(id))
+                .isInstanceOfSatisfying(
+                        UnreadableTaskException.class,
+                        e -> assertThat(e.taskId()).isEqualTo(id));
+    }
+
+    @Test
+    void aClaimLeavesOutAnUnreadableTaskAndEndsItsLeaseSoItCanBeEndedAndDeleted() {
+        long bad = put(task());
+        long good = put(task());
+        assumeTrue(corruptStoredValue(namespace, bad), "the store cannot hold an unreadable value");
+
+        assertThat(claim(10)).extracting(TaskRecord::id).containsExactly(good);
+
+        List<ExpiredLease> expired = store.reclaim(10);
+        assertThat(expired).extracting(ExpiredLease::id).containsExactly(bad);
+        ExpiredLease lease = expired.getFirst();
+        assertThat(store.failExpired(bad, lease.revision(), failure(1), null, true, null))
+                .isEqualTo(FailOutcome.DEAD);
+        assertThat(store.reclaim(10)).isEmpty();
+        assertThat(store.counts().get(queue).dead()).isEqualTo(1);
+        assertThat(store.delete(bad, lease.revision() + 1, null)).isTrue();
+        assertThat(store.counts().get(queue).dead()).isZero();
     }
 
     @Test
