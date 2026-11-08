@@ -287,8 +287,12 @@ public class RedisTaskStore implements FullStore {
         return args;
     }
 
-    /** queue id, start-by ms or '', payload flag and payload, then the hash fields: what the script's store needs after the key */
-    private static List<String> storeArgs(TaskRecord t) {
+    /**
+     * queue id, start-by ms or '', payload flag and payload, then the hash fields: what the script's store needs
+     * after the key. A new task starts without run fields ({@link TaskRecord#asNew()}).
+     */
+    private static List<String> storeArgs(TaskRecord task) {
+        var t = task.asNew();
         var args = new ArrayList<String>();
         args.add(String.valueOf(t.queueId()));
         args.add(t.startBy() == null ? "" : ms(t.startBy()));
@@ -541,7 +545,7 @@ public class RedisTaskStore implements FullStore {
     }
 
     private boolean write(long id, int revision, String target, String value) {
-        var args = List.of(String.valueOf(id), String.valueOf(revision), target, value == null ? "" : value);
+        var args = List.of(String.valueOf(id), String.valueOf(revision), target, optionalText(value));
         return num(guard(() -> scripts.run(RedisScripts.WRITE, args))) == 1;
     }
 
@@ -996,8 +1000,9 @@ public class RedisTaskStore implements FullStore {
 
     // ---- wave 2: cancel, expiry, admin, workers ------------------------------------------------------
 
-    private static String reason(String reason) {
-        return reason == null ? "" : reason;
+    /** An optional text for a script: '' for null, else the text after a one-character prefix, so '' is kept. */
+    private static String optionalText(String text) {
+        return text == null ? "" : "=" + text;
     }
 
     @Override
@@ -1016,7 +1021,7 @@ public class RedisTaskStore implements FullStore {
         var args = new ArrayList<>(List.of(
                 String.valueOf(id),
                 String.valueOf(revision),
-                reason(reason),
+                optionalText(reason),
                 keepPayload ? "1" : "0",
                 expiredOnly ? "1" : "0"));
         args.addAll(effectArgs(effect));
@@ -1044,7 +1049,7 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public CancelOutcome cancel(long id, int revision, String reason, ScheduleEffect effect) {
-        var args = new ArrayList<>(List.of(String.valueOf(id), String.valueOf(revision), reason(reason)));
+        var args = new ArrayList<>(List.of(String.valueOf(id), String.valueOf(revision), optionalText(reason)));
         args.addAll(effectArgs(effect));
         var r = (String) guard(() -> scripts.run(RedisScripts.CANCEL, args));
         if (r.endsWith("+")) {

@@ -24,8 +24,8 @@ final class Failures {
                 attempt,
                 at,
                 e.getClass().getName(),
-                StringUtils.abbreviate(StringUtils.defaultString(e.getMessage()), MAX_MESSAGE),
-                StringUtils.abbreviate(w.toString(), MAX_STACK));
+                StoredText.clean(StringUtils.abbreviate(StringUtils.defaultString(e.getMessage()), MAX_MESSAGE)),
+                StoredText.clean(StringUtils.abbreviate(w.toString(), MAX_STACK)));
     }
 
     /** An error the JVM cannot recover from: it is rethrown after it has been recorded. A stack overflow is not. */

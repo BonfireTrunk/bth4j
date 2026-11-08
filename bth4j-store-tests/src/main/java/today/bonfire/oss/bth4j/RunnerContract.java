@@ -25,6 +25,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import today.bonfire.oss.bth4j.exceptions.TaskCancelledException;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
 import today.bonfire.oss.bth4j.exceptions.TaskLeaseLostException;
@@ -374,6 +375,29 @@ public abstract class RunnerContract {
         assertThat(dead.lastFailure().type()).isEqualTo(IllegalStateException.class.getName());
         assertThat(dead.lastFailure().message()).isEqualTo("failure 3");
         assertThat(dead.lastFailure().stack()).contains("failure 3");
+    }
+
+    @Test
+    void aNulCharacterFromProcessorCodeIsRecordedAsTheReplacementCharacter() {
+        startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {
+            ctx.progress("half\u0000way");
+            if (ctx.headers().containsKey("cancel")) throw new TaskCancelledException("stop \u0000 now");
+            ctx.step("one", String.class, () -> "a\u0000b");
+            throw new IllegalStateException("bad \u0000 byte");
+        }));
+
+        long failing = enqueue(TaskRequest.of(VOID_TYPE).maxAttempts(1).build());
+        long cancelling =
+                enqueue(TaskRequest.of(VOID_TYPE).header("cancel", "yes").build());
+
+        var dead = awaitState(failing, TaskState.DEAD);
+        assertThat(dead.progress()).isEqualTo("half�way");
+        assertThat(dead.steps()).containsOnlyKeys("one");
+        assertThat(dead.lastFailure().message()).isEqualTo("bad � byte");
+        assertThat(dead.lastFailure().stack()).contains("bad � byte").doesNotContain("\u0000");
+        var cancelled = awaitState(cancelling, TaskState.CANCELLED);
+        assertThat(cancelled.cancelReason()).isEqualTo("stop � now");
+        assertThat(cancelled.progress()).isEqualTo("half�way");
     }
 
     @Test

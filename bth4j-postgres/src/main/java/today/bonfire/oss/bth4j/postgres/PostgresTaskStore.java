@@ -172,23 +172,21 @@ public class PostgresTaskStore implements FullStore {
         // unique key, and enqueueAll tells the two apart afterwards. Rows go in unique key order, so two batches
         // that share keys wait for each other's keys in the same order instead of deadlocking; within one key the
         // earlier request goes first.
+        // a new task starts without run fields (ExecutionStore#enqueue), so only the producer's fields are bound
         insertSql = "INSERT INTO " + task
                 + " (id, revision, queue_id, type_id, payload_version, state, attempts, max_attempts, created,"
                 + " due, state_changed, data, account, headers, unique_key, key_keep_ms, retry_policy, schedule_id,"
-                + " retry_of, start_by, max_run_ms, cancel_requested_at, cancel_reason, progress, steps, failures)"
+                + " retry_of, start_by, max_run_ms)"
                 + " SELECT u.id, u.revision, u.queue_id, u.type_id, u.payload_version,"
-                + " CASE WHEN u.due > now() THEN 1 ELSE 0 END, u.attempts, u.max_attempts, u.created,"
+                + " CASE WHEN u.due > now() THEN 1 ELSE 0 END, 0, u.max_attempts, u.created,"
                 + " COALESCE(u.due, now()), now(), u.data, u.account, u.headers::jsonb, u.unique_key, u.key_keep_ms,"
-                + " u.retry_policy, u.schedule_id, u.retry_of, u.start_by, u.max_run_ms, u.cancel_requested_at,"
-                + " u.cancel_reason, u.progress,"
-                + " u.steps::jsonb, u.failures::jsonb"
-                + " FROM unnest(?::bigint[], ?::int[], ?::int[], ?::int[], ?::int[], ?::int[], ?::int[],"
+                + " u.retry_policy, u.schedule_id, u.retry_of, u.start_by, u.max_run_ms"
+                + " FROM unnest(?::bigint[], ?::int[], ?::int[], ?::int[], ?::int[], ?::int[],"
                 + " ?::timestamptz[], ?::timestamptz[], ?::text[], ?::text[], ?::text[], ?::text[], ?::bigint[],"
-                + " ?::text[], ?::text[], ?::bigint[], ?::timestamptz[], ?::int[], ?::timestamptz[], ?::text[],"
-                + " ?::text[], ?::text[], ?::text[])"
-                + " WITH ORDINALITY AS u(id, revision, queue_id, type_id, payload_version, attempts, max_attempts,"
+                + " ?::text[], ?::text[], ?::bigint[], ?::timestamptz[], ?::int[])"
+                + " WITH ORDINALITY AS u(id, revision, queue_id, type_id, payload_version, max_attempts,"
                 + " created, due, data, account, headers, unique_key, key_keep_ms, retry_policy, schedule_id,"
-                + " retry_of, start_by, max_run_ms, cancel_requested_at, cancel_reason, progress, steps, failures, ord)"
+                + " retry_of, start_by, max_run_ms, ord)"
                 + " ORDER BY u.unique_key, u.ord"
                 + " ON CONFLICT DO NOTHING RETURNING id";
         claimSql = claimSql(false);
@@ -303,8 +301,8 @@ public class PostgresTaskStore implements FullStore {
                 + " ins AS (INSERT INTO " + task
                 + "   (id, revision, queue_id, type_id, payload_version, state, attempts, max_attempts, created,"
                 + "   due, state_changed, data, account, headers, retry_policy, schedule_id, unique_key, key_keep_ms,"
-                + "   start_by, max_run_ms)"
-                + "   SELECT ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, now(), ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ? FROM adv"
+                + "   start_by, max_run_ms, retry_of)"
+                + "   SELECT ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, now(), ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ? FROM adv"
                 + "   ON CONFLICT DO NOTHING RETURNING id)"
                 + " SELECT (SELECT count(*) FROM adv), (SELECT count(*) FROM ins)";
     }
@@ -732,7 +730,6 @@ public class PostgresTaskStore implements FullStore {
         var queueIds = new Integer[n];
         var typeIds = new Integer[n];
         var payloadVersions = new Integer[n];
-        var attempts = new Integer[n];
         var maxAttempts = new Integer[n];
         var created = new String[n];
         var due = new String[n];
@@ -746,11 +743,6 @@ public class PostgresTaskStore implements FullStore {
         var retryOf = new Long[n];
         var startBy = new String[n];
         var maxRunTime = new Integer[n];
-        var cancelRequestedAt = new String[n];
-        var cancelReason = new String[n];
-        var progress = new String[n];
-        var steps = new String[n];
-        var failures = new String[n];
         for (int i = 0; i < n; i++) {
             var t = batch.get(i);
             ids[i] = t.id();
@@ -758,7 +750,6 @@ public class PostgresTaskStore implements FullStore {
             queueIds[i] = t.queueId();
             typeIds[i] = t.typeId();
             payloadVersions[i] = t.payloadVersion();
-            attempts[i] = t.attempts();
             maxAttempts[i] = t.maxAttempts();
             created[i] = text(t.createdAt() == null ? Instant.now() : t.createdAt());
             due[i] = text(t.due());
@@ -776,11 +767,6 @@ public class PostgresTaskStore implements FullStore {
             maxRunTime[i] = t.maxRunTime() == null
                     ? null
                     : Math.toIntExact(t.maxRunTime().toMillis());
-            cancelRequestedAt[i] = text(t.cancelRequestedAt());
-            cancelReason[i] = t.cancelReason();
-            progress[i] = t.progress();
-            steps[i] = RecordJson.encodeSteps(t.steps());
-            failures[i] = RecordJson.encodeFailures(t.failures());
         }
         Object[][] columns = {
             ids,
@@ -788,7 +774,6 @@ public class PostgresTaskStore implements FullStore {
             queueIds,
             typeIds,
             payloadVersions,
-            attempts,
             maxAttempts,
             created,
             due,
@@ -801,12 +786,7 @@ public class PostgresTaskStore implements FullStore {
             scheduleId,
             retryOf,
             startBy,
-            maxRunTime,
-            cancelRequestedAt,
-            cancelReason,
-            progress,
-            steps,
-            failures
+            maxRunTime
         };
         var arrays = new ArrayList<Array>();
         try (var ps = c.prepareStatement(insertSql)) {
@@ -1429,6 +1409,8 @@ public class PostgresTaskStore implements FullStore {
                 setInstant(ps, 20, o.startBy());
                 if (o.maxRunTime() == null) ps.setNull(21, Types.INTEGER);
                 else ps.setInt(21, Math.toIntExact(o.maxRunTime().toMillis()));
+                if (o.retryOf() == null) ps.setNull(22, Types.BIGINT);
+                else ps.setLong(22, o.retryOf());
                 try (var rs = ps.executeQuery()) {
                     rs.next();
                     if (rs.getLong(1) != 1) return false;

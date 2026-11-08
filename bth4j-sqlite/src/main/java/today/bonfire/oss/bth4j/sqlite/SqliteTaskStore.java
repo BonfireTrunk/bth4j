@@ -191,18 +191,19 @@ public class SqliteTaskStore implements FullStore {
         this.task = prefix + "_task";
         this.schedule = prefix + "_schedule";
 
-        // ON CONFLICT without a target covers both the id and the unique key; the caller tells the two apart
+        // ON CONFLICT without a target covers both the id and the unique key; the caller tells the two apart. A new
+        // task starts without run fields (ExecutionStore#enqueue), so only the producer's fields are bound
         insertSql = "INSERT INTO " + task
                 + " (id, revision, queue_id, type_id, payload_version, state, attempts, max_attempts, created,"
                 + " due, state_changed, data, account, headers, unique_key, key_keep_ms, retry_policy, schedule_id,"
-                + " retry_of, start_by, max_run_ms, cancel_requested_at, cancel_reason, progress, steps, failures)"
-                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                + " retry_of, start_by, max_run_ms)"
+                + " VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 + " ON CONFLICT DO NOTHING";
         commitInsertSql = "INSERT INTO " + task
                 + " (id, revision, queue_id, type_id, payload_version, state, attempts, max_attempts, created,"
                 + " due, state_changed, data, account, headers, retry_policy, schedule_id, unique_key, key_keep_ms,"
-                + " start_by, max_run_ms)"
-                + " VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                + " start_by, max_run_ms, retry_of)"
+                + " VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 + " ON CONFLICT DO NOTHING";
         renewSql = "UPDATE " + task + " SET lease_until = ?1 + ?2 WHERE id = ?3 AND revision = ?4 AND state = 2"
                 + " AND lease_until > ?1 RETURNING cancel_requested_at IS NOT NULL";
@@ -589,7 +590,6 @@ public class SqliteTaskStore implements FullStore {
             t.typeId(),
             t.payloadVersion(),
             due > now ? TaskState.SCHEDULED.code() : TaskState.QUEUED.code(),
-            t.attempts(),
             t.maxAttempts(),
             t.createdAt() == null ? now : t.createdAt().toEpochMilli(),
             due,
@@ -603,12 +603,7 @@ public class SqliteTaskStore implements FullStore {
             t.scheduleId(),
             t.retryOf(),
             t.startBy(),
-            t.maxRunTime() == null ? null : t.maxRunTime().toMillis(),
-            t.cancelRequestedAt(),
-            t.cancelReason(),
-            t.progress(),
-            RecordJson.encodeSteps(t.steps()),
-            RecordJson.encodeFailures(t.failures())
+            t.maxRunTime() == null ? null : t.maxRunTime().toMillis()
         };
     }
 
@@ -1258,7 +1253,8 @@ public class SqliteTaskStore implements FullStore {
                             ? null
                             : o.keyKeep().toMillis(),
                     o.startBy(),
-                    o.maxRunTime() == null ? null : o.maxRunTime().toMillis());
+                    o.maxRunTime() == null ? null : o.maxRunTime().toMillis(),
+                    o.retryOf());
             if (fixedDelay) {
                 if (update(
                                 c,

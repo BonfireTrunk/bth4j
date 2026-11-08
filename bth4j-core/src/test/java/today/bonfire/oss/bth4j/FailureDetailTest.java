@@ -88,6 +88,14 @@ class FailureDetailTest {
     }
 
     @Test
+    void aU0000InTheMessageIsRecordedAsTheReplacementCharacter() {
+        var info = Failures.info(FailureDetail.FULL, 1, NOW, new IllegalStateException("bad \u0000 byte"));
+
+        assertThat(info.message()).isEqualTo("bad \uFFFD byte");
+        assertThat(info.stack()).contains("bad \uFFFD byte").doesNotContain("\u0000");
+    }
+
+    @Test
     void classNameOnlyEventCarriesTheClassNameOnly() {
         var event = Failures.forEvent(FailureDetail.CLASS_NAME_ONLY, new IllegalStateException(SENTINEL));
 

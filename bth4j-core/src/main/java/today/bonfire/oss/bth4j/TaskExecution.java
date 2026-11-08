@@ -338,7 +338,7 @@ final class TaskExecution implements Runnable, TaskContext {
                 emit(new TaskEvent.Retrying(view, event(ex), s.clock().instant(), Outcome.LOST));
             }
             case TaskCancelledException ex ->
-                cancelled(detail() == FailureDetail.FULL ? ex.getMessage() : cancelReason());
+                cancelled(detail() == FailureDetail.FULL ? StoredText.clean(ex.getMessage()) : cancelReason());
             // the processor most likely stopped because of the cancel request (interrupt, closed resource)
             case Throwable ex
             when cancelRequested -> {
@@ -573,7 +573,7 @@ final class TaskExecution implements Runnable, TaskContext {
         if (progress != null && progress.length() > MAX_PROGRESS) {
             throw new TaskValidationException("progress longer than " + MAX_PROGRESS + " characters");
         }
-        if (!s.store().progress(record.id(), record.revision(), progress)) {
+        if (!s.store().progress(record.id(), record.revision(), StoredText.clean(progress))) {
             leaseLost = true;
             throw new TaskLeaseLostException("lease of task " + record.id() + " was lost");
         }
@@ -597,7 +597,7 @@ final class TaskExecution implements Runnable, TaskContext {
         }
         checkCancelled();
         R result = body.call();
-        var encoded = s.codecs().encodeStep(result);
+        var encoded = StoredText.clean(s.codecs().encodeStep(result));
         if (encoded != null && encoded.length() > MAX_STEP_RESULT) {
             throw new TaskValidationException("result of step " + name + " exceeds " + MAX_STEP_RESULT + " characters");
         }

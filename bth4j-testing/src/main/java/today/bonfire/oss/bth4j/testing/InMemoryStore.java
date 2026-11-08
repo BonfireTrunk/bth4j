@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j.testing;
 
 import java.time.Clock;
+import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -240,7 +241,11 @@ public final class InMemoryStore implements FullStore {
         TaskState state = forcedDue != null || due.isAfter(now) ? TaskState.SCHEDULED : TaskState.QUEUED;
         tasks.put(
                 task.id(),
-                task.toBuilder().state(state).due(due).stateChangedAt(now).build());
+                task.asNew().toBuilder()
+                        .state(state)
+                        .due(due)
+                        .stateChangedAt(now)
+                        .build());
         if (key != null) {
             keyHolders.put(key, task.id());
         }
@@ -595,6 +600,7 @@ public final class InMemoryStore implements FullStore {
 
     @Override
     public long purge(TaskState state, Duration retention, int limit) {
+        if (!state.isTerminal()) throw new IllegalArgumentException("only terminal states are purged: " + state);
         lock.lock();
         try {
             Instant now = clock.instant();
@@ -805,8 +811,8 @@ public final class InMemoryStore implements FullStore {
     }
 
     /**
-     * The cursor is {@code <sort time in epoch nanoseconds>:<id>} of the last task of the page; the sort time is due
-     * for QUEUED and SCHEDULED, stateChanged otherwise.
+     * The cursor is {@code <epoch second>.<nanosecond>:<id>} of the sort time and id of the last task of the
+     * page; the sort time is due for QUEUED and SCHEDULED, stateChanged otherwise.
      */
     @Override
     public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
@@ -836,7 +842,7 @@ public final class InMemoryStore implements FullStore {
     }
 
     private static String encodeCursor(Instant at, long id) {
-        return (at.getEpochSecond() * 1_000_000_000L + at.getNano()) + ":" + id;
+        return at.getEpochSecond() + "." + at.getNano() + ":" + id;
     }
 
     private record Position(Instant at, long id) {}
@@ -849,17 +855,17 @@ public final class InMemoryStore implements FullStore {
     }
 
     private static Position decodeCursor(String cursor) {
-        var colon = cursor.indexOf(':');
+        var parts = cursor.split(":", -1);
+        var time = parts[0].split("\\.", -1);
         try {
-            if (colon > 0) {
-                var nanos = Long.parseLong(cursor.substring(0, colon));
-                var id = Long.parseLong(cursor.substring(colon + 1));
-                return new Position(
-                        Instant.ofEpochSecond(
-                                Math.floorDiv(nanos, 1_000_000_000L), Math.floorMod(nanos, 1_000_000_000L)),
-                        id);
+            if (parts.length == 2 && time.length == 2) {
+                var nanos = Long.parseLong(time[1]);
+                if (nanos >= 0 && nanos < 1_000_000_000L) {
+                    return new Position(
+                            Instant.ofEpochSecond(Long.parseLong(time[0]), nanos), Long.parseLong(parts[1]));
+                }
             }
-        } catch (NumberFormatException e) {
+        } catch (NumberFormatException | DateTimeException e) {
             throw new IllegalArgumentException("malformed cursor");
         }
         throw new IllegalArgumentException("malformed cursor");

@@ -7,7 +7,10 @@ import java.util.Map;
 
 /**
  * A task as the store keeps it. Fields that do not apply to the task's state are null. A store never
- * writes a null field (Redis omits the hash field, PostgreSQL stores SQL null).
+ * writes a null field (Redis omits the hash field, PostgreSQL stores SQL null). Text is stored as given: an
+ * empty string reads back empty, not null. The library never hands a store text that contains U+0000,
+ * which PostgreSQL cannot keep; it refuses such producer and operator input and replaces U+0000 with U+FFFD
+ * in text from processor code.
  *
  * @param id                unique per namespace, allocated by the client from {@link TaskStore#allocateIds}
  * @param revision          +1 on every state change; never on renew, step or progress writes; the fence every
@@ -30,7 +33,8 @@ import java.util.Map;
  * @param account           application-defined owner, or null
  * @param headers           application headers, or null
  * @param uniqueKey         the unique key while it is held, or null
- * @param keyKeep           how long the key stays held after the task ends; null releases it at the end
+ * @param keyKeep           how long the key stays held after the task ends, at most
+ *                          {@link today.bonfire.oss.bth4j.Uniqueness#MAX_KEEP_FOR}; null releases it at the end
  * @param keyUntil          when the held key of a finished task is released
  * @param retryPolicy       name of the retry policy; null means the runner's default
  * @param scheduleId        the recurring definition this task is an occurrence of, or null
@@ -84,6 +88,26 @@ public record TaskRecord(
 
     public static Builder builder() {
         return new Builder();
+    }
+
+    /**
+     * @return this record as {@link ExecutionStore#enqueue} stores a new task: the fields a producer sets, zero
+     *         attempts, and no worker, lease, claim time, key-until, cancel request or reason, progress, steps or
+     *         failures
+     */
+    public TaskRecord asNew() {
+        return toBuilder()
+                .attempts(0)
+                .workerId(null)
+                .leaseUntil(null)
+                .claimedAt(null)
+                .keyUntil(null)
+                .cancelRequestedAt(null)
+                .cancelReason(null)
+                .progress(null)
+                .steps(null)
+                .failures(null)
+                .build();
     }
 
     public Builder toBuilder() {

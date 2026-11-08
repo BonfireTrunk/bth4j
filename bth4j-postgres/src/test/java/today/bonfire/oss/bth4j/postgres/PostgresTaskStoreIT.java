@@ -314,8 +314,8 @@ class PostgresTaskStoreIT {
         assertThat(r.retryOf()).isEqualTo(7L);
         assertThat(r.startBy()).isEqualTo(t.startBy().truncatedTo(ChronoUnit.MICROS));
         assertThat(r.maxRunTime()).isEqualTo(Duration.ofSeconds(9));
-        assertThat(r.progress()).isEqualTo("10%");
-        assertThat(r.steps()).isEqualTo(steps);
+        assertThat(r.progress()).as("a new task starts without progress").isNull();
+        assertThat(r.steps()).as("a new task starts without steps").isNull();
         assertThat(r.workerId()).isNull();
         assertThat(r.leaseUntil()).isNull();
         assertThat(r.failures()).isNull();

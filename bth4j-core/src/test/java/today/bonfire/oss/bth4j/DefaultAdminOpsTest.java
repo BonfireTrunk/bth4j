@@ -310,6 +310,14 @@ class DefaultAdminOpsTest {
     }
 
     @Test
+    void aReasonOrKeyWithAU0000IsRejectedBeforeTheStore() {
+        assertThatThrownBy(() -> ops.cancel(1, 1, "why\u0000")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.cancelByKey("k\u0000", "why")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.taskByKey("k\u0000")).isInstanceOf(TaskValidationException.class);
+        assertThat(calls).isEmpty();
+    }
+
+    @Test
     void taskByKeyIsEmptyWhenNoTaskHoldsTheKey() {
         handlers.put("taskByKey", a -> Optional.empty());
 

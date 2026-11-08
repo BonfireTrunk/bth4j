@@ -25,10 +25,13 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import today.bonfire.oss.bth4j.Uniqueness;
 
 /**
  * Contract of every {@link FullStore}, checked through SPI reads only. A store module subclasses it and
@@ -46,6 +49,9 @@ public abstract class StoreContract {
 
     protected FullStore store;
     private int worker;
+    /** A registered queue no test enqueues to; with it the ids of queue, type and worker all differ. */
+    private int idle;
+
     private int queue;
     private String namespace;
     private int type;
@@ -115,9 +121,44 @@ public abstract class StoreContract {
         namespace = "contract" + COUNTER.incrementAndGet() + "x" + System.nanoTime() % 100_000;
         store = newStore(namespace);
         store.init();
+        // a store that writes one id where another belongs fails when queue, type and worker ids differ
+        idle = store.queueId("idle");
         queue = store.queueId("main");
+        store.typeId("filler-1");
+        store.typeId("filler-2");
         type = store.typeId("work");
         worker = store.allocateWorkerId("contract-test", Set.of(queue), Set.of(type));
+    }
+
+    /**
+     * Every task a listing returns, after every test, is the task {@link InspectionStore#getTask} reads, in the
+     * listed state, with a lease only while LEASED and no key-until while open.
+     */
+    @AfterEach
+    void listingsMatchReads() {
+        for (TaskState state : TaskState.values()) {
+            String cursor = null;
+            int pages = 0;
+            do {
+                TaskPage page = store.tasks(state, null, cursor, 100);
+                for (TaskRecord item : page.items()) {
+                    assertThat(item.state()).as("state of listed %s", item.id()).isEqualTo(state);
+                    assertThat(item)
+                            .as("listed %s %s against getTask", state, item.id())
+                            .isEqualTo(get(item.id()));
+                    assertThat(item.leaseUntil() != null)
+                            .as("lease of %s in %s", item.id(), state)
+                            .isEqualTo(state == TaskState.LEASED);
+                    if (!state.isTerminal()) {
+                        assertThat(item.keyUntil())
+                                .as("keyUntil of open %s", item.id())
+                                .isNull();
+                    }
+                }
+                cursor = page.next();
+            } while (cursor != null && ++pages < 1000);
+            assertThat(cursor).as("walk of %s ended", state).isNull();
+        }
     }
 
     private Instant now() {
@@ -391,6 +432,373 @@ public abstract class StoreContract {
         assertThat(t.payloadVersion()).isEqualTo(4);
         assertThat(t.maxRunTime()).isEqualTo(Duration.ofSeconds(9));
         assertThat(t.maxAttempts()).isEqualTo(3);
+    }
+
+    /** Fields a producer sets that no transition changes, except that {@link AdminStore#retry} clears startBy. */
+    private static final Map<String, Function<TaskRecord, Object>> CARRIED = carriedFields();
+
+    private static Map<String, Function<TaskRecord, Object>> carriedFields() {
+        Map<String, Function<TaskRecord, Object>> fields = new LinkedHashMap<>();
+        fields.put("id", TaskRecord::id);
+        fields.put("queueId", TaskRecord::queueId);
+        fields.put("typeId", TaskRecord::typeId);
+        fields.put("payloadVersion", TaskRecord::payloadVersion);
+        fields.put("maxAttempts", TaskRecord::maxAttempts);
+        fields.put("createdAt", TaskRecord::createdAt);
+        fields.put("account", TaskRecord::account);
+        fields.put("headers", TaskRecord::headers);
+        fields.put("keyKeep", TaskRecord::keyKeep);
+        fields.put("retryPolicy", TaskRecord::retryPolicy);
+        fields.put("scheduleId", TaskRecord::scheduleId);
+        fields.put("retryOf", TaskRecord::retryOf);
+        fields.put("startBy", TaskRecord::startBy);
+        fields.put("maxRunTime", TaskRecord::maxRunTime);
+        return Collections.unmodifiableMap(fields);
+    }
+
+    /** A task with every field a producer may set, each to a value that no default and no other field has. */
+    private TaskRecord.Builder everyField(String key) {
+        return task().revision(424_242)
+                .payloadVersion(7)
+                .maxAttempts(9)
+                .createdAt(millis(now().minusSeconds(17)))
+                .encodedPayload("{\"every\":\"field\"}")
+                .account("account-é")
+                .headers(Map.of("h1", "v1", "h\"2", "v\"2"))
+                .uniqueKey(key)
+                .keyKeep(Duration.ofMinutes(13))
+                .retryPolicy("policy-x")
+                .scheduleId("every")
+                .retryOf(31L)
+                .startBy(millis(now().plus(Duration.ofHours(5))))
+                .maxRunTime(Duration.ofSeconds(41));
+    }
+
+    private static void assertCarried(TaskRecord expected, TaskRecord actual, String step) {
+        CARRIED.forEach((name, field) ->
+                assertThat(field.apply(actual)).as("%s after %s", name, step).isEqualTo(field.apply(expected)));
+    }
+
+    /** A new task as stored: the producer's fields as given, nothing from a run. */
+    private void assertStoredAsGiven(TaskRecord given, TaskState state, String path) {
+        TaskRecord stored = get(given.id());
+        assertCarried(given, stored, path);
+        assertThat(stored.revision()).as("revision after %s", path).isEqualTo(given.revision());
+        assertThat(stored.state()).as("state after %s", path).isEqualTo(state);
+        assertThat(stored.due()).as("due after %s", path).isEqualTo(given.due());
+        assertThat(stored.encodedPayload()).as("payload after %s", path).isEqualTo(given.encodedPayload());
+        assertThat(stored.uniqueKey()).as("unique key after %s", path).isEqualTo(given.uniqueKey());
+        assertThat(stored.attempts()).as("attempts after %s", path).isZero();
+        assertThat(stored.stateChangedAt())
+                .as("state change time after %s", path)
+                .isNotNull();
+        assertThat(Stream.of(
+                        stored.workerId(),
+                        stored.leaseUntil(),
+                        stored.claimedAt(),
+                        stored.keyUntil(),
+                        stored.cancelRequestedAt(),
+                        stored.cancelReason(),
+                        stored.progress(),
+                        stored.steps(),
+                        stored.failures()))
+                .as("run fields after %s", path)
+                .containsOnlyNulls();
+    }
+
+    @Test
+    void everyFieldOfANewTaskIsStoredAsGivenOnEachWayIn() {
+        Instant later = millis(now().plus(Duration.ofHours(1)));
+        Instant past = millis(now().minusSeconds(1));
+        TaskRecord scheduled = everyField("one").due(later).build();
+        TaskRecord queued = everyField("two").due(past).revision(515_151).build();
+        assertThat(store.enqueue(scheduled)).isEqualTo(EnqueueOutcome.STORED);
+        assertThat(store.enqueue(queued)).isEqualTo(EnqueueOutcome.STORED);
+        assertStoredAsGiven(scheduled, TaskState.SCHEDULED, "enqueue");
+        assertStoredAsGiven(queued, TaskState.QUEUED, "enqueue");
+
+        TaskRecord first = everyField("three").due(later).revision(626_262).build();
+        TaskRecord second = everyField("four").due(past).revision(737_373).build();
+        assertThat(store.enqueueAll(List.of(first, second)))
+                .containsExactly(EnqueueOutcome.STORED, EnqueueOutcome.STORED);
+        assertStoredAsGiven(first, TaskState.SCHEDULED, "enqueueAll");
+        assertStoredAsGiven(second, TaskState.QUEUED, "enqueueAll");
+
+        Instant fire = millis(now().plusSeconds(1));
+        store.putRecurring(definition("every", "* * * * *"), fire, fire);
+        DueSchedule due = store.dueRecurring(fire, 10).get(0);
+        TaskRecord occurrence = everyField("five")
+                .due(fire)
+                .state(TaskState.SCHEDULED)
+                .revision(848_484)
+                .build();
+        assertThat(store.commitRecurring(due, millis(now().plusSeconds(3600)), occurrence))
+                .isTrue();
+        assertStoredAsGiven(occurrence, TaskState.SCHEDULED, "commitRecurring");
+    }
+
+    /** The task as stored after {@code step}: carried fields, unique key and payload as given, at {@code revision}. */
+    private TaskRecord walked(TaskRecord expected, String step, int revision) {
+        TaskRecord t = get(expected.id());
+        assertCarried(expected, t, step);
+        assertThat(t.revision()).as("revision after %s", step).isEqualTo(revision);
+        assertThat(t.uniqueKey()).as("unique key after %s", step).isEqualTo(expected.uniqueKey());
+        assertThat(t.encodedPayload()).as("payload after %s", step).isEqualTo(expected.encodedPayload());
+        return t;
+    }
+
+    /**
+     * One task through every transition a store implements. The key keep window outlasts the test and every
+     * finish keeps the payload, so only the revision, as the SPI counts it, and the run fields may change.
+     */
+    @Test
+    void theFieldsAProducerSetSurviveEveryTransition() {
+        TaskRecord given = everyField("walk").build();
+        long id = given.id();
+        assertThat(store.enqueue(given)).isEqualTo(EnqueueOutcome.STORED);
+
+        assertThat(claimOne().id()).isEqualTo(id);
+        TaskRecord t = walked(given, "claim", given.revision() + 1);
+        assertThat(store.renew(List.of(new LeaseRef(id, t.revision())), LEASE))
+                .singleElement()
+                .satisfies(s -> assertThat(s.owned()).isTrue());
+        walked(given, "renew", t.revision());
+        assertThat(store.saveSteps(id, t.revision(), Map.of("first", new StepResult(millis(now()), "ok"))))
+                .isTrue();
+        walked(given, "saveSteps", t.revision());
+        assertThat(store.progress(id, t.revision(), "half")).isTrue();
+        walked(given, "progress", t.revision());
+
+        assertThat(store.fail(id, t.revision(), failure(1), millis(now().minusSeconds(1)), true, null))
+                .isEqualTo(FailOutcome.RETRY);
+        t = walked(given, "fail with a retry", t.revision() + 1);
+        assertThat(store.promote(10).moved()).isEqualTo(1);
+        t = walked(given, "promote", t.revision() + 1);
+
+        assertThat(claimOne().id()).isEqualTo(id);
+        t = walked(given, "second claim", t.revision() + 1);
+        assertThat(store.reschedule(id, t.revision(), millis(now().minusSeconds(1))))
+                .isTrue();
+        t = walked(given, "reschedule", t.revision() + 1);
+        assertThat(store.promote(10).moved()).isEqualTo(1);
+        t = walked(given, "second promote", t.revision() + 1);
+
+        assertThat(claimOne().id()).isEqualTo(id);
+        t = walked(given, "third claim", t.revision() + 1);
+        assertThat(store.unclaim(id, t.revision())).isTrue();
+        t = walked(given, "unclaim", t.revision() + 1);
+
+        assertThat(claimOne().id()).isEqualTo(id);
+        t = walked(given, "fourth claim", t.revision() + 1);
+        assertThat(store.cancel(id, t.revision(), "stop", null)).isEqualTo(CancelOutcome.REQUESTED);
+        walked(given, "cancel request", t.revision());
+        assertThat(store.finishCancelled(id, t.revision(), "stop", true, null)).isTrue();
+        t = walked(given, "finishCancelled", t.revision() + 1);
+
+        TaskRecord retried = given.toBuilder().startBy(null).build();
+        assertThat(store.retry(id, t.revision())).isEqualTo(RetryOutcome.RETRIED);
+        t = walked(retried, "retry", t.revision() + 1);
+
+        assertThat(claim(1, SHORT, null)).extracting(TaskRecord::id).containsExactly(id);
+        t = walked(retried, "short claim", t.revision() + 1);
+        advance(PAST_SHORT);
+        assertThat(store.reclaim(10)).extracting(ExpiredLease::id).containsExactly(id);
+        walked(retried, "reclaim", t.revision());
+        assertThat(store.failExpired(id, t.revision(), failure(2), null, true, null))
+                .isEqualTo(FailOutcome.DEAD);
+        t = walked(retried, "failExpired", t.revision() + 1);
+
+        assertThat(store.retry(id, t.revision())).isEqualTo(RetryOutcome.RETRIED);
+        t = walked(retried, "second retry", t.revision() + 1);
+        assertThat(claimOne().id()).isEqualTo(id);
+        t = walked(retried, "fifth claim", t.revision() + 1);
+        assertThat(store.ack(id, t.revision(), true, true, null)).isTrue();
+        t = walked(retried, "ack", t.revision() + 1);
+        assertThat(t.state()).isEqualTo(TaskState.SUCCEEDED);
+    }
+
+    /** Every run field set, as a copy of a claimed, failed and progressing task carries them. */
+    private TaskRecord.Builder withRunFields(TaskRecord.Builder builder) {
+        Instant at = millis(now().minusSeconds(5));
+        return builder.state(TaskState.LEASED)
+                .attempts(3)
+                .workerId(worker)
+                .leaseUntil(millis(now().plusSeconds(60)))
+                .claimedAt(at)
+                .keyUntil(millis(now().plusSeconds(90)))
+                .cancelRequestedAt(at)
+                .cancelReason("copied")
+                .progress("copied")
+                .steps(Map.of("s", new StepResult(at, "r")))
+                .failures(List.of(failure(2)));
+    }
+
+    @Test
+    void aNewTaskStartsWithoutRunFieldsOnEveryWayIn() {
+        Instant later = millis(now().plus(Duration.ofHours(1)));
+        Instant past = millis(now().minusSeconds(1));
+        TaskRecord scheduled = withRunFields(everyField("one").due(later)).build();
+        TaskRecord queued = withRunFields(everyField("two").due(past)).build();
+        assertThat(store.enqueue(scheduled)).isEqualTo(EnqueueOutcome.STORED);
+        assertThat(store.enqueue(queued)).isEqualTo(EnqueueOutcome.STORED);
+        assertStoredAsGiven(scheduled, TaskState.SCHEDULED, "enqueue");
+        assertStoredAsGiven(queued, TaskState.QUEUED, "enqueue");
+
+        TaskRecord first = withRunFields(everyField("three").due(later)).build();
+        TaskRecord second = withRunFields(everyField("four").due(past)).build();
+        assertThat(store.enqueueAll(List.of(first, second)))
+                .containsExactly(EnqueueOutcome.STORED, EnqueueOutcome.STORED);
+        assertStoredAsGiven(first, TaskState.SCHEDULED, "enqueueAll");
+        assertStoredAsGiven(second, TaskState.QUEUED, "enqueueAll");
+
+        Instant fire = millis(now().plusSeconds(1));
+        store.putRecurring(definition("every", "* * * * *"), fire, fire);
+        DueSchedule due = store.dueRecurring(fire, 10).get(0);
+        TaskRecord occurrence = withRunFields(everyField("five").due(fire)).build();
+        assertThat(store.commitRecurring(due, millis(now().plusSeconds(3600)), occurrence))
+                .isTrue();
+        assertStoredAsGiven(occurrence, TaskState.SCHEDULED, "commitRecurring");
+    }
+
+    @Test
+    void aTaskThatWentBackToWaitingNamesNoWorkerOnceItEnds() {
+        TaskRecord retried = leased(task());
+        assertThat(store.fail(retried.id(), retried.revision(), failure(1), now().plusSeconds(60), true, null))
+                .isEqualTo(FailOutcome.RETRY);
+        assertThat(get(retried.id()).workerId())
+                .as("waiting after fail with a retry")
+                .isNull();
+        assertThat(store.cancel(retried.id(), retried.revision() + 1, "stop", null))
+                .isEqualTo(CancelOutcome.CANCELLED);
+        assertThat(get(retried.id()).workerId())
+                .as("cancelled after fail with a retry")
+                .isNull();
+
+        TaskRecord rescheduled = leased(task());
+        assertThat(store.reschedule(rescheduled.id(), rescheduled.revision(), now().plusSeconds(60)))
+                .isTrue();
+        assertThat(store.cancel(rescheduled.id(), rescheduled.revision() + 1, "stop", null))
+                .isEqualTo(CancelOutcome.CANCELLED);
+        assertThat(get(rescheduled.id()).workerId())
+                .as("cancelled after reschedule")
+                .isNull();
+
+        TaskRecord unclaimed = leased(task());
+        assertThat(store.unclaim(unclaimed.id(), unclaimed.revision())).isTrue();
+        assertThat(store.cancel(unclaimed.id(), unclaimed.revision() + 1, "stop", null))
+                .isEqualTo(CancelOutcome.CANCELLED);
+        assertThat(get(unclaimed.id()).workerId()).as("cancelled after unclaim").isNull();
+
+        TaskRecord expiring = leased(task().startBy(now().plus(SHORT)));
+        assertThat(store.fail(expiring.id(), expiring.revision(), failure(1), now().plusSeconds(60), true, null))
+                .isEqualTo(FailOutcome.RETRY);
+        advance(PAST_SHORT);
+        assertThat(store.expire(10)).containsExactly(expiring.id());
+        assertThat(get(expiring.id()).workerId())
+                .as("expired after fail with a retry")
+                .isNull();
+    }
+
+    @Test
+    void aListingOfTasksDueAfterTheYear2262EndsItsWalk() {
+        Instant far = Instant.parse("3000-01-01T00:00:00Z");
+        List<Long> ids = new ArrayList<>();
+        for (int i = 1; i <= 3; i++) {
+            ids.add(put(task().due(far.plusSeconds(i))));
+        }
+        List<Long> seen = new ArrayList<>();
+        String cursor = null;
+        for (int page = 0; page < 5; page++) {
+            TaskPage p = store.tasks(TaskState.SCHEDULED, queue, cursor, 2);
+            p.items().forEach(t -> seen.add(t.id()));
+            cursor = p.next();
+            if (cursor == null) break;
+        }
+        assertThat(seen).containsExactlyElementsOf(ids);
+        assertThat(cursor).isNull();
+    }
+
+    @Test
+    void purgeRefusesAStateThatIsNotTerminal() {
+        for (TaskState state : List.of(TaskState.LEASED, TaskState.SCHEDULED, TaskState.QUEUED)) {
+            long id = inState(state, task());
+            assertThatThrownBy(() -> store.purge(state, Duration.ZERO, 10))
+                    .as("purge of %s", state)
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThat(store.getTask(id)).as("task in %s", state).isPresent();
+        }
+    }
+
+    @Test
+    void anEmptyTextIsStoredAsGivenNotAsNull() {
+        long labelled = put(task().account("").headers(Map.of("h", "")));
+        assertThat(get(labelled).account()).as("account").isEmpty();
+        assertThat(get(labelled).headers()).as("headers").containsExactly(Map.entry("h", ""));
+
+        TaskRecord t = leased(task());
+        assertThat(store.progress(t.id(), t.revision(), "")).isTrue();
+        assertThat(get(t.id()).progress()).as("progress").isEmpty();
+        assertThat(store.cancel(t.id(), t.revision(), "", null)).isEqualTo(CancelOutcome.REQUESTED);
+        assertThat(get(t.id()).cancelReason()).as("reason of a cancel request").isEmpty();
+        assertThat(store.finishCancelled(t.id(), t.revision(), "", true, null)).isTrue();
+        assertThat(get(t.id()).cancelReason()).as("reason of finishCancelled").isEmpty();
+
+        long waiting = putNew();
+        assertThat(store.cancel(waiting, get(waiting).revision(), "", null)).isEqualTo(CancelOutcome.CANCELLED);
+        assertThat(get(waiting).cancelReason()).as("reason of a cancel").isEmpty();
+    }
+
+    @Test
+    void aClaimReturnsTheTaskAsStored() {
+        long id = put(everyField("claimed"));
+        assertThat(claimOne()).as("first claim").isEqualTo(get(id));
+        TaskRecord t = get(id);
+        assertThat(store.saveSteps(id, t.revision(), Map.of("s", new StepResult(millis(now()), "r"))))
+                .isTrue();
+        assertThat(store.progress(id, t.revision(), "p")).isTrue();
+        assertThat(store.fail(id, t.revision(), failure(1), millis(now().minusSeconds(1)), true, null))
+                .isEqualTo(FailOutcome.RETRY);
+        assertThat(store.promote(10).moved()).isEqualTo(1);
+        assertThat(claimOne()).as("claim after a failure").isEqualTo(get(id));
+    }
+
+    @Test
+    void theLongestKeepWindowHoldsTheKeyOnEveryWayATaskEnds() {
+        Duration longest = Uniqueness.MAX_KEEP_FOR;
+        TaskRecord acked = leased(task().uniqueKey("acked").keyKeep(longest));
+        assertThat(store.ack(acked.id(), acked.revision(), true, true, null)).isTrue();
+        TaskRecord dead = leased(task().uniqueKey("dead").keyKeep(longest));
+        assertThat(store.fail(dead.id(), dead.revision(), failure(1), null, true, null))
+                .isEqualTo(FailOutcome.DEAD);
+        TaskRecord cancelled = leased(task().uniqueKey("cancelled").keyKeep(longest));
+        assertThat(store.finishCancelled(cancelled.id(), cancelled.revision(), "stop", true, null))
+                .isTrue();
+        long waiting = put(task().uniqueKey("waiting").keyKeep(longest));
+        assertThat(store.cancel(waiting, get(waiting).revision(), "stop", null)).isEqualTo(CancelOutcome.CANCELLED);
+        TaskRecord removed = leased(task().uniqueKey("removed").keyKeep(longest));
+        long expired = put(task().uniqueKey("expired").keyKeep(longest).startBy(now().plus(SHORT)));
+        advance(PAST_SHORT);
+        assertThat(store.expire(10)).containsExactly(expired);
+        assertThat(store.fail(removed.id(), removed.revision(), failure(1), null, false, null))
+                .isEqualTo(FailOutcome.DEAD);
+
+        Map<String, Long> holders = new LinkedHashMap<>();
+        holders.put("acked", acked.id());
+        holders.put("dead", dead.id());
+        holders.put("cancelled", cancelled.id());
+        holders.put("waiting", waiting);
+        holders.put("expired", expired);
+        holders.put("removed", removed.id());
+        holders.forEach((key, id) -> {
+            assertThat(store.enqueue(task().uniqueKey(key).build()))
+                    .as("same-key enqueue after %s", key)
+                    .isEqualTo(new EnqueueOutcome.DuplicateKey(id));
+            store.getTask(id)
+                    .ifPresent(t -> assertThat(t.keyUntil())
+                            .as("key window of %s", key)
+                            .isEqualTo(t.stateChangedAt().plus(longest)));
+        });
+        assertThat(store.getTask(removed.id())).isEmpty();
     }
 
     @Test
@@ -1025,7 +1433,8 @@ public abstract class StoreContract {
 
     @Test
     void renewReportsACancelRequest() {
-        TaskRecord t = leased(task().cancelRequestedAt(now()).cancelReason("stop"));
+        TaskRecord t = leased(task());
+        assertThat(store.cancel(t.id(), t.revision(), "stop", null)).isEqualTo(CancelOutcome.REQUESTED);
         List<LeaseStatus> status = store.renew(List.of(new LeaseRef(t.id(), t.revision())), LEASE);
         assertThat(status).containsExactly(new LeaseStatus(t.id(), true, true));
     }
@@ -1784,8 +2193,9 @@ public abstract class StoreContract {
 
     @Test
     void reclaimFlagsACancelRequest() {
-        put(task().cancelRequestedAt(now()));
-        claim(1, SHORT, null);
+        put(task());
+        TaskRecord t = claim(1, SHORT, null).get(0);
+        assertThat(store.cancel(t.id(), t.revision(), "stop", null)).isEqualTo(CancelOutcome.REQUESTED);
         advance(PAST_SHORT);
         assertThat(store.reclaim(10)).extracting(ExpiredLease::cancelRequested).containsExactly(true);
     }
@@ -2879,7 +3289,10 @@ public abstract class StoreContract {
     void queuesListsEveryRegisteredQueueInIdOrder() {
         int second = store.queueId("second");
         assertThat(store.queues())
-                .containsExactly(new QueueInfo(queue, "main", false), new QueueInfo(second, "second", false));
+                .containsExactly(
+                        new QueueInfo(idle, "idle", false),
+                        new QueueInfo(queue, "main", false),
+                        new QueueInfo(second, "second", false));
     }
 
     @Test

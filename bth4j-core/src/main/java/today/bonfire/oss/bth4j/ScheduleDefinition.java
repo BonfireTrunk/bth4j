@@ -39,6 +39,8 @@ public record ScheduleDefinition<T>(
         if (StringUtils.isBlank(id) || id.length() > 128) {
             throw new TaskValidationException("schedule id must be 1 to 128 characters");
         }
+        StoredText.require("schedule id", id);
+        StoredText.require("account", account);
         if (type == null) throw new TaskValidationException("type is required");
         if (StringUtils.isBlank(cron) == (fixedDelay == null)) {
             throw new TaskValidationException("exactly one of cron and fixedDelay is required");

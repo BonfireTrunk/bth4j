@@ -667,6 +667,7 @@ public final class BackgroundRunner {
             if (StringUtils.isBlank(label) || label.length() > 128) {
                 throw new TaskConfigurationException("workerLabel must be 1 to 128 characters");
             }
+            if (!StoredText.storable(label)) throw new TaskConfigurationException("workerLabel contains U+0000");
             this.workerLabel = label;
             return this;
         }
@@ -842,6 +843,7 @@ public final class BackgroundRunner {
                 throw new TaskConfigurationException("Available queues cannot be empty");
             availableQueues.forEach(s -> {
                 if (StringUtils.isBlank(s)) throw new TaskConfigurationException("Queue names cannot be blank");
+                if (!StoredText.storable(s)) throw new TaskConfigurationException("Queue name contains U+0000");
             });
             // LinkedHashSet keeps the order given by the caller, a HashSet would make it random
             this.availableQueues = new LinkedHashSet<>(availableQueues);

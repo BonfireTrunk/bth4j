@@ -418,10 +418,14 @@ public final class TaskClient {
      *         holds the key
      */
     public Optional<TaskView> taskByKey(String key) {
+        StoredText.require("uniqueKey", key);
         return store.taskByKey(key).map(names::view);
     }
 
-    /** @return counts per state for every queue that has or had tasks, by queue name */
+    /**
+     * @return counts per state by queue name, for every queue that has tasks; a queue without tasks may be left
+     *         out or have every count zero
+     */
     public Map<String, StateCounts> counts() {
         var result = new java.util.LinkedHashMap<String, StateCounts>();
         store.counts().forEach((id, c) -> result.put(names.queueName(id), c));
@@ -529,6 +533,7 @@ public final class TaskClient {
             }
             for (var q : availableQueues) {
                 if (StringUtils.isBlank(q)) throw new TaskConfigurationException("queue names cannot be blank");
+                if (!StoredText.storable(q)) throw new TaskConfigurationException("queue name contains U+0000");
             }
             Set<String> available = new LinkedHashSet<>(availableQueues);
             var def = StringUtils.isBlank(defaultQueue) ? availableQueues.getFirst() : defaultQueue;

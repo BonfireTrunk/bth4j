@@ -204,7 +204,7 @@ most 8192, and all step names and encoded results of a task together at most 655
 |---|---|
 | `queue(name)` | target queue; the default queue when absent |
 | `delay(duration)` / `at(instant)` | run later; the last one set wins |
-| `uniqueKey(key)` / `uniqueKey(key, Uniqueness.keepFor(d))` | at most one task holds the key; released when the task finishes, or `d` after, also when the task itself was removed sooner (see "Retention"); an operator retry within `d` keeps it |
+| `uniqueKey(key)` / `uniqueKey(key, Uniqueness.keepFor(d))` | at most one task holds the key; released when the task finishes, or `d` (at most 100 years) after, also when the task itself was removed sooner (see "Retention"); an operator retry within `d` keeps it |
 | `maxAttempts(n)` | attempts before the task is dead; the runner default when absent |
 | `startBy(instant)` | the task expires if it has not started by then, see "Cancelling tasks"; must not be before the run time |
 | `maxRunTime(duration)` | an attempt running longer is asked to stop, see "Cancelling tasks" |
@@ -217,8 +217,11 @@ most 8192, and all step names and encoded results of a task together at most 655
 inside its `keepFor` window, without writing; it is empty when no task holds it, and also when the holder was
 removed by its retention and only its key stays taken. `admin.cancelByKey(key, reason)` cancels that task,
 and cancelling a waiting fixed-delay occurrence (key `sched:<schedule id>`) pauses its schedule, as cancelling it by id does.
-A key follows the rule of `uniqueKey`: 1 to 256 characters, not blank.
+A key follows the rule of `uniqueKey`: 1 to 256 characters, not blank, without U+0000.
 Payloads are limited to 256 KiB.
+No text the library stores may contain U+0000, which PostgreSQL cannot keep: the client refuses it in a request,
+a schedule, a name or a cancel reason on every store, and records text from processor code (failure message and
+stack, progress, step results) with U+FFFD in its place.
 
 A later enqueue with the same key and a shorter `keepFor` does not shorten the holder's window.
 `AdminOps.cancel` on a DEAD task answers `STALE` and leaves its key held for the window; a successful

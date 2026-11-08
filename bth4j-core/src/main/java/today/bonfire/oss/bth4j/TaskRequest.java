@@ -41,6 +41,7 @@ public final class TaskRequest<T> {
         if (key.isBlank() || key.length() > MAX_UNIQUE_KEY_LENGTH) {
             throw new TaskValidationException("uniqueKey must be 1 to " + MAX_UNIQUE_KEY_LENGTH + " characters");
         }
+        StoredText.require("uniqueKey", key);
     }
 
     private final TaskType<T> type;
@@ -210,6 +211,7 @@ public final class TaskRequest<T> {
             if (account != null && account.length() > MAX_ACCOUNT_LENGTH) {
                 throw new TaskValidationException("account longer than " + MAX_ACCOUNT_LENGTH);
             }
+            StoredText.require("account", account);
             this.account = account;
             return this;
         }
@@ -259,6 +261,8 @@ public final class TaskRequest<T> {
             if (name == null || name.isBlank() || value == null) {
                 throw new TaskValidationException("header name and value are required");
             }
+            StoredText.require("header name", name);
+            StoredText.require("header value", value);
             if (headers == null) headers = new LinkedHashMap<>();
             headers.put(name, value);
             return this;
@@ -284,6 +288,7 @@ public final class TaskRequest<T> {
 
         /** Name of a retry policy registered with {@code BackgroundRunner.Builder#retryPolicy(String, RetryPolicy)}; an unknown name falls back to the default policy. */
         public Builder<T> retryPolicy(String name) {
+            StoredText.require("retryPolicy", name);
             this.retryPolicy = name;
             return this;
         }

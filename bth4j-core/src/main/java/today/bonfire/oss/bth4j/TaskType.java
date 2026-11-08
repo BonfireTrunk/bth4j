@@ -30,6 +30,7 @@ public final class TaskType<T> {
         if (StringUtils.isBlank(name) || name.length() > 128) {
             throw new TaskConfigurationException("Task type name must be 1 to 128 characters: " + name);
         }
+        if (!StoredText.storable(name)) throw new TaskConfigurationException("Task type name contains U+0000");
         if (payloadVersion < 1) {
             throw new TaskConfigurationException("payloadVersion must be at least 1");
         }

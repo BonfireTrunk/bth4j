@@ -128,6 +128,14 @@ class ScheduleDefinitionTest {
     }
 
     @Test
+    void anIdOrAccountWithAU0000IsRejected() {
+        assertThatThrownBy(() -> ScheduleDefinition.of("night\u0000ly", NO_PAYLOAD, "0 2 * * *"))
+                .isInstanceOf(TaskValidationException.class);
+        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *");
+        assertThatThrownBy(() -> d.account("a\u0000b")).isInstanceOf(TaskValidationException.class);
+    }
+
+    @Test
     void bothCronAndFixedDelayAreRejected() {
         assertThatThrownBy(() -> new ScheduleDefinition<>(
                         "id",
