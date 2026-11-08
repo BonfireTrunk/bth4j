@@ -285,6 +285,63 @@ class TaskExecutionTest {
         }
     }
 
+    @Test
+    void aCancelRequestPassedOnAgainDoesNotInterruptTheBodyAgain() throws Exception {
+        var started = new CountDownLatch(1);
+        var firstInterrupt = new CountDownLatch(1);
+        var cleanup = new CountDownLatch(1);
+        var interrupts = new AtomicInteger();
+        var execution = execution(TYPE, (ctx, payload) -> {
+            started.countDown();
+            try {
+                cleanup.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                interrupts.incrementAndGet();
+                firstInterrupt.countDown();
+            }
+            try {
+                cleanup.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                interrupts.incrementAndGet();
+            }
+        });
+        var worker = new Thread(execution::run);
+        worker.start();
+        try {
+            assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+            execution.requestCancel("stop");
+            assertThat(firstInterrupt.await(5, TimeUnit.SECONDS)).isTrue();
+
+            execution.requestCancel(null);
+            execution.requestCancel(null);
+            cleanup.countDown();
+            worker.join(5_000);
+
+            assertThat(worker.isAlive()).isFalse();
+            assertThat(interrupts).hasValue(1);
+            assertThat(interruptedAtFinish).isFalse();
+        } finally {
+            cleanup.countDown();
+            worker.join(5_000);
+        }
+    }
+
+    @Test
+    void aBodyThatReschedulesItselfWhileACancelIsRequestedEndsCancelled() {
+        var execution = execution(TaskType.of("reschedule-cancel"), (ctx, payload) -> {
+            throw new TaskRescheduleException(Duration.ofMinutes(5));
+        });
+        execution.requestCancel("operator stop");
+
+        execution.run();
+
+        var task = store.getTask(execution.taskId()).orElseThrow();
+        assertThat(task.state()).isEqualTo(TaskState.CANCELLED);
+        assertThat(task.cancelReason()).isEqualTo("operator stop");
+        assertThat(events.getLast()).isInstanceOf(TaskEvent.Cancelled.class);
+        assertThat(events).noneMatch(e -> e instanceof TaskEvent.Rescheduled);
+    }
+
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
     void anInterruptAlreadyInFlightCannotReachTheNextTask(boolean cancel) throws Exception {

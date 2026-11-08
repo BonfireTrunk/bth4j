@@ -190,6 +190,30 @@ class DefaultAdminOpsTest {
     }
 
     @Test
+    void adminResolvesAQueueOtherProcessesRegisteredThatIsNotLocallyAvailable() {
+        handlers.put("pauseQueue", a -> null);
+        queueNames.put(3, "Q:REMOTE");
+
+        ops.pauseQueue("Q:REMOTE", true);
+
+        assertThat(calls).contains("pauseQueue[3, true]");
+    }
+
+    @Test
+    void adminDoesNotRegisterAnUnknownQueue() {
+        var registered = new ArrayList<Object>();
+        handlers.put("queueId", a -> {
+            registered.add(a[0]);
+            return 9;
+        });
+
+        assertThatThrownBy(() -> ops.tasks(TaskState.QUEUED, "Q:MISSING", null, 5))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessageContaining("Q:MISSING");
+        assertThat(registered).isEmpty();
+    }
+
+    @Test
     void taskIsReturnedWithQueueAndTypeNames() {
         handlers.put("getTask", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
 

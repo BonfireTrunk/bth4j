@@ -105,6 +105,8 @@ final class TaskExecution implements Runnable, TaskContext {
     private final ReentrantLock workerLock = new ReentrantLock();
     private Thread worker;
     private boolean leaseLossInterrupted;
+    /** the body was interrupted for a cancel request; guarded by workerLock */
+    private boolean cancelInterrupted;
     /** the fatal error to rethrow from run(), written by the thread that runs the task only */
     private Error fatal;
 
@@ -128,7 +130,11 @@ final class TaskExecution implements Runnable, TaskContext {
         return record.revision();
     }
 
-    /** The processor learns of it through {@link #checkCancelled()}, and by an interrupt when its type opted in. */
+    /**
+     * The processor learns of it through {@link #checkCancelled()}, and by an interrupt when its type opted in.
+     * The interrupt comes once, however often the request is passed on: a body that is cleaning up after it is
+     * not interrupted again.
+     */
     void requestCancel(String reason) {
         if (reason != null) cancelReason = reason;
         cancelRequested = true;
@@ -174,9 +180,10 @@ final class TaskExecution implements Runnable, TaskContext {
         if (!interruptOnCancel) return;
         workerLock.lock();
         try {
-            if (worker != null) {
+            if (worker != null && (leaseLoss || !cancelInterrupted)) {
                 worker.interrupt();
-                leaseLossInterrupted |= leaseLoss;
+                if (leaseLoss) leaseLossInterrupted = true;
+                else cancelInterrupted = true;
             }
         } finally {
             workerLock.unlock();
@@ -313,6 +320,13 @@ final class TaskExecution implements Runnable, TaskContext {
 
     private void fail(Throwable e) {
         switch (e) {
+            // a cancel request wins over a voluntary reschedule, or a body that reschedules itself could never be
+            // cancelled
+            case TaskRescheduleException ex
+            when cancelRequested -> {
+                log.debug("Task {} rescheduled itself while a cancel was requested", record.id());
+                cancelled(cancelReason());
+            }
             case TaskRescheduleException ex -> {
                 var due = s.clock().instant().plus(ex.delay());
                 log.info("Rescheduling task {} to {}", record.id(), due);

@@ -1060,31 +1060,49 @@ public abstract class StoreContract {
     }
 
     @Test
-    void ackWithoutKeepButWithKeyKeepKeepsTheKeyTakenUntilKeyUntil() {
+    void ackWithoutKeepRemovesTheTaskAndItsKeyStaysTakenUntilTheWindowEnds() {
         TaskRecord t = leased(task().uniqueKey("k").keyKeep(SHORT));
         assertThat(store.ack(t.id(), t.revision(), false, false, null)).isTrue();
-        TaskRecord done = get(t.id());
-        assertThat(done.state()).isEqualTo(TaskState.SUCCEEDED);
-        assertThat(done.encodedPayload()).isNull();
-        assertThat(done.keyUntil()).isNotNull();
-        assertThat(store.enqueue(task().uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(t.id()));
+        assertRemovedButKeyTaken(t, "k");
         assertThat(store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10)).isZero();
         advance(PAST_SHORT);
-        assertThat(store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10)).isEqualTo(1);
-        assertThat(store.getTask(t.id())).isEmpty();
         put(task().uniqueKey("k"));
     }
 
     @Test
-    void failWithoutKeepDeadButWithKeyKeepKeepsTheKeyTakenUntilKeyUntil() {
+    void failWithoutKeepDeadRemovesTheTaskAndItsKeyStaysTakenUntilTheWindowEnds() {
         TaskRecord t = leased(task().uniqueKey("k").keyKeep(SHORT));
         assertThat(store.fail(t.id(), t.revision(), failure(1), null, false, null))
                 .isEqualTo(FailOutcome.DEAD);
-        assertThat(get(t.id()).state()).isEqualTo(TaskState.DEAD);
-        assertThat(store.enqueue(task().uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(t.id()));
+        assertRemovedButKeyTaken(t, "k");
+        assertThat(store.purge(TaskState.DEAD, Duration.ZERO, 10)).isZero();
         advance(PAST_SHORT);
-        assertThat(store.purge(TaskState.DEAD, Duration.ZERO, 10)).isEqualTo(1);
+        put(task().uniqueKey("k"));
+    }
+
+    @Test
+    void releaseKeysFreesTheKeyOfARemovedTaskOnceItsWindowPassed() {
+        TaskRecord t = leased(task().uniqueKey("k").keyKeep(SHORT));
+        assertThat(store.ack(t.id(), t.revision(), false, false, null)).isTrue();
+        assertThat(store.releaseKeys(10)).isZero();
+        advance(PAST_SHORT);
+        assertThat(store.releaseKeys(10)).isEqualTo(releasesKeysOnItsOwn() ? 0 : 1);
+        assertThat(store.releaseKeys(10)).isZero();
+        assertThat(store.taskByKey("k")).isEmpty();
+        put(task().uniqueKey("k"));
+    }
+
+    /** The task is gone from every read, while its key still answers a same-key enqueue with its id. */
+    private void assertRemovedButKeyTaken(TaskRecord t, String key) {
         assertThat(store.getTask(t.id())).isEmpty();
+        assertThat(store.taskByKey(key)).isEmpty();
+        assertThat(store.counts().getOrDefault(queue, StateCounts.ZERO)).isEqualTo(StateCounts.ZERO);
+        for (TaskState state : TaskState.values()) {
+            assertThat(store.tasks(state, null, null, 10).items())
+                    .as("%s", state)
+                    .isEmpty();
+        }
+        assertThat(store.enqueue(task().uniqueKey(key).build())).isEqualTo(new EnqueueOutcome.DuplicateKey(t.id()));
     }
 
     @Test
@@ -1270,16 +1288,11 @@ public abstract class StoreContract {
         assertThat(applied).containsExactly(true, false, true, false);
         assertThat(store.getTask(removed.id())).isEmpty();
         assertThat(get(stale.id()).state()).isEqualTo(TaskState.LEASED);
-        TaskRecord done = get(held.id());
-        assertThat(done.state()).isEqualTo(TaskState.SUCCEEDED);
-        assertThat(done.encodedPayload()).isNull();
-        assertThat(done.keyUntil()).isNotNull();
+        assertThat(store.getTask(held.id())).isEmpty();
         assertThat(store.enqueue(task().uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(held.id()));
-        assertThat(counts().succeeded()).isEqualTo(1);
+        assertThat(counts().succeeded()).isZero();
         assertThat(counts().leased()).isEqualTo(1);
-        assertThat(store.tasks(TaskState.SUCCEEDED, queue, null, 10).items())
-                .extracting(TaskRecord::id)
-                .containsExactly(held.id());
+        assertThat(store.tasks(TaskState.SUCCEEDED, queue, null, 10).items()).isEmpty();
     }
 
     @Test
@@ -1801,19 +1814,23 @@ public abstract class StoreContract {
     }
 
     @Test
-    void purgeKeepsTasksWhoseKeyIsStillHeld() {
+    void purgeRemovesATaskPastRetentionWhoseKeyIsStillHeldAndTheKeyStaysTaken() {
         TaskRecord t = leased(task().uniqueKey("k").keyKeep(Duration.ofMillis(500)));
         assertThat(store.ack(t.id(), t.revision(), true, true, null)).isTrue();
-        advance(Duration.ofMillis(150));
+        advance(Duration.ofMillis(50));
         assertThat(store.purge(TaskState.SUCCEEDED, Duration.ofMillis(100), 10)).isZero();
         assertThat(store.getTask(t.id())).isPresent();
-        advance(Duration.ofMillis(500));
+        advance(Duration.ofMillis(100));
         assertThat(store.purge(TaskState.SUCCEEDED, Duration.ofMillis(100), 10)).isEqualTo(1);
+        assertRemovedButKeyTaken(t, "k");
+        assertThat(store.purge(TaskState.SUCCEEDED, Duration.ofMillis(100), 10)).isZero();
+        advance(Duration.ofMillis(500));
+        put(task().uniqueKey("k"));
     }
 
     @Test
-    void heldTasksAheadOfPurgeableOnesDoNotStarveThePurge() {
-        int held = 1100;
+    void purgeRemovesHeldAndUnheldTasksAlikeInFullBatches() {
+        int held = 30;
         Duration window = Duration.ofSeconds(20);
         for (int i = 0; i < held; i++) {
             put(task().uniqueKey("held" + i).keyKeep(window));
@@ -1825,28 +1842,23 @@ public abstract class StoreContract {
             }
             done += batch.size();
         }
-        List<Long> purgeable = new ArrayList<>();
         for (int i = 0; i < 10; i++) {
             TaskRecord t = leased(task());
             assertThat(store.ack(t.id(), t.revision(), true, true, null)).isTrue();
-            purgeable.add(t.id());
         }
         advance(Duration.ofMillis(150));
-        long removed = 0;
-        for (int call = 0; call < 3 && removed < purgeable.size(); call++) {
-            removed += store.purge(TaskState.SUCCEEDED, Duration.ofMillis(100), 10);
+        List<Long> batches = new ArrayList<>();
+        for (long n; (n = store.purge(TaskState.SUCCEEDED, Duration.ofMillis(100), 10)) > 0; ) {
+            batches.add(n);
         }
-        assertThat(removed).isEqualTo(purgeable.size());
-        purgeable.forEach(id -> assertThat(store.getTask(id)).isEmpty());
-        assertThat(store.counts().get(queue).succeeded()).isEqualTo(held);
+        assertThat(batches).containsExactly(10L, 10L, 10L, 10L);
+        assertThat(store.counts().getOrDefault(queue, StateCounts.ZERO)).isEqualTo(StateCounts.ZERO);
+        for (int i = 0; i < held; i++) {
+            assertThat(store.enqueue(task().uniqueKey("held" + i).build()))
+                    .isInstanceOf(EnqueueOutcome.DuplicateKey.class);
+        }
         advance(window);
-        long rest = 0;
-        for (long n; (n = store.purge(TaskState.SUCCEEDED, Duration.ofMillis(100), 500)) > 0; ) {
-            rest += n;
-        }
-        assertThat(rest).isEqualTo(held);
-        assertThat(store.counts().getOrDefault(queue, StateCounts.ZERO).succeeded())
-                .isZero();
+        put(task().uniqueKey("held0"));
     }
 
     private static final List<TaskState> PURGED_TERMINALS = List.of(TaskState.CANCELLED, TaskState.EXPIRED);

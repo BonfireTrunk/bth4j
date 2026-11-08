@@ -7,7 +7,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import org.slf4j.Logger;
@@ -52,15 +51,16 @@ class TaskProcessorService extends CustomThread {
     private final int claimBatchSize;
     private final AtomicInteger queueOffset = new AtomicInteger();
     /** shared with the runner so that a restarted processor keeps renewing the tasks its predecessor started */
-    private final Map<Long, TaskExecution> running;
+    private final Admission admission;
 
     private final QueueReservations reservations;
     /** the last shared claim skipped a queue at its cap; written and read by the processor thread only */
     private boolean capBlocked;
 
-    private final Thread renewer;
+    private final String renewerName;
+    private final ThreadGroup group;
+    private volatile Thread renewer;
     private volatile boolean renewalRunning = true;
-    private volatile boolean quiet;
 
     private TaskProcessorService(Builder b) {
         super(b.group, b.threadName);
@@ -72,16 +72,22 @@ class TaskProcessorService extends CustomThread {
         this.policed = policies.values().stream().anyMatch(p -> !p.equals(QueuePolicy.DEFAULT));
         this.knownTypeIds = Set.copyOf(b.knownTypeIds);
         this.workerId = b.workerId;
-        this.running = b.running;
+        this.admission = b.admission;
         this.reservations = b.reservations;
         this.lease = b.lease;
         this.renewInterval = Duration.ofMillis(Math.max(100, lease.toMillis() / 3));
         this.defaultMaxRunTime = b.defaultMaxRunTime;
         this.idlePollInterval = b.idlePollInterval;
         this.claimBatchSize = b.claimBatchSize;
-        this.quiet = b.quiet;
-        this.renewer = new Thread(b.group, this::renewLeases, b.threadName + "-lease");
-        this.renewer.setDaemon(true);
+        this.group = b.group;
+        this.renewerName = b.threadName + "-lease";
+        this.renewer = newRenewer();
+    }
+
+    private Thread newRenewer() {
+        var thread = new Thread(group, this::renewLeases, renewerName);
+        thread.setDaemon(true);
+        return thread;
     }
 
     private final ReentrantLock startLock = new ReentrantLock();
@@ -92,6 +98,24 @@ class TaskProcessorService extends CustomThread {
         try {
             renewer.start();
             super.start();
+        } finally {
+            startLock.unlock();
+        }
+    }
+
+    /**
+     * Starts a new renewal thread when the old one has died, so that the leases of the running tasks are renewed
+     * again.
+     *
+     * @return true when a thread was started
+     */
+    boolean ensureRenewer() {
+        startLock.lock();
+        try {
+            if (!renewalRunning || renewer.isAlive()) return false;
+            renewer = newRenewer();
+            renewer.start();
+            return true;
         } finally {
             startLock.unlock();
         }
@@ -120,7 +144,7 @@ class TaskProcessorService extends CustomThread {
     }
 
     void processOnce() throws InterruptedException {
-        if (quiet) {
+        if (admission.quiet()) {
             Thread.sleep(idlePollInterval);
             return;
         }
@@ -129,40 +153,100 @@ class TaskProcessorService extends CustomThread {
             executor.release(slots);
             return;
         }
-        List<TaskRecord> tasks;
-        try {
-            reservations.drainSignal();
-            tasks = policed ? claimShared(slots) : claim(rotatedQueues(), slots);
-            settings.status().claimed();
-        } catch (RuntimeException e) {
+        // checked again inside the claim: quiet() may have come after the check above, while reserve() waited
+        if (!admission.enterClaim()) {
             executor.release(slots);
-            settings.status().storeError(e);
-            throw e;
+            Thread.sleep(idlePollInterval);
+            return;
         }
-        if (tasks.size() > slots) tasks = withinSlots(tasks, slots);
-        executor.claimed(slots, tasks.size());
-        executor.release(slots - tasks.size());
-        for (var record : tasks) {
-            var execution = new TaskExecution(record, settings, this::finished);
-            running.put(record.id(), execution);
-            reservations.reserve(
-                    execution,
-                    policies.getOrDefault(execution.queueId(), QueuePolicy.DEFAULT)
-                                    .maxConcurrent()
-                            > 0);
-            try {
-                executor.executeWithSlot(execution::run);
-            } catch (RuntimeException e) {
-                finished(execution);
-                returnToQueue(execution, e);
-            }
+        boolean claimedAny;
+        try {
+            claimedAny = claimAndSubmit(slots);
+        } finally {
+            admission.exitClaim();
         }
-        if (tasks.isEmpty()) {
+        if (!claimedAny) {
             if (policed && capBlocked) {
                 // a skipped queue may still have work: claim again as soon as one of its slots frees
                 reservations.awaitSlot(idlePollInterval);
             } else {
                 Thread.sleep(idlePollInterval);
+            }
+        }
+    }
+
+    /**
+     * Claims for the reserved slots and starts what was claimed. Every slot is released or handed to an execution
+     * on every exit, and a claimed task that was not handed to the executor goes back to its queue.
+     *
+     * @return true when at least one task was claimed
+     */
+    private boolean claimAndSubmit(int slots) {
+        int owned = slots;
+        List<TaskRecord> tasks = List.of();
+        int handed = 0;
+        try {
+            try {
+                reservations.drainSignal();
+                tasks = policed ? claimShared(slots) : claim(rotatedQueues(), slots);
+                settings.status().claimed();
+            } catch (RuntimeException e) {
+                settings.status().storeError(e);
+                throw e;
+            }
+            if (tasks.size() > slots) tasks = withinSlots(tasks, slots);
+            executor.claimed(slots, tasks.size());
+            executor.release(slots - tasks.size());
+            owned = tasks.size();
+            for (var record : tasks) {
+                submit(record);
+                owned--;
+                handed++;
+            }
+        } finally {
+            if (owned > 0) {
+                executor.release(owned);
+                giveBack(tasks.subList(handed, tasks.size()));
+            }
+        }
+        return !tasks.isEmpty();
+    }
+
+    /**
+     * Hands a claimed task to the executor. Returns once the executor has the task or has rejected it, in both
+     * cases the executor has dealt with the slot; any other failure leaves the slot to the caller.
+     */
+    private void submit(TaskRecord record) {
+        TaskExecution execution = null;
+        boolean submitting = false;
+        try {
+            execution = new TaskExecution(record, settings, this::finished);
+            admission.started(execution);
+            reservations.reserve(
+                    execution,
+                    policies.getOrDefault(execution.queueId(), QueuePolicy.DEFAULT)
+                                    .maxConcurrent()
+                            > 0);
+            submitting = true;
+            executor.executeWithSlot(execution::run);
+        } catch (RuntimeException e) {
+            if (execution != null) finished(execution);
+            if (!submitting) throw e;
+            returnToQueue(execution, e);
+        } catch (Error e) {
+            if (execution != null) finished(execution);
+            throw e;
+        }
+    }
+
+    /** Claimed tasks that cannot run: they go back to their queue unrun, so they do not wait for a lease to expire. */
+    private void giveBack(List<TaskRecord> tasks) {
+        for (var task : tasks) {
+            try {
+                settings.store().unclaim(task.id(), task.revision());
+            } catch (RuntimeException e) {
+                settings.status().storeError(e);
+                log.error("Task {} could not be returned to its queue; its lease expires", task.id(), e);
             }
         }
     }
@@ -255,12 +339,12 @@ class TaskProcessorService extends CustomThread {
     }
 
     /**
-     * Removes this attempt from the running tasks and releases its queue slot. Only this attempt is removed:
-     * the same id may already be running again when a retry was claimed while this attempt was finishing,
-     * and the slot is released either way.
+     * Removes this attempt from the running tasks and releases its queue slot. Attempts are tracked by identity:
+     * the same id may be running again on this runner while this attempt is still finishing, and each attempt
+     * releases its own slot.
      */
     private void finished(TaskExecution execution) {
-        running.remove(execution.taskId(), execution);
+        admission.finished(execution);
         reservations.release(execution);
     }
 
@@ -288,7 +372,8 @@ class TaskProcessorService extends CustomThread {
             sleepQuietly(renewInterval);
             try {
                 renewOnce();
-            } catch (RuntimeException e) {
+            } catch (RuntimeException | Error e) {
+                // an Error ending this thread would stop every renewal while the runner reports RUNNING
                 log.error("Lease renewal round failed, retrying in {}", renewInterval, e);
             }
         }
@@ -299,12 +384,17 @@ class TaskProcessorService extends CustomThread {
      * running one renewal period after that, and renews the leases of the others.
      */
     void renewOnce() {
-        if (running.isEmpty()) return;
+        var attempts = admission.attempts();
+        if (attempts.isEmpty()) return;
         var now = settings.clock().instant();
-        var executions = new ArrayList<TaskExecution>(running.size());
-        for (var e : List.copyOf(running.values())) {
-            cancelIfOverrunning(e, now);
-            if (!abandonIfStuck(e, now)) executions.add(e);
+        var executions = new ArrayList<TaskExecution>(attempts.size());
+        for (var e : attempts) {
+            // an attempt whose processor returned is writing its outcome: it is renewed until that write resolves
+            if (!e.reporting()) {
+                cancelIfOverrunning(e, now);
+                if (abandonIfStuck(e, now)) continue;
+            }
+            executions.add(e);
         }
         if (executions.isEmpty()) return;
         var refs = new ArrayList<LeaseRef>(executions.size());
@@ -378,22 +468,18 @@ class TaskProcessorService extends CustomThread {
 
     /** @return the tasks currently running on this instance */
     int runningCount() {
-        return running.size();
-    }
-
-    /** Stops claiming new tasks; running ones finish. */
-    void quiet(boolean quiet) {
-        this.quiet = quiet;
-    }
-
-    boolean isQuiet() {
-        return quiet;
+        return admission.running();
     }
 
     /** Stops renewing leases. Call it after the executor has terminated. */
     void stopLeaseRenewal() {
-        renewalRunning = false;
-        renewer.interrupt();
+        startLock.lock();
+        try {
+            renewalRunning = false;
+            renewer.interrupt();
+        } finally {
+            startLock.unlock();
+        }
     }
 
     static class Builder {
@@ -409,8 +495,7 @@ class TaskProcessorService extends CustomThread {
         private Duration defaultMaxRunTime = Duration.ofHours(1);
         private Duration idlePollInterval = Duration.ofMillis(500);
         private int claimBatchSize = 32;
-        private boolean quiet;
-        private Map<Long, TaskExecution> running = new ConcurrentHashMap<>();
+        private Admission admission = new Admission();
         private QueueReservations reservations = new QueueReservations();
 
         Builder group(ThreadGroup group) {
@@ -475,14 +560,9 @@ class TaskProcessorService extends CustomThread {
             return this;
         }
 
-        Builder quiet(boolean quiet) {
-            this.quiet = quiet;
-            return this;
-        }
-
-        /** The tasks being executed, to hand over from a processor that died to its replacement. */
-        Builder running(Map<Long, TaskExecution> running) {
-            this.running = running;
+        /** The quiet flag, claims and unfinished attempts, shared with the replacement of a processor that died. */
+        Builder admission(Admission admission) {
+            this.admission = admission;
             return this;
         }
 

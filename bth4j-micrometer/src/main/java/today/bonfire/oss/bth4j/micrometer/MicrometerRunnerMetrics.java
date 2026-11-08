@@ -17,6 +17,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.AdminOps;
 import today.bonfire.oss.bth4j.BackgroundRunner;
 import today.bonfire.oss.bth4j.RunnerHealth;
@@ -29,6 +31,8 @@ import today.bonfire.oss.bth4j.spi.TaskState;
  */
 public final class MicrometerRunnerMetrics implements AutoCloseable {
 
+    private static final Logger log = LoggerFactory.getLogger(MicrometerRunnerMetrics.class);
+
     static final String CONCURRENCY_LIMIT = "bth4j.runner.concurrency.limit";
     static final String RUNNING = "bth4j.runner.running";
     static final String UP = "bth4j.runner.up";
@@ -40,6 +44,7 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
     private final Tags commonTags;
     private final Supplier<OptionalInt> concurrencyLimit;
     private boolean limitRegistered;
+    private boolean limitFailureLogged;
     private final AtomicInteger up = new AtomicInteger();
     private final AtomicInteger abandoned = new AtomicInteger();
     private final Map<StateKey, AtomicLong> stateValues = new ConcurrentHashMap<>();
@@ -132,16 +137,15 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
         metersLock.lock();
         try {
             if (closed) return;
-            if (!limitRegistered && concurrencyLimit.get().isPresent()) {
-                meters.add(Gauge.builder(CONCURRENCY_LIMIT, concurrencyLimit, source -> {
-                            var value = source.get();
-                            return value.isPresent() ? value.getAsInt() : Double.NaN;
-                        })
-                        .tags(commonTags)
-                        .description("Current executor concurrency limit")
-                        .strongReference(true)
-                        .register(registry));
-                limitRegistered = true;
+            if (!limitRegistered) {
+                try {
+                    registerLimitGauge();
+                } catch (RuntimeException e) {
+                    if (!limitFailureLogged) {
+                        limitFailureLogged = true;
+                        log.warn("Cannot read or register the concurrency limit gauge; retrying on each refresh", e);
+                    }
+                }
             }
         } finally {
             metersLock.unlock();
@@ -176,6 +180,20 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
             }
         } catch (RuntimeException e) {
             // keep the last known counts; the next tick retries
+        }
+    }
+
+    private void registerLimitGauge() {
+        if (concurrencyLimit.get().isPresent()) {
+            meters.add(Gauge.builder(CONCURRENCY_LIMIT, concurrencyLimit, source -> {
+                        var value = source.get();
+                        return value.isPresent() ? value.getAsInt() : Double.NaN;
+                    })
+                    .tags(commonTags)
+                    .description("Current executor concurrency limit")
+                    .strongReference(true)
+                    .register(registry));
+            limitRegistered = true;
         }
     }
 

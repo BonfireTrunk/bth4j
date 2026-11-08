@@ -1,14 +1,19 @@
 package today.bonfire.oss.bth4j;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
+import today.bonfire.oss.bth4j.spi.TaskState;
+import today.bonfire.oss.bth4j.spi.TaskStoreException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
 import today.bonfire.oss.bth4j.testing.MutableClock;
 
@@ -170,6 +175,163 @@ class BackgroundRunnerCoverageTest {
             assertThat(store.workers().getFirst().accepting()).isFalse();
         } finally {
             runner.stop();
+        }
+    }
+
+    @Test
+    void aStartWithoutProcessorsFailsWithoutBurningTheStartFlag() {
+        var runner = BackgroundRunner.builder()
+                .store(new InMemoryStore(new MutableClock()))
+                .build();
+        try {
+            assertThatThrownBy(runner::start).isInstanceOf(TaskConfigurationException.class);
+
+            runner.registry().register(TaskType.of("work"), (context, payload) -> {});
+            runner.start();
+
+            assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.RUNNING);
+        } finally {
+            runner.stop();
+        }
+    }
+
+    @Test
+    void aStartThatCannotReachTheStoreLeavesTheRunnerNewAndStartsOnTheNextCall() {
+        var down = new AtomicBoolean(true);
+        var observed = StoreInterceptor.around(new InMemoryStore(new MutableClock()), (method, args, real) -> {
+            if (method.equals("allocateWorkerId") && down.get()) throw new TaskStoreException("store down");
+            return real.proceed();
+        });
+        var runner = BackgroundRunner.builder().store(observed).build();
+        runner.registry().register(TaskType.of("work"), (context, payload) -> {});
+        try {
+            assertThatThrownBy(runner::start).isInstanceOf(TaskStoreException.class);
+            assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.NEW);
+            assertThat(runner.workerId()).isZero();
+
+            down.set(false);
+            runner.start();
+
+            assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.RUNNING);
+            assertThat(runner.workerId()).isPositive();
+        } finally {
+            runner.stop();
+        }
+    }
+
+    @Test
+    void aStartThatFailsAfterTheServicesStartedStopsThemAndCanBeRepeated() throws Exception {
+        var failing = new AtomicBoolean(true);
+        var observed = StoreInterceptor.around(new InMemoryStore(new MutableClock()), (method, args, real) -> {
+            if (method.equals("info") && failing.getAndSet(false)) throw new IllegalStateException("info failed");
+            return real.proceed();
+        });
+        var group = "start-failure-test";
+        var runner = BackgroundRunner.builder()
+                .store(observed)
+                .threadGroupName(group)
+                .build();
+        runner.registry().register(TaskType.of("work"), (context, payload) -> {});
+        try {
+            assertThatThrownBy(runner::start).isInstanceOf(IllegalStateException.class);
+
+            assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.NEW);
+            for (var thread : Thread.getAllStackTraces().keySet()) {
+                if (thread.getThreadGroup() != null
+                        && thread.getThreadGroup().getName().equals(group)) {
+                    thread.join(5_000);
+                    assertThat(thread.isAlive()).as(thread.getName()).isFalse();
+                }
+            }
+
+            runner.start();
+
+            assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.RUNNING);
+        } finally {
+            runner.stop();
+        }
+    }
+
+    @Test
+    void drainWaitsForAClaimThatWasAdmittedBeforeQuietAndForTheTaskItStarts() throws Exception {
+        var store = new InMemoryStore(new MutableClock());
+        var claimEntered = new CountDownLatch(1);
+        var claimRelease = new CountDownLatch(1);
+        var observed = StoreInterceptor.around(store, (method, args, real) -> {
+            var result = real.proceed();
+            if (method.equals("claim") && !((List<?>) result).isEmpty()) {
+                claimEntered.countDown();
+                awaitUninterruptibly(claimRelease);
+            }
+            return result;
+        });
+        var bodyStarted = new CountDownLatch(1);
+        var type = TaskType.of("drain-work");
+        var runner = BackgroundRunner.builder().store(observed).build();
+        runner.registry().register(type, (context, payload) -> bodyStarted.countDown());
+        try {
+            runner.start();
+            long id = runner.client().enqueue(TaskRequest.of(type).build()).id();
+            assertThat(claimEntered.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.LEASED);
+
+            assertThat(runner.drain(Duration.ofMillis(200))).isFalse();
+            assertThat(bodyStarted.getCount()).isEqualTo(1);
+
+            claimRelease.countDown();
+
+            assertThat(runner.drain(Duration.ofSeconds(5))).isTrue();
+            assertThat(bodyStarted.getCount()).isZero();
+            assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        } finally {
+            claimRelease.countDown();
+            runner.stop();
+        }
+    }
+
+    @Test
+    void stopTakesNoLongerThanOneShutdownTimeoutWhateverNumberOfServicesIsBlocked() throws Exception {
+        var store = new InMemoryStore(new MutableClock());
+        var release = new CountDownLatch(1);
+        var blocked = new CountDownLatch(3);
+        var observed = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("claim") || method.equals("promote") || method.equals("dueRecurring")) {
+                blocked.countDown();
+                awaitUninterruptibly(release);
+            }
+            return real.proceed();
+        });
+        var timeout = Duration.ofMillis(500);
+        var runner = BackgroundRunner.builder()
+                .store(observed)
+                .shutdownTimeout(timeout)
+                .scheduledTasksCheckInterval(Duration.ofMillis(10))
+                .recurringTasksCheckInterval(Duration.ofMillis(10))
+                .build();
+        runner.registry().register(TaskType.of("work"), (context, payload) -> {});
+        try {
+            runner.start();
+            assertThat(blocked.await(5, TimeUnit.SECONDS)).isTrue();
+
+            var begin = System.nanoTime();
+            runner.stop();
+            var elapsed = Duration.ofNanos(System.nanoTime() - begin);
+
+            // three blocked services would wait three timeouts one after the other
+            assertThat(elapsed).isLessThan(timeout.multipliedBy(2));
+        } finally {
+            release.countDown();
+        }
+    }
+
+    private static void awaitUninterruptibly(CountDownLatch latch) {
+        while (true) {
+            try {
+                if (latch.await(10, TimeUnit.SECONDS)) return;
+                throw new AssertionError("latch not released");
+            } catch (InterruptedException ignored) {
+                // a store call without a deadline ignores the interrupt of a stop as well
+            }
         }
     }
 }

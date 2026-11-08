@@ -8,9 +8,10 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /**
@@ -20,7 +21,17 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 public final class Cron {
 
     private static final CronParser PARSER = new CronParser(CronDefinitionBuilder.instanceDefinitionFor(CronType.UNIX));
-    private static final Map<String, ExecutionTime> EXECUTION_TIMES = new ConcurrentHashMap<>();
+    private static final int MAX_CACHED = 256;
+    /** The most recently used parsed expressions; synchronized, an access-ordered map changes on every read. */
+    private static final Map<String, ExecutionTime> EXECUTION_TIMES =
+            Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, ExecutionTime> eldest) {
+                    return size() > MAX_CACHED;
+                }
+            });
+    /** Transitions examined for a gap before giving up; a leap-day expression needs about eight. */
+    private static final int MAX_TRANSITIONS = 64;
 
     private Cron() {}
 
@@ -41,21 +52,42 @@ public final class Cron {
 
     /** @return the next fire time strictly after {@code after}, or empty when the expression never fires again */
     public static Optional<Instant> next(String expression, Instant after, ZoneId zone) {
-        var executionTime = EXECUTION_TIMES.computeIfAbsent(expression, c -> ExecutionTime.forCron(PARSER.parse(c)));
+        var executionTime =
+                EXECUTION_TIMES.computeIfAbsent(normalize(expression), c -> ExecutionTime.forCron(PARSER.parse(c)));
         var z = zone == null ? ZoneOffset.UTC : zone;
         var next =
                 executionTime.nextExecution(ZonedDateTime.ofInstant(after, z)).map(ZonedDateTime::toInstant);
-        var gap = z.getRules().nextTransition(after);
-        if (gap == null || !gap.isGap() || next.isPresent() && !gap.getInstant().isBefore(next.get())) {
-            return next;
+        // cron-utils drops a wall-clock match that falls inside a DST gap; every transition before the next
+        // match is examined, because the first one after `after` may be a repeated hour and the gap behind it
+        var rules = z.getRules();
+        var transition = rules.nextTransition(after);
+        for (int i = 0;
+                i < MAX_TRANSITIONS
+                        && transition != null
+                        && (next.isEmpty() || transition.getInstant().isBefore(next.get()));
+                i++, transition = rules.nextTransition(transition.getInstant())) {
+            if (!transition.isGap()) continue;
+            // evaluate the expression in the offset before the gap and, when a match lands in the gap, fire at
+            // the moment the gap ends
+            var gap = transition;
+            var skipped = executionTime
+                    .nextExecution(ZonedDateTime.ofInstant(gap.getInstant(), gap.getOffsetBefore())
+                            .minusNanos(1))
+                    .map(ZonedDateTime::toLocalDateTime)
+                    .filter(t -> !t.isBefore(gap.getDateTimeBefore()) && t.isBefore(gap.getDateTimeAfter()));
+            if (skipped.isPresent()) return Optional.of(gap.getInstant());
         }
-        // cron-utils drops a wall-clock match that falls inside a DST gap; evaluate the expression in the
-        // offset before the gap and, when the match lands in the gap, fire at the moment the gap ends
-        var skipped = executionTime
-                .nextExecution(ZonedDateTime.ofInstant(after, gap.getOffsetBefore()))
-                .map(ZonedDateTime::toLocalDateTime)
-                .filter(t -> !t.isBefore(gap.getDateTimeBefore()) && t.isBefore(gap.getDateTimeAfter()));
-        return skipped.isPresent() ? Optional.of(gap.getInstant()) : next;
+        return next;
+    }
+
+    /** The parsed expressions currently cached; for tests. */
+    static int cached() {
+        return EXECUTION_TIMES.size();
+    }
+
+    /** Spaces around and between the fields do not make another expression. */
+    private static String normalize(String expression) {
+        return expression.trim().replaceAll("\\s+", " ");
     }
 
     /** @throws TaskValidationException when the zone id is unknown */

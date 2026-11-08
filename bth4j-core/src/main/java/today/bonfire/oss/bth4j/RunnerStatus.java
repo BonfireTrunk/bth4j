@@ -4,7 +4,9 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.locks.ReentrantLock;
 
 /** What one runner knows about itself: last activity per service and the issues it noticed. */
@@ -20,6 +22,15 @@ final class RunnerStatus {
     private volatile String lastStoreError;
     /** The last store error recorded as an issue; guarded by issuesLock. */
     private Throwable lastRecorded;
+    /** The store-error issue of each distinct error text and how often it was seen; guarded by issuesLock. */
+    private final LinkedHashMap<String, StoreErrorIssue> storeErrors = new LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, StoreErrorIssue> eldest) {
+            return size() > MAX_ISSUES;
+        }
+    };
+
+    private record StoreErrorIssue(Issue issue, int count) {}
 
     RunnerStatus(Clock clock) {
         this.clock = clock;
@@ -35,22 +46,36 @@ final class RunnerStatus {
 
     /**
      * Records a store error. Every task of a failed acknowledgement batch reports the same error; it becomes one
-     * issue, so a batch does not push the other issues out.
+     * issue, so a batch does not push the other issues out. An outage repeats the same error text: those errors
+     * share one issue, which carries how often it was seen and the time of the latest, and moves to the end.
      *
-     * @return false when this error was already recorded
+     * @return false when this error was already recorded or only repeats an earlier one
      */
     boolean storeError(Throwable error) {
-        lastStoreErrorAt = clock.instant();
-        lastStoreError = error.toString();
+        var now = clock.instant();
+        lastStoreErrorAt = now;
+        var text = error.toString();
+        lastStoreError = text;
         issuesLock.lock();
         try {
             if (sameError(error, lastRecorded)) return false;
             lastRecorded = error;
+            var previous = storeErrors.get(text);
+            if (previous == null) {
+                var issue = new Issue(now, "store-error", text, null);
+                storeErrors.put(text, new StoreErrorIssue(issue, 1));
+                append(issue);
+                return true;
+            }
+            issues.remove(previous.issue());
+            int count = previous.count() + 1;
+            var issue = new Issue(now, "store-error", text + " (" + count + " times, latest at " + now + ")", null);
+            storeErrors.put(text, new StoreErrorIssue(issue, count));
+            append(issue);
+            return false;
         } finally {
             issuesLock.unlock();
         }
-        issue("store-error", error.toString(), null);
-        return true;
     }
 
     /** The batch hands an Error to its waiting tasks wrapped, one wrapper each, around the same cause. */
@@ -64,11 +89,15 @@ final class RunnerStatus {
         var issue = new Issue(clock.instant(), kind, detail, taskId);
         issuesLock.lock();
         try {
-            if (issues.size() == MAX_ISSUES) issues.removeFirst();
-            issues.addLast(issue);
+            append(issue);
         } finally {
             issuesLock.unlock();
         }
+    }
+
+    private void append(Issue issue) {
+        if (issues.size() == MAX_ISSUES) issues.removeFirst();
+        issues.addLast(issue);
     }
 
     List<Issue> issues() {
