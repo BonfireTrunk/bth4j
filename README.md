@@ -25,17 +25,17 @@ Add `bth4j-core` and one store module. Add `bth4j-testing` for tests.
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-core</artifactId>
-    <version>4.0.0</version>
+    <version>4.1.0</version>
 </dependency>
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-redis</artifactId>       <!-- or bth4j-postgres -->
-    <version>4.0.0</version>
+    <version>4.1.0</version>
 </dependency>
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-testing</artifactId>
-    <version>4.0.0</version>
+    <version>4.1.0</version>
     <scope>test</scope>
 </dependency>
 ```
@@ -46,20 +46,20 @@ The metrics and the admin HTTP server are separate modules; add them when you us
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-micrometer</artifactId>
-    <version>4.0.0</version>
+    <version>4.1.0</version>
 </dependency>
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-admin-http</artifactId>
-    <version>4.0.0</version>
+    <version>4.1.0</version>
 </dependency>
 ```
 
 | Module | Content |
 |---|---|
 | `bth4j-core` | task model, runner, services, the store interface (`today.bonfire.oss.bth4j.spi`) |
-| `bth4j-redis` | `RedisTaskStore`: Redis 7.4 or newer or Valkey 9 or newer, also on Redis Cluster; uses Jedis. Tested on Redis 8.8 and Valkey 9.1.3 |
-| `bth4j-postgres` | `PostgresTaskStore`: PostgreSQL 9.5 or newer, tested on 18; uses only `java.sql`, the application supplies the JDBC driver and a pooled `DataSource` |
+| `bth4j-redis` | `RedisTaskStore`: Redis 7.4 or newer or Valkey 9 or newer; uses Jedis. Tested on standalone Redis 8.8 and Valkey 9.1.3; Redis Cluster is not tested (see "Redis") |
+| `bth4j-postgres` | `PostgresTaskStore`: PostgreSQL 16 or newer, 17 or newer recommended, tested on 18; uses only `java.sql`, the application supplies the JDBC driver and a pooled `DataSource` |
 | `bth4j-testing` | `InMemoryStore` and `MutableClock` for tests of applications |
 | `bth4j-micrometer` | `MicrometerTaskObserver` and `MicrometerRunnerMetrics`; `micrometer-core` is a provided dependency, the application supplies it |
 | `bth4j-admin-http` | `AdminHttpServer`: a JSON admin API over `AdminOps` on the JDK HTTP server, with users, roles and sessions; no dependencies besides `bth4j-core` |
@@ -203,7 +203,7 @@ most 8192, and all step names and encoded results of a task together at most 655
 |---|---|
 | `queue(name)` | target queue; the default queue when absent |
 | `delay(duration)` / `at(instant)` | run later; the last one set wins |
-| `uniqueKey(key)` / `uniqueKey(key, Uniqueness.keepFor(d))` | at most one task record holds the key; released when the task finishes, or `d` after; an operator retry within `d` keeps it |
+| `uniqueKey(key)` / `uniqueKey(key, Uniqueness.keepFor(d))` | at most one task holds the key; released when the task finishes, or `d` after, also when the task itself was removed sooner (see "Retention"); an operator retry within `d` keeps it |
 | `maxAttempts(n)` | attempts before the task is dead; the runner default when absent |
 | `startBy(instant)` | the task expires if it has not started by then, see "Cancelling tasks"; must not be before the run time |
 | `maxRunTime(duration)` | an attempt running longer is asked to stop, see "Cancelling tasks" |
@@ -213,7 +213,8 @@ most 8192, and all step names and encoded results of a task together at most 655
 
 `enqueue` returns `Accepted(id)` or `Duplicate(existingId)`; `enqueueAll` stores many requests in chunks.
 `client.taskByKey(key)` (and `admin.taskByKey(key)`) reads the task that holds a unique key now, open or finished
-inside its `keepFor` window, without writing; it is empty when no task holds it. `admin.cancelByKey(key, reason)` cancels that task,
+inside its `keepFor` window, without writing; it is empty when no task holds it, and also when the holder was
+removed by its retention and only its key stays taken. `admin.cancelByKey(key, reason)` cancels that task,
 and cancelling a waiting fixed-delay occurrence (key `sched:<schedule id>`) pauses its schedule, as cancelling it by id does.
 A key follows the rule of `uniqueKey`: 1 to 256 characters, not blank.
 Payloads are limited to 256 KiB.
@@ -226,7 +227,7 @@ For a repair sweep that re-enqueues work after a crash, the default until-done k
 task finishes, so a late enqueue can run the job again. Use `keepFor` longer than the window in which a retry
 or sweep can still happen to prevent another enqueue from starting a second task after SUCCEEDED, DEAD or
 CANCELLED. A DEAD holder inside that window still answers `Duplicate` with its id; inspect it with
-`taskByKey`.
+`taskByKey` while its retention keeps it.
 
 A running task holds its key until it ends: a successor enqueued with that key from inside its processor
 answers `Duplicate`. Enqueue the successor after the task ends (and any keep window passes), or give it a
@@ -291,21 +292,26 @@ reservation returns empty ids; after reservation, failures carry every request's
 order. A single `enqueue` retains its caller id even if the high-water read fails, and carries a generated id
 only once it tried to write it.
 
-For a failed batch, call `retryRequests` with the list that just failed, in the same order. If the retry fails
-too, prepare the next one from the retry list, not the original, or the ids of tasks the first call may have
-stored are lost and those tasks are stored twice:
+For a failed batch, `settled()` holds the results of the chunks that completed, and `retryRequests`, called with
+the list that just failed in the same order, returns the requests after them. The settled requests are not sent
+again, so a settled `Duplicate` cannot start a task once its key's holder has finished. If the retry fails too,
+prepare the next one from the retry list, not the original, or the ids of tasks the first call may have stored are
+lost and those tasks are stored twice. The batch's results are the settled ones followed by the retry's:
 
 ```java
+var results = new ArrayList<EnqueueResult>();
 List<? extends TaskRequest<?>> batch = requests;
 for (int attempt = 1; ; attempt++) {
     try {
-        client.enqueueAll(batch);
+        results.addAll(client.enqueueAll(batch));
         break;
     } catch (EnqueueFailedException e) {
         if (attempt == 3) throw e;
+        results.addAll(e.settled());
         batch = e.retryRequests(batch);
     }
 }
+// results has one entry per request, in order
 ```
 
 `notStored()` contains zero-based positions of generated-id requests this call knows it did not write:
@@ -325,7 +331,7 @@ with a caller id, the colliding positions remain marked in `notStored()`; exhaus
 replacement ids. A caller id taken by another writer after preflight also fails with `EnqueueFailedException`,
 carrying a `TaskIdReusedException` cause. Such caller-id reuse still requires caller correction.
 
-On PostgreSQL the id check reads the id sequence with `pg_sequence_last_value` (PostgreSQL 10 or newer), which
+On PostgreSQL the id check reads the id sequence with `pg_sequence_last_value`, which
 needs only the USAGE privilege on `<prefix>_task_id` that `allocateIds` already uses.
 
 ### Cancelling tasks
@@ -345,7 +351,7 @@ was done. The reason (default "cancelled by operator", at most 512 characters) s
 
 The processor decides how to stop. `ctx.cancelRequested()` shows the request and `ctx.checkCancelled()`
 throws `TaskCancelledException`, which ends the task CANCELLED. A task type declared with `interruptOnCancel()`
-also has its thread interrupted, so sleeps and blocking calls wake up; the exception that follows is treated
+also has its thread interrupted once per attempt, so sleeps and blocking calls wake up; the exception that follows is treated
 as the cancellation:
 
 ```java
@@ -358,6 +364,11 @@ runner.registry().register(EXPORT, (ctx, export) -> {
     }
 });
 ```
+
+While a cancel is requested, any exception the processor throws ends the task CANCELLED, also a
+`TaskUnrecoverableException` or a `TaskRescheduleException`, so a body that reschedules itself every attempt
+can still be cancelled. A request that reaches the store after the last renewal of an attempt that then fails
+stays on the task when it is retried, so the next attempt starts with `cancelRequested()` true.
 
 `interruptOnCancel()` also interrupts the body when lease renewal reports a lost lease. Only an attempt
 actually interrupted for lease loss has its outcome discarded, even if it swallows the interrupt and returns.
@@ -379,7 +390,9 @@ renewal period after the request is abandoned: the runner stops renewing its lea
 maintenance retries or ends the task, and raises the issue `attempt-abandoned`. The abandoned thread keeps its
 executor and queue slots until the processor returns, which `RunnerHealth.abandonedAttempts` and the gauge
 `bth4j.runner.abandoned` count. A processor that blocks without a timeout therefore costs a slot, not the
-task. `startBy(instant)` expires a task that did not start in time:
+task. An attempt whose processor has returned keeps its lease renewed until its outcome is written and is not
+asked to stop or abandoned meanwhile, even when a slow store write takes it past its maximum run time.
+`startBy(instant)` expires a task that did not start in time:
 claims skip it, maintenance moves it to EXPIRED and the observer receives `TaskEvent.Expired`.
 
 ```java
@@ -422,15 +435,24 @@ client.putSchedule(ScheduleDefinition.every("poll-feed", POLL_FEED, Duration.ofM
 
 The misfire threshold is twice `recurringTasksCheckInterval`, at least one minute. `SKIP` creates nothing and
 continues from now, `FIRE_ONCE_NOW` creates one task now, `CATCH_UP` creates one task per missed fire time up
-to `maxFires` (the most recent ones when more were missed) and continues from now. Every misfire is recorded as an
-issue. With `Overlap.SKIP`, an occurrence is skipped (and an issue `schedule-overlap` recorded) while the task
-of the previous one is not finished. This keys only the occurrence (`sched:<id>`); tasks its processor
+to `maxFires` (the most recent ones when more were missed) and continues from now. After a downtime of more than
+`maxFires` fires, `CATCH_UP` moves in one step to the last `maxFires` missed fires and creates them from that
+check on, up to about 100 per check, including those late by less than the threshold; beyond 100,000 missed fires it creates one task now, as `FIRE_ONCE_NOW` does. Every misfire is recorded as an
+issue. With `Overlap.SKIP`, an occurrence is skipped (and an issue `schedule-overlap`
+recorded) while the task of the previous one is not finished. The check creates an occurrence up to one
+`recurringTasksCheckInterval` before its fire time and decides the overlap then. This keys only the occurrence (`sched:<id>`); tasks its processor
 enqueues are unique only if the application gives them keys. A fixed-delay definition (at least 1 second)
 first fires one delay after registration; if an occurrence ends DEAD or CANCELLED (in its processor, through
 an expired lease or by an operator cancel) the definition is paused and an issue `schedule-paused` is recorded, so a failing job does
 not run again until an operator resumes it. Pausing,
 resuming and triggering a definition are `AdminOps` operations; a paused cron definition keeps its stored next
-fire time.
+fire time. Resuming a definition that is not paused changes nothing. Triggering moves the next fire time to now;
+the task is created by the next recurring check, and a paused definition creates nothing until it is resumed
+(resuming a fixed-delay definition sets its next fire one delay from now). A trigger also forgets the occurrence
+in flight, so when that task ends it neither re-arms nor pauses the definition. A definition that cannot be
+evaluated (an invalid cron expression, a time zone the JVM no longer knows) has its next fire moved ahead by at
+least an hour, or twice the check interval, with a `schedule-broken` issue each time, so it does not hold back
+the others.
 
 ### Queues
 
@@ -449,8 +471,11 @@ BackgroundRunner.builder()
 A `QueuePolicy(weight, maxConcurrent)` shares a runner's free executor slots between its queues. Free slots
 are divided in proportion to the weights (default 1), each queue is capped at `maxConcurrent` tasks of that
 queue running on this runner at once (0 means no limit), and a queue that cannot fill its share lets the others
-use it. A runner with any policy claims once per queue instead of once per cycle; queues without a policy have
-weight 1 and no limit. Limits are per runner, not per fleet.
+use it. All queues' shares and caps go to the store in one atomic claim per cycle. The store first tries
+each share in order, then offers unused slots to queues that filled their share, respecting each cap.
+Queues without a policy have weight 1 and no limit. Limits are per runner, not per fleet. When a claim
+found nothing because a queue was at its cap, the runner claims again as soon as a task of a capped queue
+finishes. This wake-up survives a processor restart; `idlePollInterval` remains the timeout fallback.
 
 ```java
 BackgroundRunner.builder()
@@ -475,7 +500,8 @@ again later without spending an attempt. Set a high `maxAttempts` with a capped 
 attempt budget is still finite.
 
 A retry's due time is computed on the worker's clock; promotion and leases use the store's clock. Keep
-these clocks synchronized: skew changes the effective retry delay.
+these clocks synchronized: skew changes the effective retry delay. After a failover to a store server whose
+clock is behind, due tasks wait and leases last longer by that difference.
 
 Register policies under a name and let a request choose one:
 
@@ -523,13 +549,15 @@ level set on that prefix covers them all except `TASKS`, and they do not change 
 ```java
 client.task(id);                                  // Optional<TaskView>, any state
 client.counts();                                  // per queue name: counts per state
-TaskViewPage page = client.tasks(TaskState.DEAD, "mail", null, 100);   // oldest state change first; null cursor starts
+TaskViewPage page = client.tasks(TaskState.DEAD, "mail", null, 100);   // oldest state change first (QUEUED and SCHEDULED: earliest due); null cursor starts
 client.tasks(TaskState.DEAD, "mail", page.next(), 100);   // next is null after the last page
 ```
 
 The listing returns a `TaskViewPage` whose `next` is an opaque position in the listing, so the walk does not depend on
 the last task of the previous page. A task whose own position moves while the walk runs (for example a deferral) can
 still be seen twice (moved later) or missed (moved earlier). A malformed cursor throws `IllegalArgumentException`.
+A task whose stored value cannot be read is left out, so a page can hold fewer tasks than asked for while `next`
+is not null; `counts()` still counts it.
 
 A `TaskView` carries state, attempts, due time, the last failures, completed steps and progress.
 
@@ -545,13 +573,38 @@ boolean drained = runner.drain(Duration.ofSeconds(30));   // quiet, then wait fo
 
 An `Issue` has a time, a kind, a detail and the task id when there is one. The kinds are `unknown-type`,
 `store-error`, `lease-lost`, `attempt-abandoned`, `retry-policy`, `executor-rejected`, `schedule-misfire`,
-`schedule-overlap` and `schedule-paused`. Issues live in the memory of the runner that saw them. `drain` leaves the runner quiet
+`schedule-overlap`, `schedule-paused`, `schedule-rearm`, `schedule-broken`, `corrupt-task` and
+`resource-signal-unavailable`. `schedule-rearm` means a fixed-delay definition was not re-armed because its
+delay header cannot be read; `schedule-broken` is described under "Recurring tasks". Repeats of a `store-error`
+with the same text are one issue whose detail carries the count and whose time is the latest. A `corrupt-task` is a
+task with a stored value the store cannot read, such as a hand-edited row: a claim leaves it out and ends its
+lease, and maintenance ends it DEAD with the failure `unreadable-record` within one check interval; the purge
+removes it after `deadRetention` like any dead task. Listings leave it out, and reading it answers
+`UnreadableTaskException` (422 over the admin HTTP API). `AdminOps.cancel` and `delete` still work on it given
+its id and revision; a corrupt fixed-delay occurrence is then not treated as one, so the cancel or delete
+neither pauses nor re-arms its definition. Issues live in the memory of the runner that saw them. `drain` leaves the runner quiet
 (call `resume()` to claim again, or `stop()`), and returns whether every running task finished in time; use it
-before a rolling restart.
+before a rolling restart. It returns true only when no claim that started before the runner went quiet is
+still in progress and no attempt is unfinished.
 
-Each runner also writes a heartbeat (last seen time and running tasks) to the worker registry every
-`maintenanceCheckInterval`, and maintenance deletes workers that were silent for `workerStaleAfter` (10
-minutes by default). `admin.workers()` lists them.
+Each runner also writes a heartbeat (last seen time, running tasks and whether it is accepting work) to
+the worker registry every `maintenanceCheckInterval`. New workers accept work. `quiet()` and `drain()`
+stop accepting; `resume()` accepts again. Quiet and resume request an immediate heartbeat on the
+maintenance thread without blocking the caller on the store. Maintenance deletes workers that were
+silent for `workerStaleAfter` (10 minutes by default). `admin.workers()` lists them, including `accepting`,
+the queue ids they process and their registered task type ids, recorded at startup. A runner that is still
+alive, for example one that could not reach the store for longer than `workerStaleAfter`, writes its row again
+with its next heartbeat, under the same id and with its label, queues and types; the row's start time is then
+the time it was written again.
+
+`admin.unservedWork()` finds queued work that no worker seen within the last minute can process;
+`admin.unservedWork(Duration)` chooses another heartbeat window using the admin clock. Paused queues
+are skipped, and workers that are not accepting do not contribute coverage. A queue without a live
+accepting worker produces `UnservedWork(queue, null, waiting)` with its full queued count. For queues
+with live accepting workers, each unhandled type produces `UnservedWork(queue, type, waiting)` with
+its exact queued count. Both come from `InspectionStore.queuedByType()` at the time of that read.
+A worker's last seen time is the store's clock, and the window is measured on the admin clock, so a skew
+between them shifts the window by that much.
 
 ### Admin API
 
@@ -564,19 +617,20 @@ AdminOps admin = runner.admin();
 
 admin.counts();                                    // Map<queue name, StateCounts>
 admin.queues();                                    // id, name, paused
-admin.tasks(TaskState.DEAD, "mail", cursor, 100);  // oldest state change first; TaskViewPage(items, next); cursor null starts, next null ends; queue null for all
+admin.tasks(TaskState.DEAD, "mail", cursor, 100);  // oldest state change first, QUEUED and SCHEDULED earliest due; TaskViewPage(items, next); cursor null starts, next null ends; queue null for all
 admin.task(id);                                    // Optional<TaskView>
 admin.taskByKey("welcome-42");                     // the task holding that unique key, Optional<TaskView>
 admin.retry(id, revision);                         // DEAD, CANCELLED or EXPIRED back to QUEUED, attempts reset
 admin.cancel(id, revision, "reason");              // CANCELLED, REQUESTED or STALE
-admin.cancelByKey("welcome-42", "reason");         // the holder of the key: CANCELLED, REQUESTED, STALE (changed meanwhile), NOT_FOUND or FINISHED
+admin.cancelByKey("welcome-42", "reason");         // the holder of the key: CANCELLED, REQUESTED, STALE (changed meanwhile), NOT_FOUND (also a removed holder) or FINISHED
 admin.delete(id, revision);                        // any state but LEASED
 admin.pauseQueue("mail", true);
 admin.schedules();                                 // ScheduleView: cron, zone, misfire, fixed delay, paused, next fire
-admin.pauseSchedule("poll-feed", false);           // resume; a fixed-delay definition is re-armed one delay from now
+admin.pauseSchedule("poll-feed", false);           // resume a paused one; a fixed-delay definition is re-armed one delay from now
 admin.triggerSchedule("nightly-report");           // fires at the next recurring check
 admin.deleteSchedule("nightly-report");
 admin.workers();
+admin.unservedWork();
 admin.purgeStaleWorkers(Duration.ofMinutes(10));
 ```
 
@@ -619,7 +673,7 @@ MicrometerRunnerMetrics metrics = MicrometerRunnerMetrics.bind(runner, registry,
 | `bth4j.deferred` | counter | `type` |
 | `bth4j.schedule.fired` | counter | none |
 | `bth4j.purged` | counter | `state` |
-| `bth4j.runner.running` | gauge | none |
+| `bth4j.runner.running` | gauge | none; includes tasks whose outcome is still being written, up to twice the concurrency limit with the built-in executors |
 | `bth4j.runner.abandoned` | gauge | none; attempts past their maximum run time that still hold a slot |
 | `bth4j.runner.up` | gauge | none; 1 while the runner is RUNNING |
 | `bth4j.tasks.state` | gauge | `state`, `queue` |
@@ -648,21 +702,32 @@ At least one user is required. `Role.ADMIN` may read and change; `Role.VIEWER` m
 task payloads, and every mutation answers 403. A client signs in with `POST /api/v1/session` (`{"user", "password"}`),
 receives the `bth4j_session` cookie (`HttpOnly`, `SameSite=Strict`) and a CSRF token in the reply, and sends the token
 as `X-CSRF-Token` on every POST and DELETE. Sessions are kept in memory, last 12 hours after the last request
-(`sessionTtl`) and end when the server stops. Five failed logins in a row block that remote address for 10
-seconds (HTTP 429). A stale revision is answered 409, an unknown id 404; task ids and revisions are JSON strings.
+(`sessionTtl`) and end when the server stops. A user has at most 20 sessions; a login past that ends that
+user's oldest session. Every fifth failed login from a remote address blocks it for 10 seconds (HTTP 429); a
+successful login does not clear the failures counted before it. A stale revision is answered 409, an unknown id
+404, and a task whose stored value cannot be read 422 with `code: "UNREADABLE_TASK"`; task ids and revisions are
+JSON strings.
 The endpoints are `me`, `session`, `health`, `overview`, `queues` (with `pause` and `resume`), `tasks` (list
 with `state`, `queue`, `cursor` and `limit` up to 200; one task, its `payload`, `retry`, `cancel`, delete;
 `tasks/by-key/{key}` reads the task that holds a unique key, 404 when none does, and `tasks/by-key/{key}/cancel` cancels it
 with a body of `{"reason"}` and no revision: viewers may read, admins may cancel; a blank key or one over 256 characters
 is answered 400; cancel answers 404 when no task holds the key and 409 when the holder is already finished or changed meanwhile),
-`schedules` (with `pause`, `resume`, `trigger`, delete), `workers` and `issues`.
+`schedules` (with `pause`, `resume`, `trigger`, delete), `workers`, `unserved` and `issues`.
+
+`GET /api/v1/workers` includes `queues` and `types` as name lists and the boolean `accepting`. `GET /api/v1/unserved` returns a list
+of `{"queue", "type", "waiting"}` using the one-minute heartbeat window. A null type means the whole queue is unserved and waiting is its queued
+count; otherwise waiting is the exact queued count of that type. Both endpoints are available to viewers.
+The dashboard shows coverage and quiet status on Workers and unserved work on Overview.
 
 `GET /api/v1/tasks` answers `{"items": [...], "next": "<cursor>" | null}`: pass `next` as `cursor` for the following
 page; `next` is null after the last page. A missing or empty `cursor` starts at the beginning, and a malformed one is
 answered 400.
 
 The server speaks plain HTTP unless `https(SSLContext)` is set, which also marks the cookie `Secure`; keep it
-on the loopback interface or behind TLS. `corsOrigin("https://dashboard.example.com")` lets a browser app on
+on the loopback interface or behind TLS. Behind a TLS-terminating proxy the server itself speaks plain HTTP, so set
+`secureCookie(true)` to mark the cookie `Secure`. Every authenticated response renews the cookie's `Max-Age`, so
+the browser's expiry follows the sliding session expiry. A server runs once: `start()` after `stop()` throws, so
+build a new one. An unknown queue name is answered 400 in the tasks filter and 404 on pause and resume. `corsOrigin("https://dashboard.example.com")` lets a browser app on
 another origin call the API with credentials.
 
 The dashboard is the static Vue 3 app in `dashboard/` (no build step; it ships its pinned Vue runtime in
@@ -679,14 +744,61 @@ serves sample data without Java.
 Finished tasks are kept for inspection, then purged by the maintenance service: succeeded tasks 10 minutes
 (their payload is dropped unless `keepSucceededPayload(true)`), dead tasks 90 days, cancelled and expired
 tasks 48 hours. A retention of
-`Duration.ZERO` removes the task at the transition instead. A unique key with `keepFor` keeps its task
-until the window ends.
+`Duration.ZERO` removes the task at the transition instead. Retention and the key window are independent:
+retention decides how long the task stays readable, `keepFor` how long its key blocks a same-key enqueue. A task
+removed inside its window (retention zero at the transition, or purged after its retention) is gone from every
+read, while its key still answers a same-key enqueue with `Duplicate` and the removed task's id until the window
+ends.
 
 ### Concurrency
 
 By default a runner runs twice as many tasks at once as there are processors, each on a virtual thread.
-`concurrency(Concurrency.fixed(n))` sets another limit; `concurrency(Concurrency.adaptive(min, max))` lets
-the limit move with CPU load and throughput.
+`concurrency(Concurrency.fixed(n))` sets another limit. Adaptive concurrency starts at `min` and stays within
+`[min, max]`, targeting whole-machine CPU and memory usage:
+
+```java
+Concurrency.adaptive(8, 256) // CPU 0.90, memory 0.80, heap only
+Concurrency.adaptive(8, 256, 0.75, 0.70).withMemorySignal(MemorySignal.HEAP_AND_SYSTEM)
+```
+
+A daemon samples every 500 ms with fixed delay and monotonic time, without catch-up after a pause. CPU uses
+`OperatingSystemMXBean.getCpuLoad()` (container-aware on JDK 25), smoothed with EWMA alpha 0.25, without a
+load-average fallback. Heap usage is used / max (committed if max is undefined), taking the lowest reading
+in the last 2 seconds to smooth the GC sawtooth. `HEAP_AND_SYSTEM` takes the greater of heap and system
+usage, each with its own 2-second minimum. Reductions use the highest valid component, so an unavailable
+system reading cannot hide heap pressure; growth requires every configured component to be valid. System
+usage catches native memory such as image buffers, but can count OS file cache as used and hold the limit
+low on a long-running host.
+
+A claim that fills its executor reservation provides demand evidence for 5 seconds and allows one growth
+step, so the slots a step adds must be filled before the next one; a partial or empty claim clears it. Growth requires saturation: running plus reserved slots must be at least the current
+limit, including permit debt after a reduction. With fresh evidence, raw and smoothed CPU and memory at
+least 0.15 below their targets grow the limit by 25% (rounded up, at most 16 slots); at least 0.05 below
+grows by one. Without fresh evidence, a saturated runner with at least 0.05 headroom probes by adding
+exactly one slot, at most once every 5 seconds. A full claim restores demand evidence; an empty claim
+leaves the slot free, stopping growth. Probes obey the same resource checks and cooldowns as other growth.
+When queue caps (`maxConcurrent`) keep claims from filling the reservation while work waits, the claims are
+partial, so the limit grows only by these one-slot probes.
+For targets below 0.2 these margins scale proportionally. Each tick makes at most one increase; free slots
+always prevent growth.
+
+Memory at or above 0.95 resets the limit to `min`. Memory at its target for 1 second reduces the limit by
+25%, at most once per second, and blocks growth for 5 seconds. Smoothed CPU above its target plus 0.03 for
+1 second reduces it by 20%, at most once per second, and blocks growth for 2 seconds. Memory takes priority.
+Invalid or unavailable CPU or any configured memory component blocks growth; after 5 seconds without a
+valid reading for that signal, the limit decays by 25% per second toward `min`. Two fresh valid samples of
+each configured signal are needed before growth resumes. The first time a signal goes 5 seconds without a
+valid reading, the executor logs a WARN and the runner raises the issue `resource-signal-unavailable`; a JVM or
+container that never provides the reading keeps the limit at `min`, where `Concurrency.fixed` fits better. After 30 seconds without a running task seen
+at a sampling tick or a nonempty claim, the limit returns to `min`. Reservations, releases and empty polls
+do not restart that idle timer.
+
+Shrinking never cancels tasks or blocks waiting for them: permits may remain negative until occupied slots
+finish; saturated growth and probes can recover even while those tasks keep running.
+`runner.concurrencyLimit()` exposes the current limit when supported by the executor. Custom executors can
+receive demand through `BackgroundExecutor.claimed(reserved, claimed)` and expose their limit through
+`limit()`; both have defaults.
+Limit changes are logged at DEBUG and holds at TRACE under `Loggers.EXECUTOR`.
 
 ## Configuration
 
@@ -698,7 +810,7 @@ All settings are on `BackgroundRunner.builder()`.
 | `registry` | new registry | the processor registry; by default created by the runner and reached with `runner.registry()` |
 | `jsonMapper` | none | payloads and step results as JSON; needed unless every task type has its own codec |
 | `clock` | `Clock.systemUTC()` | clock for client-side instants (`createdAt`, delays, retry times) |
-| `concurrency` | `Concurrency.fixed(max(2, 2 x processors))` | how many tasks run at once; `fixed(n)` or `adaptive(min, max)` |
+| `concurrency` | `Concurrency.fixed(max(2, 2 x processors))` | how many tasks run at once; `fixed(n)` or `adaptive(min, max[, cpuTarget, memoryTarget])`; adaptive defaults: CPU 0.90, memory 0.80, `HEAP` |
 | `taskExecutor` | built from `concurrency` | a custom `BackgroundExecutor`; the runner shuts it down |
 | `retryPolicy` | exponential, 1 s doubling, capped at 1 h, 20 % jitter | delay after a failed attempt |
 | `retryPolicy(name, policy)` | none | adds a named policy that requests choose with `TaskRequest.retryPolicy(name)`; name 1 to 64 characters; may be called several times |
@@ -714,9 +826,9 @@ All settings are on `BackgroundRunner.builder()`.
 | `purgeInterval` | 1 minute | time between purge runs |
 | `purgeBatchSize` | 500 | tasks removed per purge call; the purge loops until a call removes fewer |
 | `leaseDuration` | 60 s (at least 1 s) | how long a claimed task stays leased without renewal; renewed every third while running. A lapsed lease cannot be renewed any more, so keep it well above the worst pause (GC, container freeze, slow store round trip); a few seconds is fragile |
-| `idlePollInterval` | 500 ms (at least 10 ms) | sleep after a claim that found nothing, and the wait for a free executor slot |
+| `idlePollInterval` | 500 ms (at least 10 ms) | sleep after a claim that found nothing (cut short when a queue at its `maxConcurrent` frees a slot), and the wait for a free executor slot |
 | `claimBatchSize` | 32 | most tasks claimed in one call, bounded by free executor slots |
-| `shutdownTimeout` | 30 s | how long `stop()` waits for services and running tasks |
+| `shutdownTimeout` | 30 s | how long `stop()` takes at most, waiting for services and running tasks |
 | `serviceCheckInterval` | 10 s | how often a dead service thread is restarted |
 | `maintenanceCheckInterval` | 5 s (at least 1 s) | how often expired leases are looked for, tasks past `startBy` are expired and the worker heartbeat is written |
 | `workerStaleAfter` | 10 minutes | worker registry rows without a heartbeat for this long are deleted by the purge |
@@ -731,10 +843,23 @@ lock that keeps block allocation contiguous, so busy producers serialise on it. 
 PostgreSQL, size 1 reached about one third of the enqueue rate of a larger block (10,743 against 32,379
 enqueues in 60 s).
 
-`start()` fails with `TaskConfigurationException` when no processor is registered. `quiet()` stops claiming while
-running tasks finish and `resume()` claims again. `stop()` stops the services, waits up to `shutdownTimeout`
-and keeps renewing leases of running tasks meanwhile; tasks still running afterwards are retried when their
-lease expires. A lease that has lapsed is not revived by a later renewal, so `leaseDuration` must sit well above the worst pause of a worker (GC, container freeze, slow store round trip). A process that only produces tasks can use `TaskClient.builder().store(store).jsonMapper(mapper).build()`.
+`start()` fails with `TaskConfigurationException` when no processor is registered. A `start()` that fails later,
+for example because the store cannot be reached, stops what it started and can be called again. `quiet()` stops
+claiming while running tasks finish and `resume()` claims again. `stop()` stops the services, waits up to
+`shutdownTimeout` in total, also when a service is stuck in a store call, and keeps renewing leases of running
+tasks meanwhile; tasks still running afterwards are retried when their lease expires. A lease that has lapsed is not revived by a later renewal, so `leaseDuration` must sit well above the worst pause of a worker (GC, container freeze, slow store round trip).
+
+A runner acknowledges successful tasks in batches without a timer: a task that finishes while no batch is on its
+way is acknowledged at once, and tasks that finish while one is on its way go together in the next
+(`ExecutionStore.ackAll`, one script on Redis, one statement on PostgreSQL). A succeeded occurrence of a
+fixed-delay schedule keeps its own call, because its re-arm is part of the same write. A task's executor slot is freed
+when its processor returns, so the slot takes the next task while the outcome is written; the task keeps its lease
+renewed until the store answers, and its queue's `maxConcurrent` counts it until then. The built-in executors let at
+most twice their current limit run or write their outcome at once, so a slow store holds back claims; adaptive
+concurrency counts the slots this bound holds back as occupied. `runningTasks` and `bth4j.runner.running`
+count a task until its outcome is written, so they can reach twice the limit. Observers of outcome events run after
+the slot is freed. A custom `BackgroundExecutor` keeps the slot until
+the task ends unless it overrides `executeWithSlot`. A process that only produces tasks can use `TaskClient.builder().store(store).jsonMapper(mapper).build()`.
 
 ## Stores
 
@@ -745,14 +870,34 @@ var store = new RedisTaskStore(jedis, "my-app");   // UnifiedJedis (for example 
 ```
 
 The namespace prefixes every key and carries the Redis Cluster hash tag, so all keys of a store share one
-slot. The store does not close the Jedis client. Redis 7.4 or newer, or Valkey 9 or newer, is required (the
+slot. Redis Cluster is not tested. The scripts declare only one key and derive the others, so the namespace's slot
+must not be resharded while runners use it: during a slot migration a script can fail after part of its writes.
+The store does not close the Jedis client. Redis 7.4 or newer, or Valkey 9 or newer, is required (the
 store expires the key fields of finished tasks with hash field expiry). A namespace written by bth4j 3.0 has
-another layout and is refused by `init`, and so is one written by a 4.0.0 snapshot; start 4.0 with a new
-namespace. Enqueue writes a random per-record
+another layout and is refused by `init`, and so is one written by 4.0.0, a 4.0.0 snapshot or an earlier 4.1.0
+snapshot (any layout but 5); start with a new namespace. Enqueue writes a random per-record
 token in task hash field `wt` with the other fields. A transport resend with that token returns stored again;
 a different token under the same id returns exists, before checking the unique key. The token only helps while
 the task exists: with a zero succeeded retention a task that already ran and was removed is stored again by a
 resend.
+
+Layout 5 stores queued tasks in `q:<queue-id>:<type-id>` zsets scored by due milliseconds, and keeps in
+`active:<queue-id>` the set of types whose zset in that queue is not empty. A runner's known types are stored
+once as the set `ts:<digest>`, named by a digest of the sorted type ids and shared by runners with the same
+types; it expires a day after the last claim that named it and a claim writes it again when it is missing. A
+claim takes the intersection of the two sets, so its cost grows with the types that have queued tasks, not
+with the types registered. A claim runs both grant passes in one atomic script and merges the eligible types
+by `(due, lexical id)`, leaving foreign tasks unchanged. Its scan budget is `min(count * 4, 1000)` eligible
+entries per queue across both passes. Queue listings merge the active type zsets by `(due, numeric id)` and
+retain their position cursors when a type empties. `queuedByType()` and the counts read exact zset
+cardinalities of the active types in one script without task hash reads. Finished tasks are listed and purged
+from one zset per state and queue, `idx:<state>:<queue-id>`. A task removed while its unique key window is open
+leaves only the key string `k:<key>`, which expires at the end of the window. Enqueue batches and acknowledgement
+batches run as one script per group of tasks. A claim leaves a task whose `startBy` has passed in its queue for
+maintenance to expire. Type names use `reg:type` and `seq:type`; task and
+recurring-definition hashes store the type id in `ty`. Worker registration sets `accepting` to 1, and one
+heartbeat script atomically updates the worker's time, running count and accepting flag, and writes the hash of
+a removed worker again with its label, queues and types.
 
 Memory: the task hash stays a listpack only while every value is at most `hash-max-listpack-value` bytes
 (default 64). A header map, account, unique key, progress text or cancel reason longer than that makes the
@@ -763,19 +908,67 @@ entries (default 128) and cost about 6 times more per entry as a skiplist; raisi
 ### PostgreSQL
 
 ```java
-var store = new PostgresTaskStore(dataSource, "bth");   // tables bth_task, bth_queue, bth_event, bth_worker, bth_schedule, bth_meta
+var store = new PostgresTaskStore(dataSource, "bth");   // tables bth_task, bth_queue, bth_type, bth_worker, bth_schedule, bth_meta
 ```
 
 The tables are created when the runner or client is built, or run `store.schemaStatements()` from your
 migration tool. The prefix is lower case letters, digits and underscores, at most 41 characters; runners with
-the same prefix on the same database share the work. There are no foreign keys. PostgreSQL 9.5 or newer is
-required (`SKIP LOCKED`, `ON CONFLICT`); the tests run on 17.
+the same prefix on the same database share the work. There are no foreign keys. PostgreSQL 16 or newer is
+supported, 17 or newer recommended; the tests run on 18. The store runs at the connection's isolation level
+and is written for READ COMMITTED, PostgreSQL's default: under REPEATABLE READ or
+SERIALIZABLE, concurrent claims and fenced writes fail with serialization errors. Tables written by bth4j 3.0 or 4.0.0 (schema
+version 1 or 2) are refused by `init`; start with a new prefix or drop the tables.
+
+Schema version 3 stores task types in `<prefix>_type` and `type_id` columns in the task and schedule
+tables. Worker coverage uses `queue_ids` and `type_ids` as `smallint[] NOT NULL`; `accepting` is a
+required boolean, true on registration and updated by heartbeat.
+
+`init` takes a transaction-level advisory lock for the prefix, then only reads the stored schema version when the
+tables exist; it runs DDL only when there is no schema yet. A runner role on existing tables needs only data
+privileges (SELECT, INSERT, UPDATE, DELETE on the tables, USAGE on the sequences), and starting a runner takes no
+table lock. `payload_version` and `catch_up_max` are `integer`, so every positive Java `int` is stored. A task
+removed inside its unique key's keep window leaves a key-only row (state code 7, content columns empty) in the
+task table until the window ends; it is not counted or listed.
+
+The store sets no query timeout of its own. Configure them on the driver and pool: for pgjdbc `socketTimeout`
+and `tcpKeepAlive`, and a `statement_timeout` (for example `options=-c statement_timeout=30s`). Without them, a
+half-open connection can block a runner thread for as long as the operating system keeps the socket, while
+health still reports RUNNING. A write whose reply was lost to a timeout may or may not have committed; the
+runner treats it as `UNKNOWN` (see "Observing a runner").
+
+Queue grants are claimed in one statement that runs both passes, each with a bounded per-queue
+`FOR UPDATE SKIP LOCKED` scan, so a claim is atomic without a transaction.
+`queuedByType()` uses one `GROUP BY queue_id, type_id` over queued
+rows. The queued partial index ends with `type_id` to cover those counts while preserving claim order;
+it uses ordinary index columns. `counts()` reads the `<prefix>_task_counts` index (`queue_id, state`), listing
+one finished state of one queue reads `<prefix>_task_finished_queue`, and listing QUEUED across all queues scans
+the queued index once per queue and merges by due time and id. A claim walks the queued tasks of a queue in due
+order past those of types it does not handle, so a large backlog of a type no live runner handles makes every
+claim on that queue slower; give such types their own queue.
 
 ### Other stores
 
 The store interface is `today.bonfire.oss.bth4j.spi.FullStore`. A store on another engine implements it and
 subclasses `StoreContract` and `RunnerContract` from `bth4j-store-tests`; see "The store SPI and how to implement a store" in
 [docs/design-3.0.md](docs/design-3.0.md).
+
+### Store SPI
+
+`ExecutionStore.claim` takes `ClaimRequest(List<QueueGrant> grants, int count, Duration lease,
+int workerId, Set<Integer> knownTypeIds)`. A `QueueGrant(queueId, share, cap)` requires
+`0 <= share <= cap`; grants must be non-empty and contain no duplicate queue ids. The store performs
+both passes atomically across all grants, claiming each queue by `(due, id)` (Redis may compare equal-due
+ids as decimal text). Pass 1 skips paused queues and zero shares, takes up to `min(share, remaining)`,
+and marks a grant filled only when it took that positive amount in full. Pass 2 visits only filled grants
+in order, taking up to `min(remaining, cap - alreadyClaimed)`. Total claims never exceed `count`.
+Without policies each queue has `share = cap = count`, preserving queue preference order. Unknown
+types stay unchanged, including their due times; a null `knownTypeIds` accepts every type.
+
+`InspectionStore.queuedByType()` returns exact QUEUED counts as queue id to type id to count, with
+only non-zero entries. `AdminStore.heartbeat(workerId, label, queueIds, typeIds, running, accepting)` persists
+the worker's accepting state, exposed by `WorkerInfo.accepting()`, and creates the row again under the same id
+when maintenance purged it. `allocateWorkerId` creates accepting workers.
+`StoreContract` covers these behaviours for every store implementation.
 
 ## Testing
 
@@ -833,8 +1026,9 @@ changes is in [CHANGELOG.md](CHANGELOG.md).
 - Issues are kept in the memory of the runner that recorded them (the last 100) and are lost on restart.
 - Admin sessions of `AdminHttpServer` are in memory and the server has no user store beyond the users given to
   the builder; put TLS (`https`) or a TLS-terminating proxy in front of it when it is not on the loopback interface.
-- The Redis store needs Redis 7.4 or newer or Valkey 9 or newer, the PostgreSQL store PostgreSQL 9.5 or
-  newer, and Java 21 or later is required.
+- The Redis store needs Redis 7.4 or newer or Valkey 9 or newer, the PostgreSQL store PostgreSQL 16 or
+  newer (17 or newer recommended), and Java 21 or later is required. Redis Cluster is not tested, and a
+  namespace's slot must not be resharded while runners use it.
 
 ## Contributing
 

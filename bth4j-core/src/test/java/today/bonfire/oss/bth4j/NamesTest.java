@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
@@ -66,7 +67,7 @@ class NamesTest {
         }
 
         @Override
-        public int allocateWorkerId(String label) {
+        public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
             return 1;
         }
     }

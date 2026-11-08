@@ -32,7 +32,7 @@ public final class RecordJson {
         var map = object(Json.parse(text), "headers");
         var out = new LinkedHashMap<String, String>();
         for (var e : map.entrySet()) {
-            out.put(e.getKey(), string(e.getValue(), "headers." + e.getKey(), true));
+            out.put(e.getKey(), string(e.getValue(), "headers." + e.getKey(), false));
         }
         return out;
     }

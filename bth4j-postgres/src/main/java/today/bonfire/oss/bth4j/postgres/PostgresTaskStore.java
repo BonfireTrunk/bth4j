@@ -6,6 +6,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -15,7 +16,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -37,6 +37,8 @@ import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
 import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
+import today.bonfire.oss.bth4j.spi.PutRecurringResult;
+import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecordJson;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
@@ -50,17 +52,19 @@ import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
+import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /**
- * {@link FullStore} on PostgreSQL (9.5 or newer for {@code SKIP LOCKED} and {@code ON CONFLICT}; tested
- * on 17): one row per task in {@code <prefix>_task} with a state column, name registries in
- * {@code <prefix>_queue} and {@code <prefix>_event}, workers in {@code <prefix>_worker}, recurring
+ * {@link FullStore} on PostgreSQL (16 or newer, 17 or newer recommended, tested on 18): one row per task in
+ * {@code <prefix>_task} with a state column, name registries in
+ * {@code <prefix>_queue} and {@code <prefix>_type}, workers in {@code <prefix>_worker}, recurring
  * definitions in {@code <prefix>_schedule}. Each transition's check and writes commit together: claims use
  * {@code FOR UPDATE SKIP LOCKED}, the fenced transitions are {@code UPDATE ... WHERE id = ? AND revision = ?
  * AND state = 2}, and {@link #fail} locks the row before it reads the failures it appends to. Runners that
  * share the tables share the work. The database clock ({@code now()}) decides due times, leases and
- * retention.
+ * retention. A task removed while its unique key's keep window is open leaves a key-only row, which holds the
+ * key until the window ends and is invisible to every read.
  * <p>
  * The tables are created by {@link #init()}, or by running {@link #schemaStatements()} from the
  * application's migration tool. There are no foreign keys; the registries are only written through
@@ -72,7 +76,7 @@ public class PostgresTaskStore implements FullStore {
      * The schema this class writes, stored in the {@code meta} table. {@link #init} refuses tables written with
      * another one; there is no migration between schemas. Version 1 is the 3.0 schema.
      */
-    public static final int SCHEMA_VERSION = 2;
+    public static final int SCHEMA_VERSION = 3;
 
     private static final Pattern PREFIX = Pattern.compile("[a-z][a-z0-9_]{0,40}");
     private static final int MAX_FAILURES = 20;
@@ -85,6 +89,23 @@ public class PostgresTaskStore implements FullStore {
             " unique_key = CASE WHEN key_keep_ms IS NULL THEN NULL ELSE unique_key END,"
                     + " key_until = CASE WHEN key_keep_ms IS NULL OR unique_key IS NULL THEN NULL"
                     + " ELSE now() + key_keep_ms * interval '1 millisecond' END";
+
+    /**
+     * Store-internal state code of a key-only row: a task removed while its unique key's keep window is open.
+     * The row keeps its id, queue, type, key and window, so the unique index still answers an enqueue of that key
+     * with this id; nothing else reads it, and the window's end deletes it.
+     */
+    private static final int KEY_ONLY = 7;
+
+    /** Turns a row into a key-only row; each statement sets the revision and, when the task ends here, key_until. */
+    private static final String TO_KEY_ONLY = " state = " + KEY_ONLY + ", state_changed = now(), data = NULL,"
+            + " account = NULL, headers = NULL, retry_policy = NULL, schedule_id = NULL, retry_of = NULL,"
+            + " start_by = NULL, max_run_ms = NULL, cancel_requested_at = NULL, cancel_reason = NULL,"
+            + " progress = NULL, steps = NULL, failures = NULL, worker_id = NULL, lease_until = NULL,"
+            + " claimed_at = NULL";
+
+    /** Starts the keep window of a task that ends here as a key-only row. */
+    private static final String KEY_WINDOW = " key_until = now() + key_keep_ms * interval '1 millisecond'";
 
     private static final String FENCE = " WHERE id = ? AND revision = ? AND state = 2";
 
@@ -106,6 +127,7 @@ public class PostgresTaskStore implements FullStore {
     private final String finishCancelledSql;
     private final String finishCancelledExpiredSql;
     private final String ackSql;
+    private final String ackAllSql;
     private final String failLockSql;
     private final String rescheduleSql;
     private final String unclaimSql;
@@ -114,11 +136,16 @@ public class PostgresTaskStore implements FullStore {
     private final String promoteSql;
     private final String nextDueSql;
     private final String reclaimSql;
-    private final String purgeSql;
+    private final String endLeasesSql;
     private final String releaseKeysSql;
+    private final String releaseExpiredKeysSql;
     private final String putScheduleSql;
     private final String dueScheduleSql;
     private final String commitScheduleSql;
+
+    private volatile SortedTypes lastTypes;
+
+    private record SortedTypes(Set<Integer> ids, Integer[] sorted) {}
 
     /**
      * @param dataSource connections to the database; the store does not close it
@@ -134,7 +161,7 @@ public class PostgresTaskStore implements FullStore {
         this.prefix = prefix;
         this.meta = prefix + "_meta";
         this.queue = prefix + "_queue";
-        this.type = prefix + "_event";
+        this.type = prefix + "_type";
         this.worker = prefix + "_worker";
         this.task = prefix + "_task";
         this.schedule = prefix + "_schedule";
@@ -142,12 +169,14 @@ public class PostgresTaskStore implements FullStore {
         this.scheduleSeq = prefix + "_schedule_rev";
 
         // one statement for any number of tasks; ON CONFLICT without a target covers both the id and the
-        // unique key, and enqueueAll tells the two apart afterwards
+        // unique key, and enqueueAll tells the two apart afterwards. Rows go in unique key order, so two batches
+        // that share keys wait for each other's keys in the same order instead of deadlocking; within one key the
+        // earlier request goes first.
         insertSql = "INSERT INTO " + task
-                + " (id, revision, queue_id, event_id, payload_version, state, attempts, max_attempts, created,"
+                + " (id, revision, queue_id, type_id, payload_version, state, attempts, max_attempts, created,"
                 + " due, state_changed, data, account, headers, unique_key, key_keep_ms, retry_policy, schedule_id,"
                 + " retry_of, start_by, max_run_ms, cancel_requested_at, cancel_reason, progress, steps, failures)"
-                + " SELECT u.id, u.revision, u.queue_id, u.event_id, u.payload_version,"
+                + " SELECT u.id, u.revision, u.queue_id, u.type_id, u.payload_version,"
                 + " CASE WHEN u.due > now() THEN 1 ELSE 0 END, u.attempts, u.max_attempts, u.created,"
                 + " COALESCE(u.due, now()), now(), u.data, u.account, u.headers::jsonb, u.unique_key, u.key_keep_ms,"
                 + " u.retry_policy, u.schedule_id, u.retry_of, u.start_by, u.max_run_ms, u.cancel_requested_at,"
@@ -157,30 +186,47 @@ public class PostgresTaskStore implements FullStore {
                 + " ?::timestamptz[], ?::timestamptz[], ?::text[], ?::text[], ?::text[], ?::text[], ?::bigint[],"
                 + " ?::text[], ?::text[], ?::bigint[], ?::timestamptz[], ?::int[], ?::timestamptz[], ?::text[],"
                 + " ?::text[], ?::text[], ?::text[])"
-                + " WITH ORDINALITY AS u(id, revision, queue_id, event_id, payload_version, attempts, max_attempts,"
+                + " WITH ORDINALITY AS u(id, revision, queue_id, type_id, payload_version, attempts, max_attempts,"
                 + " created, due, data, account, headers, unique_key, key_keep_ms, retry_policy, schedule_id,"
                 + " retry_of, start_by, max_run_ms, cancel_requested_at, cancel_reason, progress, steps, failures, ord)"
-                + " ORDER BY u.ord"
+                + " ORDER BY u.unique_key, u.ord"
                 + " ON CONFLICT DO NOTHING RETURNING id";
         claimSql = claimSql(false);
         claimKnownTypesSql = claimSql(true);
-        renewSql = "UPDATE " + task + " t SET lease_until = now() + ? * interval '1 millisecond'"
-                + " FROM unnest(?::bigint[], ?::int[]) AS u(id, revision)"
-                + " WHERE t.id = u.id AND t.revision = u.revision AND t.state = 2"
-                + " AND t.lease_until > now()"
+        // renew and ackAll lock their rows in id order, so a renewal and a batch of the same worker's acks that
+        // overlap wait for each other instead of deadlocking
+        renewSql = "WITH l AS (SELECT t.id FROM " + task + " t JOIN unnest(?::bigint[], ?::int[]) AS u(id, revision)"
+                + "   ON t.id = u.id AND t.revision = u.revision WHERE t.state = 2 AND t.lease_until > now()"
+                + "   ORDER BY t.id FOR UPDATE OF t)"
+                + " UPDATE " + task + " t SET lease_until = now() + ? * interval '1 millisecond'"
+                + " FROM l WHERE t.id = l.id"
                 + " RETURNING t.id, t.revision, t.cancel_requested_at IS NOT NULL";
         finishCancelledSql = "UPDATE " + task + " SET state = 5, revision = revision + 1, state_changed = now(),"
                 + " cancel_reason = ?, cancel_requested_at = COALESCE(cancel_requested_at, now()),"
                 + " lease_until = NULL, data = CASE WHEN ? THEN data ELSE NULL END," + KEY_RELEASE + FENCE;
         finishCancelledExpiredSql = finishCancelledSql + " AND lease_until <= now()";
-        // keep = false removes the row, unless it still holds its key for a keep window; the two branches
-        // exclude each other, so at most one touches the row
+        // keep = false removes the row, or leaves only its key while the key has a keep window; the three
+        // branches exclude each other, so at most one touches the row
         ackSql = "WITH d AS (DELETE FROM " + task + FENCE
                 + "   AND NOT ? AND (key_keep_ms IS NULL OR unique_key IS NULL) RETURNING id),"
+                + " k AS (UPDATE " + task + " SET" + TO_KEY_ONLY + ", revision = revision + 1," + KEY_WINDOW
+                + FENCE + " AND NOT ? AND key_keep_ms IS NOT NULL AND unique_key IS NOT NULL RETURNING id),"
                 + " u AS (UPDATE " + task + " SET state = 3, revision = revision + 1, state_changed = now(),"
-                + "   lease_until = NULL, data = CASE WHEN ? AND ? THEN data ELSE NULL END," + KEY_RELEASE
-                + FENCE + " AND (? OR (key_keep_ms IS NOT NULL AND unique_key IS NOT NULL)) RETURNING id)"
-                + " SELECT (SELECT count(*) FROM d) + (SELECT count(*) FROM u)";
+                + "   lease_until = NULL, data = CASE WHEN ? THEN data ELSE NULL END," + KEY_RELEASE
+                + FENCE + " AND ? RETURNING id)"
+                + " SELECT (SELECT count(*) FROM d) + (SELECT count(*) FROM k) + (SELECT count(*) FROM u)";
+        ackAllSql = "WITH l AS (SELECT t.id, t.revision, t.key_keep_ms IS NOT NULL AND t.unique_key IS NOT NULL AS held"
+                + "   FROM " + task + " t JOIN unnest(?::bigint[], ?::int[]) AS u(id, revision)"
+                + "   ON t.id = u.id AND t.revision = u.revision WHERE t.state = 2 ORDER BY t.id FOR UPDATE OF t),"
+                + " d AS (DELETE FROM " + task + " t USING l WHERE t.id = l.id AND NOT ? AND NOT l.held"
+                + "   RETURNING t.id, l.revision),"
+                + " k AS (UPDATE " + task + " SET" + TO_KEY_ONLY + ", revision = l.revision + 1," + KEY_WINDOW
+                + "   FROM l WHERE " + task + ".id = l.id AND NOT ? AND l.held RETURNING l.id, l.revision),"
+                + " u AS (UPDATE " + task + " SET state = 3, revision = l.revision + 1, state_changed = now(),"
+                + "   lease_until = NULL, data = CASE WHEN ? THEN data ELSE NULL END," + KEY_RELEASE
+                + "   FROM l WHERE " + task + ".id = l.id AND ? RETURNING l.id, l.revision)"
+                + " SELECT id, revision FROM d UNION ALL SELECT id, revision FROM k"
+                + " UNION ALL SELECT id, revision FROM u";
         failLockSql = "SELECT attempts, max_attempts, failures::text,"
                 + " key_keep_ms IS NOT NULL AND unique_key IS NOT NULL, lease_until <= now()"
                 + " FROM " + task + FENCE + " FOR UPDATE";
@@ -195,14 +241,13 @@ public class PostgresTaskStore implements FullStore {
                 + " UPDATE " + task + " t SET state = 0, revision = t.revision + 1, state_changed = now()"
                 + " FROM due WHERE t.id = due.id";
         nextDueSql = "SELECT min(due) FROM " + task + " WHERE state = 1";
-        reclaimSql = "SELECT id, revision, attempts, max_attempts, event_id, cancel_requested_at IS NOT NULL" + " FROM "
+        endLeasesSql =
+                "UPDATE " + task + " SET lease_until = claimed_at WHERE id = ANY(?) AND state = 2 AND worker_id = ?";
+        reclaimSql = "SELECT id, revision, attempts, max_attempts, type_id, cancel_requested_at IS NOT NULL" + " FROM "
                 + task + " WHERE state = 2 AND lease_until <= now() ORDER BY lease_until LIMIT ?";
-        purgeSql = "DELETE FROM " + task + " WHERE id IN (SELECT id FROM " + task
-                + "   WHERE state = ? AND state_changed <= now() - ? * interval '1 millisecond'"
-                + "   AND (key_until IS NULL OR key_until <= now())"
-                + "   ORDER BY state_changed LIMIT ? FOR UPDATE SKIP LOCKED)";
-        releaseKeysSql = "UPDATE " + task + " SET unique_key = NULL, key_until = NULL WHERE id IN (SELECT id FROM "
-                + task + "   WHERE key_until <= now() ORDER BY key_until LIMIT ? FOR UPDATE SKIP LOCKED)";
+        releaseKeysSql = releaseKeysSql("key_until <= now() ORDER BY key_until LIMIT ? FOR UPDATE SKIP LOCKED");
+        releaseExpiredKeysSql =
+                releaseKeysSql("unique_key = ANY(?) AND key_until <= now() ORDER BY unique_key FOR UPDATE");
         // the stored next fire time survives a re-put that keeps the timing (cron, zone, fixed delay) unchanged
         // and is not past the caller's keep-until bound;
         // paused is only taken from a new definition, so a runner re-putting at start cannot undo an operator's pause;
@@ -212,7 +257,7 @@ public class PostgresTaskStore implements FullStore {
                 + " AND " + schedule + ".fixed_delay_ms IS NOT DISTINCT FROM EXCLUDED.fixed_delay_ms";
         var sameDefinition = new StringBuilder(sameTiming);
         for (var column : List.of(
-                "event_id",
+                "type_id",
                 "payload_version",
                 "queue_id",
                 "account",
@@ -234,10 +279,10 @@ public class PostgresTaskStore implements FullStore {
                 "EXISTS (SELECT 1 FROM " + task + " o WHERE o.id = " + schedule + ".occurrence_id AND o.state < 3)";
         var keepFire = sameTiming + " AND (" + occurrenceRunning + " OR " + schedule + ".next_fire <= ?)";
         putScheduleSql = "INSERT INTO " + schedule
-                + " (id, event_id, payload_version, queue_id, account, cron, zone, misfire, catch_up_max,"
+                + " (id, type_id, payload_version, queue_id, account, cron, zone, misfire, catch_up_max,"
                 + " fixed_delay_ms, overlap_skip, data, max_attempts, max_run_ms, paused, rev, next_fire)"
                 + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, nextval('" + scheduleSeq + "'), ?)"
-                + " ON CONFLICT (id) DO UPDATE SET event_id = EXCLUDED.event_id,"
+                + " ON CONFLICT (id) DO UPDATE SET type_id = EXCLUDED.type_id,"
                 + " payload_version = EXCLUDED.payload_version, queue_id = EXCLUDED.queue_id,"
                 + " account = EXCLUDED.account, cron = EXCLUDED.cron, zone = EXCLUDED.zone,"
                 + " misfire = EXCLUDED.misfire, catch_up_max = EXCLUDED.catch_up_max,"
@@ -249,39 +294,69 @@ public class PostgresTaskStore implements FullStore {
                 + " next_fire = CASE WHEN " + keepFire + " THEN " + schedule + ".next_fire ELSE EXCLUDED.next_fire END"
                 + " WHERE NOT (" + sameDefinition + " AND " + keepFire + " AND (" + schedule
                 + ".occurrence_id IS NULL OR " + occurrenceRunning + "))"
-                + " RETURNING xmax = 0";
+                + " RETURNING xmax = 0, next_fire";
         dueScheduleSql =
                 "SELECT * FROM " + schedule + " WHERE NOT paused AND next_fire <= ? ORDER BY next_fire LIMIT ?";
         // a definition paused between dueRecurring and the commit does not fire
         commitScheduleSql = "WITH adv AS (UPDATE " + schedule + " SET next_fire = ?"
                 + "   WHERE id = ? AND rev = ? AND next_fire = ? AND NOT paused RETURNING id),"
                 + " ins AS (INSERT INTO " + task
-                + "   (id, revision, queue_id, event_id, payload_version, state, attempts, max_attempts, created,"
+                + "   (id, revision, queue_id, type_id, payload_version, state, attempts, max_attempts, created,"
                 + "   due, state_changed, data, account, headers, retry_policy, schedule_id, unique_key, key_keep_ms,"
                 + "   start_by, max_run_ms)"
                 + "   SELECT ?, 0, ?, ?, ?, 1, 0, ?, ?, ?, now(), ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ? FROM adv"
                 + "   ON CONFLICT DO NOTHING RETURNING id)"
-                + " SELECT count(*) FROM adv";
+                + " SELECT (SELECT count(*) FROM adv), (SELECT count(*) FROM ins)";
     }
 
     /**
-     * One bounded, index-ordered scan per queue, then the caller's queue order decides between them; a single
-     * ORDER BY array_position(...) would sort every queued row on each claim.
+     * Ends the key windows that the selection picks: a key-only row goes, any other row keeps its task and frees
+     * the key. The statement returns how many keys it released.
+     */
+    private String releaseKeysSql(String selection) {
+        return "WITH x AS (SELECT id, state FROM " + task + " WHERE " + selection + "),"
+                + " d AS (DELETE FROM " + task + " t USING x WHERE t.id = x.id AND x.state = " + KEY_ONLY
+                + "   RETURNING 1),"
+                + " u AS (UPDATE " + task + " t SET unique_key = NULL, key_until = NULL FROM x"
+                + "   WHERE t.id = x.id AND x.state <> " + KEY_ONLY + " RETURNING 1)"
+                + " SELECT (SELECT count(*) FROM d) + (SELECT count(*) FROM u)";
+    }
+
+    /**
+     * Both claim passes in one statement, so a claim is atomic without a transaction. Pass 1 (p1) takes each
+     * grant's share; pass 2 (p2) lets the grants that took their share in full take up to their cap, skipping
+     * what pass 1 took. Each pass is one bounded, index-ordered scan per queue, then orders by grant, due and id
+     * and stops at the count left; a single ORDER BY array_position(...) would sort every queued row on each claim.
+     * Parameters: [types], queue ids, shares, caps, count, count, count, worker, lease ms.
      */
     private String claimSql(boolean filterTypes) {
-        return "WITH q AS (SELECT u.queue_id, u.prio FROM unnest(?::int[]) WITH ORDINALITY AS u(queue_id, prio)"
-                + "   WHERE NOT EXISTS (SELECT 1 FROM " + queue + " p WHERE p.id = u.queue_id AND p.paused)),"
-                + " locked AS (SELECT c.id, q.prio, c.due FROM q, LATERAL (SELECT id, due FROM " + task
-                + "   WHERE state = 0 AND queue_id = q.queue_id AND (start_by IS NULL OR start_by > now())"
-                + (filterTypes ? " AND event_id = ANY(?::int[])" : "")
-                + "   ORDER BY due, id LIMIT ? FOR UPDATE SKIP LOCKED) c),"
-                + " picked AS (SELECT id, row_number() OVER (ORDER BY prio, due, id) AS ord"
-                + "   FROM (SELECT * FROM locked ORDER BY prio, due, id LIMIT ?) l),"
+        var eligible = " state = 0 AND queue_id = g.queue_id AND (start_by IS NULL OR start_by > now())"
+                // as a subquery result the planner does not estimate each of thousands of type ids on every claim
+                + (filterTypes ? " AND type_id = ANY((SELECT types FROM k)::int[])" : "");
+        return "WITH " + (filterTypes ? "k AS (SELECT ?::int[] AS types)," : "")
+                + " q AS (SELECT u.queue_id, u.take, u.cap, u.prio FROM unnest(?::int[], ?::int[], ?::int[])"
+                + " WITH ORDINALITY AS u(queue_id, take, cap, prio)"
+                + "   WHERE u.take > 0 AND NOT EXISTS (SELECT 1 FROM " + queue
+                + " p WHERE p.id = u.queue_id AND p.paused)),"
+                + " l1 AS (SELECT c.id, g.queue_id, g.prio, c.due FROM q g, LATERAL (SELECT id, due FROM " + task
+                + "   WHERE" + eligible + " ORDER BY due, id LIMIT g.take FOR UPDATE SKIP LOCKED) c),"
+                + " p1 AS (SELECT * FROM l1 ORDER BY prio, due, id LIMIT ?),"
+                + " q2 AS (SELECT q.queue_id, q.prio, q.cap - q.take AS take FROM q"
+                + "   WHERE q.cap > q.take AND (SELECT count(*) FROM p1) < ?"
+                + "   AND (SELECT count(*) FROM p1 WHERE p1.queue_id = q.queue_id) = q.take),"
+                + " l2 AS (SELECT c.id, g.prio, c.due FROM q2 g, LATERAL (SELECT id, due FROM " + task + " t"
+                + "   WHERE" + eligible + " AND NOT EXISTS (SELECT 1 FROM p1 WHERE p1.id = t.id)"
+                + "   ORDER BY due, id LIMIT g.take FOR UPDATE SKIP LOCKED) c),"
+                + " p2 AS (SELECT * FROM l2 ORDER BY prio, due, id LIMIT (SELECT ? - count(*) FROM p1)),"
+                + " picked AS (SELECT id, row_number() OVER (ORDER BY pass, prio, due, id) AS ord FROM"
+                + "   (SELECT 1 AS pass, id, prio, due FROM p1 UNION ALL SELECT 2, id, prio, due FROM p2) x),"
                 + " upd AS (UPDATE " + task + " t SET state = 2, revision = t.revision + 1, attempts = t.attempts + 1,"
                 + "   worker_id = ?, claimed_at = now(), state_changed = now(),"
                 + "   lease_until = now() + ? * interval '1 millisecond'"
-                + "   FROM picked WHERE t.id = picked.id RETURNING t.*, picked.ord)"
-                + " SELECT * FROM upd ORDER BY ord";
+                // ids as one array so the rows are found by primary key: a join with picked lets the planner,
+                // which cannot see the LIMITs, hash the whole task table instead
+                + "   WHERE t.id = ANY((SELECT array_agg(id) FROM picked)::bigint[]) RETURNING t.*)"
+                + " SELECT upd.* FROM upd JOIN picked ON picked.id = upd.id ORDER BY picked.ord";
     }
 
     // ---- schema --------------------------------------------------------------------------------------
@@ -305,13 +380,16 @@ public class PostgresTaskStore implements FullStore {
                         + " label text NOT NULL,"
                         + " started_at timestamptz NOT NULL,"
                         + " last_seen timestamptz NOT NULL,"
-                        + " running integer NOT NULL DEFAULT 0)",
+                        + " running integer NOT NULL DEFAULT 0,"
+                        + " accepting boolean NOT NULL,"
+                        + " queue_ids smallint[] NOT NULL,"
+                        + " type_ids smallint[] NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS " + task + " ("
                         + " id bigint PRIMARY KEY,"
                         + " revision integer NOT NULL,"
                         + " queue_id smallint NOT NULL,"
-                        + " event_id smallint NOT NULL,"
-                        + " payload_version smallint NOT NULL,"
+                        + " type_id smallint NOT NULL,"
+                        + " payload_version integer NOT NULL,"
                         + " state smallint NOT NULL,"
                         + " attempts smallint NOT NULL,"
                         + " max_attempts smallint NOT NULL,"
@@ -338,11 +416,16 @@ public class PostgresTaskStore implements FullStore {
                         + " steps jsonb,"
                         + " failures jsonb)",
                 "CREATE SEQUENCE IF NOT EXISTS " + taskIdSeq,
-                "CREATE INDEX IF NOT EXISTS " + task + "_queued ON " + task + " (queue_id, due, id) WHERE state = 0",
+                "CREATE INDEX IF NOT EXISTS " + task + "_queued ON " + task
+                        + " (queue_id, due, id, type_id) WHERE state = 0",
                 "CREATE INDEX IF NOT EXISTS " + task + "_scheduled ON " + task + " (due) WHERE state = 1",
                 "CREATE INDEX IF NOT EXISTS " + task + "_leased ON " + task + " (lease_until) WHERE state = 2",
                 "CREATE INDEX IF NOT EXISTS " + task + "_finished ON " + task
-                        + " (state, state_changed, id) WHERE state >= 3",
+                        + " (state, state_changed, id) WHERE state BETWEEN 3 AND 6",
+                "CREATE INDEX IF NOT EXISTS " + task + "_finished_queue ON " + task
+                        + " (queue_id, state, state_changed, id) WHERE state BETWEEN 3 AND 6",
+                "CREATE INDEX IF NOT EXISTS " + task + "_counts ON " + task + " (queue_id, state) WHERE state < "
+                        + KEY_ONLY,
                 "CREATE UNIQUE INDEX IF NOT EXISTS " + task + "_unique_key ON " + task
                         + " (unique_key) WHERE unique_key IS NOT NULL",
                 "CREATE INDEX IF NOT EXISTS " + task + "_key_until ON " + task
@@ -351,14 +434,14 @@ public class PostgresTaskStore implements FullStore {
                         + " (start_by) WHERE start_by IS NOT NULL AND state < 2",
                 "CREATE TABLE IF NOT EXISTS " + schedule + " ("
                         + " id text PRIMARY KEY,"
-                        + " event_id smallint NOT NULL,"
-                        + " payload_version smallint NOT NULL,"
+                        + " type_id smallint NOT NULL,"
+                        + " payload_version integer NOT NULL,"
                         + " queue_id smallint NOT NULL,"
                         + " account text,"
                         + " cron text,"
                         + " zone text,"
                         + " misfire text,"
-                        + " catch_up_max smallint,"
+                        + " catch_up_max integer,"
                         + " fixed_delay_ms bigint,"
                         + " overlap_skip boolean NOT NULL DEFAULT false,"
                         + " data text,"
@@ -375,8 +458,10 @@ public class PostgresTaskStore implements FullStore {
     }
 
     /**
-     * Creates the tables, indexes and sequences when they are missing, then checks the schema version. Safe to
-     * call from several runners at once: they serialize on a transaction-level advisory lock for the prefix.
+     * Checks the schema version, and creates the tables, indexes and sequences when there is no schema yet. A
+     * matching schema runs no DDL, so a role with only data privileges can start, and a start takes no table lock.
+     * Safe to call from several runners at once: they serialize on a transaction-level advisory lock for the
+     * prefix.
      *
      * @throws TaskStoreException when the tables carry another schema version, or a task table exists
      *                            without a version (an older layout)
@@ -410,6 +495,8 @@ public class PostgresTaskStore implements FullStore {
                                 "schema version " + version + ", this library needs " + SCHEMA_VERSION);
                     }
                 }
+                // the version row is written last, in the transaction that created everything else
+                return null;
             }
             try (var st = c.createStatement()) {
                 for (var sql : schemaStatements()) {
@@ -460,15 +547,33 @@ public class PostgresTaskStore implements FullStore {
     }
 
     @Override
-    public int allocateWorkerId(String label) {
+    public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
         if (label == null) throw new IllegalArgumentException("label is required");
-        return withConnection(c -> {
+        return withConnection(c -> withWorkerArrays(c, queueIds, typeIds, (queues, types) -> {
             try (var ps = c.prepareStatement("INSERT INTO " + worker
-                    + " (label, started_at, last_seen) VALUES (?, now(), now()) RETURNING id")) {
+                    + " (label, started_at, last_seen, accepting, queue_ids, type_ids)"
+                    + " VALUES (?, now(), now(), true, ?, ?) RETURNING id")) {
                 ps.setString(1, label);
+                ps.setArray(2, queues);
+                ps.setArray(3, types);
                 return (int) single(ps);
             }
-        });
+        }));
+    }
+
+    private static <T> T withWorkerArrays(
+            Connection c, Set<Integer> queueIds, Set<Integer> typeIds, WorkerArraysFunction<T> fn) throws SQLException {
+        Array queues = c.createArrayOf("int2", queueIds.toArray(Integer[]::new));
+        try {
+            Array types = c.createArrayOf("int2", typeIds.toArray(Integer[]::new));
+            try {
+                return fn.apply(queues, types);
+            } finally {
+                types.free();
+            }
+        } finally {
+            queues.free();
+        }
     }
 
     @Override
@@ -609,16 +714,18 @@ public class PostgresTaskStore implements FullStore {
                 .toArray(String[]::new);
         if (keys.length == 0) return;
         var array = c.createArrayOf("text", keys);
-        try (var ps = c.prepareStatement("UPDATE " + task + " SET unique_key = NULL, key_until = NULL"
-                + " WHERE unique_key = ANY(?) AND key_until <= now()")) {
+        try (var ps = c.prepareStatement(releaseExpiredKeysSql)) {
             ps.setArray(1, array);
-            ps.executeUpdate();
+            single(ps);
         } finally {
             array.free();
         }
     }
 
-    private Set<Long> insert(Connection c, List<TaskRecord> batch) throws SQLException {
+    private Set<Long> insert(Connection c, List<TaskRecord> requested) throws SQLException {
+        // the key order of the statement must not decide which request of a repeated id is stored
+        var seen = new HashSet<Long>();
+        var batch = requested.stream().filter(t -> seen.add(t.id())).toList();
         int n = batch.size();
         var ids = new Long[n];
         var revisions = new Integer[n];
@@ -774,27 +881,73 @@ public class PostgresTaskStore implements FullStore {
 
     @Override
     public List<TaskRecord> claim(ClaimRequest r) {
-        if (r.count() <= 0 || r.queueIds().isEmpty()) return List.of();
-        boolean filter = r.knownTypeIds() != null;
-        if (filter && r.knownTypeIds().isEmpty()) return List.of();
-        var distinct = new LinkedHashSet<>(r.queueIds()).toArray(Integer[]::new);
+        if (r.count() <= 0 || (r.knownTypeIds() != null && r.knownTypeIds().isEmpty())) return List.of();
+        var shares =
+                r.grants().stream().map(g -> Math.min(g.share(), r.count())).toArray(Integer[]::new);
+        var caps = r.grants().stream().map(QueueGrant::cap).toArray(Integer[]::new);
+        var queueIds = r.grants().stream().map(QueueGrant::queueId).toArray(Integer[]::new);
+        var typeIds = r.knownTypeIds() == null ? null : sortedTypes(r.knownTypeIds());
         return withConnection(c -> {
-            Array queueArray = c.createArrayOf("int4", distinct);
-            Array typeArray = filter ? c.createArrayOf("int4", r.knownTypeIds().toArray(Integer[]::new)) : null;
-            try (var ps = c.prepareStatement(filter ? claimKnownTypesSql : claimSql)) {
+            var arrays = new ArrayList<Array>();
+            try (var ps = c.prepareStatement(typeIds != null ? claimKnownTypesSql : claimSql)) {
+                if (typeIds != null) arrays.add(c.createArrayOf("int4", typeIds));
+                arrays.add(c.createArrayOf("int4", queueIds));
+                arrays.add(c.createArrayOf("int4", shares));
+                arrays.add(c.createArrayOf("int4", caps));
                 int i = 1;
-                ps.setArray(i++, queueArray);
-                if (filter) ps.setArray(i++, typeArray);
+                for (var array : arrays) ps.setArray(i++, array);
+                ps.setInt(i++, r.count());
                 ps.setInt(i++, r.count());
                 ps.setInt(i++, r.count());
                 ps.setInt(i++, r.workerId());
                 ps.setLong(i, r.lease().toMillis());
-                return readAll(ps);
+                return readClaimed(c, ps, r.workerId());
             } finally {
-                queueArray.free();
-                if (typeArray != null) typeArray.free();
+                for (var array : arrays) array.free();
             }
         });
+    }
+
+    /**
+     * The claimed tasks, without those it cannot read: their leases end at once, so maintenance takes them over.
+     * A failure of that statement fails the claim, since it may have ended the transaction that holds the claim.
+     */
+    private List<TaskRecord> readClaimed(Connection c, PreparedStatement ps, int workerId) throws SQLException {
+        var result = new ArrayList<TaskRecord>();
+        List<Long> unreadable = null;
+        try (var rs = ps.executeQuery()) {
+            while (rs.next()) {
+                try {
+                    result.add(read(rs));
+                } catch (UnreadableTaskException e) {
+                    if (unreadable == null) unreadable = new ArrayList<>();
+                    unreadable.add(e.taskId());
+                }
+            }
+        }
+        if (unreadable != null) {
+            var ids = c.createArrayOf("int8", unreadable.toArray());
+            try (var end = c.prepareStatement(endLeasesSql)) {
+                end.setArray(1, ids);
+                end.setInt(2, workerId);
+                end.executeUpdate();
+            } finally {
+                ids.free();
+            }
+        }
+        return result;
+    }
+
+    /**
+     * The ids in ascending order, kept for the runner's next claim. Each index scan sorts its array of type ids
+     * unless it is already sorted, which costs milliseconds at thousands of types; a set's own order is random.
+     */
+    private Integer[] sortedTypes(Set<Integer> ids) {
+        var last = lastTypes;
+        if (last != null && (last.ids() == ids || last.ids().equals(ids))) return last.sorted();
+        var made = new SortedTypes(ids, ids.stream().sorted().toArray(Integer[]::new));
+        lastTypes = made;
+        return made.sorted();
     }
 
     @Override
@@ -806,9 +959,9 @@ public class PostgresTaskStore implements FullStore {
             Array idArray = c.createArrayOf("int8", ids);
             Array revisionArray = c.createArrayOf("int4", revisions);
             try (var ps = c.prepareStatement(renewSql)) {
-                ps.setLong(1, lease.toMillis());
-                ps.setArray(2, idArray);
-                ps.setArray(3, revisionArray);
+                ps.setArray(1, idArray);
+                ps.setArray(2, revisionArray);
+                ps.setLong(3, lease.toMillis());
                 var result = new HashMap<LeaseRef, Boolean>();
                 try (var rs = ps.executeQuery()) {
                     while (rs.next()) result.put(new LeaseRef(rs.getLong(1), rs.getInt(2)), rs.getBoolean(3));
@@ -838,17 +991,50 @@ public class PostgresTaskStore implements FullStore {
         });
     }
 
+    /** One statement for the whole batch; the applied (id, revision) pairs come back, each answers its first lease. */
+    @Override
+    public List<Boolean> ackAll(List<LeaseRef> leases, boolean keep, boolean keepPayload) {
+        if (leases.isEmpty()) return List.of();
+        var ids = leases.stream().map(LeaseRef::id).toArray(Long[]::new);
+        var revisions = leases.stream().map(LeaseRef::revision).toArray(Integer[]::new);
+        var applied = withConnection(c -> {
+            Array idArray = c.createArrayOf("int8", ids);
+            Array revisionArray = c.createArrayOf("int4", revisions);
+            try (var ps = c.prepareStatement(ackAllSql)) {
+                ps.setArray(1, idArray);
+                ps.setArray(2, revisionArray);
+                ps.setBoolean(3, keep);
+                ps.setBoolean(4, keep);
+                ps.setBoolean(5, keepPayload);
+                ps.setBoolean(6, keep);
+                var result = new HashSet<LeaseRef>();
+                try (var rs = ps.executeQuery()) {
+                    while (rs.next()) result.add(new LeaseRef(rs.getLong(1), rs.getInt(2)));
+                }
+                return result;
+            } finally {
+                idArray.free();
+                revisionArray.free();
+            }
+        });
+        var out = new ArrayList<Boolean>(leases.size());
+        for (var ref : leases) out.add(applied.remove(ref));
+        return out;
+    }
+
     private boolean ackStatement(Connection c, long id, int revision, boolean keep, boolean keepPayload)
             throws SQLException {
         try (var ps = c.prepareStatement(ackSql)) {
             ps.setLong(1, id);
             ps.setInt(2, revision);
             ps.setBoolean(3, keep);
-            ps.setBoolean(4, keep);
-            ps.setBoolean(5, keepPayload);
-            ps.setLong(6, id);
-            ps.setInt(7, revision);
-            ps.setBoolean(8, keep);
+            ps.setLong(4, id);
+            ps.setInt(5, revision);
+            ps.setBoolean(6, keep);
+            ps.setBoolean(7, keepPayload);
+            ps.setLong(8, id);
+            ps.setInt(9, revision);
+            ps.setBoolean(10, keep);
             return single(ps) == 1;
         }
     }
@@ -940,26 +1126,33 @@ public class PostgresTaskStore implements FullStore {
             }
         }
         boolean dead = retryAt == null || attempts >= maxAttempts;
-        if (dead && !keepDead && !holdsKey) {
-            try (var ps = c.prepareStatement("DELETE FROM " + task + " WHERE id = ?")) {
+        if (dead && !keepDead) {
+            try (var ps = c.prepareStatement(
+                    holdsKey
+                            ? "UPDATE " + task + " SET" + TO_KEY_ONLY + ", revision = revision + 1," + KEY_WINDOW
+                                    + " WHERE id = ?"
+                            : "DELETE FROM " + task + " WHERE id = ?")) {
                 ps.setLong(1, id);
                 ps.executeUpdate();
             }
             return FailOutcome.DEAD;
         }
         var failures = new ArrayList<FailureInfo>();
-        var old = RecordJson.decodeFailures(failuresJson);
-        if (old != null) failures.addAll(old);
+        try {
+            var old = RecordJson.decodeFailures(failuresJson);
+            if (old != null) failures.addAll(old);
+        } catch (IllegalArgumentException | DateTimeException unreadable) {
+            // dropped, so that the task can still end
+        }
         failures.add(failure);
         var json = RecordJson.encodeFailures(
                 failures.subList(Math.max(0, failures.size() - MAX_FAILURES), failures.size()));
         if (dead) {
             try (var ps = c.prepareStatement("UPDATE " + task + " SET state = 4, revision = revision + 1,"
-                    + " state_changed = now(), lease_until = NULL, failures = ?::jsonb,"
-                    + " data = CASE WHEN ? THEN data ELSE NULL END," + KEY_RELEASE + " WHERE id = ?")) {
+                    + " state_changed = now(), lease_until = NULL, failures = ?::jsonb," + KEY_RELEASE
+                    + " WHERE id = ?")) {
                 ps.setString(1, json);
-                ps.setBoolean(2, keepDead);
-                ps.setLong(3, id);
+                ps.setLong(2, id);
                 ps.executeUpdate();
             }
             return FailOutcome.DEAD;
@@ -1054,16 +1247,27 @@ public class PostgresTaskStore implements FullStore {
         });
     }
 
+    /**
+     * A task past its retention whose key is still in its keep window becomes a key-only row; the others are
+     * deleted. Either way the task is gone, so the next batch does not walk it again. The state is written into
+     * the statement, so that the plan can use the {@code _finished} partial index.
+     */
     @Override
     public long purge(TaskState state, Duration retention, int limit) {
         if (!state.isTerminal()) throw new IllegalArgumentException("only terminal states are purged: " + state);
         if (limit <= 0) return 0;
+        var sql = "WITH x AS (SELECT id, COALESCE(key_until > now(), false) AS held FROM " + task
+                + "   WHERE state = " + state.code() + " AND state_changed <= now() - ? * interval '1 millisecond'"
+                + "   ORDER BY state_changed LIMIT ? FOR UPDATE SKIP LOCKED),"
+                + " d AS (DELETE FROM " + task + " t USING x WHERE t.id = x.id AND NOT x.held RETURNING 1),"
+                + " k AS (UPDATE " + task + " t SET" + TO_KEY_ONLY + ", revision = t.revision + 1 FROM x"
+                + "   WHERE t.id = x.id AND x.held RETURNING 1)"
+                + " SELECT (SELECT count(*) FROM d) + (SELECT count(*) FROM k)";
         return withConnection(c -> {
-            try (var ps = c.prepareStatement(purgeSql)) {
-                ps.setInt(1, state.code());
-                ps.setLong(2, retention.toMillis());
-                ps.setInt(3, limit);
-                return (long) ps.executeUpdate();
+            try (var ps = c.prepareStatement(sql)) {
+                ps.setLong(1, retention.toMillis());
+                ps.setInt(2, limit);
+                return single(ps);
             }
         });
     }
@@ -1074,7 +1278,7 @@ public class PostgresTaskStore implements FullStore {
         return withConnection(c -> {
             try (var ps = c.prepareStatement(releaseKeysSql)) {
                 ps.setInt(1, limit);
-                return ps.executeUpdate();
+                return (int) single(ps);
             }
         });
     }
@@ -1092,9 +1296,18 @@ public class PostgresTaskStore implements FullStore {
 
     // ---- recurring definitions -----------------------------------------------------------------------
 
+    /**
+     * Locks the definition's row first, in a statement of its own: the upsert's check for an occurrence in flight
+     * then reads a snapshot taken after the lock, which shows an occurrence that a commit holding the row stored.
+     * Waiting for the row inside the upsert would read a snapshot from before that commit.
+     */
     @Override
-    public PutRecurringOutcome putRecurring(RecurringDefinition d, Instant nextFire, Instant keepUntil) {
-        return withConnection(c -> {
+    public PutRecurringResult putRecurring(RecurringDefinition d, Instant nextFire, Instant keepUntil) {
+        return inTransaction(c -> {
+            try (var ps = c.prepareStatement("SELECT 1 FROM " + schedule + " WHERE id = ? FOR UPDATE")) {
+                ps.setString(1, d.scheduleId());
+                ps.executeQuery().close();
+            }
             try (var ps = c.prepareStatement(putScheduleSql)) {
                 ps.setString(1, d.scheduleId());
                 ps.setInt(2, d.typeId());
@@ -1117,8 +1330,19 @@ public class PostgresTaskStore implements FullStore {
                 setInstant(ps, 17, keepUntil);
                 setInstant(ps, 18, keepUntil);
                 try (var rs = ps.executeQuery()) {
-                    if (!rs.next()) return PutRecurringOutcome.UNCHANGED;
-                    return rs.getBoolean(1) ? PutRecurringOutcome.CREATED : PutRecurringOutcome.CHANGED;
+                    if (rs.next()) {
+                        return new PutRecurringResult(
+                                rs.getBoolean(1) ? PutRecurringOutcome.CREATED : PutRecurringOutcome.CHANGED,
+                                getInstant(rs, 2));
+                    }
+                }
+            }
+            // unchanged: the row is locked above, so this is the next fire time the put found and kept
+            try (var ps = c.prepareStatement("SELECT next_fire FROM " + schedule + " WHERE id = ?")) {
+                ps.setString(1, d.scheduleId());
+                try (var rs = ps.executeQuery()) {
+                    rs.next();
+                    return new PutRecurringResult(PutRecurringOutcome.UNCHANGED, getInstant(rs, 1));
                 }
             }
         });
@@ -1164,7 +1388,8 @@ public class PostgresTaskStore implements FullStore {
 
     /**
      * An occurrence whose unique key is held by another task is not stored, but the definition still advances
-     * and the commit counts: that is how overlap protection skips a fire time. A stored occurrence of a
+     * and the commit counts: that is how overlap protection skips a fire time. An occurrence whose id is taken
+     * rolls the advance back. A stored occurrence of a
      * fixed-delay definition becomes its occurrence_id, in the same transaction; when the key is held,
      * occurrence_id is empty and the holder belongs to the schedule, the holder becomes it.
      */
@@ -1172,7 +1397,14 @@ public class PostgresTaskStore implements FullStore {
     public boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord o) {
         var fixedDelay = due.definition().isFixedDelay();
         SqlFunction<Boolean> commit = c -> {
-            if (o.uniqueKey() != null) releaseExpiredKeys(c, List.of(o));
+            if (o.uniqueKey() != null) {
+                // the schedule row before the key holder's row, the order every other schedule write takes
+                try (var ps = c.prepareStatement("SELECT 1 FROM " + schedule + " WHERE id = ? FOR UPDATE")) {
+                    ps.setString(1, due.scheduleId());
+                    ps.executeQuery().close();
+                }
+                releaseExpiredKeys(c, List.of(o));
+            }
             try (var ps = c.prepareStatement(commitScheduleSql)) {
                 setInstant(ps, 1, nextFire);
                 ps.setString(2, due.scheduleId());
@@ -1196,7 +1428,14 @@ public class PostgresTaskStore implements FullStore {
                 setInstant(ps, 19, o.startBy());
                 if (o.maxRunTime() == null) ps.setNull(20, Types.INTEGER);
                 else ps.setInt(20, Math.toIntExact(o.maxRunTime().toMillis()));
-                if (single(ps) != 1) return false;
+                try (var rs = ps.executeQuery()) {
+                    rs.next();
+                    if (rs.getLong(1) != 1) return false;
+                    if (rs.getLong(2) == 0 && taskExists(c, o.id())) {
+                        c.rollback();
+                        return false;
+                    }
+                }
             }
             if (fixedDelay) {
                 try (var ps = c.prepareStatement("UPDATE " + schedule + " SET occurrence_id = ? WHERE id = ?"
@@ -1220,7 +1459,17 @@ public class PostgresTaskStore implements FullStore {
             }
             return true;
         };
-        return fixedDelay ? inTransaction(commit) : withConnection(commit);
+        return inTransaction(commit);
+    }
+
+    /** Sees a row that a concurrent insert of that id committed: ON CONFLICT waited for it before skipping. */
+    private boolean taskExists(Connection c, long id) throws SQLException {
+        try (var ps = c.prepareStatement("SELECT 1 FROM " + task + " WHERE id = ?")) {
+            ps.setLong(1, id);
+            try (var rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
     }
 
     // ---- inspection ----------------------------------------------------------------------------------
@@ -1228,7 +1477,7 @@ public class PostgresTaskStore implements FullStore {
     @Override
     public Optional<TaskRecord> getTask(long id) {
         return withConnection(c -> {
-            try (var ps = c.prepareStatement("SELECT * FROM " + task + " WHERE id = ?")) {
+            try (var ps = c.prepareStatement("SELECT * FROM " + task + " WHERE id = ? AND state < " + KEY_ONLY)) {
                 ps.setLong(1, id);
                 try (var rs = ps.executeQuery()) {
                     return rs.next() ? Optional.of(read(rs)) : Optional.empty();
@@ -1242,7 +1491,8 @@ public class PostgresTaskStore implements FullStore {
     public Optional<TaskRecord> taskByKey(String key) {
         return withConnection(c -> {
             try (var ps = c.prepareStatement(
-                    "SELECT * FROM " + task + " WHERE unique_key = ? AND (key_until IS NULL OR key_until > now())")) {
+                    "SELECT * FROM " + task + " WHERE unique_key = ? AND (key_until IS NULL OR key_until > now())"
+                            + " AND state < " + KEY_ONLY)) {
                 ps.setString(1, key);
                 try (var rs = ps.executeQuery()) {
                     return rs.next() ? Optional.of(read(rs)) : Optional.empty();
@@ -1251,7 +1501,7 @@ public class PostgresTaskStore implements FullStore {
         });
     }
 
-    /** Every registered queue appears, with zeros when it has no tasks. Counts by a scan of the task table. */
+    /** Every registered queue appears, with zeros when it has no tasks. Counts by a scan of the {@code _counts} index. */
     @Override
     public Map<Integer, StateCounts> counts() {
         int states = TaskState.values().length;
@@ -1261,8 +1511,8 @@ public class PostgresTaskStore implements FullStore {
                     var rs = ps.executeQuery()) {
                 while (rs.next()) raw.put(rs.getInt(1), new long[states]);
             }
-            try (var ps = c.prepareStatement(
-                            "SELECT queue_id, state, count(*) FROM " + task + " GROUP BY queue_id, state");
+            try (var ps = c.prepareStatement("SELECT queue_id, state, count(*) FROM " + task + " WHERE state < "
+                            + KEY_ONLY + " GROUP BY queue_id, state");
                     var rs = ps.executeQuery()) {
                 while (rs.next()) {
                     raw.computeIfAbsent(rs.getInt(1), k -> new long[states])[rs.getInt(2)] = rs.getLong(3);
@@ -1274,38 +1524,78 @@ public class PostgresTaskStore implements FullStore {
         });
     }
 
-    /** The cursor is {@code <state_changed in epoch microseconds>:<id>} of the last task of the page. */
+    /**
+     * The cursor is {@code <sort time in epoch microseconds>:<id>} of the last task of the page; the sort time is
+     * due for QUEUED and SCHEDULED, state_changed otherwise. The state is written into the statement, so that the
+     * plan can use the partial indexes. QUEUED across every queue is one bounded scan of {@code _queued} per queue,
+     * merged; that index leads with the queue, so a single scan would sort every queued row.
+     */
     @Override
     public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
         var position = cursor == null ? null : decodeCursor(cursor);
         if (limit <= 0) return new TaskPage(List.of(), null);
-        var sql = new StringBuilder("SELECT * FROM " + task + " WHERE state = ?");
+        var byDue = listedByDue(state);
+        var column = byDue ? "due" : "state_changed";
+        var perQueue = queueId == null && state == TaskState.QUEUED;
+        var sql = new StringBuilder("SELECT * FROM " + task + " WHERE state = " + state.code());
         if (queueId != null) sql.append(" AND queue_id = ?");
-        if (position != null) sql.append(" AND (state_changed, id) > (?, ?)");
-        sql.append(" ORDER BY state_changed, id LIMIT ?");
-        var items = withConnection(c -> {
+        if (perQueue) sql.append(" AND queue_id = q.id");
+        if (position != null) sql.append(" AND (" + column + ", id) > (?, ?)");
+        sql.append(" ORDER BY " + column + ", id LIMIT ?");
+        if (perQueue) {
+            // queue ids as an array: the planner estimates few rows, where an unanalysed queue table would make
+            // the estimate, and with it JIT compilation, cost more than the listing
+            sql.insert(
+                    0,
+                    "SELECT t.* FROM unnest((SELECT array_agg(id) FROM " + queue + ")) AS q(id) CROSS JOIN LATERAL (");
+            sql.append(") t ORDER BY t." + column + ", t.id LIMIT ?");
+        }
+        var rows = withConnection(c -> {
             try (var ps = c.prepareStatement(sql.toString())) {
                 int i = 1;
-                ps.setInt(i++, state.code());
                 if (queueId != null) ps.setInt(i++, queueId);
                 if (position != null) {
-                    setInstant(ps, i++, position.changed());
+                    setInstant(ps, i++, position.at());
                     ps.setLong(i++, position.id());
                 }
-                ps.setLong(i, (long) limit + 1);
-                return readAll(ps);
+                ps.setLong(i++, (long) limit + 1);
+                if (perQueue) ps.setLong(i, (long) limit + 1);
+                var out = new ArrayList<Listed>();
+                try (var rs = ps.executeQuery()) {
+                    while (rs.next()) out.add(listed(rs, column));
+                }
+                return out;
             }
         });
-        if (items.size() <= limit) return new TaskPage(items, null);
-        var page = items.subList(0, limit);
-        return new TaskPage(page, encodeCursor(page.getLast()));
+        var page = rows.subList(0, Math.min(limit, rows.size()));
+        var items = page.stream().map(Listed::task).filter(Objects::nonNull).toList();
+        if (rows.size() <= limit) return new TaskPage(items, null);
+        var last = page.getLast();
+        return new TaskPage(items, encodeCursor(last.at(), last.id()));
     }
 
-    private record Position(Instant changed, long id) {}
+    /** A listed row; an unreadable task is left out of the page (null) but still positions the cursor. */
+    private record Listed(Instant at, long id, TaskRecord task) {}
 
-    private static String encodeCursor(TaskRecord last) {
-        var at = micros(last.stateChangedAt());
-        return (at.getEpochSecond() * 1_000_000L + at.getNano() / 1000) + ":" + last.id();
+    private static Listed listed(ResultSet rs, String column) throws SQLException {
+        var at = getInstant(rs, column);
+        long id = rs.getLong("id");
+        try {
+            return new Listed(at, id, read(rs));
+        } catch (UnreadableTaskException e) {
+            return new Listed(at, id, null);
+        }
+    }
+
+    private static boolean listedByDue(TaskState state) {
+        return state == TaskState.QUEUED || state == TaskState.SCHEDULED;
+    }
+
+    private record Position(Instant at, long id) {}
+
+    private static String encodeCursor(Instant sortTime, long id) {
+        var at = micros(sortTime);
+        return (at.getEpochSecond() * 1_000_000L + at.getNano() / 1000) + ":" + id;
     }
 
     private static Position decodeCursor(String cursor) {
@@ -1337,6 +1627,11 @@ public class PostgresTaskStore implements FullStore {
         void bind(PreparedStatement ps) throws SQLException;
     }
 
+    @FunctionalInterface
+    private interface WorkerArraysFunction<T> {
+        T apply(Array queues, Array types) throws SQLException;
+    }
+
     private boolean update(String sql, SqlBinder binder) {
         return withConnection(c -> {
             try (var ps = c.prepareStatement(sql)) {
@@ -1353,8 +1648,8 @@ public class PostgresTaskStore implements FullStore {
                 var result = fn.apply(c);
                 if (!autoCommit) c.commit();
                 return result;
-            } catch (SQLException | RuntimeException e) {
-                if (!autoCommit) c.rollback();
+            } catch (Throwable e) {
+                if (!autoCommit) rollback(c, e);
                 throw e;
             }
         } catch (SQLException e) {
@@ -1362,22 +1657,50 @@ public class PostgresTaskStore implements FullStore {
         }
     }
 
+    /**
+     * Any failure, an Error too, rolls back. Turning auto-commit back on commits an open transaction, so it is
+     * only turned back on once the transaction ended.
+     */
     private <T> T inTransaction(SqlFunction<T> fn) {
         try (var c = dataSource.getConnection()) {
             boolean autoCommit = c.getAutoCommit();
             if (autoCommit) c.setAutoCommit(false);
+            T result;
             try {
-                var result = fn.apply(c);
+                result = fn.apply(c);
                 c.commit();
-                return result;
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
+            } catch (Throwable e) {
+                if (rollback(c, e) && autoCommit) {
+                    try {
+                        c.setAutoCommit(true);
+                    } catch (SQLException | RuntimeException restore) {
+                        e.addSuppressed(restore);
+                    }
+                }
                 throw e;
-            } finally {
-                if (autoCommit) c.setAutoCommit(true);
             }
+            if (autoCommit) {
+                try {
+                    c.setAutoCommit(true);
+                } catch (SQLException | RuntimeException restore) {
+                    // the work is committed, so the call succeeded; a connection that cannot even switch modes
+                    // is broken, and the pool drops it when it is closed below
+                }
+            }
+            return result;
         } catch (SQLException e) {
             throw new TaskStoreException("PostgreSQL task store operation failed", e);
+        }
+    }
+
+    /** @return whether the transaction ended; a failed rollback is added to the failure that caused it */
+    private static boolean rollback(Connection c, Throwable failure) {
+        try {
+            c.rollback();
+            return true;
+        } catch (SQLException | RuntimeException e) {
+            failure.addSuppressed(e);
+            return false;
         }
     }
 
@@ -1388,22 +1711,22 @@ public class PostgresTaskStore implements FullStore {
         }
     }
 
-    private static List<TaskRecord> readAll(PreparedStatement ps) throws SQLException {
-        var result = new ArrayList<TaskRecord>();
-        try (var rs = ps.executeQuery()) {
-            while (rs.next()) {
-                result.add(read(rs));
-            }
+    private static TaskRecord read(ResultSet rs) throws SQLException {
+        long id = rs.getLong("id");
+        try {
+            return readFields(rs, id);
+        } catch (IllegalArgumentException | DateTimeException e) {
+            // the cause's message may quote the stored value, so it stays out of issues and stored failures
+            throw new UnreadableTaskException(id, "task " + id + " has a stored value that cannot be read", e);
         }
-        return result;
     }
 
-    private static TaskRecord read(ResultSet rs) throws SQLException {
+    private static TaskRecord readFields(ResultSet rs, long id) throws SQLException {
         return TaskRecord.builder()
-                .id(rs.getLong("id"))
+                .id(id)
                 .revision(rs.getInt("revision"))
                 .queueId(rs.getInt("queue_id"))
-                .typeId(rs.getInt("event_id"))
+                .typeId(rs.getInt("type_id"))
                 .payloadVersion(rs.getInt("payload_version"))
                 .state(TaskState.fromCode(rs.getInt("state")))
                 .attempts(rs.getInt("attempts"))
@@ -1604,7 +1927,8 @@ public class PostgresTaskStore implements FullStore {
     public boolean delete(long id, int revision, ScheduleEffect effect) {
         SqlFunction<Boolean> delete = c -> {
             if (effect != null) lockSchedule(c, effect);
-            try (var ps = c.prepareStatement("DELETE FROM " + task + " WHERE id = ? AND revision = ? AND state <> 2")) {
+            try (var ps = c.prepareStatement(
+                    "DELETE FROM " + task + " WHERE id = ? AND revision = ? AND state NOT IN (2, " + KEY_ONLY + ")")) {
                 ps.setLong(1, id);
                 ps.setInt(2, revision);
                 if (ps.executeUpdate() != 1) return false;
@@ -1636,10 +1960,38 @@ public class PostgresTaskStore implements FullStore {
     }
 
     @Override
-    public void heartbeat(int workerId, int running) {
-        update("UPDATE " + worker + " SET last_seen = now(), running = ? WHERE id = ?", ps -> {
-            ps.setInt(1, running);
-            ps.setInt(2, workerId);
+    public void heartbeat(
+            int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
+        if (label == null) throw new IllegalArgumentException("label is required");
+        withConnection(c -> withWorkerArrays(c, queueIds, typeIds, (queues, types) -> {
+            try (var ps = c.prepareStatement("INSERT INTO " + worker
+                    + " (id, label, started_at, last_seen, running, accepting, queue_ids, type_ids)"
+                    + " VALUES (?, ?, now(), now(), ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE"
+                    + " SET last_seen = excluded.last_seen, running = excluded.running,"
+                    + " accepting = excluded.accepting")) {
+                ps.setInt(1, workerId);
+                ps.setString(2, label);
+                ps.setInt(3, running);
+                ps.setBoolean(4, accepting);
+                ps.setArray(5, queues);
+                ps.setArray(6, types);
+                return ps.executeUpdate();
+            }
+        }));
+    }
+
+    @Override
+    public Map<Integer, Map<Integer, Long>> queuedByType() {
+        return withConnection(c -> {
+            var result = new TreeMap<Integer, Map<Integer, Long>>();
+            try (var ps = c.prepareStatement("SELECT queue_id, type_id, count(*) FROM " + task
+                            + " WHERE state = 0 GROUP BY queue_id, type_id");
+                    var rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    result.computeIfAbsent(rs.getInt(1), id -> new TreeMap<>()).put(rs.getInt(2), rs.getLong(3));
+                }
+            }
+            return result;
         });
     }
 
@@ -1648,15 +2000,34 @@ public class PostgresTaskStore implements FullStore {
         return withConnection(c -> {
             var result = new ArrayList<WorkerInfo>();
             try (var ps = c.prepareStatement(
-                            "SELECT id, label, started_at, last_seen, running FROM " + worker + " ORDER BY id");
+                            "SELECT id, label, started_at, last_seen, running, accepting, queue_ids, type_ids FROM "
+                                    + worker + " ORDER BY id");
                     var rs = ps.executeQuery()) {
                 while (rs.next()) {
                     result.add(new WorkerInfo(
-                            rs.getInt(1), rs.getString(2), getInstant(rs, 3), getInstant(rs, 4), rs.getInt(5)));
+                            rs.getInt(1),
+                            rs.getString(2),
+                            getInstant(rs, 3),
+                            getInstant(rs, 4),
+                            rs.getInt(5),
+                            rs.getBoolean(6),
+                            workerIds(rs, 7),
+                            workerIds(rs, 8)));
                 }
             }
             return result;
         });
+    }
+
+    private static Set<Integer> workerIds(ResultSet rs, int column) throws SQLException {
+        var array = rs.getArray(column);
+        try {
+            var ids = new HashSet<Integer>();
+            for (var id : (Short[]) array.getArray()) ids.add(id.intValue());
+            return Set.copyOf(ids);
+        } finally {
+            array.free();
+        }
     }
 
     @Override
@@ -1672,10 +2043,28 @@ public class PostgresTaskStore implements FullStore {
     }
 
     @Override
-    public boolean pauseRecurring(String scheduleId, boolean paused) {
-        return update("UPDATE " + schedule + " SET paused = ? WHERE id = ?", ps -> {
-            ps.setBoolean(1, paused);
-            ps.setString(2, scheduleId);
+    public boolean pauseRecurring(String scheduleId) {
+        return update("UPDATE " + schedule + " SET paused = true WHERE id = ?", ps -> ps.setString(1, scheduleId));
+    }
+
+    /** Only a paused row is written; the existence check reads the same statement's snapshot. */
+    @Override
+    public boolean resumeRecurring(String scheduleId, Instant nextFire) {
+        return withConnection(c -> {
+            try (var ps = c.prepareStatement("WITH u AS (UPDATE " + schedule + " SET paused = false,"
+                    + "   next_fire = COALESCE(?::timestamptz, next_fire),"
+                    + "   rev = CASE WHEN ?::timestamptz IS NULL THEN rev ELSE nextval('" + scheduleSeq + "') END"
+                    + "   WHERE id = ? AND paused RETURNING 1)"
+                    + " SELECT EXISTS (SELECT 1 FROM u) OR EXISTS (SELECT 1 FROM " + schedule + " WHERE id = ?)")) {
+                setInstant(ps, 1, nextFire);
+                setInstant(ps, 2, nextFire);
+                ps.setString(3, scheduleId);
+                ps.setString(4, scheduleId);
+                try (var rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getBoolean(1);
+                }
+            }
         });
     }
 
@@ -1683,7 +2072,9 @@ public class PostgresTaskStore implements FullStore {
     @Override
     public boolean setNextFire(String scheduleId, Instant nextFire) {
         return update(
-                "UPDATE " + schedule + " SET next_fire = ?, rev = nextval('" + scheduleSeq + "') WHERE id = ?", ps -> {
+                "UPDATE " + schedule + " SET next_fire = ?, rev = nextval('" + scheduleSeq + "'), occurrence_id = NULL"
+                        + " WHERE id = ?",
+                ps -> {
                     setInstant(ps, 1, nextFire);
                     ps.setString(2, scheduleId);
                 });
@@ -1704,7 +2095,7 @@ public class PostgresTaskStore implements FullStore {
     private static RecurringDefinition readDefinition(ResultSet rs) throws SQLException {
         return new RecurringDefinition(
                 rs.getString("id"),
-                rs.getInt("event_id"),
+                rs.getInt("type_id"),
                 rs.getInt("payload_version"),
                 rs.getInt("queue_id"),
                 rs.getString("account"),

@@ -4,9 +4,12 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.function.IntSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,6 +22,7 @@ import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
+import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 
 /**
  * Housekeeping, every check interval: ends tasks whose lease expired (retried, dead, or cancelled when a
@@ -45,7 +49,11 @@ class MaintenanceService extends CustomThread {
     private final int batchSize;
     private final int purgeBatchSize;
     private final int workerId;
+    private final String workerLabel;
+    private final Set<Integer> workerQueueIds;
+    private final Set<Integer> workerTypeIds;
     private final IntSupplier running;
+    private final BooleanSupplier accepting;
     private final Duration workerStaleAfter;
 
     MaintenanceService(Builder b) {
@@ -64,7 +72,11 @@ class MaintenanceService extends CustomThread {
         this.batchSize = b.batchSize;
         this.purgeBatchSize = b.purgeBatchSize;
         this.workerId = b.workerId;
+        this.workerLabel = b.workerLabel;
+        this.workerQueueIds = b.workerQueueIds;
+        this.workerTypeIds = b.workerTypeIds;
         this.running = b.running;
+        this.accepting = b.accepting;
         this.workerStaleAfter = b.workerStaleAfter;
         this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
             var thread = new Thread(b.group, r, b.threadName + "-scheduler");
@@ -76,8 +88,20 @@ class MaintenanceService extends CustomThread {
     @Override
     public void run() {
         var delay = checkInterval.toMillis();
-        executor.scheduleWithFixedDelay(this::cycle, delay, delay, TimeUnit.MILLISECONDS);
-        executor.scheduleWithFixedDelay(this::purge, delay, purgeInterval.toMillis(), TimeUnit.MILLISECONDS);
+        executor.scheduleWithFixedDelay(survivingErrors(this::cycle), delay, delay, TimeUnit.MILLISECONDS);
+        executor.scheduleWithFixedDelay(
+                survivingErrors(this::purge), delay, purgeInterval.toMillis(), TimeUnit.MILLISECONDS);
+    }
+
+    /** A periodic job that throws is never run again by its executor, so an Error must not leave the job. */
+    private static Runnable survivingErrors(Runnable job) {
+        return () -> {
+            try {
+                job.run();
+            } catch (Error e) {
+                log.error("Maintenance job failed, it runs again at its next interval", e);
+            }
+        };
     }
 
     void cycle() {
@@ -89,17 +113,21 @@ class MaintenanceService extends CustomThread {
     private void reclaimExpiredLeases() {
         try {
             int count;
+            int handled;
             do {
                 var expired = store.reclaim(batchSize);
                 count = expired.size();
+                handled = 0;
                 for (var e : expired) {
                     try {
                         handleExpired(e);
+                        handled++;
                     } catch (RuntimeException ex) {
                         log.error("Could not handle the expired lease of task {}", e.id(), ex);
                     }
                 }
-            } while (count == batchSize && canContinueProcessing);
+                // a lease that could not be handled stays expired, so a batch of only those would come back at once
+            } while (count == batchSize && handled > 0 && canContinueProcessing);
         } catch (Exception e) {
             status.storeError(e);
             log.error("Error in reclaiming expired leases", e);
@@ -107,12 +135,18 @@ class MaintenanceService extends CustomThread {
     }
 
     private void handleExpired(ExpiredLease e) {
+        TaskRecord record;
+        try {
+            record = store.getTask(e.id()).orElse(null);
+        } catch (UnreadableTaskException unreadable) {
+            endUnreadable(e, unreadable);
+            return;
+        }
         if (e.cancelRequested()) {
-            cancelExpired(e);
+            cancelExpired(e, record);
             return;
         }
         Instant retryAt = null;
-        var record = store.getTask(e.id()).orElse(null);
         if (e.attempts() < e.maxAttempts()
                 && record != null
                 && decide(record) instanceof RetryPolicy.Decision.RetryAfter r) {
@@ -141,9 +175,22 @@ class MaintenanceService extends CustomThread {
         log.warn(detail);
     }
 
+    /**
+     * A task with a stored value that cannot be read could never run, so it ends DEAD whatever attempts it has
+     * left. A claim leaves such a task out and ends its lease, which brings it here.
+     */
+    private void endUnreadable(ExpiredLease e, UnreadableTaskException unreadable) {
+        var failure =
+                new FailureInfo(e.attempts(), clock.instant(), "unreadable-record", unreadable.getMessage(), null);
+        var outcome = store.failExpired(e.id(), e.revision(), failure, null, keepDead, null);
+        if (outcome == FailOutcome.LOST) return;
+        status.issue("corrupt-task", unreadable.getMessage(), e.id());
+        log.error("Task {} has a stored value that cannot be read, it ended {}", e.id(), outcome, unreadable);
+        observer.emit(new TaskEvent.LeaseExpired(e.id(), e.attempts(), e.maxAttempts(), true));
+    }
+
     /** A cancelled task whose worker died must not run again. */
-    private void cancelExpired(ExpiredLease e) {
-        var record = store.getTask(e.id()).orElse(null);
+    private void cancelExpired(ExpiredLease e, TaskRecord record) {
         var reason = record != null && record.cancelReason() != null ? record.cancelReason() : "cancel requested";
         var pause = RecurringTaskService.pauseEffect(record);
         var applied = store.finishCancelledExpired(e.id(), e.revision(), reason, true, pause);
@@ -157,7 +204,11 @@ class MaintenanceService extends CustomThread {
     /** An Error from the policy, fatal or not, is logged and answered with an immediate retry; it never ends the maintenance thread. */
     private RetryPolicy.Decision decide(TaskRecord record) {
         var policy = retryPolicies.named(record.retryPolicy());
-        if (policy == null) policy = retryPolicies.defaultPolicy();
+        if (policy == null) {
+            status.issue("retry-policy", "unknown retry policy " + record.retryPolicy(), record.id());
+            log.warn("Task {} names unknown retry policy {}, using the default", record.id(), record.retryPolicy());
+            policy = retryPolicies.defaultPolicy();
+        }
         try {
             var d = policy.decide(names.view(record), null);
             return d != null ? d : RetryPolicy.Decision.retryAfter(Duration.ZERO);
@@ -192,9 +243,26 @@ class MaintenanceService extends CustomThread {
         }
     }
 
+    void heartbeatNow() {
+        try {
+            executor.execute(survivingErrors(this::heartbeat));
+        } catch (RejectedExecutionException e) {
+            // A concurrent stop leaves the next service generation to publish the state.
+            if (!executor.isShutdown()) throw e;
+        }
+    }
+
     private void heartbeat() {
         try {
-            if (workerId > 0) store.heartbeat(workerId, running.getAsInt());
+            if (workerId > 0) {
+                store.heartbeat(
+                        workerId,
+                        workerLabel,
+                        workerQueueIds,
+                        workerTypeIds,
+                        running.getAsInt(),
+                        accepting.getAsBoolean());
+            }
             status.maintained();
         } catch (Exception e) {
             status.storeError(e);
@@ -272,7 +340,11 @@ class MaintenanceService extends CustomThread {
         private int batchSize = 100;
         private int purgeBatchSize = 500;
         private int workerId;
+        private String workerLabel;
+        private Set<Integer> workerQueueIds = Set.of();
+        private Set<Integer> workerTypeIds = Set.of();
         private IntSupplier running = () -> 0;
+        private BooleanSupplier accepting = () -> true;
         private Duration workerStaleAfter = Duration.ofMinutes(10);
 
         Builder group(ThreadGroup group) {
@@ -351,10 +423,21 @@ class MaintenanceService extends CustomThread {
             return this;
         }
 
-        /** The worker whose heartbeat this service records; 0 records none. */
-        Builder worker(int workerId, IntSupplier running) {
+        /**
+         * The worker whose heartbeat this service records, with what it registered so that the heartbeat can
+         * restore a purged row; 0 records none.
+         */
+        Builder worker(int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, IntSupplier running) {
             this.workerId = workerId;
+            this.workerLabel = label;
+            this.workerQueueIds = queueIds;
+            this.workerTypeIds = typeIds;
             this.running = running;
+            return this;
+        }
+
+        Builder accepting(BooleanSupplier accepting) {
+            this.accepting = accepting;
             return this;
         }
 

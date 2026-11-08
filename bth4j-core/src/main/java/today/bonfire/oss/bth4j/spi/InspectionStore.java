@@ -6,7 +6,10 @@ import java.util.Optional;
 /** Read-only views for clients, the runner and the admin API. */
 public interface InspectionStore extends TaskStore {
 
-    /** @return the task with that id, in whatever state it is */
+    /**
+     * @return the task with that id, in whatever state it is
+     * @throws UnreadableTaskException when a stored value of the task cannot be read
+     */
     Optional<TaskRecord> getTask(long id);
 
     /**
@@ -24,11 +27,17 @@ public interface InspectionStore extends TaskStore {
     /** @return counts per state for every queue that has or had tasks, by queue id */
     Map<Integer, StateCounts> counts();
 
+    /** @return exact QUEUED counts by queue id and type id, with only non-zero entries */
+    Map<Integer, Map<Integer, Long>> queuedByType();
+
     /**
-     * Lists tasks in one state, by {@code (stateChanged, id)} ascending, paging by an opaque position that the
-     * store encodes itself. The position does not depend on the task it was taken from, so that task leaving
-     * the listed state neither ends the listing early nor restarts it. A task whose own position moves while
-     * the walk runs can still be seen twice (moved later) or missed (moved earlier).
+     * Lists tasks in one state, QUEUED and SCHEDULED by {@code (due, id)} ascending and the other states by
+     * {@code (stateChanged, id)} ascending, paging by an opaque position that the store encodes itself. The
+     * position does not depend on the task it was taken from, so that task leaving the listed state neither ends
+     * the listing early nor restarts it. A task whose own position moves while the walk runs can still be seen
+     * twice (moved later) or missed (moved earlier). A task with a stored value that cannot be read is left out,
+     * so that it does not break the listing; it still takes its place in the walk, so a page can hold fewer than
+     * {@code limit} tasks while {@code next} is not null, and it is still counted by {@link #counts()}.
      *
      * @param queueId null for every queue
      * @param cursor {@link TaskPage#next()} of the previous page; null starts at the beginning

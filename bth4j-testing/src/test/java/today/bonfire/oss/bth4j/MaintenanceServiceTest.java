@@ -6,6 +6,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -15,8 +16,10 @@ import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
+import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
+import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
 import today.bonfire.oss.bth4j.testing.MutableClock;
 
@@ -45,8 +48,12 @@ class MaintenanceServiceTest {
     private int batchSize = 100;
     private int purgeBatchSize = 500;
     private int workerId;
+    private Set<Integer> workerQueueIds = Set.of();
+    private Set<Integer> workerTypeIds = Set.of();
     private int runningTasks;
+    private boolean accepting = true;
     private Duration workerStaleAfter = Duration.ofMinutes(10);
+    private Duration checkInterval = Duration.ofSeconds(5);
 
     // ---- expired leases -------------------------------------------------------------------------------
 
@@ -66,6 +73,81 @@ class MaintenanceServiceTest {
             assertThat(f.message()).isEqualTo("lease expired after attempt 1");
         });
         assertThat(events).containsExactly(new TaskEvent.LeaseExpired(id, 1, 3, false));
+    }
+
+    @Test
+    void anExpiredTaskWhoseRecordCannotBeReadEndsDeadWithAttemptsLeftAndIsAnIssue() throws Exception {
+        long id = leased(request().maxAttempts(3).build());
+        serviceStore = unreadable(id);
+        clock.advance(LEASE.plusSeconds(1));
+
+        cycle();
+
+        var task = store.getTask(id).orElseThrow();
+        assertThat(task.state()).isEqualTo(TaskState.DEAD);
+        assertThat(task.failures()).singleElement().satisfies(f -> {
+            assertThat(f.type()).isEqualTo("unreadable-record");
+            assertThat(f.attempt()).isEqualTo(1);
+            assertThat(f.message()).isEqualTo("task " + id + " has a stored value that cannot be read");
+        });
+        assertThat(status.issues()).singleElement().satisfies(i -> {
+            assertThat(i.kind()).isEqualTo("corrupt-task");
+            assertThat(i.taskId()).isEqualTo(id);
+        });
+        assertThat(events).containsExactly(new TaskEvent.LeaseExpired(id, 1, 3, true));
+    }
+
+    @Test
+    void anUnreadableTaskWithACancelRequestEndsDeadToo() throws Exception {
+        long id = leased(request().maxAttempts(3).build());
+        store.cancel(id, store.getTask(id).orElseThrow().revision(), "stop", null);
+        serviceStore = unreadable(id);
+        clock.advance(LEASE.plusSeconds(1));
+
+        cycle();
+
+        assertThat(state(id)).isEqualTo(TaskState.DEAD);
+        assertThat(status.issues()).extracting(Issue::kind).containsExactly("corrupt-task");
+    }
+
+    @Test
+    void aFullBatchOfExpiredLeasesThatAllFailIsNotReadAgainInTheSameCycle() throws Exception {
+        batchSize = 2;
+        leased(request().build());
+        leased(request().build());
+        var reclaims = new AtomicInteger();
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("reclaim")) reclaims.incrementAndGet();
+            if (method.equals("failExpired")) throw new TaskStoreException("rejected");
+            return real.proceed();
+        });
+        clock.advance(LEASE.plusSeconds(1));
+
+        cycle();
+
+        assertThat(reclaims).hasValue(1);
+    }
+
+    @Test
+    void aCycleThatThrowsAnErrorRunsAgainAtItsNextInterval() throws Exception {
+        var reclaims = new AtomicInteger();
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("reclaim") && reclaims.incrementAndGet() == 1) throw new AssertionError("first cycle");
+            return real.proceed();
+        });
+        checkInterval = Duration.ofMillis(10);
+        var service = service();
+
+        service.start();
+        try {
+            var deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (reclaims.get() < 3 && System.nanoTime() < deadline) Thread.sleep(5);
+        } finally {
+            service.stopThread();
+            service.waitTillDone(Duration.ofSeconds(5));
+        }
+
+        assertThat(reclaims.get()).isGreaterThanOrEqualTo(3);
     }
 
     @Test
@@ -146,7 +228,7 @@ class MaintenanceServiceTest {
     }
 
     @Test
-    void anUnknownPolicyNameFallsBackToTheDefaultPolicy() throws Exception {
+    void anUnknownPolicyNameFallsBackToTheDefaultPolicyAndRaisesAnIssue() throws Exception {
         long id = leased(request().maxAttempts(3).retryPolicy("missing").build());
         clock.advance(LEASE.plusSeconds(1));
 
@@ -154,6 +236,11 @@ class MaintenanceServiceTest {
 
         assertThat(store.getTask(id).orElseThrow().due())
                 .isEqualTo(clock.instant().plus(RETRY_DELAY));
+        assertThat(status.issues()).singleElement().satisfies(i -> {
+            assertThat(i.kind()).isEqualTo("retry-policy");
+            assertThat(i.detail()).isEqualTo("unknown retry policy missing");
+            assertThat(i.taskId()).isEqualTo(id);
+        });
     }
 
     @Test
@@ -383,17 +470,17 @@ class MaintenanceServiceTest {
     // ---- purge ----------------------------------------------------------------------------------------
 
     @Test
-    void aFinishedTaskIsPurgedOnlyOnceItIsOlderThanTheRetention() throws Exception {
+    void aFinishedTaskIsPurgedOnceItIsAsOldAsTheRetention() throws Exception {
         retention = Map.of(TaskState.SUCCEEDED, Duration.ofHours(1));
-        long old = succeeded(request().build());
-        clock.advance(Duration.ofMillis(1));
         long boundary = succeeded(request().build());
-        clock.advance(Duration.ofHours(1));
+        clock.advance(Duration.ofMillis(1));
+        long younger = succeeded(request().build());
+        clock.advance(Duration.ofHours(1).minusMillis(1));
 
         purge();
 
-        assertThat(store.getTask(old)).isEmpty();
-        assertThat(store.getTask(boundary)).isPresent();
+        assertThat(store.getTask(boundary)).isEmpty();
+        assertThat(store.getTask(younger)).isPresent();
         assertThat(events).containsExactly(new TaskEvent.Purged(TaskState.SUCCEEDED, 1));
     }
 
@@ -447,7 +534,7 @@ class MaintenanceServiceTest {
     }
 
     @Test
-    void aTaskHoldingItsUniqueKeyIsNotPurgedBeforeTheKeyWindowEnds() throws Exception {
+    void aTaskPastRetentionIsPurgedWhileItsKeyStaysTakenUntilTheWindowEnds() throws Exception {
         retention = Map.of(TaskState.SUCCEEDED, Duration.ofMinutes(1));
         long id = succeeded(request()
                 .uniqueKey("k", Uniqueness.keepFor(Duration.ofHours(1)))
@@ -456,14 +543,14 @@ class MaintenanceServiceTest {
 
         purge();
 
-        assertThat(store.getTask(id)).isPresent();
-        assertThat(events).isEmpty();
+        assertThat(store.getTask(id)).isEmpty();
+        assertThat(events).containsExactly(new TaskEvent.Purged(TaskState.SUCCEEDED, 1));
+        assertThat(client.enqueue(request().uniqueKey("k").build()).accepted()).isFalse();
 
         clock.advance(Duration.ofHours(1));
         purge();
 
-        assertThat(store.getTask(id)).isEmpty();
-        assertThat(events).containsExactly(new TaskEvent.Purged(TaskState.SUCCEEDED, 1));
+        assertThat(client.enqueue(request().uniqueKey("k").build()).accepted()).isTrue();
     }
 
     @Test
@@ -554,7 +641,7 @@ class MaintenanceServiceTest {
 
     @Test
     void aCycleRecordsTheWorkersHeartbeatWithItsRunningCount() throws Exception {
-        workerId = store.allocateWorkerId("worker-a");
+        workerId = store.allocateWorkerId("worker-a", Set.of(), Set.of());
         var startedAt = clock.instant();
         runningTasks = 3;
         clock.advance(Duration.ofMinutes(5));
@@ -574,7 +661,7 @@ class MaintenanceServiceTest {
 
     @Test
     void eachCycleReportsTheRunningCountAtThatMoment() throws Exception {
-        workerId = store.allocateWorkerId("worker-a");
+        workerId = store.allocateWorkerId("worker-a", Set.of(), Set.of());
         runningTasks = 3;
         cycle();
         clock.advance(Duration.ofSeconds(5));
@@ -589,8 +676,19 @@ class MaintenanceServiceTest {
     }
 
     @Test
+    void eachCycleReportsWhetherTheRunnerAcceptsWork() throws Exception {
+        workerId = store.allocateWorkerId("worker-a", Set.of(), Set.of());
+        accepting = false;
+        cycle();
+        assertThat(store.workers().getFirst().accepting()).isFalse();
+        accepting = true;
+        cycle();
+        assertThat(store.workers().getFirst().accepting()).isTrue();
+    }
+
+    @Test
     void aServiceWithoutAWorkerRecordsNoHeartbeatButStillMarksMaintenance() throws Exception {
-        store.allocateWorkerId("other");
+        store.allocateWorkerId("other", Set.of(), Set.of());
         var before = store.workers();
         clock.advance(Duration.ofMinutes(5));
 
@@ -602,7 +700,7 @@ class MaintenanceServiceTest {
 
     @Test
     void aFailedHeartbeatIsRecordedWithoutMarkingMaintenanceAndTheNextCycleRecovers() throws Exception {
-        workerId = store.allocateWorkerId("worker-a");
+        workerId = store.allocateWorkerId("worker-a", Set.of(), Set.of());
         runningTasks = 2;
         clock.advance(Duration.ofSeconds(5));
         var failing = new AtomicInteger(1);
@@ -631,13 +729,38 @@ class MaintenanceServiceTest {
         assertThat(status.issues()).hasSize(1);
     }
 
+    @Test
+    void aCycleRestoresTheWorkersRowAfterAnotherRunnerPurgedItUnderTheSameId() throws Exception {
+        int typeId = store.typeId("work");
+        workerQueueIds = Set.of(queueId);
+        workerTypeIds = Set.of(typeId);
+        workerId = store.allocateWorkerId("worker-a", workerQueueIds, workerTypeIds);
+        clock.advance(workerStaleAfter.plusSeconds(1));
+        purge();
+        assertThat(store.workers()).isEmpty();
+        runningTasks = 2;
+
+        cycle();
+
+        assertThat(store.workers()).singleElement().satisfies(w -> {
+            assertThat(w.id()).isEqualTo(workerId);
+            assertThat(w.label()).isEqualTo("worker-a");
+            assertThat(w.queueIds()).containsExactly(queueId);
+            assertThat(w.typeIds()).containsExactly(typeId);
+            assertThat(w.startedAt()).isEqualTo(clock.instant());
+            assertThat(w.lastSeen()).isEqualTo(clock.instant());
+            assertThat(w.running()).isEqualTo(2);
+            assertThat(w.accepting()).isTrue();
+        });
+    }
+
     // ---- stale workers --------------------------------------------------------------------------------
 
     @Test
     void aWorkerSilentForLongerThanTheThresholdIsRemovedAndAFreshOneIsKept() throws Exception {
-        int stale = store.allocateWorkerId("stale");
+        int stale = store.allocateWorkerId("stale", Set.of(), Set.of());
         clock.advance(Duration.ofMinutes(6));
-        int fresh = store.allocateWorkerId("fresh");
+        int fresh = store.allocateWorkerId("fresh", Set.of(), Set.of());
         clock.advance(Duration.ofMinutes(5));
 
         purge();
@@ -648,7 +771,7 @@ class MaintenanceServiceTest {
 
     @Test
     void aWorkerExactlyAtTheThresholdIsKeptAndOneMillisecondOlderIsRemoved() throws Exception {
-        int id = store.allocateWorkerId("edge");
+        int id = store.allocateWorkerId("edge", Set.of(), Set.of());
         clock.advance(workerStaleAfter);
 
         purge();
@@ -663,7 +786,7 @@ class MaintenanceServiceTest {
 
     @Test
     void aHeartbeatKeepsAWorkerFromBeingPurged() throws Exception {
-        workerId = store.allocateWorkerId("beating");
+        workerId = store.allocateWorkerId("beating", Set.of(), Set.of());
         clock.advance(Duration.ofMinutes(9));
         cycle();
         clock.advance(Duration.ofMinutes(9));
@@ -676,7 +799,7 @@ class MaintenanceServiceTest {
     @Test
     void theStaleThresholdIsTheConfiguredOne() throws Exception {
         workerStaleAfter = Duration.ofSeconds(30);
-        store.allocateWorkerId("short");
+        store.allocateWorkerId("short", Set.of(), Set.of());
         clock.advance(Duration.ofSeconds(31));
 
         purge();
@@ -686,7 +809,7 @@ class MaintenanceServiceTest {
 
     @Test
     void aFailedWorkerPurgeIsRecordedAndTheNextPurgeRemovesTheStaleWorker() throws Exception {
-        store.allocateWorkerId("stale");
+        store.allocateWorkerId("stale", Set.of(), Set.of());
         clock.advance(workerStaleAfter.plusSeconds(1));
         var failing = new AtomicInteger(1);
         serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
@@ -718,7 +841,7 @@ class MaintenanceServiceTest {
 
     private long leased(TaskRequest<Void> request) {
         long id = client.enqueue(request).id();
-        var claimed = store.claim(new ClaimRequest(List.of(queueId), 1, LEASE, 1, null));
+        var claimed = store.claim(new ClaimRequest(List.of(new QueueGrant(queueId, 1, 1)), 1, LEASE, 1, null));
         assertThat(claimed).singleElement().satisfies(r -> assertThat(r.id()).isEqualTo(id));
         return id;
     }
@@ -726,7 +849,7 @@ class MaintenanceServiceTest {
     private long leasedOccurrence(int maxAttempts) {
         long id = ScheduleFixtures.fixedDelayOccurrence(
                 store, client, clock.instant(), store.typeId(TYPE.name()), queueId, maxAttempts);
-        var claimed = store.claim(new ClaimRequest(List.of(queueId), 1, LEASE, 1, null));
+        var claimed = store.claim(new ClaimRequest(List.of(new QueueGrant(queueId, 1, 1)), 1, LEASE, 1, null));
         assertThat(claimed).singleElement().satisfies(r -> assertThat(r.id()).isEqualTo(id));
         return id;
     }
@@ -777,6 +900,16 @@ class MaintenanceServiceTest {
         });
     }
 
+    /** The store as maintenance sees it when a stored value of the task cannot be read. */
+    private FullStore unreadable(long id) {
+        return StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("getTask") && (long) args[0] == id) {
+                throw new UnreadableTaskException(id, "task " + id + " has a stored value that cannot be read", null);
+            }
+            return real.proceed();
+        });
+    }
+
     private void cycle() throws Exception {
         service().cycle();
     }
@@ -799,8 +932,10 @@ class MaintenanceServiceTest {
                 .keepDead(keepDead)
                 .batchSize(batchSize)
                 .purgeBatchSize(purgeBatchSize)
-                .worker(workerId, () -> runningTasks)
+                .worker(workerId, "worker-a", workerQueueIds, workerTypeIds, () -> runningTasks)
+                .accepting(() -> accepting)
                 .workerStaleAfter(workerStaleAfter)
+                .checkInterval(checkInterval)
                 .create();
     }
 }

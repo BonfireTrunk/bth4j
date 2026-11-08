@@ -5,12 +5,14 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 import today.bonfire.oss.bth4j.Issue;
 import today.bonfire.oss.bth4j.Misfire;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.TaskView;
+import today.bonfire.oss.bth4j.UnservedWork;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.StateCounts;
@@ -141,13 +143,24 @@ final class Views {
         return view;
     }
 
-    static Map<String, Object> worker(WorkerInfo w) {
+    static Map<String, Object> worker(WorkerInfo w, Map<Integer, String> queues, Map<Integer, String> types) {
         return obj(
                 "id", w.id(),
                 "label", w.label(),
                 "startedAt", w.startedAt(),
                 "lastSeen", w.lastSeen(),
-                "running", w.running());
+                "running", w.running(),
+                "accepting", w.accepting(),
+                "queues", names(w.queueIds(), queues),
+                "types", names(w.typeIds(), types));
+    }
+
+    private static List<String> names(Set<Integer> ids, Map<Integer, String> names) {
+        return ids.stream().map(id -> names.getOrDefault(id, "#" + id)).sorted().toList();
+    }
+
+    static Map<String, Object> unserved(UnservedWork work) {
+        return obj("queue", work.queue(), "type", work.type(), "waiting", work.waiting());
     }
 
     static Map<String, Object> issue(Issue i) {

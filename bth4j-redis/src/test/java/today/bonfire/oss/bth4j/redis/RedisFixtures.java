@@ -11,6 +11,7 @@ import redis.clients.jedis.UnifiedJedis;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
+import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 
@@ -37,7 +38,7 @@ final class RedisFixtures {
     static TaskRecord leasedWithHistory(RedisTaskStore store, int queue, TaskRecord leased) {
         addHistory(store, leased, Instant.now().minusSeconds(5));
         assertThat(store.promote(10).moved()).isEqualTo(1);
-        return store.claim(new ClaimRequest(List.of(queue), 1, Duration.ofSeconds(30), 1, null))
+        return store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, Duration.ofSeconds(30), 1, null))
                 .getFirst();
     }
 

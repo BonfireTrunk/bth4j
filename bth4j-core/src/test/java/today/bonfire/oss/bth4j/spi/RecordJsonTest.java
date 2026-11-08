@@ -36,17 +36,11 @@ class RecordJsonTest {
 
     @Test
     void headersRejectMalformedInput() {
-        for (var bad : List.of("{", "[]", "\"x\"", "{\"a\":1}", "{\"a\":null}x", "{\"a\":[\"b\"]}")) {
+        for (var bad : List.of("{", "[]", "\"x\"", "{\"a\":1}", "{\"a\":null}", "{\"a\":null}x", "{\"a\":[\"b\"]}")) {
             assertThatThrownBy(() -> RecordJson.decodeHeaders(bad))
                     .as(bad)
                     .isInstanceOf(IllegalArgumentException.class);
         }
-    }
-
-    @Test
-    void headersAcceptNullValue() {
-        var decoded = RecordJson.decodeHeaders("{\"a\":null}");
-        assertThat(decoded).containsEntry("a", null);
     }
 
     @Test

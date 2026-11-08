@@ -18,9 +18,21 @@ class PostgresStoreContractIT extends StoreContract {
     }
 
     @Override
+    protected boolean corruptStoredValue(String namespace, long taskId) {
+        try (var c = PostgresTestSupport.dataSource().getConnection();
+                var ps = c.prepareStatement("UPDATE " + PostgresTestSupport.prefix(namespace)
+                        + "_task SET headers = '{\"a\":null}'::jsonb WHERE id = ?")) {
+            ps.setLong(1, taskId);
+            return ps.executeUpdate() == 1;
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Override
     protected void fillRegistry(TaskStore fresh, String namespace, Registry registry, int lastId) {
         var sequence =
-                PostgresTestSupport.prefix(namespace) + (registry == Registry.QUEUE ? "_queue" : "_event") + "_id_seq";
+                PostgresTestSupport.prefix(namespace) + (registry == Registry.QUEUE ? "_queue" : "_type") + "_id_seq";
         try (var c = PostgresTestSupport.dataSource().getConnection();
                 var st = c.createStatement()) {
             st.execute("SELECT setval('" + sequence + "', " + lastId + ")");

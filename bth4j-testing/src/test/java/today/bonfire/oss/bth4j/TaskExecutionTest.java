@@ -33,6 +33,7 @@ import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
+import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
@@ -187,7 +188,8 @@ class TaskExecutionTest {
             assertThat(task.state()).isEqualTo(takenOver ? TaskState.QUEUED : TaskState.SUCCEEDED);
             assertThat(task.failures()).isNull();
             if (!takenOver) {
-                assertThat(store.claim(new ClaimRequest(List.of(store.queueId("Q:DEF")), 1, LEASE, 1, null)))
+                assertThat(store.claim(new ClaimRequest(
+                                List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)), 1, LEASE, 1, null)))
                         .isEmpty();
             }
         }
@@ -281,6 +283,63 @@ class TaskExecutionTest {
             release.countDown();
             worker.join(5_000);
         }
+    }
+
+    @Test
+    void aCancelRequestPassedOnAgainDoesNotInterruptTheBodyAgain() throws Exception {
+        var started = new CountDownLatch(1);
+        var firstInterrupt = new CountDownLatch(1);
+        var cleanup = new CountDownLatch(1);
+        var interrupts = new AtomicInteger();
+        var execution = execution(TYPE, (ctx, payload) -> {
+            started.countDown();
+            try {
+                cleanup.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                interrupts.incrementAndGet();
+                firstInterrupt.countDown();
+            }
+            try {
+                cleanup.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                interrupts.incrementAndGet();
+            }
+        });
+        var worker = new Thread(execution::run);
+        worker.start();
+        try {
+            assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+            execution.requestCancel("stop");
+            assertThat(firstInterrupt.await(5, TimeUnit.SECONDS)).isTrue();
+
+            execution.requestCancel(null);
+            execution.requestCancel(null);
+            cleanup.countDown();
+            worker.join(5_000);
+
+            assertThat(worker.isAlive()).isFalse();
+            assertThat(interrupts).hasValue(1);
+            assertThat(interruptedAtFinish).isFalse();
+        } finally {
+            cleanup.countDown();
+            worker.join(5_000);
+        }
+    }
+
+    @Test
+    void aBodyThatReschedulesItselfWhileACancelIsRequestedEndsCancelled() {
+        var execution = execution(TaskType.of("reschedule-cancel"), (ctx, payload) -> {
+            throw new TaskRescheduleException(Duration.ofMinutes(5));
+        });
+        execution.requestCancel("operator stop");
+
+        execution.run();
+
+        var task = store.getTask(execution.taskId()).orElseThrow();
+        assertThat(task.state()).isEqualTo(TaskState.CANCELLED);
+        assertThat(task.cancelReason()).isEqualTo("operator stop");
+        assertThat(events.getLast()).isInstanceOf(TaskEvent.Cancelled.class);
+        assertThat(events).noneMatch(e -> e instanceof TaskEvent.Rescheduled);
     }
 
     @ParameterizedTest
@@ -432,7 +491,8 @@ class TaskExecutionTest {
         assertThat(store.failExpired(execution.taskId(), execution.revision(), failure, clock.instant(), true, null))
                 .isEqualTo(FailOutcome.RETRY);
         store.promote(10);
-        assertThat(store.claim(new ClaimRequest(List.of(store.queueId("Q:DEF")), 1, LEASE, 1, null)))
+        assertThat(store.claim(
+                        new ClaimRequest(List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)), 1, LEASE, 1, null)))
                 .singleElement()
                 .satisfies(r -> assertThat(r.id()).isEqualTo(execution.taskId()));
     }
@@ -497,6 +557,38 @@ class TaskExecutionTest {
         assertThat(store.getTask(execution.taskId()).orElseThrow().state()).isEqualTo(transition.committedState);
     }
 
+    @ParameterizedTest
+    @EnumSource(Transition.class)
+    void theSlotIsFreedOnceTheProcessorReturnsAndBeforeTheOutcomeIsWritten(Transition transition) {
+        var order = new ArrayList<String>();
+        executionStore = recording(order);
+        var execution = execution(TaskType.of("slot-" + transition), (ctx, payload) -> {
+            order.add("processor");
+            transition.exit();
+        });
+
+        execution.run(() -> order.add("slot freed"));
+
+        assertThat(order).containsSubsequence("processor", "slot freed", transition.storeMethod);
+        assertThat(order).containsOnlyOnce("slot freed");
+        assertThat(store.getTask(execution.taskId()).orElseThrow().state()).isEqualTo(transition.committedState);
+    }
+
+    @Test
+    void aTaskWithoutAProcessorFreesItsSlotBeforeItIsDeferred() {
+        var order = new ArrayList<String>();
+        executionStore = recording(order);
+        client.enqueue(TaskRequest.of(TaskType.of("unregistered")).build());
+        var record = store.claim(
+                        new ClaimRequest(List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)), 1, LEASE, 1, null))
+                .getFirst();
+
+        new TaskExecution(record, settings(), e -> {}).run(() -> order.add("slot freed"));
+
+        assertThat(order).containsSubsequence("slot freed", "reschedule");
+        assertThat(store.getTask(record.id()).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
+    }
+
     private TaskEvent.Outcome lastOutcome() {
         return switch (events.getLast()) {
             case TaskEvent.Succeeded e -> e.outcome();
@@ -512,7 +604,9 @@ class TaskExecutionTest {
     private FullStore faulty(String method, Fault fault) {
         return (FullStore) Proxy.newProxyInstance(
                 FullStore.class.getClassLoader(), new Class<?>[] {FullStore.class}, (proxy, m, args) -> {
-                    boolean target = m.getName().equals(method);
+                    // an acknowledgement without a schedule effect goes through ackAll
+                    boolean target = m.getName().equals(method)
+                            || (method.equals("ack") && m.getName().equals("ackAll"));
                     if (target && fault == Fault.BEFORE_COMMIT) throw new TaskStoreException("lost before commit");
                     Object result;
                     try {
@@ -520,9 +614,22 @@ class TaskExecutionTest {
                     } catch (InvocationTargetException e) {
                         throw e.getCause();
                     }
-                    storeCalls.add(m.getName());
+                    storeCalls.add(target ? method : m.getName());
                     if (target) throw new TaskStoreException("reply lost");
                     return result;
+                });
+    }
+
+    /** The real store, noting each outcome call in {@code order}; an acknowledgement goes through ackAll. */
+    private FullStore recording(List<String> order) {
+        return (FullStore) Proxy.newProxyInstance(
+                FullStore.class.getClassLoader(), new Class<?>[] {FullStore.class}, (proxy, m, args) -> {
+                    if (!m.getName().equals("getTask")) order.add(m.getName().equals("ackAll") ? "ack" : m.getName());
+                    try {
+                        return m.invoke(store, args);
+                    } catch (InvocationTargetException e) {
+                        throw e.getCause();
+                    }
                 });
     }
 
@@ -530,7 +637,8 @@ class TaskExecutionTest {
         registry.register(type, processor);
         ScheduleFixtures.fixedDelayOccurrence(
                 store, client, clock.instant(), store.typeId(type.name()), store.queueId("Q:DEF"), 3);
-        var record = store.claim(new ClaimRequest(List.of(store.queueId("Q:DEF")), 1, LEASE, 1, null))
+        var record = store.claim(
+                        new ClaimRequest(List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)), 1, LEASE, 1, null))
                 .getFirst();
         return new TaskExecution(record, settings(), e -> {});
     }
@@ -538,7 +646,8 @@ class TaskExecutionTest {
     private TaskExecution execution(TaskType<Void> type, TaskProcessor<Void> processor) {
         registry.register(type, processor);
         long id = client.enqueue(TaskRequest.of(type).build()).id();
-        var record = store.claim(new ClaimRequest(List.of(store.queueId("Q:DEF")), 1, LEASE, 1, null))
+        var record = store.claim(
+                        new ClaimRequest(List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)), 1, LEASE, 1, null))
                 .getFirst();
         assertThat(record.id()).isEqualTo(id);
         return new TaskExecution(record, settings(), e -> {

@@ -42,6 +42,7 @@ class RecurringTaskServiceTest {
     private final int queueId = store.queueId("Q:DEF");
     private FullStore serviceStore = store;
     private Duration checkInterval = Duration.ofSeconds(10);
+    private int batchSize = 100;
     private Observers observers = new Observers(events::add);
 
     // ---- misfire threshold ----------------------------------------------------------------------------
@@ -98,16 +99,20 @@ class RecurringTaskServiceTest {
     // ---- catch-up -------------------------------------------------------------------------------------
 
     @Test
-    void aCatchUpWithMoreMissedFiresThanAllowedFirstSkipsToTheLastAllowedOnes() throws Exception {
+    void aCatchUpWithMoreMissedFiresThanAllowedMovesToTheLastAllowedOnesAndCreatesThemInTheSameRound()
+            throws Exception {
         clock.set(T0.plus(Duration.ofMinutes(35)));
         register(definition("*/10 * * * *", RecurringDefinition.MISFIRE_CATCH_UP, 3), T0);
 
         round();
 
         var resume = T0.plus(Duration.ofMinutes(10));
-        assertThat(occurrences()).isEmpty();
-        assertThat(events).isEmpty();
-        assertThat(store.recurringSchedules()).containsEntry(ID, resume);
+        var missed = List.of(resume, T0.plus(Duration.ofMinutes(20)), T0.plus(Duration.ofMinutes(30)));
+        assertThat(occurrences()).extracting(TaskRecord::due).containsExactlyElementsOf(missed);
+        assertThat(events)
+                .extracting(e -> ((TaskEvent.ScheduleFired) e).fireAt())
+                .containsExactlyElementsOf(missed);
+        assertThat(store.recurringSchedules()).containsEntry(ID, T0.plus(Duration.ofMinutes(40)));
         assertThat(status.issues()).singleElement().satisfies(i -> {
             assertThat(i.kind()).isEqualTo("schedule-misfire");
             assertThat(i.detail()).endsWith("catching up the last 3 fires from " + resume);
@@ -115,20 +120,74 @@ class RecurringTaskServiceTest {
     }
 
     @Test
-    void theNextRoundCreatesAnOccurrenceForEachOfTheLastAllowedMissedFires() throws Exception {
-        clock.set(T0.plus(Duration.ofMinutes(35)));
-        register(definition("*/10 * * * *", RecurringDefinition.MISFIRE_CATCH_UP, 3), T0);
-        round();
+    void aWeekOfMissedFiresIsCaughtUpInOneStepWithOneIssue() throws Exception {
+        var downtime = Duration.ofDays(7);
+        var last = T0.plus(downtime);
+        clock.set(last.plusSeconds(30));
+        register(definition("* * * * *", RecurringDefinition.MISFIRE_CATCH_UP, 3), T0);
 
         round();
 
-        var missed = List.of(
-                T0.plus(Duration.ofMinutes(10)), T0.plus(Duration.ofMinutes(20)), T0.plus(Duration.ofMinutes(30)));
+        var missed = List.of(last.minusSeconds(120), last.minusSeconds(60), last);
         assertThat(occurrences()).extracting(TaskRecord::due).containsExactlyElementsOf(missed);
-        assertThat(events)
-                .extracting(e -> ((TaskEvent.ScheduleFired) e).fireAt())
-                .containsExactlyElementsOf(missed);
-        assertThat(store.recurringSchedules()).containsEntry(ID, T0.plus(Duration.ofMinutes(40)));
+        assertThat(store.recurringSchedules()).containsEntry(ID, last.plusSeconds(60));
+        assertThat(status.issues())
+                .singleElement()
+                .satisfies(i -> assertThat(i.kind()).isEqualTo("schedule-misfire"));
+    }
+
+    @Test
+    void aCatchUpCreatesTheMissedFiresThatAreLateByLessThanTheThresholdToo() throws Exception {
+        clock.set(T0.plusSeconds(60));
+        register(definition("* * * * *", RecurringDefinition.MISFIRE_CATCH_UP, 5), T0);
+
+        round();
+
+        assertThat(occurrences()).extracting(TaskRecord::due).containsExactly(T0, T0.plusSeconds(60));
+        assertThat(store.recurringSchedules()).containsEntry(ID, T0.plusSeconds(120));
+    }
+
+    @Test
+    void aCatchUpWithAHugeMaxFiresDoesNotSizeItsWindowByIt() throws Exception {
+        clock.set(T0.plus(Duration.ofMinutes(10)));
+        register(definition("* * * * *", RecurringDefinition.MISFIRE_CATCH_UP, Integer.MAX_VALUE - 1), T0);
+
+        round();
+
+        assertThat(occurrences()).hasSize(11);
+    }
+
+    @Test
+    void moreMissedFiresThanTheScanLimitFireOnceNowWithAnIssue() throws Exception {
+        clock.set(T0.plus(Duration.ofDays(100)));
+        register(definition("* * * * *", RecurringDefinition.MISFIRE_CATCH_UP, 3), T0);
+
+        round();
+
+        assertThat(occurrences())
+                .singleElement()
+                .satisfies(o -> assertThat(o.due()).isEqualTo(T0));
+        assertThat(store.recurringSchedules()).containsEntry(ID, clock.instant().plusSeconds(60));
+        assertThat(status.issues()).singleElement().satisfies(i -> {
+            assertThat(i.kind()).isEqualTo("schedule-misfire");
+            assertThat(i.detail()).endsWith("fires missed, firing once now");
+        });
+    }
+
+    @Test
+    void aSkippedMisfireCountsAsProgressSoTheRoundGoesOn() throws Exception {
+        clock.set(T0.plus(Duration.ofMinutes(30)));
+        var late = clock.instant().minus(Duration.ofMinutes(10));
+        register(definition("0 * * * *", RecurringDefinition.MISFIRE_SKIP, 0), late);
+        register(definition("other", "*/5 * * * *", null, 0, false), clock.instant());
+        checkInterval = Duration.ofMinutes(1);
+        batchSize = 1;
+
+        round();
+
+        assertThat(occurrences())
+                .singleElement()
+                .satisfies(o -> assertThat(o.scheduleId()).isEqualTo("other"));
     }
 
     @Test
@@ -237,26 +296,8 @@ class RecurringTaskServiceTest {
     }
 
     @Test
-    void aDefinitionThatCannotBeEvaluatedIsSkippedAndTheOthersStillFire() throws Exception {
-        register(
-                new RecurringDefinition(
-                        "broken",
-                        typeId,
-                        0,
-                        queueId,
-                        null,
-                        "not a cron",
-                        null,
-                        null,
-                        0,
-                        null,
-                        false,
-                        null,
-                        3,
-                        null,
-                        false,
-                        0),
-                T0);
+    void aDefinitionThatCannotBeEvaluatedIsPushedAheadWithAnIssueAndTheOthersStillFire() throws Exception {
+        register(broken("broken", "not a cron", null), T0);
         register(definition("0 * * * *", null, 0), T0.plusSeconds(1));
 
         round();
@@ -265,7 +306,79 @@ class RecurringTaskServiceTest {
                 .singleElement()
                 .satisfies(o -> assertThat(o.scheduleId()).isEqualTo(ID));
         assertThat(events).singleElement().isInstanceOf(TaskEvent.ScheduleFired.class);
+        assertThat(store.recurringSchedules()).containsEntry("broken", T0.plus(Duration.ofHours(1)));
+        assertThat(status.issues()).singleElement().satisfies(i -> {
+            assertThat(i.kind()).isEqualTo("schedule-broken");
+            assertThat(i.detail()).contains("schedule broken").contains("moved from " + T0);
+        });
+    }
+
+    @Test
+    void aFullBatchOfBrokenDefinitionsDoesNotBlockTheHealthyOneBehindIt() throws Exception {
+        batchSize = 2;
+        for (int i = 0; i < 5; i++) register(broken("broken-" + i, "not a cron", null), T0.plusMillis(i));
+        register(definition("0 * * * *", null, 0), T0.plusSeconds(1));
+
+        round();
+
+        assertThat(occurrences())
+                .singleElement()
+                .satisfies(o -> assertThat(o.scheduleId()).isEqualTo(ID));
+        assertThat(status.issues())
+                .hasSize(5)
+                .allSatisfy(i -> assertThat(i.kind()).isEqualTo("schedule-broken"));
+    }
+
+    @Test
+    void aRemovedZoneIsPushedAheadLikeAnInvalidCron() throws Exception {
+        register(broken("gone", "0 * * * *", "Mars/Olympus_Mons"), T0);
+
+        round();
+
+        assertThat(store.recurringSchedules()).containsEntry("gone", T0.plus(Duration.ofHours(1)));
+        assertThat(status.issues())
+                .singleElement()
+                .satisfies(i -> assertThat(i.kind()).isEqualTo("schedule-broken"));
+    }
+
+    @Test
+    void aBrokenDefinitionWhoseStoreWriteFailsIsNotMovedAndEndsTheRound() throws Exception {
+        register(broken("broken", "not a cron", null), T0);
+        register(definition("0 * * * *", null, 0), T0.plusSeconds(1));
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("setNextFire")) throw new TaskStoreException("store down");
+            return real.proceed();
+        });
+
+        round();
+
         assertThat(store.recurringSchedules()).containsEntry("broken", T0);
+        assertThat(occurrences()).isEmpty();
+        assertThat(status.issues())
+                .singleElement()
+                .satisfies(i -> assertThat(i.kind()).isEqualTo("store-error"));
+    }
+
+    @Test
+    void aStoreFailureWhileCommittingIsRecordedAsAStoreErrorAndEndsTheRound() throws Exception {
+        register(definition("0 * * * *", null, 0), T0);
+        register(definition("second", "0 * * * *", null, 0, false), T0.plusSeconds(1));
+        var commits = new AtomicInteger();
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("commitRecurring")) {
+                commits.incrementAndGet();
+                throw new TaskStoreException("store down");
+            }
+            return real.proceed();
+        });
+
+        round();
+
+        assertThat(commits).hasValue(1);
+        assertThat(status.lastStoreError()).contains("store down");
+        assertThat(status.issues())
+                .singleElement()
+                .satisfies(i -> assertThat(i.kind()).isEqualTo("store-error"));
     }
 
     @Test
@@ -381,12 +494,12 @@ class RecurringTaskServiceTest {
             return real.proceed();
         });
 
-        runLoopUntil(() -> status.issueCount() >= 3);
+        runLoopUntil(() -> calls.get() >= 3);
 
-        assertThat(status.issues())
-                .hasSizeGreaterThanOrEqualTo(3)
-                .allSatisfy(i -> assertThat(i.kind()).isEqualTo("store-error"));
-        assertThat(calls.get()).isGreaterThanOrEqualTo(3);
+        assertThat(status.issues()).singleElement().satisfies(i -> {
+            assertThat(i.kind()).isEqualTo("store-error");
+            assertThat(i.detail()).startsWith("today.bonfire.oss.bth4j.spi.TaskStoreException: store down");
+        });
     }
 
     @Test
@@ -422,8 +535,13 @@ class RecurringTaskServiceTest {
     }
 
     private RecurringDefinition definition(String cron, String misfire, int catchUpMaxFires, boolean overlapSkip) {
+        return definition(ID, cron, misfire, catchUpMaxFires, overlapSkip);
+    }
+
+    private RecurringDefinition definition(
+            String id, String cron, String misfire, int catchUpMaxFires, boolean overlapSkip) {
         return new RecurringDefinition(
-                ID,
+                id,
                 typeId,
                 0,
                 queueId,
@@ -439,6 +557,12 @@ class RecurringTaskServiceTest {
                 null,
                 false,
                 0);
+    }
+
+    /** A definition whose cron expression or zone cannot be evaluated; the store keeps it as written. */
+    private RecurringDefinition broken(String id, String cron, String zone) {
+        return new RecurringDefinition(
+                id, typeId, 0, queueId, null, cron, zone, null, 0, null, false, null, 3, null, false, 0);
     }
 
     private void register(RecurringDefinition definition, Instant fireAt) {
@@ -481,6 +605,7 @@ class RecurringTaskServiceTest {
                 .clock(clock)
                 .status(status)
                 .checkInterval(checkInterval)
+                .batchSize(batchSize)
                 .create();
     }
 }

@@ -2,6 +2,7 @@ package today.bonfire.oss.bth4j.spi;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -34,13 +35,20 @@ public interface ExecutionStore extends TaskStore {
     List<EnqueueOutcome> enqueueAll(List<TaskRecord> tasks);
 
     /**
-     * Moves up to {@code count} queued tasks to LEASED and returns them with their new revision, lease and
-     * worker. Queues are read in the given order by {@code (due, id)}; a store may order tasks with the same
-     * {@code due} by the id's decimal text instead of its value (the Redis store does), which differs only
-     * where ids of different digit counts share a due time. Tasks whose type is not in
-     * {@link ClaimRequest#knownTypeIds()} are left alone; a store that cannot filter cheaply may instead
-     * move their due time a few seconds ahead without counting an attempt. Each claim adds one to
-     * {@code attempts}, sets {@code claimedAt} and keeps {@code due}.
+     * Atomically moves up to {@link ClaimRequest#count()} queued tasks to LEASED across all grants.
+     * In grant order, skip paused queues and zero shares, and claim up to the smaller of the share and
+     * remaining count. A grant filled that first pass only when it took that positive amount in full.
+     * In a second pass in the same order, only filled grants may claim more, up to their cap minus what
+     * they already took and the remaining count.
+     * <p>
+     * Within each queue tasks are read by {@code (due, id)}; a store may order equal-due tasks by the id's
+     * decimal text (the Redis store does). Tasks outside {@link ClaimRequest#knownTypeIds()} are left
+     * unchanged, including their due time; null accepts every type. Each claim adds one to {@code attempts},
+     * sets {@code claimedAt} and keeps {@code due}, returning the new revision, lease and worker.
+     * <p>
+     * A claimed task with a stored value that cannot be read is left out of the result, and its lease ends at
+     * once, so that {@link MaintenanceStore#reclaim} hands it to maintenance, which ends it DEAD. The other tasks
+     * of the claim are returned as usual.
      */
     List<TaskRecord> claim(ClaimRequest request);
 
@@ -64,9 +72,23 @@ public interface ExecutionStore extends TaskStore {
     boolean ack(long id, int revision, boolean keep, boolean keepPayload, ScheduleEffect effect);
 
     /**
+     * {@link #ack} without a schedule effect for several tasks, each checked and applied as if acknowledged on
+     * its own, in as few round trips as the store allows. When the call throws, any of them may have applied.
+     *
+     * @return per lease whether its ack applied, in the same order
+     */
+    default List<Boolean> ackAll(List<LeaseRef> leases, boolean keep, boolean keepPayload) {
+        var out = new ArrayList<Boolean>(leases.size());
+        for (var lease : leases) out.add(ack(lease.id(), lease.revision(), keep, keepPayload, null));
+        return out;
+    }
+
+    /**
      * Records a failed attempt of a LEASED task. The task is SCHEDULED for {@code retryAt}, or DEAD when
      * {@code retryAt} is null or the attempts are exhausted. The failure is appended to
-     * {@link TaskRecord#failures()}, which the store bounds to the last 20.
+     * {@link TaskRecord#failures()}, which the store bounds to the last 20. It must work for a task with stored
+     * values that cannot be read, so that such a task can still end; the store may drop stored failures it
+     * cannot read.
      *
      * @param keepDead false removes a dead task at once instead of keeping it for inspection
      * @param effect applied to a recurring definition in the same atomic step, only when the outcome is

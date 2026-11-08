@@ -8,6 +8,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalInt;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -16,18 +17,23 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.AdminOps;
 import today.bonfire.oss.bth4j.BackgroundRunner;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.spi.TaskState;
 
 /**
- * Gauges for one runner: {@code bth4j.runner.running}, {@code bth4j.runner.up}, {@code bth4j.runner.abandoned}
- * and {@code bth4j.tasks.state} (tags state, queue). Health and task counts are read by a single daemon thread every {@code refresh}, so
- * scraping the registry never touches the store. Call {@link #close()} to stop the thread and remove the meters.
+ * Gauges for one runner: running tasks, health, abandoned attempts, concurrency limit when available, and
+ * task counts by state and queue. Health and counts are read by a single daemon every {@code refresh}, so
+ * scraping never touches the store. Call {@link #close()} to stop polling and remove the meters.
  */
 public final class MicrometerRunnerMetrics implements AutoCloseable {
 
+    private static final Logger log = LoggerFactory.getLogger(MicrometerRunnerMetrics.class);
+
+    static final String CONCURRENCY_LIMIT = "bth4j.runner.concurrency.limit";
     static final String RUNNING = "bth4j.runner.running";
     static final String UP = "bth4j.runner.up";
     static final String ABANDONED = "bth4j.runner.abandoned";
@@ -36,6 +42,9 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
     private final MeterRegistry registry;
     private final AdminOps admin;
     private final Tags commonTags;
+    private final Supplier<OptionalInt> concurrencyLimit;
+    private boolean limitRegistered;
+    private boolean limitFailureLogged;
     private final AtomicInteger up = new AtomicInteger();
     private final AtomicInteger abandoned = new AtomicInteger();
     private final Map<StateKey, AtomicLong> stateValues = new ConcurrentHashMap<>();
@@ -47,7 +56,13 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
     private record StateKey(String queue, TaskState state) {}
 
     private MicrometerRunnerMetrics(
-            AdminOps admin, Supplier<Integer> running, MeterRegistry registry, Tags commonTags, Duration refresh) {
+            AdminOps admin,
+            Supplier<Integer> running,
+            Supplier<OptionalInt> concurrencyLimit,
+            MeterRegistry registry,
+            Tags commonTags,
+            Duration refresh) {
+        this.concurrencyLimit = concurrencyLimit;
         this.admin = admin;
         this.registry = registry;
         this.commonTags = commonTags;
@@ -79,13 +94,18 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
     /**
      * Registers the gauges and starts polling.
      *
-     * @param admin the runner's admin view; supplies health and the task counts
-     * @param running current number of running tasks, normally {@code runner::runningTasks}
+     * @param runner supplies the admin view, running tasks and concurrency limit
      * @param registry where the gauges are registered
      * @param refresh how often health and counts are read; must be positive
      */
     public static MicrometerRunnerMetrics bind(BackgroundRunner runner, MeterRegistry registry, Duration refresh) {
-        return bind(runner.admin(), runner::runningTasks, registry, Tags.empty(), refresh);
+        return bind(runner, registry, Tags.empty(), refresh);
+    }
+
+    /** Binds a runner, including its concurrency limit when available, with common tags. */
+    public static MicrometerRunnerMetrics bind(
+            BackgroundRunner runner, MeterRegistry registry, Tags commonTags, Duration refresh) {
+        return bind(runner.admin(), runner::runningTasks, runner::concurrencyLimit, registry, commonTags, refresh);
     }
 
     public static MicrometerRunnerMetrics bind(
@@ -96,14 +116,40 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
     /** Same as {@link #bind(AdminOps, Supplier, MeterRegistry, Duration)} with common tags on every gauge. */
     public static MicrometerRunnerMetrics bind(
             AdminOps admin, Supplier<Integer> running, MeterRegistry registry, Tags commonTags, Duration refresh) {
+        return bind(admin, running, OptionalInt::empty, registry, commonTags, refresh);
+    }
+
+    static MicrometerRunnerMetrics bind(
+            AdminOps admin,
+            Supplier<Integer> running,
+            Supplier<OptionalInt> limit,
+            MeterRegistry registry,
+            Tags commonTags,
+            Duration refresh) {
         if (refresh.isZero() || refresh.isNegative()) {
             throw new IllegalArgumentException("refresh must be positive");
         }
-        return new MicrometerRunnerMetrics(admin, running, registry, commonTags, refresh);
+        return new MicrometerRunnerMetrics(admin, running, limit, registry, commonTags, refresh);
     }
 
     /** Reads health and counts once; also called by the poller. A failing store leaves the last counts in place. */
     void refresh() {
+        metersLock.lock();
+        try {
+            if (closed) return;
+            if (!limitRegistered) {
+                try {
+                    registerLimitGauge();
+                } catch (RuntimeException e) {
+                    if (!limitFailureLogged) {
+                        limitFailureLogged = true;
+                        log.warn("Cannot read or register the concurrency limit gauge; retrying on each refresh", e);
+                    }
+                }
+            }
+        } finally {
+            metersLock.unlock();
+        }
         try {
             var health = admin.health();
             this.up.set(
@@ -134,6 +180,20 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
             }
         } catch (RuntimeException e) {
             // keep the last known counts; the next tick retries
+        }
+    }
+
+    private void registerLimitGauge() {
+        if (concurrencyLimit.get().isPresent()) {
+            meters.add(Gauge.builder(CONCURRENCY_LIMIT, concurrencyLimit, source -> {
+                        var value = source.get();
+                        return value.isPresent() ? value.getAsInt() : Double.NaN;
+                    })
+                    .tags(commonTags)
+                    .description("Current executor concurrency limit")
+                    .strongReference(true)
+                    .register(registry));
+            limitRegistered = true;
         }
     }
 

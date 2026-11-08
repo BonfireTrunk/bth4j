@@ -19,6 +19,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
@@ -32,6 +33,7 @@ import today.bonfire.oss.bth4j.Misfire;
 import today.bonfire.oss.bth4j.Overlap;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.ScheduleView;
+import today.bonfire.oss.bth4j.UnservedWork;
 import today.bonfire.oss.bth4j.common.Json;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.StateCounts;
@@ -626,6 +628,20 @@ class AdminHttpServerTest {
     }
 
     @Test
+    void anUnreadableTaskIs422WithItsCodeAndNoStoredDetail() throws Exception {
+        start();
+        var login = admin();
+        ops.failure = new today.bonfire.oss.bth4j.spi.UnreadableTaskException(
+                1, "task 1 has a stored value that cannot be read", new IllegalArgumentException("secret value"));
+
+        var res = get("/api/v1/tasks/1", login);
+
+        assertThat(res.statusCode()).isEqualTo(422);
+        assertThat(res.body()).contains("UNREADABLE_TASK").doesNotContain("secret");
+        assertThat(get("/api/v1/tasks/by-key/welcome", login).statusCode()).isEqualTo(422);
+    }
+
+    @Test
     void taskListUsesStateQueueAndLimit() throws Exception {
         start();
         var login = admin();
@@ -726,7 +742,7 @@ class AdminHttpServerTest {
 
     @Test
     void overviewHasCountsPerQueueTotalsWorkersIssuesAndHealth() throws Exception {
-        ops.workers.add(new WorkerInfo(1, "w", Instant.EPOCH, Instant.EPOCH, 0));
+        ops.workers.add(new WorkerInfo(1, "w", Instant.EPOCH, Instant.EPOCH, 0, true, Set.of(), Set.of()));
         ops.issues.add(new Issue(Instant.EPOCH, "store-error", "boom", 5L));
         ops.issues.add(new Issue(Instant.EPOCH, "lease-lost", "x", null));
         ops.health = new RunnerHealth(RunnerHealth.Status.RUNNING, 1, 2, 0, null, null, null, null, 2);
@@ -777,7 +793,7 @@ class AdminHttpServerTest {
     @Test
     void queuesSchedulesWorkersAndIssuesAreListed() throws Exception {
         ops.schedules.add(schedule("nightly"));
-        ops.workers.add(new WorkerInfo(2, "w2", Instant.EPOCH, Instant.EPOCH, 1));
+        ops.workers.add(new WorkerInfo(2, "w2", Instant.EPOCH, Instant.EPOCH, 1, true, Set.of(), Set.of()));
         ops.issues.add(new Issue(Instant.EPOCH, "store-error", "boom", 5L));
         start();
         var login = viewer();
@@ -804,6 +820,50 @@ class AdminHttpServerTest {
         assertThat(jsonList(get("/api/v1/issues", login)).get(0))
                 .containsEntry("kind", "store-error")
                 .containsEntry("taskId", "5");
+    }
+
+    @Test
+    void unservedEndpointListsQueueAndTypeReportsForViewers() throws Exception {
+        ops.unserved.add(new UnservedWork("mail", null, 12));
+        ops.unserved.add(new UnservedWork("default", "export", 3));
+        start();
+
+        var response = get("/api/v1/unserved", viewer());
+        assertThat(response.statusCode()).isEqualTo(200);
+        var reports = jsonList(response);
+        assertThat(reports).hasSize(2);
+        assertThat(reports.getFirst())
+                .containsOnlyKeys("queue", "type", "waiting")
+                .containsEntry("queue", "mail")
+                .containsEntry("type", null)
+                .containsEntry("waiting", 12L);
+        assertThat(reports.get(1))
+                .containsEntry("queue", "default")
+                .containsEntry("type", "export")
+                .containsEntry("waiting", 3L);
+        assertThat(ops.calls).contains("unservedWork PT1M");
+        ops.unserved.clear();
+        assertThat(jsonList(get("/api/v1/unserved", viewer()))).isEmpty();
+        assertThat(get("/api/v1/unserved", null).statusCode()).isEqualTo(401);
+    }
+
+    @Test
+    void workersViewIncludesCoverageNamesAndEmptyCoverage() throws Exception {
+        ops.workers.add(new WorkerInfo(1, "known", Instant.EPOCH, Instant.EPOCH, 2, true, Set.of(2, 1), Set.of(2, 1)));
+        ops.workers.add(new WorkerInfo(3, "empty", Instant.EPOCH, Instant.EPOCH, 0, false, Set.of(), Set.of()));
+        start();
+
+        var workers = jsonList(get("/api/v1/workers", viewer()));
+        assertThat(workers).hasSize(2);
+        assertThat(workers.getFirst())
+                .containsOnlyKeys("id", "label", "startedAt", "lastSeen", "running", "accepting", "queues", "types")
+                .containsEntry("accepting", true)
+                .containsEntry("queues", List.of("default", "mail"))
+                .containsEntry("types", List.of("export", "send-mail"));
+        assertThat(workers.get(1))
+                .containsEntry("accepting", false)
+                .containsEntry("queues", List.of())
+                .containsEntry("types", List.of());
     }
 
     @Test
@@ -928,6 +988,150 @@ class AdminHttpServerTest {
                 .isInstanceOf(IllegalStateException.class);
         assertThatThrownBy(() -> AdminHttpServer.builder().admin(ops).build())
                 .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void anUnknownQueueIsABadRequestOnTheTaskListAndNotFoundOnPause() throws Exception {
+        ops.queueFailure = new today.bonfire.oss.bth4j.exceptions.TaskValidationException("Unknown queue: nope");
+        start();
+        var login = admin();
+
+        var list = get("/api/v1/tasks?state=DEAD&queue=nope", login);
+        assertThat(list.statusCode()).isEqualTo(400);
+        assertThat(json(list)).containsEntry("error", "Unknown queue: nope");
+        assertThat(mutate("POST", "/api/v1/queues/default/pause", login, null).statusCode())
+                .isEqualTo(404);
+    }
+
+    @Test
+    void secureCookieFollowsTheBuilderSettingIndependentlyOfHttps() throws Exception {
+        start(builder().secureCookie(true));
+
+        var res = rawLogin("alice", "s3cret");
+
+        assertThat(res.headers().firstValue("Set-Cookie").orElseThrow()).contains("Secure");
+    }
+
+    @Test
+    void authenticatedResponsesReissueTheCookieWithAFreshMaxAge() throws Exception {
+        start(builder().sessionTtl(Duration.ofMinutes(10)));
+        var login = admin();
+        clock.advance(Duration.ofMinutes(6));
+
+        var res = get("/api/v1/me", login);
+
+        assertThat(res.headers().firstValue("Set-Cookie").orElseThrow())
+                .startsWith(login.cookie() + ";")
+                .contains("Max-Age=600");
+        assertThat(get("/api/v1/me", null).headers().firstValue("Set-Cookie")).isEmpty();
+    }
+
+    @Test
+    void aStoppedServerCannotBeStartedAgain() {
+        start();
+        server.stop();
+
+        assertThatThrownBy(server::start).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void theLoggedRouteHidesPathParameters() {
+        assertThat(AdminHttpServer.routeTemplate("/api/v1/tasks/by-key/order-42/cancel"))
+                .isEqualTo("/api/v1/tasks/by-key/{key}/cancel");
+        assertThat(AdminHttpServer.routeTemplate("/api/v1/tasks/7/payload")).isEqualTo("/api/v1/tasks/{}/payload");
+        assertThat(AdminHttpServer.routeTemplate("/api/v1/health")).isEqualTo("/api/v1/health");
+        assertThat(AdminHttpServer.routeTemplate("/secret/file")).doesNotContain("secret");
+    }
+
+    @Test
+    void concurrentLoginAttemptsCannotAllPassABlock() throws Exception {
+        var throttle = new LoginThrottle(clock);
+        var allowed = new java.util.concurrent.atomic.AtomicInteger();
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(16)) {
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var futures = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            for (var i = 0; i < 64; i++) {
+                futures.add(pool.submit(() -> {
+                    start.await();
+                    if (throttle.attempt("10.0.0.1") == 0) allowed.incrementAndGet();
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (var f : futures) f.get();
+        }
+
+        assertThat(allowed.get()).isEqualTo(5);
+        assertThat(throttle.attempt("10.0.0.1")).isPositive();
+    }
+
+    @Test
+    void aSuccessfulLoginTakesBackOnlyItsOwnAttempt() {
+        var throttle = new LoginThrottle(clock);
+        for (var i = 0; i < 3; i++) assertThat(throttle.attempt("a")).isZero();
+        assertThat(throttle.attempt("a")).isZero();
+        throttle.success("a");
+        assertThat(throttle.attempt("a")).as("fourth failure").isZero();
+        assertThat(throttle.attempt("a")).as("fifth attempt, it sets the block").isZero();
+        throttle.success("a");
+        assertThat(throttle.attempt("a"))
+                .as("the fifth succeeded, so its block is lifted")
+                .isZero();
+        assertThat(throttle.attempt("a"))
+                .as("but the failures before it still count")
+                .isPositive();
+    }
+
+    @Test
+    void atTheTrackingCapTheOldestUnblockedEntriesAreEvictedAndBlocksStay() {
+        var throttle = new LoginThrottle(clock);
+        for (var i = 0; i < 5; i++) throttle.attempt("blocked");
+        for (var i = 0; i < 4; i++) throttle.attempt("old");
+        clock.advance(Duration.ofMillis(1));
+        for (var i = 1; i < 9_998; i++) throttle.attempt("addr-" + i);
+        clock.advance(Duration.ofMillis(1));
+        for (var i = 0; i < 4; i++) throttle.attempt("new");
+        clock.advance(Duration.ofMillis(1));
+
+        throttle.attempt("one-more");
+
+        assertThat(throttle.attempt("blocked")).as("an active block stays").isPositive();
+        assertThat(throttle.attempt("old")).isZero();
+        assertThat(throttle.attempt("old"))
+                .as("the oldest entry went, so its count restarted")
+                .isZero();
+        assertThat(throttle.attempt("new")).as("a recent entry stays").isZero();
+        assertThat(throttle.attempt("new")).isPositive();
+    }
+
+    @Test
+    void concurrentSessionCreationNeverExceedsTheCap() throws Exception {
+        var sessions = new Sessions(clock, Duration.ofHours(1), 10);
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(16)) {
+            var futures = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            for (var i = 0; i < 400; i++) {
+                futures.add(pool.submit(() -> sessions.create("u", Role.ADMIN)));
+            }
+            for (var f : futures) f.get();
+        }
+
+        assertThat(sessions.size()).isEqualTo(10);
+    }
+
+    @Test
+    void aUserAtTheirSessionCapLosesTheirOwnOldestAndNoOneElses() {
+        var sessions = new Sessions(clock, Duration.ofHours(1), 1000);
+        var admin = sessions.create("admin", Role.ADMIN);
+        clock.advance(Duration.ofSeconds(1));
+        var firstViewer = sessions.create("viewer", Role.VIEWER);
+        for (var i = 0; i < 2 * Sessions.PER_USER; i++) {
+            clock.advance(Duration.ofSeconds(1));
+            sessions.create("viewer", Role.VIEWER);
+        }
+
+        assertThat(sessions.size()).isEqualTo(1 + Sessions.PER_USER);
+        assertThat(sessions.find(admin.token())).isNotNull();
+        assertThat(sessions.find(firstViewer.token())).isNull();
     }
 
     @Test

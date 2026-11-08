@@ -72,6 +72,18 @@ public interface AdminOps {
 
     List<WorkerInfo> workers();
 
+    /** Uses a one-minute heartbeat window to find unserved waiting work. */
+    default List<UnservedWork> unservedWork() {
+        return unservedWork(Duration.ofMinutes(1));
+    }
+
+    /**
+     * Finds queued work on unpaused queues without a live accepting worker. Queue and type counts are exact.
+     *
+     * @param liveWithin non-negative maximum heartbeat age, measured against the admin clock
+     */
+    List<UnservedWork> unservedWork(Duration liveWithin);
+
     int purgeStaleWorkers(Duration staleAfter);
 
     List<ScheduleView> schedules();

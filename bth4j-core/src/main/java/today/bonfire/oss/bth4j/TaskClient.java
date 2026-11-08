@@ -103,9 +103,9 @@ public final class TaskClient {
                 log.warn("Generated task id {} is already in use, reserving another", record.id());
             }
         } catch (TaskStoreException e) {
-            throw new EnqueueFailedException(known, 0, e);
+            throw new EnqueueFailedException(known, List.of(), e);
         }
-        throw new EnqueueFailedException(known, 0, new TaskStoreException(ID_TAKEN));
+        throw new EnqueueFailedException(known, List.of(), new TaskStoreException(ID_TAKEN));
     }
 
     /**
@@ -113,8 +113,9 @@ public final class TaskClient {
      * are replaced during writing. Every caller id is checked against its stored task before the first write.
      * Caller ids are validated against the high-water mark before fresh ids are reserved. A generated id
      * found taken abandons the current id block and is replaced from a fresh block, at most three writes
-     * per request. On failure, {@link EnqueueFailedException#retryRequests(List)} prepares the same requests
-     * for retry: it preserves ids of writes whose outcome is uncertain and caller-set ids, but leaves
+     * per request. On failure, {@link EnqueueFailedException#settled()} holds the results of the completed
+     * chunks and {@link EnqueueFailedException#retryRequests(List)} prepares the other requests for retry: it
+     * preserves ids of writes whose outcome is uncertain and caller-set ids, but leaves
      * generated requests known not to have been written without an id. These include collisions and
      * requests in unattempted chunks. No replacement ids are reserved after the third collision.
      * Retrying is idempotent while the original tasks are retained and the requests encode identically;
@@ -145,7 +146,7 @@ public final class TaskClient {
             callerIds.stream().mapToLong(Long::longValue).max().ifPresent(this::requireAllocated);
             if (freshCount > 0) nextId = this.ids.nextIds(freshCount);
         } catch (TaskStoreException e) {
-            throw new EnqueueFailedException(List.of(), 0, notStored, e);
+            throw new EnqueueFailedException(List.of(), List.of(), notStored, e);
         }
         for (long id : callerIds) {
             if (id >= nextId && id < nextId + freshCount) {
@@ -164,7 +165,7 @@ public final class TaskClient {
                 }
             }
         } catch (TaskStoreException e) {
-            throw new EnqueueFailedException(ids, 0, notStored, e);
+            throw new EnqueueFailedException(ids, List.of(), notStored, e);
         }
         var results = new ArrayList<EnqueueResult>(records.size());
         for (int from = 0; from < records.size(); from += ENQUEUE_CHUNK) {
@@ -172,7 +173,7 @@ public final class TaskClient {
             try {
                 results.addAll(writeChunk(requests, records, ids, callerIds, verified, notStored, from, to));
             } catch (TaskStoreException | TaskIdReusedException e) {
-                throw new EnqueueFailedException(ids, results.size(), notStored, e);
+                throw new EnqueueFailedException(ids, results, notStored, e);
             }
         }
         return results;
@@ -304,6 +305,7 @@ public final class TaskClient {
         }
         var b = TaskRecord.builder()
                 .id(id)
+                .revision(IdAllocator.firstRevision())
                 .queueId(names.queueId(queues.validQueue(request.queue())))
                 .typeId(names.typeId(type.name()))
                 .payloadVersion(type.payloadVersion())
@@ -344,7 +346,7 @@ public final class TaskClient {
      * such as a parked fixed-delay definition, resets it. A fixed-delay definition first fires one delay from
      * now.
      *
-     * @return the next fire time
+     * @return the next fire time it has after the put: the stored one when it was kept
      */
     public <T> Instant putSchedule(ScheduleDefinition<T> definition) {
         var now = clock.instant();
@@ -379,7 +381,9 @@ public final class TaskClient {
                 definition.maxRunTime() == null ? null : definition.maxRunTime().toMillis(),
                 false,
                 0);
-        var outcome = store.putRecurring(stored, next, keepUntil);
+        var result = store.putRecurring(stored, next, keepUntil);
+        var outcome = result.outcome();
+        next = result.nextFire();
         var timing = definition.isFixedDelay() ? "every " + definition.fixedDelay() : definition.cron();
         if (outcome == PutRecurringOutcome.UNCHANGED) {
             log.debug("Schedule {} ({}) is registered already", definition.id(), timing);
@@ -425,7 +429,8 @@ public final class TaskClient {
     }
 
     /**
-     * Lists tasks in one state, oldest state change first, paging by a cursor that is a position in the listing.
+     * Lists tasks in one state, QUEUED and SCHEDULED earliest due first and the other states oldest state change
+     * first, paging by a cursor that is a position in the listing.
      *
      * @param queue  a queue name, or null for every queue
      * @param cursor {@link TaskViewPage#next()} of the previous page; null starts at the beginning

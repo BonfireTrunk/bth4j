@@ -7,6 +7,7 @@ export default {
   setup() {
     const { data, loading, error, reload } = usePoll(() => api.overview(), 5000);
     const board = usePoll(loadDepartures, 5000);
+    const unserved = usePoll(() => api.unserved(), 5000);
     const { diff, changed } = useChanges();
     const queues = computed(() => Object.keys((data.value && data.value.counts) || {}).sort());
     const totals = computed(() => {
@@ -47,9 +48,9 @@ export default {
       diff(flat);
     });
 
-    const reloadAll = () => Promise.all([reload(), board.reload()]);
+    const reloadAll = () => Promise.all([reload(), board.reload(), unserved.reload()]);
 
-    return { data, loading, error, reload: reloadAll, board, queues, totals, grand, health, STATES, changed, rowTotal, link };
+    return { data, loading, error, reload: reloadAll, board, unserved, queues, totals, grand, health, STATES, changed, rowTotal, link };
   },
   template: `
   <section>
@@ -102,6 +103,16 @@ export default {
           </div>
         </div>
         <div>
+          <h2>Unserved work</h2>
+          <status-msg :loading="unserved.loading.value && !unserved.data.value" :error="unserved.error.value"></status-msg>
+          <div class="panel" v-if="unserved.data.value">
+            <p v-if="!unserved.data.value.length" class="muted">No unserved work detected.</p>
+            <p v-for="work in unserved.data.value" :key="JSON.stringify([work.queue, work.type])">
+              <span class="tag issue">UNSERVED</span>
+              <template v-if="work.type === null">No live worker processes queue {{ work.queue }} ({{ work.waiting }} waiting)</template>
+              <template v-else>No live worker on queue {{ work.queue }} handles type {{ work.type }} (at least {{ work.waiting }} waiting)</template>
+            </p>
+          </div>
           <h2>Runner in this process</h2>
           <div class="panel">
             <p v-if="!health" class="muted">No runner in this process; the server only reads the store.</p>

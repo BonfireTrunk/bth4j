@@ -15,15 +15,17 @@ export default {
     <status-msg :loading="loading" :error="error" :empty="!data || data.length === 0" empty-text="No workers registered." empty-hint="A worker appears when a runner starts against this store."></status-msg>
     <div class="table-wrap" v-if="data && data.length">
       <table>
-        <thead><tr><th>Id</th><th>Label</th><th>Started</th><th>Last heartbeat</th><th class="num">Running</th><th>Status</th></tr></thead>
+        <thead><tr><th>Id</th><th>Label</th><th>Queues</th><th>Types</th><th>Started</th><th>Last heartbeat</th><th class="num">Running</th><th>Status</th></tr></thead>
         <tbody>
           <tr v-for="w in data" :key="w.id" :class="{ stale: isStale(w) }">
             <td class="mono">{{ w.id }}</td>
             <td>{{ w.label }}</td>
+            <td>{{ w.queues.join(', ') || 'none' }}</td>
+            <td>{{ w.types.join(', ') || 'none' }}</td>
             <td><time-ago :at="w.startedAt"></time-ago></td>
             <td><time-ago :at="w.lastSeen"></time-ago></td>
             <td class="num">{{ w.running }}</td>
-            <td><span v-if="isStale(w)" class="tag issue">SILENT OVER 1 MIN</span><span v-else class="muted">alive</span></td>
+            <td><span v-if="isStale(w)" class="tag issue">SILENT OVER 1 MIN</span><span v-else-if="!w.accepting" class="tag">quiet</span><span v-else class="muted">alive</span></td>
           </tr>
         </tbody>
       </table>

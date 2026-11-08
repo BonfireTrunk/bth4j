@@ -17,7 +17,9 @@ class FixedExecutorTest {
     @Test
     void limitMustBePositive() {
         assertThatThrownBy(() -> new FixedExecutor(0)).isInstanceOf(IllegalArgumentException.class);
-        assertThat(new FixedExecutor(3).limit()).isEqualTo(3);
+        var executor = new FixedExecutor(3);
+        assertThat(executor.limit()).hasValue(3);
+        executor.shutdown();
     }
 
     @Test
@@ -80,6 +82,31 @@ class FixedExecutorTest {
         assertThat(ran.await(10, TimeUnit.SECONDS)).isTrue();
         assertThat(executor.reserve(1, Duration.ofSeconds(10))).isEqualTo(1);
         executor.shutdown();
+    }
+
+    @Test
+    void aTaskThatFreesItsSlotEarlyLetsTheNextOneRunAndShutdownStillWaitsForIt() throws Exception {
+        var executor = new FixedExecutor(1);
+        var finish = new CountDownLatch(1);
+        var secondRan = new CountDownLatch(1);
+        assertThat(executor.reserve(1, Duration.ofMillis(10))).isEqualTo(1);
+
+        executor.executeWithSlot(freeSlot -> {
+            freeSlot.run();
+            try {
+                finish.await();
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+        });
+
+        assertThat(executor.reserve(1, Duration.ofSeconds(10))).isEqualTo(1);
+        executor.execute(secondRan::countDown);
+        assertThat(secondRan.await(10, TimeUnit.SECONDS)).isTrue();
+        executor.shutdown();
+        assertThat(executor.awaitTermination(Duration.ofMillis(50))).isFalse();
+        finish.countDown();
+        assertThat(executor.awaitTermination(Duration.ofSeconds(10))).isTrue();
     }
 
     @Test

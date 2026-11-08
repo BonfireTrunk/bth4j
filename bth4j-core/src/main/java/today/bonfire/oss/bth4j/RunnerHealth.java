@@ -5,9 +5,10 @@ import java.time.Instant;
 /**
  * A snapshot of one runner.
  *
- * @param runningTasks the attempts running on this runner
+ * @param runningTasks the attempts running on this runner, including those whose processor returned and whose outcome
+ *     is still being written; with the built-in executors up to twice the concurrency limit
  * @param abandonedAttempts the running attempts that passed their maximum run time without stopping: their leases are
- *     no longer renewed, but each still holds its executor and queue slot until its processor returns
+ *     no longer renewed, but each still holds its slots until it ends
  */
 public record RunnerHealth(
         Status status,

@@ -23,9 +23,11 @@ class KeysTest {
                 keys.data(1),
                 keys.steps(1),
                 keys.failures(1),
-                keys.queue(2),
+                keys.queue(2, 3),
                 keys.scheduled(2),
                 keys.index(3, 2),
+                keys.activeTypes(2),
+                keys.typeSet("d"),
                 keys.uniqueKey("k"),
                 keys.worker(4),
                 keys.cronDefinition("s"),
@@ -40,11 +42,13 @@ class KeysTest {
         assertThat(keys.data(7)).isEqualTo("{NS}:d:7");
         assertThat(keys.steps(7)).isEqualTo("{NS}:st:7");
         assertThat(keys.failures(7)).isEqualTo("{NS}:f:7");
-        assertThat(keys.queue(2)).isEqualTo("{NS}:q:2");
+        assertThat(keys.queue(2, 3)).isEqualTo("{NS}:q:2:3");
         assertThat(keys.scheduled(2)).isEqualTo("{NS}:sched:2");
         assertThat(keys.index(4, 2)).isEqualTo("{NS}:idx:4:2");
+        assertThat(keys.activeTypes(2)).isEqualTo("{NS}:active:2");
+        assertThat(keys.typeSet("d")).isEqualTo("{NS}:ts:d");
         assertThat(keys.uniqueKey("k")).isEqualTo("{NS}:k:k");
-        assertThat(keys.registry("event")).isEqualTo("{NS}:reg:event");
+        assertThat(keys.registry("type")).isEqualTo("{NS}:reg:type");
     }
 
     @Test

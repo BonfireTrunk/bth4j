@@ -4,6 +4,11 @@ A static single-page operator dashboard for the bth4j admin HTTP API. No build s
 `index.html`, `app.css`, `api.js`, `ui.js`, `app.js` and `pages/*.js` (plain ES modules).
 
 Pages: overview, queues, tasks (filter, cursor paging, detail), dead tasks, schedules, workers, issues.
+Workers shows each worker's queues, registered types and accepting state (`accepting` from the API).
+A live worker that is not accepting is shown as quiet; a stale heartbeat still shows the silence warning.
+Overview polls `GET /api/v1/unserved` for queued work without a live accepting worker (heartbeat within
+one minute). Whole-queue and per-type counts are exact at the queued-count read. Quiet workers do not
+contribute coverage, and paused queues are skipped.
 
 ## Serving it
 
@@ -54,6 +59,8 @@ dashboard keeps in memory and in `sessionStorage` (cleared when the tab closes) 
 - **Admin**: all of the above. Every mutation asks for confirmation; cancel also requires a reason.
   Task actions send the revision shown on screen. If the task changed meanwhile the server answers `409`
   and the dashboard shows a "changed meanwhile, reload" prompt instead of overwriting.
+  Trigger moves a schedule's next fire time to now, and the runner creates the task on its next scheduling
+  round; it is disabled for a paused schedule, which does not fire (resume it first).
 
 Task ids and revisions are handled as strings and never parsed to numbers (they can exceed 2^53).
 

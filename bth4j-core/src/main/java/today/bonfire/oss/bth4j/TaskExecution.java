@@ -53,7 +53,40 @@ final class TaskExecution implements Runnable, TaskContext {
             boolean keepSucceeded,
             boolean keepPayload,
             boolean keepDead,
-            FailureDetail failureDetail) {}
+            FailureDetail failureDetail,
+            AckBatcher acks) {
+
+        Settings(
+                ExecutionStore store,
+                InspectionStore inspection,
+                Names names,
+                Codecs codecs,
+                TaskProcessorRegistry registry,
+                RetryPolicies retryPolicies,
+                Observers observer,
+                Clock clock,
+                RunnerStatus status,
+                boolean keepSucceeded,
+                boolean keepPayload,
+                boolean keepDead,
+                FailureDetail failureDetail) {
+            this(
+                    store,
+                    inspection,
+                    names,
+                    codecs,
+                    registry,
+                    retryPolicies,
+                    observer,
+                    clock,
+                    status,
+                    keepSucceeded,
+                    keepPayload,
+                    keepDead,
+                    failureDetail,
+                    new AckBatcher(store, keepSucceeded, keepPayload));
+        }
+    }
 
     private final TaskRecord record;
     private final TaskView view;
@@ -67,10 +100,13 @@ final class TaskExecution implements Runnable, TaskContext {
     private volatile boolean leaseLost;
     private volatile Instant startedAt;
     private volatile Instant overrunSince;
+    private volatile boolean reporting;
     // Serializes interrupts with detachment so a late signal cannot reach the thread's next task.
     private final ReentrantLock workerLock = new ReentrantLock();
     private Thread worker;
     private boolean leaseLossInterrupted;
+    /** the body was interrupted for a cancel request; guarded by workerLock */
+    private boolean cancelInterrupted;
     /** the fatal error to rethrow from run(), written by the thread that runs the task only */
     private Error fatal;
 
@@ -94,7 +130,11 @@ final class TaskExecution implements Runnable, TaskContext {
         return record.revision();
     }
 
-    /** The processor learns of it through {@link #checkCancelled()}, and by an interrupt when its type opted in. */
+    /**
+     * The processor learns of it through {@link #checkCancelled()}, and by an interrupt when its type opted in.
+     * The interrupt comes once, however often the request is passed on: a body that is cleaning up after it is
+     * not interrupted again.
+     */
     void requestCancel(String reason) {
         if (reason != null) cancelReason = reason;
         cancelRequested = true;
@@ -123,6 +163,14 @@ final class TaskExecution implements Runnable, TaskContext {
         return record.queueId();
     }
 
+    /**
+     * @return true once the attempt has begun writing its outcome; from then on the store may no longer hold
+     *     the lease although nothing took the task over
+     */
+    boolean reporting() {
+        return reporting;
+    }
+
     void leaseLost() {
         leaseLost = true;
         interruptWorker(true);
@@ -132,9 +180,10 @@ final class TaskExecution implements Runnable, TaskContext {
         if (!interruptOnCancel) return;
         workerLock.lock();
         try {
-            if (worker != null) {
+            if (worker != null && (leaseLoss || !cancelInterrupted)) {
                 worker.interrupt();
-                leaseLossInterrupted |= leaseLoss;
+                if (leaseLoss) leaseLossInterrupted = true;
+                else cancelInterrupted = true;
             }
         } finally {
             workerLock.unlock();
@@ -145,8 +194,17 @@ final class TaskExecution implements Runnable, TaskContext {
 
     @Override
     public void run() {
+        run(() -> {});
+    }
+
+    /**
+     * Runs the attempt; {@code freeSlot} runs once the processor has returned, before the outcome is written, so the
+     * slot can take the next task while the outcome is on its way to the store. The task stays running, and its
+     * lease renewed, until the finished callback has seen it.
+     */
+    void run(Runnable freeSlot) {
         try {
-            runAttempt();
+            runAttempt(freeSlot);
         } catch (Throwable t) {
             if (fatal != null && fatal != t) {
                 fatal.addSuppressed(t);
@@ -159,12 +217,14 @@ final class TaskExecution implements Runnable, TaskContext {
         if (fatal != null) throw fatal;
     }
 
-    private void runAttempt() {
+    private void runAttempt(Runnable freeSlot) {
         var started = s.clock().instant();
         startedAt = started;
         emit(new TaskEvent.Started(view, record.workerId() == null ? 0 : record.workerId()));
         var registration = s.registry().get(view.type());
         if (registration == null) {
+            freeSlot.run();
+            reporting = true;
             defer("no processor registered for " + view.type());
             return;
         }
@@ -191,6 +251,8 @@ final class TaskExecution implements Runnable, TaskContext {
                 workerLock.unlock();
             }
         }
+        freeSlot.run();
+        reporting = true;
         if (leaseLossInterrupted) {
             fail(new TaskLeaseLostException("lease of task " + record.id() + " was lost"));
         } else if (failure == null) {
@@ -231,8 +293,10 @@ final class TaskExecution implements Runnable, TaskContext {
 
     private void succeed(Instant started) {
         var rearm = rearmEffect();
-        var outcome =
-                apply(() -> s.store().ack(record.id(), record.revision(), s.keepSucceeded(), s.keepPayload(), rearm));
+        // a re-arm must stay atomic with its own transition, so it keeps the single call
+        var outcome = apply(() -> rearm == null
+                ? s.acks().ack(record.id(), record.revision())
+                : s.store().ack(record.id(), record.revision(), s.keepSucceeded(), s.keepPayload(), rearm));
         if (outcome == Outcome.LOST) {
             log.warn("Task {} completed but its lease was lost, it may run again", record.id());
         }
@@ -256,6 +320,13 @@ final class TaskExecution implements Runnable, TaskContext {
 
     private void fail(Throwable e) {
         switch (e) {
+            // a cancel request wins over a voluntary reschedule, or a body that reschedules itself could never be
+            // cancelled
+            case TaskRescheduleException ex
+            when cancelRequested -> {
+                log.debug("Task {} rescheduled itself while a cancel was requested", record.id());
+                cancelled(cancelReason());
+            }
             case TaskRescheduleException ex -> {
                 var due = s.clock().instant().plus(ex.delay());
                 log.info("Rescheduling task {} to {}", record.id(), due);
@@ -418,12 +489,19 @@ final class TaskExecution implements Runnable, TaskContext {
     }
 
     private void logStoreError(Throwable e) {
-        s.status().storeError(e);
-        log.error(
-                "Unable to update the state of task {}, the outcome is unknown. If it was not applied, the lease"
-                        + " expires and maintenance retries the task",
-                record.id(),
-                e);
+        if (s.status().storeError(e)) {
+            log.error(
+                    "Unable to update the state of task {}, the outcome is unknown. If it was not applied, the lease"
+                            + " expires and maintenance retries the task",
+                    record.id(),
+                    e);
+        } else {
+            log.error(
+                    "Unable to update the state of task {}, the outcome is unknown (the store error logged before:"
+                            + " {})",
+                    record.id(),
+                    e.toString());
+        }
     }
 
     private FailureInfo failure(Throwable e) {

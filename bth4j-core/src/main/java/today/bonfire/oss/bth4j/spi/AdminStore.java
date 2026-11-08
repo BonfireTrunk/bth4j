@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j.spi;
 
 import java.util.List;
+import java.util.Set;
 
 /**
  * Operator changes. Every revision-checked method has no effect and reports so when the task's revision or
@@ -47,8 +48,14 @@ public interface AdminStore extends TaskStore {
     /** @return every queue the store knows, in id order */
     List<QueueInfo> queues();
 
-    /** Records that the worker is alive now and how many tasks it is running. */
-    void heartbeat(int workerId, int running);
+    /**
+     * Records that the worker is alive now, how many tasks it is running and whether it accepts new work. When
+     * the worker's row is gone, because {@link MaintenanceStore#purgeWorkers} removed it while the worker could
+     * not reach the store, the row is created again under the same id with the label, queues and types given
+     * here and a start time of now. An existing row keeps its own label, queues, types and start time.
+     */
+    void heartbeat(
+            int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting);
 
     /** @return every worker row, in id order */
     List<WorkerInfo> workers();

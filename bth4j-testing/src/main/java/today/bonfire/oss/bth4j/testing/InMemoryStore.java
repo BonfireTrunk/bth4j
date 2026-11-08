@@ -15,6 +15,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Function;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
@@ -27,6 +28,8 @@ import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
 import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
+import today.bonfire.oss.bth4j.spi.PutRecurringResult;
+import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
@@ -68,6 +71,9 @@ public final class InMemoryStore implements FullStore {
 
     private final Map<Long, TaskRecord> tasks = new HashMap<>();
     private final Map<String, Long> keyHolders = new HashMap<>();
+    /** Keys of removed tasks whose keep window is still open; the task is gone, its key stays taken. */
+    private final Map<String, KeptKey> keptKeys = new HashMap<>();
+
     private final Map<String, Recurring> recurring = new HashMap<>();
     private final Map<String, Integer> queueIds = new LinkedHashMap<>();
     private final Map<String, Integer> typeIds = new LinkedHashMap<>();
@@ -124,12 +130,12 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public int allocateWorkerId(String label) {
+    public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
         lock.lock();
         try {
             int id = nextWorkerId++;
             Instant now = clock.instant();
-            workers.put(id, new WorkerInfo(id, label, now, now, 0));
+            workers.put(id, new WorkerInfo(id, label, now, now, 0, true, queueIds, typeIds));
             return id;
         } finally {
             lock.unlock();
@@ -225,6 +231,10 @@ public final class InMemoryStore implements FullStore {
                 }
                 releaseKey(holderId);
             }
+            Long keptBy = keptKeyHolder(key, now);
+            if (keptBy != null) {
+                return new EnqueueOutcome.DuplicateKey(keptBy);
+            }
         }
         Instant due = forcedDue != null ? forcedDue : task.due() != null ? task.due() : now;
         TaskState state = forcedDue != null || due.isAfter(now) ? TaskState.SCHEDULED : TaskState.QUEUED;
@@ -242,6 +252,19 @@ public final class InMemoryStore implements FullStore {
                 || (holder.keyUntil() != null && holder.keyUntil().isAfter(now));
     }
 
+    /** The id of the removed task that still keeps this key taken; a passed window is dropped here. */
+    private Long keptKeyHolder(String key, Instant now) {
+        KeptKey kept = keptKeys.get(key);
+        if (kept == null) {
+            return null;
+        }
+        if (kept.until().isAfter(now)) {
+            return kept.id();
+        }
+        keptKeys.remove(key);
+        return null;
+    }
+
     private void releaseKey(long id) {
         TaskRecord t = tasks.get(id);
         if (t == null || t.uniqueKey() == null) {
@@ -256,41 +279,51 @@ public final class InMemoryStore implements FullStore {
         lock.lock();
         try {
             Instant now = clock.instant();
-            Set<Integer> known = request.knownTypeIds();
             List<TaskRecord> claimed = new ArrayList<>();
-            for (int queueId : request.queueIds()) {
-                if (pausedQueues.contains(queueId)) {
-                    continue;
-                }
-                int missing = request.count() - claimed.size();
-                if (missing <= 0) {
-                    break;
-                }
-                List<TaskRecord> candidates = tasks.values().stream()
-                        .filter(t -> t.state() == TaskState.QUEUED && t.queueId() == queueId)
-                        .filter(t -> t.startBy() == null || t.startBy().isAfter(now))
-                        .filter(t -> known == null || known.contains(t.typeId()))
-                        .sorted(BY_DUE)
-                        .limit(missing)
-                        .toList();
-                for (TaskRecord t : candidates) {
-                    TaskRecord leased = t.toBuilder()
-                            .state(TaskState.LEASED)
-                            .attempts(t.attempts() + 1)
-                            .revision(t.revision() + 1)
-                            .claimedAt(now)
-                            .stateChangedAt(now)
-                            .leaseUntil(now.plus(request.lease()))
-                            .workerId(request.workerId())
-                            .build();
-                    tasks.put(t.id(), leased);
-                    claimed.add(leased);
-                }
+            var got = new int[request.grants().size()];
+            var filled = new boolean[got.length];
+            for (int i = 0; i < got.length && claimed.size() < request.count(); i++) {
+                var grant = request.grants().get(i);
+                if (pausedQueues.contains(grant.queueId()) || grant.share() == 0) continue;
+                int take = Math.min(grant.share(), request.count() - claimed.size());
+                got[i] = claimQueue(request, grant, take, now, claimed);
+                filled[i] = got[i] == take && take > 0;
+            }
+            for (int i = 0; i < got.length && claimed.size() < request.count(); i++) {
+                if (!filled[i]) continue;
+                var grant = request.grants().get(i);
+                int take = Math.min(request.count() - claimed.size(), grant.cap() - got[i]);
+                claimQueue(request, grant, take, now, claimed);
             }
             return claimed;
         } finally {
             lock.unlock();
         }
+    }
+
+    private int claimQueue(ClaimRequest request, QueueGrant grant, int take, Instant now, List<TaskRecord> claimed) {
+        var known = request.knownTypeIds();
+        List<TaskRecord> candidates = tasks.values().stream()
+                .filter(t -> t.state() == TaskState.QUEUED && t.queueId() == grant.queueId())
+                .filter(t -> t.startBy() == null || t.startBy().isAfter(now))
+                .filter(t -> known == null || known.contains(t.typeId()))
+                .sorted(BY_DUE)
+                .limit(take)
+                .toList();
+        for (TaskRecord t : candidates) {
+            TaskRecord leased = t.toBuilder()
+                    .state(TaskState.LEASED)
+                    .attempts(t.attempts() + 1)
+                    .revision(t.revision() + 1)
+                    .claimedAt(now)
+                    .stateChangedAt(now)
+                    .leaseUntil(now.plus(request.lease()))
+                    .workerId(request.workerId())
+                    .build();
+            tasks.put(t.id(), leased);
+            claimed.add(leased);
+        }
+        return candidates.size();
     }
 
     @Override
@@ -330,8 +363,8 @@ public final class InMemoryStore implements FullStore {
             }
             Instant now = clock.instant();
             applyEffect(effect);
-            if (!keep && t.keyKeep() == null) {
-                remove(t);
+            if (!keep) {
+                removeFinished(t, now);
                 return true;
             }
             TaskRecord.Builder b = t.toBuilder()
@@ -378,6 +411,19 @@ public final class InMemoryStore implements FullStore {
         tasks.remove(t.id());
         if (t.uniqueKey() != null) {
             keyHolders.remove(t.uniqueKey(), t.id());
+        }
+    }
+
+    /** Removes a task that just ended; a key with a keep window stays taken by its id until the window ends. */
+    private void removeFinished(TaskRecord t, Instant now) {
+        removeKeepingKey(t, t.uniqueKey() != null && t.keyKeep() != null ? now.plus(t.keyKeep()) : null, now);
+    }
+
+    private void removeKeepingKey(TaskRecord t, Instant keyUntil, Instant now) {
+        boolean held = t.uniqueKey() != null && Objects.equals(keyHolders.get(t.uniqueKey()), t.id());
+        remove(t);
+        if (held && keyUntil != null && keyUntil.isAfter(now)) {
+            keptKeys.put(t.uniqueKey(), new KeptKey(t.id(), keyUntil));
         }
     }
 
@@ -434,8 +480,8 @@ public final class InMemoryStore implements FullStore {
             return FailOutcome.RETRY;
         }
         applyEffect(effect);
-        if (!keepDead && t.keyKeep() == null) {
-            remove(t);
+        if (!keepDead) {
+            removeFinished(t, now);
             return FailOutcome.DEAD;
         }
         finish(t, b.state(TaskState.DEAD), now);
@@ -554,12 +600,11 @@ public final class InMemoryStore implements FullStore {
             Instant now = clock.instant();
             Instant cutoff = now.minus(retention);
             List<TaskRecord> old = tasks.values().stream()
-                    .filter(t -> t.state() == state && t.stateChangedAt().isBefore(cutoff))
-                    .filter(t -> t.keyUntil() == null || !t.keyUntil().isAfter(now))
+                    .filter(t -> t.state() == state && !t.stateChangedAt().isAfter(cutoff))
                     .sorted(Comparator.comparing(TaskRecord::stateChangedAt).thenComparingLong(TaskRecord::id))
                     .limit(limit)
                     .toList();
-            old.forEach(this::remove);
+            old.forEach(t -> removeKeepingKey(t, t.keyUntil(), now));
             return old.size();
         } finally {
             lock.unlock();
@@ -580,7 +625,16 @@ public final class InMemoryStore implements FullStore {
                     .map(TaskRecord::id)
                     .toList();
             expired.forEach(this::releaseKey);
-            return expired.size();
+            List<String> passed = keptKeys.entrySet().stream()
+                    .filter(e -> !e.getValue().until().isAfter(now))
+                    .sorted(Comparator.comparing((Map.Entry<String, KeptKey> e) ->
+                                    e.getValue().until())
+                            .thenComparingLong(e -> e.getValue().id()))
+                    .limit(limit - expired.size())
+                    .map(Map.Entry::getKey)
+                    .toList();
+            passed.forEach(keptKeys::remove);
+            return expired.size() + passed.size();
         } finally {
             lock.unlock();
         }
@@ -605,7 +659,7 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public PutRecurringOutcome putRecurring(RecurringDefinition definition, Instant nextFire, Instant keepUntil) {
+    public PutRecurringResult putRecurring(RecurringDefinition definition, Instant nextFire, Instant keepUntil) {
         lock.lock();
         try {
             Recurring old = recurring.get(definition.scheduleId());
@@ -624,13 +678,14 @@ public final class InMemoryStore implements FullStore {
                                     .withPaused(old.definition().paused())
                                     .withRevision(old.definition().revision()))
                     && Objects.equals(occurrence, old.occurrence())) {
-                return PutRecurringOutcome.UNCHANGED;
+                return new PutRecurringResult(PutRecurringOutcome.UNCHANGED, fire);
             }
             RecurringDefinition stored = definition
                     .withPaused(old != null ? old.definition().paused() : definition.paused())
                     .withRevision(++recurringRevision);
             recurring.put(definition.scheduleId(), new Recurring(stored, fire, occurrence));
-            return old == null ? PutRecurringOutcome.CREATED : PutRecurringOutcome.CHANGED;
+            return new PutRecurringResult(
+                    old == null ? PutRecurringOutcome.CREATED : PutRecurringOutcome.CHANGED, fire);
         } finally {
             lock.unlock();
         }
@@ -749,41 +804,48 @@ public final class InMemoryStore implements FullStore {
         }
     }
 
-    /** The cursor is {@code <stateChanged in epoch nanoseconds>:<id>} of the last task of the page. */
+    /**
+     * The cursor is {@code <sort time in epoch nanoseconds>:<id>} of the last task of the page; the sort time is due
+     * for QUEUED and SCHEDULED, stateChanged otherwise.
+     */
     @Override
     public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
         var position = cursor == null ? null : decodeCursor(cursor);
+        Function<TaskRecord, Instant> sortTime = state == TaskState.QUEUED || state == TaskState.SCHEDULED
+                ? TaskRecord::due
+                : TaskRecord::stateChangedAt;
         lock.lock();
         try {
-            Comparator<TaskRecord> order =
-                    Comparator.comparing(TaskRecord::stateChangedAt).thenComparingLong(TaskRecord::id);
+            Comparator<TaskRecord> order = Comparator.comparing(sortTime).thenComparingLong(TaskRecord::id);
             List<TaskRecord> found = limit <= 0
                     ? List.of()
                     : tasks.values().stream()
                             .filter(t -> t.state() == state)
                             .filter(t -> queueId == null || t.queueId() == queueId)
-                            .filter(t -> position == null || isAfter(t, position))
+                            .filter(t -> position == null || isAfter(sortTime.apply(t), t.id(), position))
                             .sorted(order)
                             .limit((long) limit + 1)
                             .toList();
             if (found.size() <= limit) return new TaskPage(found, null);
             var items = found.subList(0, limit);
-            return new TaskPage(items, encodeCursor(items.getLast()));
+            var last = items.getLast();
+            return new TaskPage(items, encodeCursor(sortTime.apply(last), last.id()));
         } finally {
             lock.unlock();
         }
     }
 
-    private static String encodeCursor(TaskRecord last) {
-        var at = last.stateChangedAt();
-        return (at.getEpochSecond() * 1_000_000_000L + at.getNano()) + ":" + last.id();
+    private static String encodeCursor(Instant at, long id) {
+        return (at.getEpochSecond() * 1_000_000_000L + at.getNano()) + ":" + id;
     }
 
-    private record Position(Instant changed, long id) {}
+    private record Position(Instant at, long id) {}
 
-    private static boolean isAfter(TaskRecord t, Position p) {
-        int c = t.stateChangedAt().compareTo(p.changed());
-        return c > 0 || (c == 0 && t.id() > p.id());
+    private record KeptKey(long id, Instant until) {}
+
+    private static boolean isAfter(Instant at, long id, Position p) {
+        int c = at.compareTo(p.at());
+        return c > 0 || (c == 0 && id > p.id());
     }
 
     private static Position decodeCursor(String cursor) {
@@ -948,6 +1010,9 @@ public final class InMemoryStore implements FullStore {
                     }
                     releaseKey(holderId);
                 }
+                if (keptKeyHolder(key, now) != null) {
+                    return RetryOutcome.DUPLICATE;
+                }
                 keyHolders.put(key, id);
             }
             tasks.put(
@@ -1016,13 +1081,41 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public void heartbeat(int workerId, int running) {
+    public void heartbeat(
+            int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
         lock.lock();
         try {
+            Instant now = clock.instant();
             WorkerInfo w = workers.get(workerId);
-            if (w != null) {
-                workers.put(workerId, new WorkerInfo(w.id(), w.label(), w.startedAt(), clock.instant(), running));
+            workers.put(
+                    workerId,
+                    w == null
+                            ? new WorkerInfo(workerId, label, now, now, running, accepting, queueIds, typeIds)
+                            : new WorkerInfo(
+                                    w.id(),
+                                    w.label(),
+                                    w.startedAt(),
+                                    now,
+                                    running,
+                                    accepting,
+                                    w.queueIds(),
+                                    w.typeIds()));
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public Map<Integer, Map<Integer, Long>> queuedByType() {
+        lock.lock();
+        try {
+            var result = new TreeMap<Integer, Map<Integer, Long>>();
+            for (var task : tasks.values()) {
+                if (task.state() == TaskState.QUEUED) {
+                    result.computeIfAbsent(task.queueId(), q -> new TreeMap<>()).merge(task.typeId(), 1L, Long::sum);
+                }
             }
+            return result;
         } finally {
             lock.unlock();
         }
@@ -1053,14 +1146,37 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public boolean pauseRecurring(String scheduleId, boolean paused) {
+    public boolean pauseRecurring(String scheduleId) {
         lock.lock();
         try {
             Recurring r = recurring.get(scheduleId);
             if (r == null) {
                 return false;
             }
-            recurring.put(scheduleId, new Recurring(r.definition().withPaused(paused), r.nextFire(), r.occurrence()));
+            recurring.put(scheduleId, new Recurring(r.definition().withPaused(true), r.nextFire(), r.occurrence()));
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public boolean resumeRecurring(String scheduleId, Instant nextFire) {
+        lock.lock();
+        try {
+            Recurring r = recurring.get(scheduleId);
+            if (r == null) {
+                return false;
+            }
+            if (!r.definition().paused()) {
+                return true;
+            }
+            RecurringDefinition resumed = r.definition().withPaused(false);
+            recurring.put(
+                    scheduleId,
+                    nextFire == null
+                            ? new Recurring(resumed, r.nextFire(), r.occurrence())
+                            : new Recurring(resumed.withRevision(++recurringRevision), nextFire, r.occurrence()));
             return true;
         } finally {
             lock.unlock();
@@ -1075,9 +1191,7 @@ public final class InMemoryStore implements FullStore {
             if (r == null) {
                 return false;
             }
-            recurring.put(
-                    scheduleId,
-                    new Recurring(r.definition().withRevision(++recurringRevision), nextFire, r.occurrence()));
+            recurring.put(scheduleId, new Recurring(r.definition().withRevision(++recurringRevision), nextFire, null));
             return true;
         } finally {
             lock.unlock();
