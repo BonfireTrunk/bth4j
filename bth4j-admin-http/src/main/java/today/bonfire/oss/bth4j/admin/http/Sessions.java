@@ -6,6 +6,7 @@ import java.time.Duration;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /** In-memory sessions with a sliding expiry and a hard cap that evicts the oldest session. */
 final class Sessions {
@@ -48,6 +49,7 @@ final class Sessions {
 
     private final SecureRandom random = new SecureRandom();
     private final ConcurrentHashMap<String, Session> sessions = new ConcurrentHashMap<>();
+    private final ReentrantLock admission = new ReentrantLock();
     private final Clock clock;
     private final long ttlMillis;
     private final int max;
@@ -60,11 +62,16 @@ final class Sessions {
 
     Session create(String user, Role role) {
         var now = clock.millis();
-        if (sessions.size() >= max) {
-            evict(now);
-        }
         var session = new Session(randomToken(), randomToken(), user, role, now);
-        sessions.put(session.token, session);
+        admission.lock();
+        try {
+            if (sessions.size() >= max) {
+                evict(now);
+            }
+            sessions.put(session.token, session);
+        } finally {
+            admission.unlock();
+        }
         return session;
     }
 

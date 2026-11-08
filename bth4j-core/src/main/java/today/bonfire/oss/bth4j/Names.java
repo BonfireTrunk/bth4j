@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j;
 
 import java.util.Map;
+import java.util.OptionalInt;
 import java.util.concurrent.ConcurrentHashMap;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskStore;
@@ -28,6 +29,19 @@ final class Names {
             queueNames.put(id, n);
             return id;
         });
+    }
+
+    /** Looks up a queue the store already knows, reloading its registry once on a miss; registers nothing. */
+    OptionalInt knownQueueId(String name) {
+        var id = queueIds.get(name);
+        if (id == null) {
+            store.queueNames().forEach((i, n) -> {
+                queueNames.put(i, n);
+                queueIds.put(n, i);
+            });
+            id = queueIds.get(name);
+        }
+        return id == null ? OptionalInt.empty() : OptionalInt.of(id);
     }
 
     int typeId(String name) {

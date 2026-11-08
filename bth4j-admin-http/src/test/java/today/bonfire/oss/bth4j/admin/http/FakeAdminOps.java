@@ -39,6 +39,7 @@ final class FakeAdminOps implements AdminOps {
     final java.util.Set<Long> heldKeys = ConcurrentHashMap.newKeySet();
     volatile RunnerHealth health;
     volatile RuntimeException failure;
+    volatile RuntimeException queueFailure;
 
     static TaskView task(long id, int revision, TaskState state, String queue, String encodedPayload) {
         var record = TaskRecord.builder()
@@ -68,6 +69,9 @@ final class FakeAdminOps implements AdminOps {
 
     @Override
     public void pauseQueue(String queue, boolean paused) {
+        if (queueFailure != null) {
+            throw queueFailure;
+        }
         calls.add("pauseQueue " + queue + ' ' + paused);
     }
 
@@ -98,6 +102,9 @@ final class FakeAdminOps implements AdminOps {
 
     @Override
     public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
+        if (queueFailure != null) {
+            throw queueFailure;
+        }
         calls.add("tasks " + state + ' ' + queue + " cursor=" + cursor + ' ' + limit);
         long afterId;
         try {

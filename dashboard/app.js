@@ -186,7 +186,7 @@ const App = {
       <h2>{{ dialog.title }}</h2>
       <p class="pre">{{ dialog.message }}</p>
       <label v-if="dialog.askReason">Reason
-        <input v-model="dialog.reason" type="text" placeholder="Why is this being cancelled?" @keydown.enter="dialog.reason.trim() && closeDialog(true)">
+        <input v-model="dialog.reason" type="text" maxlength="512" placeholder="Why is this being cancelled?" @keydown.enter="dialog.reason.trim() && closeDialog(true)">
       </label>
       <div class="row end">
         <button type="button" @click="closeDialog(false)">Keep as is</button>
