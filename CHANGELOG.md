@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Repeated store errors with the same text are one `store-error` issue whose detail carries the count and whose time is the latest, so a store outage no longer pushes every other issue out of the 100-entry buffer.
 - `AdminHttpServer.start()` after `stop()` throws `IllegalStateException`; build a new server instead. Before, a restarted server used an executor that was already shut down, or with an external executor kept the old sessions valid.
 - Breaking: `EnqueueFailedException.retryRequests(requests)` returns only the requests after the completed chunks, and the new `settled()` holds the results of those chunks (`storedCount()` is its size). Before, the retry list sent the settled requests again, so a request that had answered `Duplicate` could be stored once its key's holder had finished, running work the first call had deduplicated. A batch's results are `settled()` followed by the retry's results. The constructors take the settled results instead of a count.
-- The admin HTTP server keeps the SHA3-384 digest of each password instead of the SHA-256 digest.
+- The admin HTTP server keeps a random salt per user and the SHA3-384 digest of salt and password, instead of the unsalted SHA-256 digest, so equal passwords no longer give equal digests in a heap dump.
 - `AdminHttpServer.Builder.secureCookie(boolean)` marks the session cookie `Secure` behind a TLS-terminating proxy; by default it is `Secure` only when the server has an `SSLContext`.
 
 ### Fixed

@@ -17,6 +17,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -69,7 +70,12 @@ public final class AdminHttpServer {
             + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; "
             + "base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
 
-    private record User(byte[] digest, Role role) {}
+    private record User(byte[] salt, byte[] digest, Role role) {
+        static User of(String password, Role role) {
+            var salt = randomBytes();
+            return new User(salt, AdminHttpServer.digest(salt, password), role);
+        }
+    }
 
     private final AdminOps admin;
     private final String host;
@@ -83,7 +89,8 @@ public final class AdminHttpServer {
     private final boolean ownExecutor;
     private final Sessions sessions;
     private final LoginThrottle throttle;
-    private final byte[] dummyDigest = digest(randomBytes());
+    // an unknown user is checked like a known one, so the reply time does not tell which names exist
+    private final User dummyUser = User.of(HexFormat.of().formatHex(randomBytes()), Role.VIEWER);
     private final boolean secureCookie;
     private HttpServer server;
     private boolean stopped;
@@ -367,8 +374,8 @@ public final class AdminHttpServer {
             throw new HttpError(400, "user and password are required");
         }
         var user = users.get(name);
-        var expected = user == null ? dummyDigest : user.digest();
-        var matches = MessageDigest.isEqual(digest(password.getBytes(StandardCharsets.UTF_8)), expected);
+        var checked = user == null ? dummyUser : user;
+        var matches = MessageDigest.isEqual(digest(checked.salt(), password), checked.digest());
         if (user == null || !matches) {
             throw new HttpError(401, "invalid credentials");
         }
@@ -673,9 +680,11 @@ public final class AdminHttpServer {
         return bytes;
     }
 
-    private static byte[] digest(byte[] input) {
+    private static byte[] digest(byte[] salt, String password) {
         try {
-            return MessageDigest.getInstance("SHA3-384").digest(input);
+            var sha3 = MessageDigest.getInstance("SHA3-384");
+            sha3.update(salt);
+            return sha3.digest(password.getBytes(StandardCharsets.UTF_8));
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA3-384 is provided by the JDK since Java 9", e);
         }
@@ -710,12 +719,12 @@ public final class AdminHttpServer {
             return this;
         }
 
-        /** Adds a user; at least one is required. Only the SHA3-384 digest of the password is kept. */
+        /** Adds a user; at least one is required. Only a random salt and the SHA3-384 digest of the salt and password are kept. */
         public Builder user(String name, String password, Role role) {
             if (name == null || name.isEmpty() || password == null || role == null) {
                 throw new IllegalArgumentException("name, password and role are required");
             }
-            users.put(name, new User(digest(password.getBytes(StandardCharsets.UTF_8)), role));
+            users.put(name, User.of(password, role));
             return this;
         }
 
