@@ -228,7 +228,7 @@ class MaintenanceServiceTest {
     }
 
     @Test
-    void anUnknownPolicyNameFallsBackToTheDefaultPolicy() throws Exception {
+    void anUnknownPolicyNameFallsBackToTheDefaultPolicyAndRaisesAnIssue() throws Exception {
         long id = leased(request().maxAttempts(3).retryPolicy("missing").build());
         clock.advance(LEASE.plusSeconds(1));
 
@@ -236,6 +236,11 @@ class MaintenanceServiceTest {
 
         assertThat(store.getTask(id).orElseThrow().due())
                 .isEqualTo(clock.instant().plus(RETRY_DELAY));
+        assertThat(status.issues()).singleElement().satisfies(i -> {
+            assertThat(i.kind()).isEqualTo("retry-policy");
+            assertThat(i.detail()).isEqualTo("unknown retry policy missing");
+            assertThat(i.taskId()).isEqualTo(id);
+        });
     }
 
     @Test
