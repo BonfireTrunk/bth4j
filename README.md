@@ -1,7 +1,7 @@
 # Background Task Handler (BTH4J)
 
-A Java library for background tasks with at-least-once delivery. Tasks live in a store (Redis or
-PostgreSQL), several instances share the work through that store, and every state change is one atomic
+A Java library for background tasks with at-least-once delivery. Tasks live in a store (Redis, PostgreSQL or
+SQLite), several instances share the work through that store, and every state change is one atomic
 transition guarded by a revision, so a worker that lost its task cannot change it.
 
 ## Overview
@@ -14,7 +14,7 @@ BTH4J handles three kinds of work:
 
 A task has a type (`TaskType`) with a payload, a queue, an optional unique key, a retry budget and, while
 running, a lease that the runner renews. A processor can split its work into durable steps so that a retry
-resumes where the failed attempt stopped. The store is an interface with a Redis, a PostgreSQL and an
+resumes where the failed attempt stopped. The store is an interface with a Redis, a PostgreSQL, a SQLite and an
 in-memory implementation.
 
 ## Installation
@@ -29,7 +29,7 @@ Add `bth4j-core` and one store module. Add `bth4j-testing` for tests.
 </dependency>
 <dependency>
     <groupId>today.bonfire.oss</groupId>
-    <artifactId>bth4j-redis</artifactId>       <!-- or bth4j-postgres -->
+    <artifactId>bth4j-redis</artifactId>       <!-- or bth4j-postgres or bth4j-sqlite -->
     <version>4.1.0</version>
 </dependency>
 <dependency>
@@ -60,6 +60,7 @@ The metrics and the admin HTTP server are separate modules; add them when you us
 | `bth4j-core` | task model, runner, services, the store interface (`today.bonfire.oss.bth4j.spi`) |
 | `bth4j-redis` | `RedisTaskStore`: Redis 7.4 or newer or Valkey 9 or newer; uses Jedis. Tested on standalone Redis 8.8 and Valkey 9.1.3; Redis Cluster is not tested (see "Redis") |
 | `bth4j-postgres` | `PostgresTaskStore`: PostgreSQL 16 or newer, 17 or newer recommended, tested on 18; uses only `java.sql`, the application supplies the JDBC driver and a pooled `DataSource` |
+| `bth4j-sqlite` | `SqliteTaskStore`: SQLite 3.45 or newer in WAL mode, latest recommended, tested on 3.54; uses only `java.sql`, the application supplies the JDBC driver and a pooled `DataSource`; for runners on one machine |
 | `bth4j-testing` | `InMemoryStore` and `MutableClock` for tests of applications |
 | `bth4j-micrometer` | `MicrometerTaskObserver` and `MicrometerRunnerMetrics`; `micrometer-core` is a provided dependency, the application supplies it |
 | `bth4j-admin-http` | `AdminHttpServer`: a JSON admin API over `AdminOps` on the JDK HTTP server, with users, roles and sessions; no dependencies besides `bth4j-core` |
@@ -256,6 +257,7 @@ try (Connection c = dataSource.getConnection()) {
 
 An insert with the same unique key as another open transaction waits until that transaction ends. Enqueue
 last, after taking your own row locks, or outside the transaction, to avoid a lock-order cycle.
+`SqliteTaskStore.enqueue(Connection, TaskRecord)` works the same way; see "SQLite" for its locking.
 
 If the store cannot be reached, `enqueue` throws `EnqueueFailedException` and the caller does not know
 whether the task was stored. Ids are allocated by the client before the write, so the retry is safe:
@@ -946,6 +948,66 @@ the queued index once per queue and merges by due time and id. A claim walks the
 order past those of types it does not handle, so a large backlog of a type no live runner handles makes every
 claim on that queue slower; give such types their own queue.
 
+### SQLite
+
+```java
+var config = new SQLiteConfig();
+config.setJournalMode(SQLiteConfig.JournalMode.WAL);
+config.setBusyTimeout(5000);
+config.setSynchronous(SQLiteConfig.SynchronousMode.FULL);
+var source = new SQLiteDataSource(config);
+source.setUrl("jdbc:sqlite:/var/lib/my-app/tasks.db");
+
+var pool = new HikariConfig();
+pool.setDataSource(source);
+var store = new SqliteTaskStore(new HikariDataSource(pool), "bth");   // tables bth_task, bth_queue, bth_type, bth_worker, bth_schedule, bth_meta
+```
+
+The store is for one or more runners in one process or in several processes on one machine, with the database
+file on a local disk. Network file systems are not supported: SQLite's WAL mode does not work over them, and the
+store does not detect them. For runners on several machines use PostgreSQL or Redis.
+
+The tables are created when the runner or client is built, or run `store.schemaStatements()` from your
+migration tool. The prefix is lower case letters, digits and underscores, at most 41 characters; runners with
+the same prefix on the same database file share the work. All tables are `STRICT`, there are no foreign keys,
+and times are stored as epoch milliseconds taken from the store's `java.time.Clock` (the third constructor
+argument, `Clock.systemUTC()` by default), never from an SQL function. The SQLite store has its own schema
+version, 1, stored in `<prefix>_meta`; `init` refuses tables with another version and tables that have no
+`<prefix>_meta`, and when the version matches it only reads. SQLite 3.45 or newer is supported, the latest
+release recommended; the tests run on 3.54 (sqlite-jdbc 3.54.1.0, which carries its own SQLite). The store uses
+no feature newer than 3.45 and does not check the version. On JDK 25 the JVM prints a warning when sqlite-jdbc
+loads its native library, unless the application starts with `--enable-native-access=ALL-UNNAMED`.
+
+`init` refuses to run unless `PRAGMA journal_mode` is `wal` and `PRAGMA busy_timeout` is at least 1000 on the
+connection it receives, and its exception names the setting and how to set it. Without WAL a writer blocks
+readers, and without a busy timeout concurrent runners fail with `SQLITE_BUSY` instead of waiting for the write
+lock. Set both on every connection, as in the example, or in the JDBC URL
+(`jdbc:sqlite:/path/tasks.db?journal_mode=WAL&busy_timeout=5000`). `synchronous` is your choice and is not
+checked: `FULL` keeps every confirmed commit through a power cut; `NORMAL` survives a crash of the application
+but can lose the last commits on power loss.
+
+SQLite allows one writer at a time. Every write of the store runs in a `BEGIN IMMEDIATE` transaction that the
+store issues itself, whatever the pool does to the connection, so a writer waits for the lock up to the busy
+timeout and then fails with a `TaskStoreException`. A claim is several short statements in one such
+transaction: it picks the ids for both passes of the queue grants, then leases them with one `UPDATE` that takes
+the id list through `json_each`. A claim, promotion, purge or expiry that finds nothing to do reads first and
+takes no write lock. The store returns every connection with the auto-commit setting it received. A pool that
+turns auto-commit off together with `transaction_mode=IMMEDIATE` in the JDBC URL makes the driver begin a write
+transaction on every idle pooled connection, which holds the write lock; do not combine the two. Writes
+queue behind one another, so the write rate of the whole database is that of one writer.
+
+A task removed inside its unique key's keep window leaves a key-only row (state code 7, content columns empty)
+in the task table until the window ends; it is not counted or listed. The queued partial index ends with
+`type_id`, and a claim walks the queued tasks of a queue in due order past those of types it does not handle,
+so a large backlog of a type no live runner handles makes every claim on that queue slower; give such types
+their own queue.
+
+`SqliteTaskStore.enqueue(Connection, TaskRecord)` stores a record on your connection and does not commit; the
+task exists only if your transaction commits. A write transaction holds SQLite's single write lock until it
+ends, so keep it short: every other writer waits for it. A transaction that reads first and writes later can
+fail with `SQLITE_BUSY` when another writer committed in between; begin it with `BEGIN IMMEDIATE`, or use
+`transaction_mode=IMMEDIATE` with a pool whose connections have auto-commit on.
+
 ### Other stores
 
 The store interface is `today.bonfire.oss.bth4j.spi.FullStore`. A store on another engine implements it and
@@ -996,7 +1058,7 @@ clock.advance(Duration.ofHours(1));                 // the task is promoted and 
 ```
 
 `new InMemoryStore()` uses the system clock. The in-memory store passes the same `StoreContract` as the
-Redis and PostgreSQL stores, so behaviour in tests matches production. The services still wait in real
+Redis, PostgreSQL and SQLite stores, so behaviour in tests matches production. The services still wait in real
 time between their checks, so a test that moves the clock should poll for the result (for example with
 Awaitility) instead of asserting at once.
 
@@ -1007,7 +1069,8 @@ the stored form of a payload version or a step result against the library's own 
 The integration tests of the store modules start containers with Testcontainers: `redis:8.8-alpine` and
 `postgres:18-alpine` by default. `./mvnw -pl bth4j-redis -am verify -Pvalkey` runs the Redis suite against
 `valkey/valkey:9.1.3-alpine`, and `-Dbth4j.redis.image=...` or `-Dbth4j.postgres.image=...` selects any
-other image.
+other image. The SQLite tests need no Docker: they run in the `test` phase on a database file in a temporary
+directory.
 
 Test output (logs included) goes to `target/surefire-reports` and `target/failsafe-reports` of each module, one
 `*-output.txt` file per test class, so the build log shows only results and failures. Add
@@ -1031,11 +1094,14 @@ changes is in [CHANGELOG.md](CHANGELOG.md).
 - Admin sessions of `AdminHttpServer` are in memory and the server has no user store beyond the users given to
   the builder; put TLS (`https`) or a TLS-terminating proxy in front of it when it is not on the loopback interface.
 - The Redis store needs Redis 7.4 or newer or Valkey 9 or newer, the PostgreSQL store PostgreSQL 16 or
-  newer (17 or newer recommended), and Java 21 or later is required. Redis Cluster is not tested, and a
-  namespace's slot must not be resharded while runners use it.
+  newer (17 or newer recommended), the SQLite store SQLite 3.45 or newer (latest recommended) in WAL mode, and
+  Java 21 or later is required. Redis Cluster is not tested, and a namespace's slot must not be resharded while
+  runners use it.
+- The SQLite store is for runners on one machine with the database file on a local disk; network file systems
+  are not supported, and all writes of a database go through one writer at a time.
 
 ## Contributing
 
 - Build and test with the Maven Wrapper: `./mvnw verify`. Java 21 or later is required.
-- The build has the modules `bth4j-core`, `bth4j-redis`, `bth4j-postgres`, `bth4j-micrometer`, `bth4j-admin-http` and `bth4j-testing`, released together under one version, plus `bth4j-store-tests` (the contract tests, not published). Unit tests run in the `test` phase. The integration tests (`*IT` in the store modules) start a Redis or PostgreSQL container with Testcontainers in the `integration-test` phase and need Docker.
+- The build has the modules `bth4j-core`, `bth4j-redis`, `bth4j-postgres`, `bth4j-sqlite`, `bth4j-micrometer`, `bth4j-admin-http` and `bth4j-testing`, released together under one version, plus `bth4j-store-tests` (the contract tests, not published). Unit tests run in the `test` phase. The integration tests (`*IT` in the store modules) start a Redis or PostgreSQL container with Testcontainers in the `integration-test` phase and need Docker.
 - Versioning: the first change after a release bumps the version in `pom.xml` to the next `-SNAPSHOT`. A release is a pull request titled `Release X.Y.Z` that sets the final version and adds a `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md`; merging it publishes the release.
