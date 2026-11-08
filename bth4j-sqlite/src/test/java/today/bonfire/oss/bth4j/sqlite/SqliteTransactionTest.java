@@ -12,6 +12,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.AfterAll;
@@ -26,6 +28,7 @@ import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
+import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
@@ -482,6 +485,61 @@ class SqliteTransactionTest {
         assertThat(store.enqueue(rolledBack)).isEqualTo(EnqueueOutcome.STORED);
     }
 
+    /**
+     * A keyed enqueue first releases expired keys. Were that a read, the caller's deferred transaction would hold a
+     * read snapshot when it asks for the write lock, and SQLite answers that with SQLITE_BUSY at once instead of
+     * waiting for the busy timeout.
+     */
+    @Test
+    void aKeyedEnqueueOnTheCallersDeferredTransactionWaitsForTheWriteLock() throws Exception {
+        var keyed = task().uniqueKey("waits").build();
+        try (var holder = database.dataSource().getConnection();
+                var hold = holder.createStatement();
+                var c = database.dataSource().getConnection()) {
+            c.setAutoCommit(false);
+            hold.execute("BEGIN IMMEDIATE");
+            CompletableFuture<EnqueueOutcome> enqueued;
+            try {
+                enqueued = CompletableFuture.supplyAsync(() -> store.enqueue(c, keyed));
+                Thread.sleep(300);
+                assertThat(enqueued).isNotDone();
+            } finally {
+                hold.execute("COMMIT");
+            }
+            assertThat(enqueued.get(10, TimeUnit.SECONDS)).isEqualTo(EnqueueOutcome.STORED);
+            c.commit();
+            c.setAutoCommit(true);
+        }
+
+        assertThat(get(keyed.id()).state()).isEqualTo(TaskState.QUEUED);
+    }
+
+    /**
+     * An insert that stores nothing although neither its id nor its key is taken lost a race with a writer that
+     * removed the blocking row; the test makes the insert store nothing with a trigger that ignores it.
+     */
+    @Test
+    void anInsertThatStoresNothingWithoutAConflictIsTriedAgainForUpToThreeRounds() throws SQLException {
+        sql("CREATE TABLE " + prefix + "_skips (n INTEGER) STRICT");
+        sql("CREATE TRIGGER " + prefix + "_boom BEFORE INSERT ON " + prefix + "_task WHEN (SELECT count(*) FROM "
+                + prefix + "_skips) < 2 BEGIN INSERT INTO " + prefix + "_skips VALUES (1); SELECT RAISE(IGNORE); END");
+        var third = task().uniqueKey("third").build();
+
+        assertThat(store.enqueue(third)).isEqualTo(EnqueueOutcome.STORED);
+        assertThat(scalar("SELECT count(*) FROM " + prefix + "_skips")).isEqualTo(2);
+
+        healWrites();
+        sql("CREATE TRIGGER " + prefix + "_boom BEFORE INSERT ON " + prefix + "_task BEGIN SELECT RAISE(IGNORE); END");
+        var never = task().build();
+
+        assertThatThrownBy(() -> store.enqueue(never))
+                .isInstanceOf(TaskStoreException.class)
+                .hasMessageContaining("did not settle");
+        healWrites();
+        assertThat(store.getTask(never.id())).isEmpty();
+        assertThat(get(third.id()).state()).isEqualTo(TaskState.QUEUED);
+    }
+
     // ---- the write lock ------------------------------------------------------------------------------
 
     @Test
@@ -559,6 +617,23 @@ class SqliteTransactionTest {
         clock.advance(Duration.ofSeconds(61));
         assertThat(store.promote(10).moved()).isEqualTo(1);
         assertThat(get(retried.id()).stateChangedAt()).isEqualTo(clock.instant());
+    }
+
+    @Test
+    void putRecurringReturnsTheNextFireTimeAsStoredInWholeMilliseconds() {
+        var created = store.putRecurring(
+                fixedDelay("sub-ms", 60_000), Instant.parse("2100-06-15T12:01:00.123456789Z"), clock.instant());
+
+        assertThat(created.outcome()).isEqualTo(PutRecurringOutcome.CREATED);
+        assertThat(created.nextFire()).isEqualTo(Instant.parse("2100-06-15T12:01:00.123Z"));
+        assertThat(store.recurringSchedules()).containsEntry("sub-ms", created.nextFire());
+
+        var changed = store.putRecurring(
+                fixedDelay("sub-ms", 30_000), Instant.parse("2100-06-15T12:00:30.987654Z"), clock.instant());
+
+        assertThat(changed.outcome()).isEqualTo(PutRecurringOutcome.CHANGED);
+        assertThat(changed.nextFire()).isEqualTo(Instant.parse("2100-06-15T12:00:30.987Z"));
+        assertThat(store.recurringSchedules()).containsEntry("sub-ms", changed.nextFire());
     }
 
     @Test

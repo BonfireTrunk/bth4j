@@ -968,7 +968,8 @@ file on a local disk. Network file systems are not supported: SQLite's WAL mode 
 store does not detect them. For runners on several machines use PostgreSQL or Redis.
 
 The tables are created when the runner or client is built, or run `store.schemaStatements()` from your
-migration tool. The prefix is lower case letters, digits and underscores, at most 41 characters; runners with
+migration tool. The prefix is lower case letters, digits and underscores, at most 41 characters, and neither
+`sqlite` nor starting with `sqlite_`, because SQLite reserves table names that start with `sqlite_`; runners with
 the same prefix on the same database file share the work. All tables are `STRICT`, there are no foreign keys,
 and times are stored as epoch milliseconds taken from the store's `java.time.Clock` (the third constructor
 argument, `Clock.systemUTC()` by default), never from an SQL function. The SQLite store has its own schema
@@ -1006,7 +1007,9 @@ their own queue.
 task exists only if your transaction commits. A write transaction holds SQLite's single write lock until it
 ends, so keep it short: every other writer waits for it. A transaction that reads first and writes later can
 fail with `SQLITE_BUSY` when another writer committed in between; begin it with `BEGIN IMMEDIATE`, or use
-`transaction_mode=IMMEDIATE` with a pool whose connections have auto-commit on.
+`transaction_mode=IMMEDIATE` with a pool whose connections have auto-commit on. Call `client.prepare(request)`
+before your transaction begins: it can allocate ids and register queue and type names, writes on another
+connection that would wait for your transaction's write lock until the busy timeout.
 
 ### Other stores
 

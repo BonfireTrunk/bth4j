@@ -11,6 +11,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -174,6 +175,10 @@ public class SqliteTaskStore implements FullStore {
         if (dataSource == null) throw new TaskConfigurationException("DataSource is required");
         if (prefix == null || !PREFIX.matcher(prefix).matches()) {
             throw new TaskConfigurationException("prefix must match " + PREFIX.pattern());
+        }
+        if (prefix.equals("sqlite") || prefix.startsWith("sqlite_")) {
+            throw new TaskConfigurationException("prefix " + prefix + " would make table names starting with sqlite_,"
+                    + " which SQLite reserves for itself");
         }
         if (clock == null) throw new TaskConfigurationException("clock is required");
         this.dataSource = dataSource;
@@ -536,7 +541,9 @@ public class SqliteTaskStore implements FullStore {
      * A write in SQLite that follows a read in the same transaction can fail with SQLITE_BUSY when another
      * writer committed in between. Start the caller's transaction as IMMEDIATE (with sqlite-jdbc,
      * {@code SQLiteConfig.setTransactionMode(SQLiteConfig.TransactionMode.IMMEDIATE)} on a pool whose connections
-     * have auto-commit on), or make this call before the transaction reads.
+     * have auto-commit on), or make this call before the transaction reads. Call {@code TaskClient.prepare}
+     * before the transaction begins: it can allocate ids and register queue and type names, writes that run on
+     * another connection and would wait for this transaction's write lock until the busy timeout.
      *
      * @throws TaskStoreException when a statement fails; the caller's transaction is then aborted
      */
@@ -549,14 +556,25 @@ public class SqliteTaskStore implements FullStore {
         }
     }
 
+    /**
+     * On a caller's connection without an open transaction each statement commits on its own, so the row that
+     * blocked an insert can be gone when {@link #classify} looks for it; the insert is then tried again, up to three
+     * rounds, as in PostgreSQL.
+     */
     private List<EnqueueOutcome> enqueueAll(Connection c, List<TaskRecord> tasks) throws SQLException {
         long now = clock.millis();
         releaseExpiredKeys(c, now, tasks.stream().map(TaskRecord::uniqueKey).toList());
         var outcomes = new ArrayList<EnqueueOutcome>(tasks.size());
         try (var ps = c.prepareStatement(insertSql)) {
             for (var t : tasks) {
-                bind(ps, insertValues(t, now));
-                outcomes.add(ps.executeUpdate() == 1 ? EnqueueOutcome.STORED : classify(c, t));
+                EnqueueOutcome outcome = null;
+                for (int round = 0; round < 3 && outcome == null; round++) {
+                    if (round > 0) releaseExpiredKeys(c, now, Collections.singletonList(t.uniqueKey()));
+                    bind(ps, insertValues(t, now));
+                    outcome = ps.executeUpdate() == 1 ? EnqueueOutcome.STORED : classify(c, t);
+                }
+                if (outcome == null) throw new TaskStoreException("enqueue did not settle for task " + t.id());
+                outcomes.add(outcome);
             }
         }
         return outcomes;
@@ -594,7 +612,7 @@ public class SqliteTaskStore implements FullStore {
         };
     }
 
-    /** Names why a task was not stored: its id exists, or its key is held by another task. */
+    /** @return why a task was not stored (its id exists, or its key is held by another task), or null when neither */
     private EnqueueOutcome classify(Connection c, TaskRecord t) throws SQLException {
         if (queryOne(c, "SELECT 1 FROM " + task + " WHERE id = ?", rs -> true, t.id()) != null) {
             return EnqueueOutcome.EXISTS;
@@ -604,19 +622,31 @@ public class SqliteTaskStore implements FullStore {
                     queryOne(c, "SELECT id FROM " + task + " WHERE unique_key = ?", rs -> rs.getLong(1), t.uniqueKey());
             if (holder != null) return new EnqueueOutcome.DuplicateKey(holder);
         }
-        throw new TaskStoreException("enqueue did not settle for task " + t.id());
+        return null;
     }
 
-    /** A key whose keep window has passed is free; release it now rather than wait for {@link #releaseKeys}. */
+    /**
+     * A key whose keep window has passed is free; release it now rather than wait for {@link #releaseKeys}. Both
+     * statements write, with no read before them, so that on a caller's deferred transaction the write lock is taken
+     * by the first statement and waits up to the busy timeout instead of failing on a stale read.
+     */
     private void releaseExpiredKeys(Connection c, long now, Collection<String> keys) throws SQLException {
         var distinct = keys.stream().filter(Objects::nonNull).distinct().toList();
         if (distinct.isEmpty()) return;
-        releaseSelected(
+        var json = Json.write(distinct);
+        update(
                 c,
+                "DELETE FROM " + task + " WHERE unique_key IN (SELECT value FROM json_each(?2)) AND key_until <= ?1"
+                        + " AND state = " + KEY_ONLY,
                 now,
-                "SELECT id, state FROM " + task + " WHERE unique_key IN (SELECT value FROM json_each(?2))"
-                        + " AND key_until <= ?1",
-                Json.write(distinct));
+                json);
+        update(
+                c,
+                "UPDATE " + task + " SET unique_key = NULL, key_until = NULL"
+                        + " WHERE unique_key IN (SELECT value FROM json_each(?2)) AND key_until <= ?1"
+                        + " AND state <> " + KEY_ONLY,
+                now,
+                json);
     }
 
     /**
@@ -1057,7 +1087,8 @@ public class SqliteTaskStore implements FullStore {
      * nothing writes nothing, so it keeps the revision.
      */
     @Override
-    public PutRecurringResult putRecurring(RecurringDefinition d, Instant nextFire, Instant keepUntil) {
+    public PutRecurringResult putRecurring(RecurringDefinition d, Instant fireAt, Instant keepUntil) {
+        var nextFire = Instant.ofEpochMilli(fireAt.toEpochMilli());
         return inTransaction(c -> {
             var old = queryOne(
                     c,

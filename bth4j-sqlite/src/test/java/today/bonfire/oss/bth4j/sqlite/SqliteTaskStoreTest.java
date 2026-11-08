@@ -52,6 +52,18 @@ class SqliteTaskStoreTest {
     }
 
     @Test
+    void prefixesThatWouldMakeTableNamesSqliteReservesAreRejected() {
+        for (var reserved : new String[] {"sqlite", "sqlite_", "sqlite_app"}) {
+            assertThatThrownBy(() -> new SqliteTaskStore(DATA_SOURCE, reserved))
+                    .as("prefix %s", reserved)
+                    .isInstanceOf(TaskConfigurationException.class)
+                    .hasMessageContaining("reserves");
+        }
+        assertThatCode(() -> new SqliteTaskStore(DATA_SOURCE, "sqlitex")).doesNotThrowAnyException();
+        assertThatCode(() -> new SqliteTaskStore(DATA_SOURCE, "my_sqlite")).doesNotThrowAnyException();
+    }
+
+    @Test
     void infoNamesTheEngineAndTheSchemaVersion() {
         var info = new SqliteTaskStore(DATA_SOURCE, "app").info();
 
