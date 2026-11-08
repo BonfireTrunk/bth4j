@@ -889,7 +889,7 @@ final class RedisScripts {
     /**
      * ARGV: id, revision, reason ('' for none, else the text after a one-character prefix), keep payload (1/0),
      * expired only (1/0), then the schedule effect as for ACK. LEASED to CANCELLED; the worker id stays, the
-     * cancel request time is kept when there is one. Returns 1 (2 when the effect changed the definition), or 0
+     * cancel request time is kept when there is one, and the reason is the one given (none removes an earlier one). Returns 1 (2 when the effect changed the definition), or 0
      * when the fence fails or, with expired only, when the stored lease is after now.
      */
     static final String FINISH_CANCELLED = PRELUDE + """
@@ -903,6 +903,7 @@ final class RedisScripts {
             if not v[6] then extra = {'cra', at} end
             if ARGV[4] ~= '' then extra[#extra + 1] = 'crs'; extra[#extra + 1] = string.sub(ARGV[4], 2) end
             finish(tkey, id, tonumber(v[3]), 2, 5, at, tonumber(v[1]), v[4], v[5], extra, true)
+            if ARGV[4] == '' then redis.call('HDEL', tkey, 'crs') end
             if ARGV[5] ~= '1' then redis.call('UNLINK', P .. 'd:' .. id) end
             local fx = effect(ARGV[7], ARGV[8], ARGV[9])
             flush()
@@ -923,6 +924,7 @@ final class RedisScripts {
             local at = now()
             local extra = {'cra', at}
             if ARGV[4] ~= '' then extra[3] = 'crs'; extra[4] = string.sub(ARGV[4], 2) end
+            if ARGV[4] == '' and (state == 0 or state == 1 or state == 2) then redis.call('HDEL', tkey, 'crs') end
             if state == 0 or state == 1 then
               finish(tkey, id, v[3], state, 5, at, tonumber(v[1]), v[4], v[5], extra, true)
               zrem(P .. 'startby', id)

@@ -62,6 +62,8 @@ public abstract class RunnerContract {
      */
     private static final long HELD_FOR_MS = 300;
 
+    private static final String REPLACEMENT = String.valueOf((char) 0xFFFD);
+
     private static final AtomicInteger NAMESPACES = new AtomicInteger();
 
     protected FullStore store;
@@ -391,13 +393,15 @@ public abstract class RunnerContract {
                 enqueue(TaskRequest.of(VOID_TYPE).header("cancel", "yes").build());
 
         var dead = awaitState(failing, TaskState.DEAD);
-        assertThat(dead.progress()).isEqualTo("half�way");
+        assertThat(dead.progress()).isEqualTo("half" + REPLACEMENT + "way");
         assertThat(dead.steps()).containsOnlyKeys("one");
-        assertThat(dead.lastFailure().message()).isEqualTo("bad � byte");
-        assertThat(dead.lastFailure().stack()).contains("bad � byte").doesNotContain("\u0000");
+        assertThat(dead.lastFailure().message()).isEqualTo("bad " + REPLACEMENT + " byte");
+        assertThat(dead.lastFailure().stack())
+                .contains("bad " + REPLACEMENT + " byte")
+                .doesNotContain("\u0000");
         var cancelled = awaitState(cancelling, TaskState.CANCELLED);
-        assertThat(cancelled.cancelReason()).isEqualTo("stop � now");
-        assertThat(cancelled.progress()).isEqualTo("half�way");
+        assertThat(cancelled.cancelReason()).isEqualTo("stop " + REPLACEMENT + " now");
+        assertThat(cancelled.progress()).isEqualTo("half" + REPLACEMENT + "way");
     }
 
     @Test

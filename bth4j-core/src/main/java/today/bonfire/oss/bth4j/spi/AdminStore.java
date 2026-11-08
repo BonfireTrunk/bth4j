@@ -14,6 +14,9 @@ public interface AdminStore extends TaskStore {
      * {@code cancelReason} set, unique key handled like a terminal transition). LEASED: only the request is
      * stored ({@code cancelRequestedAt}, {@code cancelReason}, no revision change); the worker learns of it
      * through {@link ExecutionStore#renew} and finishes the task with {@link ExecutionStore#finishCancelled}.
+     * The request stays with the task until it ends or {@link #retry} clears it: when the attempt fails with a
+     * retry, reschedules or is unclaimed, the next attempt's claim and renew report it. The reason is stored as
+     * given; null removes an earlier one, here and in {@code finishCancelled}.
      *
      * @param effect applied to a recurring definition in the same atomic step, only when the task is
      *     cancelled at once; may be null
