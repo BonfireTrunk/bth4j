@@ -428,7 +428,8 @@ public final class TaskClient {
     }
 
     /**
-     * Lists tasks in one state, oldest state change first, paging by a cursor that is a position in the listing.
+     * Lists tasks in one state, QUEUED and SCHEDULED earliest due first and the other states oldest state change
+     * first, paging by a cursor that is a position in the listing.
      *
      * @param queue  a queue name, or null for every queue
      * @param cursor {@link TaskViewPage#next()} of the previous page; null starts at the beginning

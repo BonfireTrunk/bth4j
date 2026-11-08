@@ -59,6 +59,8 @@ dashboard keeps in memory and in `sessionStorage` (cleared when the tab closes) 
 - **Admin**: all of the above. Every mutation asks for confirmation; cancel also requires a reason.
   Task actions send the revision shown on screen. If the task changed meanwhile the server answers `409`
   and the dashboard shows a "changed meanwhile, reload" prompt instead of overwriting.
+  Trigger moves a schedule's next fire time to now, and the runner creates the task on its next scheduling
+  round; it is disabled for a paused schedule, which does not fire (resume it first).
 
 Task ids and revisions are handled as strings and never parsed to numbers (they can exceed 2^53).
 
