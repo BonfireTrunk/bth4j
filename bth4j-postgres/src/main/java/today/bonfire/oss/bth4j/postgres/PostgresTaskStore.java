@@ -62,7 +62,8 @@ import today.bonfire.oss.bth4j.spi.WorkerInfo;
  * {@code FOR UPDATE SKIP LOCKED}, the fenced transitions are {@code UPDATE ... WHERE id = ? AND revision = ?
  * AND state = 2}, and {@link #fail} locks the row before it reads the failures it appends to. Runners that
  * share the tables share the work. The database clock ({@code now()}) decides due times, leases and
- * retention.
+ * retention. A task removed while its unique key's keep window is open leaves a key-only row, which holds the
+ * key until the window ends and is invisible to every read.
  * <p>
  * The tables are created by {@link #init()}, or by running {@link #schemaStatements()} from the
  * application's migration tool. There are no foreign keys; the registries are only written through
@@ -1530,7 +1531,11 @@ public class PostgresTaskStore implements FullStore {
         if (position != null) sql.append(" AND (" + column + ", id) > (?, ?)");
         sql.append(" ORDER BY " + column + ", id LIMIT ?");
         if (perQueue) {
-            sql.insert(0, "SELECT t.* FROM " + queue + " q CROSS JOIN LATERAL (");
+            // queue ids as an array: the planner estimates few rows, where an unanalysed queue table would make
+            // the estimate, and with it JIT compilation, cost more than the listing
+            sql.insert(
+                    0,
+                    "SELECT t.* FROM unnest((SELECT array_agg(id) FROM " + queue + ")) AS q(id) CROSS JOIN LATERAL (");
             sql.append(") t ORDER BY t." + column + ", t.id LIMIT ?");
         }
         var items = withConnection(c -> {
