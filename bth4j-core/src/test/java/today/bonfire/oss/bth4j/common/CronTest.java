@@ -196,4 +196,46 @@ class CronTest {
         assertThatThrownBy(() -> Cron.zone("")).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> Cron.zone("  ")).isInstanceOf(TaskValidationException.class);
     }
+
+    @Test
+    void aGapBehindARepeatedHourIsStillFoundWhenItIsTheFirstFireAfterIt() {
+        // from April 2025 the first transition is the October overlap; 02:30 on 29 March does not exist in 2026
+        var fire = Cron.next("30 2 29 3 *", Instant.parse("2025-04-01T00:00:00Z"), BERLIN)
+                .orElseThrow();
+
+        assertThat(fire).isEqualTo(Instant.parse("2026-03-29T01:00:00Z"));
+    }
+
+    @Test
+    void aGapIsFoundWhenAnOverlapAndAnotherYearsGapLieBetweenAndTheMatch() {
+        var fire = Cron.next("30 2 30 3 *", Instant.parse("2024-04-01T00:00:00Z"), BERLIN)
+                .orElseThrow();
+
+        assertThat(fire).isEqualTo(Instant.parse("2025-03-30T01:00:00Z"));
+    }
+
+    @Test
+    void anExpressionWithoutAMatchInAGapIsNotMovedByAnEarlierOverlap() {
+        var fire = Cron.next("30 3 29 3 *", Instant.parse("2025-04-01T00:00:00Z"), BERLIN)
+                .orElseThrow();
+
+        assertThat(fire).isEqualTo(Instant.parse("2026-03-29T01:30:00Z"));
+    }
+
+    @Test
+    void theCacheOfParsedExpressionsIsBoundedAndSpacingDoesNotMakeAnotherEntry() {
+        var after = Instant.parse("2026-01-01T00:00:00Z");
+        var before = Cron.cached();
+        Cron.next("  0   5 * * * ", after);
+        Cron.next("0 5 * * *", after);
+        assertThat(Cron.cached()).isLessThanOrEqualTo(before + 1);
+
+        for (int minute = 0; minute < 60; minute++) {
+            for (int hour = 0; hour < 24; hour++) {
+                Cron.next(minute + " " + hour + " * * *", after);
+            }
+        }
+
+        assertThat(Cron.cached()).isLessThanOrEqualTo(256);
+    }
 }
