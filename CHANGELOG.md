@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A recurring task that cannot be evaluated because of an invalid cron expression or time zone is logged as one ERROR line with the reason, without a stack trace; other failures to evaluate one still log the stack trace.
 - `Cron.next` throws `TaskValidationException` for an expression that does not parse, with the same message as `Cron.validate`, instead of the cron library's `IllegalArgumentException`.
 
+### Fixed
+
+- PostgreSQL: a new recurring occurrence is stored at the random revision the runner gives it, as 4.1.0 describes; it was stored at revision 0. Occurrence ids are always newly allocated, so no stale lease could match one; Redis and the in-memory store already kept the given revision.
+
 ## [4.1.0] - 2026-11-08
 
 ### Added

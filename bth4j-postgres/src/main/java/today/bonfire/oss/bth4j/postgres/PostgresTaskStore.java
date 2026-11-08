@@ -304,7 +304,7 @@ public class PostgresTaskStore implements FullStore {
                 + "   (id, revision, queue_id, type_id, payload_version, state, attempts, max_attempts, created,"
                 + "   due, state_changed, data, account, headers, retry_policy, schedule_id, unique_key, key_keep_ms,"
                 + "   start_by, max_run_ms)"
-                + "   SELECT ?, 0, ?, ?, ?, 1, 0, ?, ?, ?, now(), ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ? FROM adv"
+                + "   SELECT ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, now(), ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ? FROM adv"
                 + "   ON CONFLICT DO NOTHING RETURNING id)"
                 + " SELECT (SELECT count(*) FROM adv), (SELECT count(*) FROM ins)";
     }
@@ -1411,23 +1411,24 @@ public class PostgresTaskStore implements FullStore {
                 ps.setLong(3, due.definition().revision());
                 setInstant(ps, 4, due.fireAt());
                 ps.setLong(5, o.id());
-                ps.setInt(6, o.queueId());
-                ps.setInt(7, o.typeId());
-                ps.setInt(8, o.payloadVersion());
-                ps.setInt(9, o.maxAttempts());
-                setInstant(ps, 10, o.createdAt() == null ? Instant.now() : o.createdAt());
-                setInstant(ps, 11, due.fireAt());
-                ps.setString(12, o.encodedPayload());
-                ps.setString(13, o.account());
-                ps.setString(14, RecordJson.encodeHeaders(o.headers()));
-                ps.setString(15, o.retryPolicy());
-                ps.setString(16, o.scheduleId() == null ? due.scheduleId() : o.scheduleId());
-                ps.setString(17, o.uniqueKey());
-                if (o.uniqueKey() == null || o.keyKeep() == null) ps.setNull(18, Types.BIGINT);
-                else ps.setLong(18, o.keyKeep().toMillis());
-                setInstant(ps, 19, o.startBy());
-                if (o.maxRunTime() == null) ps.setNull(20, Types.INTEGER);
-                else ps.setInt(20, Math.toIntExact(o.maxRunTime().toMillis()));
+                ps.setInt(6, o.revision());
+                ps.setInt(7, o.queueId());
+                ps.setInt(8, o.typeId());
+                ps.setInt(9, o.payloadVersion());
+                ps.setInt(10, o.maxAttempts());
+                setInstant(ps, 11, o.createdAt() == null ? Instant.now() : o.createdAt());
+                setInstant(ps, 12, due.fireAt());
+                ps.setString(13, o.encodedPayload());
+                ps.setString(14, o.account());
+                ps.setString(15, RecordJson.encodeHeaders(o.headers()));
+                ps.setString(16, o.retryPolicy());
+                ps.setString(17, o.scheduleId() == null ? due.scheduleId() : o.scheduleId());
+                ps.setString(18, o.uniqueKey());
+                if (o.uniqueKey() == null || o.keyKeep() == null) ps.setNull(19, Types.BIGINT);
+                else ps.setLong(19, o.keyKeep().toMillis());
+                setInstant(ps, 20, o.startBy());
+                if (o.maxRunTime() == null) ps.setNull(21, Types.INTEGER);
+                else ps.setInt(21, Math.toIntExact(o.maxRunTime().toMillis()));
                 try (var rs = ps.executeQuery()) {
                     rs.next();
                     if (rs.getLong(1) != 1) return false;

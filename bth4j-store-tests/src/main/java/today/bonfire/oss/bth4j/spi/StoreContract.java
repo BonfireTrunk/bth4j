@@ -2453,6 +2453,21 @@ public abstract class StoreContract {
     }
 
     @Test
+    void commitRecurringStoresTheOccurrenceAtTheRevisionItWasGiven() {
+        Instant fire = millis(now().plusSeconds(1));
+        store.putRecurring(definition("nightly", "* * * * *"), fire, fire);
+        DueSchedule due = store.dueRecurring(fire, 10).get(0);
+        TaskRecord occurrence = task().scheduleId("nightly")
+                .due(fire)
+                .state(TaskState.SCHEDULED)
+                .revision(123_456)
+                .build();
+        assertThat(store.commitRecurring(due, millis(now().plusSeconds(3600)), occurrence))
+                .isTrue();
+        assertThat(get(occurrence.id()).revision()).isEqualTo(123_456);
+    }
+
+    @Test
     void commitRecurringWithAStaleDueDoesNothing() {
         Instant fire = millis(now().plusSeconds(1));
         Instant next = millis(now().plusSeconds(3600));
