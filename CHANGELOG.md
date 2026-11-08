@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `bth4j-sqlite`: `SqliteTaskStore`, a store on SQLite 3.45 or newer (latest recommended, tested on 3.54) for runners on one machine, in one process or in several, with the database file on a local disk. It uses only `java.sql`; the application supplies the JDBC driver and a `DataSource`. `init` refuses a connection that is not in WAL mode or whose `busy_timeout` is below 1000 ms and names the setting; `synchronous` is the application's choice. Every write runs in a `BEGIN IMMEDIATE` transaction issued by the store. The tables are `STRICT`, times are epoch milliseconds from the `java.time.Clock` given to the store, and the schema version is 1. `enqueue(Connection, TaskRecord)` joins the caller's transaction. The store passes `StoreContract`, `RunnerContract` and `ThroughputContract` in the `test` phase, without Docker.
+
 ## [4.1.0] - 2026-11-08
 
 ### Added
