@@ -11,11 +11,11 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -49,7 +49,10 @@ import today.bonfire.oss.bth4j.spi.TaskState;
  * {@code Retry-After}). Behind a reverse proxy every client shares the proxy's address, so rate-limit there too.
  * <p>
  * The server speaks plain HTTP unless an {@link SSLContext} is given; without one, put it behind TLS or keep it on
- * the loopback interface.
+ * the loopback interface. The session cookie is marked Secure when an {@link SSLContext} is given; behind a
+ * TLS-terminating proxy set {@link Builder#secureCookie(boolean)} instead.
+ * <p>
+ * An instance is one-shot: after {@link #stop()} it cannot be started again, build a new one.
  */
 public final class AdminHttpServer {
 
@@ -66,7 +69,7 @@ public final class AdminHttpServer {
             + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; "
             + "base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
 
-    private record User(byte[] digest, Role role) {}
+    private record User(PasswordHash password, Role role) {}
 
     private final AdminOps admin;
     private final String host;
@@ -80,8 +83,10 @@ public final class AdminHttpServer {
     private final boolean ownExecutor;
     private final Sessions sessions;
     private final LoginThrottle throttle;
-    private final byte[] dummyDigest = sha256(randomBytes());
+    private final PasswordHash dummyPassword = PasswordHash.create(randomSecret());
+    private final boolean secureCookie;
     private HttpServer server;
+    private boolean stopped;
     private final ReentrantLock lifecycle = new ReentrantLock();
 
     private AdminHttpServer(Builder b) {
@@ -93,6 +98,7 @@ public final class AdminHttpServer {
         this.staticFiles = b.staticDir == null ? null : new StaticFiles(b.staticDir);
         this.corsOrigins = Set.copyOf(b.corsOrigins);
         this.ssl = b.ssl;
+        this.secureCookie = b.secureCookie != null ? b.secureCookie : b.ssl != null;
         this.ownExecutor = b.executor == null;
         this.executor = ownExecutor ? Executors.newVirtualThreadPerTaskExecutor() : b.executor;
         this.sessions = new Sessions(b.clock, b.sessionTtl, MAX_SESSIONS);
@@ -104,10 +110,17 @@ public final class AdminHttpServer {
         return new Builder();
     }
 
-    /** Binds the port and starts serving. */
+    /**
+     * Binds the port and starts serving.
+     *
+     * @throws IllegalStateException when already started, or when this instance was stopped before
+     */
     public void start() {
         lifecycle.lock();
         try {
+            if (stopped) {
+                throw new IllegalStateException("Admin HTTP server was stopped and cannot be started again");
+            }
             if (server != null) {
                 throw new IllegalStateException("Admin HTTP server is already started");
             }
@@ -145,6 +158,7 @@ public final class AdminHttpServer {
             }
             server.stop(1);
             server = null;
+            stopped = true;
             if (ownExecutor) {
                 ((ExecutorService) executor).shutdown();
             }
@@ -188,11 +202,13 @@ public final class AdminHttpServer {
             var body = Views.obj("error", e.getMessage());
             if (e.code() != null) body.put("code", e.code());
             sendJson(ex, e.status(), body);
+        } catch (TaskValidationException e) {
+            sendJson(ex, 400, Views.obj("error", e.getMessage()));
         } catch (Exception e) {
             log.error(
                     "Admin request {} {} failed",
                     ex.getRequestMethod(),
-                    ex.getRequestURI().getRawPath(),
+                    routeTemplate(ex.getRequestURI().getRawPath()),
                     e);
             try {
                 sendJson(ex, 500, Views.obj("error", "internal error"));
@@ -233,6 +249,10 @@ public final class AdminHttpServer {
             return;
         }
         var session = authenticate(ex);
+        var logout = method.equals("DELETE") && segments.equals(List.of("session"));
+        if (!logout) {
+            ex.getResponseHeaders().add("Set-Cookie", sessionCookie(session.token(), sessionTtl.toSeconds()));
+        }
         var mutation = method.equals("POST") || method.equals("DELETE");
         if (mutation) {
             var sent = ex.getRequestHeaders().getFirst(CSRF_HEADER);
@@ -242,7 +262,6 @@ public final class AdminHttpServer {
                             session.csrf().getBytes(StandardCharsets.UTF_8))) {
                 throw new HttpError(403, "missing or wrong CSRF token");
             }
-            var logout = method.equals("DELETE") && segments.equals(List.of("session"));
             if (!logout && session.role() != Role.ADMIN) {
                 throw new HttpError(403, "this action needs the ADMIN role");
             }
@@ -338,7 +357,7 @@ public final class AdminHttpServer {
 
     private void login(HttpExchange ex) throws IOException {
         var address = ex.getRemoteAddress().getAddress().getHostAddress();
-        var wait = throttle.retryAfterMillis(address);
+        var wait = throttle.attempt(address);
         if (wait > 0) {
             ex.getResponseHeaders().set("Retry-After", String.valueOf((wait + 999) / 1000));
             throw new HttpError(429, "too many failed logins, try again later");
@@ -348,17 +367,13 @@ public final class AdminHttpServer {
             throw new HttpError(400, "user and password are required");
         }
         var user = users.get(name);
-        var expected = user == null ? dummyDigest : user.digest();
-        var matches = MessageDigest.isEqual(sha256(password.getBytes(StandardCharsets.UTF_8)), expected);
+        var matches = (user == null ? dummyPassword : user.password()).matches(password);
         if (user == null || !matches) {
-            throttle.failure(address);
             throw new HttpError(401, "invalid credentials");
         }
         throttle.success(address);
         var session = sessions.create(name, user.role());
-        var cookie = COOKIE + '=' + session.token() + "; HttpOnly; SameSite=Strict; Path=/; Max-Age="
-                + sessionTtl.toSeconds() + (ssl != null ? "; Secure" : "");
-        ex.getResponseHeaders().add("Set-Cookie", cookie);
+        ex.getResponseHeaders().add("Set-Cookie", sessionCookie(session.token(), sessionTtl.toSeconds()));
         sendJson(
                 ex,
                 200,
@@ -373,11 +388,35 @@ public final class AdminHttpServer {
 
     private void logout(HttpExchange ex, Sessions.Session session) throws IOException {
         sessions.remove(session.token());
-        ex.getResponseHeaders()
-                .add(
-                        "Set-Cookie",
-                        COOKIE + "=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0" + (ssl != null ? "; Secure" : ""));
+        ex.getResponseHeaders().set("Set-Cookie", sessionCookie("", 0));
         sendJson(ex, 200, Views.obj("ok", true));
+    }
+
+    private String sessionCookie(String token, long maxAgeSeconds) {
+        return COOKIE + '=' + token + "; HttpOnly; SameSite=Strict; Path=/; Max-Age=" + maxAgeSeconds
+                + (secureCookie ? "; Secure" : "");
+    }
+
+    /** The shape of a route with its path parameters, such as a unique key, replaced; safe to log. */
+    static String routeTemplate(String rawPath) {
+        if (!rawPath.equals(API) && !rawPath.startsWith(API + "/")) {
+            return "(non-api path)";
+        }
+        var parts = new ArrayList<String>();
+        for (var part : rawPath.substring(API.length()).split("/")) {
+            if (!part.isEmpty()) {
+                parts.add(part);
+            }
+        }
+        var byKey = parts.size() >= 3
+                && parts.get(0).equals("tasks")
+                && parts.get(1).equals("by-key");
+        if (byKey) {
+            parts.set(2, "{key}");
+        } else if (parts.size() >= 2) {
+            parts.set(1, "{}");
+        }
+        return API + '/' + String.join("/", parts.subList(0, Math.min(parts.size(), 4)));
     }
 
     private Sessions.Session authenticate(HttpExchange ex) {
@@ -421,7 +460,11 @@ public final class AdminHttpServer {
         if (admin.queues().stream().noneMatch(q -> q.name().equals(name))) {
             throw new HttpError(404, "unknown queue");
         }
-        admin.pauseQueue(name, paused);
+        try {
+            admin.pauseQueue(name, paused);
+        } catch (TaskValidationException e) {
+            throw new HttpError(404, "unknown queue");
+        }
         sendJson(ex, 200, Views.obj("ok", true));
     }
 
@@ -623,18 +666,10 @@ public final class AdminHttpServer {
         ex.getResponseBody().write(bytes);
     }
 
-    private static byte[] randomBytes() {
+    private static String randomSecret() {
         var bytes = new byte[32];
         new SecureRandom().nextBytes(bytes);
-        return bytes;
-    }
-
-    private static byte[] sha256(byte[] input) {
-        try {
-            return MessageDigest.getInstance("SHA-256").digest(input);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 is required of every JDK", e);
-        }
+        return Base64.getEncoder().encodeToString(bytes);
     }
 
     /** Collects the settings of an {@link AdminHttpServer}. */
@@ -647,6 +682,7 @@ public final class AdminHttpServer {
         private Path staticDir;
         private final List<String> corsOrigins = new ArrayList<>();
         private SSLContext ssl;
+        private Boolean secureCookie;
         private Executor executor;
         private Clock clock = Clock.systemUTC();
 
@@ -665,12 +701,12 @@ public final class AdminHttpServer {
             return this;
         }
 
-        /** Adds a user; at least one is required. Only the SHA-256 digest of the password is kept. */
+        /** Adds a user; at least one is required. Only a salted PBKDF2-HMAC-SHA256 hash of the password is kept. */
         public Builder user(String name, String password, Role role) {
             if (name == null || name.isEmpty() || password == null || role == null) {
                 throw new IllegalArgumentException("name, password and role are required");
             }
-            users.put(name, new User(sha256(password.getBytes(StandardCharsets.UTF_8)), role));
+            users.put(name, new User(PasswordHash.create(password), role));
             return this;
         }
 
@@ -692,9 +728,18 @@ public final class AdminHttpServer {
             return this;
         }
 
-        /** Serves HTTPS with this context and marks the session cookie Secure. */
+        /** Serves HTTPS with this context and, unless {@link #secureCookie(boolean)} says otherwise, marks the session cookie Secure. */
         public Builder https(SSLContext context) {
             this.ssl = context;
+            return this;
+        }
+
+        /**
+         * Whether the session cookie carries the Secure attribute. The default follows {@link #https}: Secure when a
+         * context is given. Set it to true behind a TLS-terminating proxy, where the server itself speaks plain HTTP.
+         */
+        public Builder secureCookie(boolean secure) {
+            this.secureCookie = secure;
             return this;
         }
 

@@ -977,6 +977,133 @@ class AdminHttpServerTest {
     }
 
     @Test
+    void anUnknownQueueIsABadRequestOnTheTaskListAndNotFoundOnPause() throws Exception {
+        ops.queueFailure = new today.bonfire.oss.bth4j.exceptions.TaskValidationException("Unknown queue: nope");
+        start();
+        var login = admin();
+
+        var list = get("/api/v1/tasks?state=DEAD&queue=nope", login);
+        assertThat(list.statusCode()).isEqualTo(400);
+        assertThat(json(list)).containsEntry("error", "Unknown queue: nope");
+        assertThat(mutate("POST", "/api/v1/queues/default/pause", login, null).statusCode())
+                .isEqualTo(404);
+    }
+
+    @Test
+    void secureCookieFollowsTheBuilderSettingIndependentlyOfHttps() throws Exception {
+        start(builder().secureCookie(true));
+
+        var res = rawLogin("alice", "s3cret");
+
+        assertThat(res.headers().firstValue("Set-Cookie").orElseThrow()).contains("Secure");
+    }
+
+    @Test
+    void authenticatedResponsesReissueTheCookieWithAFreshMaxAge() throws Exception {
+        start(builder().sessionTtl(Duration.ofMinutes(10)));
+        var login = admin();
+        clock.advance(Duration.ofMinutes(6));
+
+        var res = get("/api/v1/me", login);
+
+        assertThat(res.headers().firstValue("Set-Cookie").orElseThrow())
+                .startsWith(login.cookie() + ";")
+                .contains("Max-Age=600");
+        assertThat(get("/api/v1/me", null).headers().firstValue("Set-Cookie")).isEmpty();
+    }
+
+    @Test
+    void aStoppedServerCannotBeStartedAgain() {
+        start();
+        server.stop();
+
+        assertThatThrownBy(server::start).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void theLoggedRouteHidesPathParameters() {
+        assertThat(AdminHttpServer.routeTemplate("/api/v1/tasks/by-key/order-42/cancel"))
+                .isEqualTo("/api/v1/tasks/by-key/{key}/cancel");
+        assertThat(AdminHttpServer.routeTemplate("/api/v1/tasks/7/payload")).isEqualTo("/api/v1/tasks/{}/payload");
+        assertThat(AdminHttpServer.routeTemplate("/api/v1/health")).isEqualTo("/api/v1/health");
+        assertThat(AdminHttpServer.routeTemplate("/secret/file")).doesNotContain("secret");
+    }
+
+    @Test
+    void concurrentLoginAttemptsCannotAllPassABlock() throws Exception {
+        var throttle = new LoginThrottle(clock);
+        var allowed = new java.util.concurrent.atomic.AtomicInteger();
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(16)) {
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var futures = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            for (var i = 0; i < 64; i++) {
+                futures.add(pool.submit(() -> {
+                    start.await();
+                    if (throttle.attempt("10.0.0.1") == 0) allowed.incrementAndGet();
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (var f : futures) f.get();
+        }
+
+        assertThat(allowed.get()).isEqualTo(5);
+        assertThat(throttle.attempt("10.0.0.1")).isPositive();
+    }
+
+    @Test
+    void aSuccessfulLoginForgetsTheCountedAttempts() {
+        var throttle = new LoginThrottle(clock);
+        for (var i = 0; i < 4; i++) assertThat(throttle.attempt("a")).isZero();
+        throttle.success("a");
+        for (var i = 0; i < 4; i++) assertThat(throttle.attempt("a")).isZero();
+    }
+
+    @Test
+    void atTheTrackingCapOnlyTheOldestEntriesAreEvicted() {
+        var throttle = new LoginThrottle(clock);
+        for (var i = 0; i < 5; i++) throttle.attempt("old");
+        for (var i = 1; i < 9_999; i++) {
+            clock.advance(Duration.ofMillis(1));
+            throttle.attempt("addr-" + i);
+        }
+        clock.advance(Duration.ofMillis(1));
+        for (var i = 0; i < 5; i++) throttle.attempt("new");
+        clock.advance(Duration.ofMillis(1));
+
+        throttle.attempt("one-more");
+
+        assertThat(throttle.attempt("new")).as("a recent entry stays").isPositive();
+        assertThat(throttle.attempt("old")).as("the oldest entries go").isZero();
+    }
+
+    @Test
+    void concurrentSessionCreationNeverExceedsTheCap() throws Exception {
+        var sessions = new Sessions(clock, Duration.ofHours(1), 10);
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(16)) {
+            var futures = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            for (var i = 0; i < 400; i++) {
+                futures.add(pool.submit(() -> sessions.create("u", Role.ADMIN)));
+            }
+            for (var f : futures) f.get();
+        }
+
+        assertThat(sessions.size()).isEqualTo(10);
+    }
+
+    @Test
+    void passwordsAreSaltedAndVerifiedAgainstThePlaintext() {
+        var one = PasswordHash.create("s3cret");
+        var two = PasswordHash.create("s3cret");
+
+        assertThat(one.salt()).isNotEqualTo(two.salt());
+        assertThat(one.hash()).isNotEqualTo(two.hash());
+        assertThat(one.matches("s3cret")).isTrue();
+        assertThat(one.matches("s3cret ")).isFalse();
+        assertThat(PasswordHash.create("").matches("")).isTrue();
+    }
+
+    @Test
     void sessionsAreCappedAndEvictTheOldest() {
         var sessions = new Sessions(clock, Duration.ofHours(1), 3);
         var first = sessions.create("a", Role.ADMIN);

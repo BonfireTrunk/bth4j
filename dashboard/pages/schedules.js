@@ -31,7 +31,7 @@ export default {
 
     const pause = (s) => run(s, { label: 'Pause', done: 'paused', message: 'No new tasks are created until it is resumed. Tasks already created still run.', call: api.pauseSchedule });
     const resume = (s) => run(s, { label: 'Resume', done: 'resumed', message: 'The schedule fires again from its next fire time.', call: api.resumeSchedule });
-    const trigger = (s) => run(s, { label: 'Trigger', done: 'triggered', message: 'Creates one task now, in addition to the regular schedule.', call: api.triggerSchedule });
+    const trigger = (s) => run(s, { label: 'Trigger', done: 'triggered', message: 'Moves the next fire time to now; the runner creates one task on its next scheduling round, in addition to the regular schedule.', call: api.triggerSchedule });
     const remove = (s) => run(s, { label: 'Delete', done: 'deleted', danger: true, message: 'The schedule definition is removed permanently. Tasks already created are kept.', call: api.deleteSchedule });
 
     // The runner parks a fixed-delay definition a century ahead while its occurrence runs; the real
@@ -61,7 +61,7 @@ export default {
             <td><span v-if="s.paused" class="tag paused">PAUSED</span><span v-else class="muted">armed</span></td>
             <td class="actions">
               <button type="button" class="small" :disabled="!admin() || busy === s.id" :title="admin() ? '' : 'Admin role required'" @click="s.paused ? resume(s) : pause(s)">{{ s.paused ? 'Resume' : 'Pause' }}</button>
-              <button type="button" class="small" :disabled="!admin() || busy === s.id" :title="admin() ? '' : 'Admin role required'" @click="trigger(s)">Trigger</button>
+              <button type="button" class="small" :disabled="!admin() || busy === s.id || s.paused" :title="!admin() ? 'Admin role required' : s.paused ? 'Resume the schedule first; a paused schedule does not fire' : ''" @click="trigger(s)">Trigger</button>
               <button type="button" class="small danger" :disabled="!admin() || busy === s.id" :title="admin() ? '' : 'Admin role required'" @click="remove(s)">Delete</button>
             </td>
           </tr>

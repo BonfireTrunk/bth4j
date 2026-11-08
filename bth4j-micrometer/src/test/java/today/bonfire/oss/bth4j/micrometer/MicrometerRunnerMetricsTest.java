@@ -15,6 +15,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.AdminOps;
 import today.bonfire.oss.bth4j.BackgroundRunner;
@@ -247,6 +248,28 @@ class MicrometerRunnerMetricsTest {
         metrics.close();
         metrics.refresh();
         assertThat(registry.getMeters()).isEmpty();
+    }
+
+    @Test
+    void aThrowingLimitSupplierDoesNotStopHealthAndCountPolling() {
+        counts.set(Map.of("emails", new StateCounts(3, 0, 0, 0, 0, 0, 0)));
+        var failing = new AtomicReference<RuntimeException>(new IllegalStateException("limit unavailable"));
+        Supplier<OptionalInt> limit = () -> {
+            if (failing.get() != null) throw failing.get();
+            return OptionalInt.of(4);
+        };
+        try (var metrics =
+                MicrometerRunnerMetrics.bind(admin, () -> 0, limit, registry, Tags.empty(), Duration.ofHours(1))) {
+            abandoned.set(5);
+            metrics.refresh();
+
+            assertThat(gauge("bth4j.runner.abandoned")).isEqualTo(5);
+            assertThat(state("emails", "queued")).isEqualTo(3);
+
+            failing.set(null);
+            metrics.refresh();
+            assertThat(gauge(MicrometerRunnerMetrics.CONCURRENCY_LIMIT)).isEqualTo(4);
+        }
     }
 
     @Test
