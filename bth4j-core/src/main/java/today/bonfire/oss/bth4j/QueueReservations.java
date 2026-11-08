@@ -11,9 +11,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * The executions holding a slot of their queue's {@link today.bonfire.oss.bth4j.QueuePolicy#maxConcurrent()}.
  * One instance is shared by every processor generation of a runner, so an execution started by a processor
- * that died is released against the same count its replacement reads. Each execution is released once,
- * whether or not it is still the running map's entry for its id: a retry of the same id claimed while an
- * earlier attempt was still finishing holds a slot of its own.
+ * that died is released against the same count its replacement reads. Each execution is released once: a
+ * retry of the same id claimed while an earlier attempt was still finishing holds a slot of its own.
  */
 final class QueueReservations {
     private final Map<TaskExecution, Boolean> held = new ConcurrentHashMap<>();
