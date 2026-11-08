@@ -38,6 +38,7 @@ import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskState;
+import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 
 /**
  * JSON admin API over {@link AdminOps} on the JDK HTTP server, optionally with a static dashboard.
@@ -211,6 +212,15 @@ public final class AdminHttpServer {
             sendJson(ex, e.status(), body);
         } catch (TaskValidationException e) {
             sendJson(ex, 400, Views.obj("error", e.getMessage()));
+        } catch (UnreadableTaskException e) {
+            log.warn(
+                    "Admin request {} {}: task {} has a stored value that cannot be read",
+                    ex.getRequestMethod(),
+                    routeTemplate(ex.getRequestURI().getRawPath()),
+                    e.taskId());
+            var body = Views.obj("error", "the task has a stored value that cannot be read");
+            body.put("code", "UNREADABLE_TASK");
+            sendJson(ex, 422, body);
         } catch (Exception e) {
             log.error(
                     "Admin request {} {} failed",

@@ -628,6 +628,20 @@ class AdminHttpServerTest {
     }
 
     @Test
+    void anUnreadableTaskIs422WithItsCodeAndNoStoredDetail() throws Exception {
+        start();
+        var login = admin();
+        ops.failure = new today.bonfire.oss.bth4j.spi.UnreadableTaskException(
+                1, "task 1 has a stored value that cannot be read", new IllegalArgumentException("secret value"));
+
+        var res = get("/api/v1/tasks/1", login);
+
+        assertThat(res.statusCode()).isEqualTo(422);
+        assertThat(res.body()).contains("UNREADABLE_TASK").doesNotContain("secret");
+        assertThat(get("/api/v1/tasks/by-key/welcome", login).statusCode()).isEqualTo(422);
+    }
+
+    @Test
     void taskListUsesStateQueueAndLimit() throws Exception {
         start();
         var login = admin();
@@ -1052,29 +1066,42 @@ class AdminHttpServerTest {
     }
 
     @Test
-    void aSuccessfulLoginForgetsTheCountedAttempts() {
+    void aSuccessfulLoginTakesBackOnlyItsOwnAttempt() {
         var throttle = new LoginThrottle(clock);
-        for (var i = 0; i < 4; i++) assertThat(throttle.attempt("a")).isZero();
+        for (var i = 0; i < 3; i++) assertThat(throttle.attempt("a")).isZero();
+        assertThat(throttle.attempt("a")).isZero();
         throttle.success("a");
-        for (var i = 0; i < 4; i++) assertThat(throttle.attempt("a")).isZero();
+        assertThat(throttle.attempt("a")).as("fourth failure").isZero();
+        assertThat(throttle.attempt("a")).as("fifth attempt, it sets the block").isZero();
+        throttle.success("a");
+        assertThat(throttle.attempt("a"))
+                .as("the fifth succeeded, so its block is lifted")
+                .isZero();
+        assertThat(throttle.attempt("a"))
+                .as("but the failures before it still count")
+                .isPositive();
     }
 
     @Test
-    void atTheTrackingCapOnlyTheOldestEntriesAreEvicted() {
+    void atTheTrackingCapTheOldestUnblockedEntriesAreEvictedAndBlocksStay() {
         var throttle = new LoginThrottle(clock);
-        for (var i = 0; i < 5; i++) throttle.attempt("old");
-        for (var i = 1; i < 9_999; i++) {
-            clock.advance(Duration.ofMillis(1));
-            throttle.attempt("addr-" + i);
-        }
+        for (var i = 0; i < 5; i++) throttle.attempt("blocked");
+        for (var i = 0; i < 4; i++) throttle.attempt("old");
         clock.advance(Duration.ofMillis(1));
-        for (var i = 0; i < 5; i++) throttle.attempt("new");
+        for (var i = 1; i < 9_998; i++) throttle.attempt("addr-" + i);
+        clock.advance(Duration.ofMillis(1));
+        for (var i = 0; i < 4; i++) throttle.attempt("new");
         clock.advance(Duration.ofMillis(1));
 
         throttle.attempt("one-more");
 
-        assertThat(throttle.attempt("new")).as("a recent entry stays").isPositive();
-        assertThat(throttle.attempt("old")).as("the oldest entries go").isZero();
+        assertThat(throttle.attempt("blocked")).as("an active block stays").isPositive();
+        assertThat(throttle.attempt("old")).isZero();
+        assertThat(throttle.attempt("old"))
+                .as("the oldest entry went, so its count restarted")
+                .isZero();
+        assertThat(throttle.attempt("new")).as("a recent entry stays").isZero();
+        assertThat(throttle.attempt("new")).isPositive();
     }
 
     @Test
@@ -1089,6 +1116,22 @@ class AdminHttpServerTest {
         }
 
         assertThat(sessions.size()).isEqualTo(10);
+    }
+
+    @Test
+    void aUserAtTheirSessionCapLosesTheirOwnOldestAndNoOneElses() {
+        var sessions = new Sessions(clock, Duration.ofHours(1), 1000);
+        var admin = sessions.create("admin", Role.ADMIN);
+        clock.advance(Duration.ofSeconds(1));
+        var firstViewer = sessions.create("viewer", Role.VIEWER);
+        for (var i = 0; i < 2 * Sessions.PER_USER; i++) {
+            clock.advance(Duration.ofSeconds(1));
+            sessions.create("viewer", Role.VIEWER);
+        }
+
+        assertThat(sessions.size()).isEqualTo(1 + Sessions.PER_USER);
+        assertThat(sessions.find(admin.token())).isNotNull();
+        assertThat(sessions.find(firstViewer.token())).isNull();
     }
 
     @Test

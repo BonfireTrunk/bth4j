@@ -578,9 +578,11 @@ An `Issue` has a time, a kind, a detail and the task id when there is one. The k
 delay header cannot be read; `schedule-broken` is described under "Recurring tasks". Repeats of a `store-error`
 with the same text are one issue whose detail carries the count and whose time is the latest. A `corrupt-task` is a
 task with a stored value the store cannot read, such as a hand-edited row: a claim leaves it out and ends its
-lease, and maintenance ends it DEAD with the failure `unreadable-record` within one check interval. An operator
-can still cancel or delete such a task; a corrupt fixed-delay occurrence is then not treated as one, so the
-cancel or delete neither pauses nor re-arms its definition. Issues live in the memory of the runner that saw them. `drain` leaves the runner quiet
+lease, and maintenance ends it DEAD with the failure `unreadable-record` within one check interval; the purge
+removes it after `deadRetention` like any dead task. Listings leave it out, and reading it answers
+`UnreadableTaskException` (422 over the admin HTTP API). `AdminOps.cancel` and `delete` still work on it given
+its id and revision; a corrupt fixed-delay occurrence is then not treated as one, so the cancel or delete
+neither pauses nor re-arms its definition. Issues live in the memory of the runner that saw them. `drain` leaves the runner quiet
 (call `resume()` to claim again, or `stop()`), and returns whether every running task finished in time; use it
 before a rolling restart. It returns true only when no claim that started before the runner went quiet is
 still in progress and no attempt is unfinished.
@@ -700,8 +702,11 @@ At least one user is required. `Role.ADMIN` may read and change; `Role.VIEWER` m
 task payloads, and every mutation answers 403. A client signs in with `POST /api/v1/session` (`{"user", "password"}`),
 receives the `bth4j_session` cookie (`HttpOnly`, `SameSite=Strict`) and a CSRF token in the reply, and sends the token
 as `X-CSRF-Token` on every POST and DELETE. Sessions are kept in memory, last 12 hours after the last request
-(`sessionTtl`) and end when the server stops. Five failed logins in a row block that remote address for 10
-seconds (HTTP 429). A stale revision is answered 409, an unknown id 404; task ids and revisions are JSON strings.
+(`sessionTtl`) and end when the server stops. A user has at most 20 sessions; a login past that ends that
+user's oldest session. Every fifth failed login from a remote address blocks it for 10 seconds (HTTP 429); a
+successful login does not clear the failures counted before it. A stale revision is answered 409, an unknown id
+404, and a task whose stored value cannot be read 422 with `code: "UNREADABLE_TASK"`; task ids and revisions are
+JSON strings.
 The endpoints are `me`, `session`, `health`, `overview`, `queues` (with `pause` and `resume`), `tasks` (list
 with `state`, `queue`, `cursor` and `limit` up to 200; one task, its `payload`, `retry`, `cancel`, delete;
 `tasks/by-key/{key}` reads the task that holds a unique key, 404 when none does, and `tasks/by-key/{key}/cancel` cancels it

@@ -8,7 +8,10 @@ import java.util.Comparator;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
-/** In-memory sessions with a sliding expiry and a hard cap that evicts the oldest session. */
+/**
+ * In-memory sessions with a sliding expiry and two caps: a user at {@link #PER_USER} sessions loses their own oldest,
+ * so one account logging in over and over cannot push out the others, and the total cap evicts the oldest session.
+ */
 final class Sessions {
 
     static final class Session {
@@ -45,6 +48,8 @@ final class Sessions {
         }
     }
 
+    static final int PER_USER = 20;
+
     private static final Base64.Encoder B64 = Base64.getUrlEncoder().withoutPadding();
 
     private final SecureRandom random = new SecureRandom();
@@ -65,8 +70,17 @@ final class Sessions {
         var session = new Session(randomToken(), randomToken(), user, role, now);
         admission.lock();
         try {
+            sessions.values().removeIf(s -> now - s.lastSeen >= ttlMillis);
+            var own =
+                    sessions.values().stream().filter(s -> s.user.equals(user)).toList();
+            if (own.size() >= PER_USER) {
+                own.stream()
+                        .sorted(Comparator.comparingLong((Session s) -> s.created))
+                        .limit(own.size() - PER_USER + 1L)
+                        .forEach(s -> sessions.remove(s.token, s));
+            }
             if (sessions.size() >= max) {
-                evict(now);
+                evict();
             }
             sessions.put(session.token, session);
         } finally {
@@ -101,8 +115,7 @@ final class Sessions {
         return sessions.size();
     }
 
-    private void evict(long now) {
-        sessions.values().removeIf(s -> now - s.lastSeen >= ttlMillis);
+    private void evict() {
         while (sessions.size() >= max) {
             sessions.values().stream()
                     .min(Comparator.comparingLong((Session s) -> s.created))
