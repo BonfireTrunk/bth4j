@@ -1040,13 +1040,19 @@ final class RedisScripts {
             return id
             """;
 
-    /** ARGV: worker id, running, accepting (1/0). Removed workers stay removed. */
+    /**
+     * ARGV: worker id, running, accepting (1/0), label, queue ids JSON, type ids JSON. A removed worker's hash is
+     * created again with the given label, queues and types; an existing one keeps its own. Returns 1.
+     */
     static final String HEARTBEAT = PRELUDE + """
             local id = ARGV[2]
-            if not redis.call('ZSCORE', P .. 'workers', id) then return 0 end
+            local key = P .. 'w:' .. id
             local at = now()
-            redis.call('ZADD', P .. 'workers', 'XX', at, id)
-            redis.call('HSET', P .. 'w:' .. id, 'seen', at, 'running', ARGV[3], 'accepting', ARGV[4])
+            if redis.call('EXISTS', key) == 0 then
+              redis.call('HSET', key, 'label', ARGV[5], 'started', at, 'queues', ARGV[6], 'types', ARGV[7])
+            end
+            redis.call('HSET', key, 'seen', at, 'running', ARGV[3], 'accepting', ARGV[4])
+            redis.call('ZADD', P .. 'workers', at, id)
             return 1
             """;
 

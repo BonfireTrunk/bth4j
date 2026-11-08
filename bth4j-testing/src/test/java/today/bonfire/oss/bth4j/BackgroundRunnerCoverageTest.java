@@ -42,6 +42,45 @@ class BackgroundRunnerCoverageTest {
     }
 
     @Test
+    void aWorkerRowPurgedWhileTheRunnerLivesIsRestoredWithWhatTheRunnerRegistered() throws Exception {
+        var clock = new MutableClock();
+        var store = new InMemoryStore(clock);
+        var heartbeats = new LinkedBlockingQueue<Integer>();
+        var observed = StoreInterceptor.around(store, (method, args, real) -> {
+            var result = real.proceed();
+            if (method.equals("heartbeat")) heartbeats.add((int) args[0]);
+            return result;
+        });
+        var runner = BackgroundRunner.builder()
+                .store(observed)
+                .clock(clock)
+                .configureQueues(List.of("main"), List.of("main"), "main")
+                .workerLabel("restored")
+                .maintenanceCheckInterval(Duration.ofHours(1))
+                .build();
+        runner.registry().register(TaskType.of("send"), (context, payload) -> {});
+        try {
+            runner.start();
+            assertThat(heartbeats.poll(2, TimeUnit.SECONDS)).isEqualTo(runner.workerId());
+            clock.advance(Duration.ofMinutes(11));
+            assertThat(store.purgeWorkers(Duration.ofMinutes(10))).isEqualTo(1);
+
+            runner.resume();
+
+            assertThat(heartbeats.poll(2, TimeUnit.SECONDS)).isEqualTo(runner.workerId());
+            assertThat(store.workers()).singleElement().satisfies(w -> {
+                assertThat(w.id()).isEqualTo(runner.workerId());
+                assertThat(w.label()).isEqualTo("restored");
+                assertThat(w.queueIds()).containsExactly(store.queueId("main"));
+                assertThat(w.typeIds()).containsExactly(store.typeId("send"));
+                assertThat(w.startedAt()).isEqualTo(clock.instant());
+            });
+        } finally {
+            runner.stop();
+        }
+    }
+
+    @Test
     void quietAndResumePublishOnTheMaintenanceThreadWithoutWaitingForTheStore() throws Exception {
         var store = new InMemoryStore(new MutableClock());
         var heartbeats = new LinkedBlockingQueue<Boolean>();
@@ -51,7 +90,7 @@ class BackgroundRunnerCoverageTest {
         var heartbeatThreads = new LinkedBlockingQueue<Thread>();
         var observed = StoreInterceptor.around(store, (method, args, real) -> {
             if (!method.equals("heartbeat")) return real.proceed();
-            boolean accepting = (boolean) args[2];
+            boolean accepting = (boolean) args[5];
             if (!accepting) {
                 quietHeartbeatEntered.countDown();
                 if (!releaseQuietHeartbeat.await(5, TimeUnit.SECONDS))
@@ -93,7 +132,7 @@ class BackgroundRunnerCoverageTest {
         var published = new LinkedBlockingQueue<Boolean>();
         var observed = StoreInterceptor.around(store, (method, args, real) -> {
             var result = real.proceed();
-            if (method.equals("heartbeat")) published.add((boolean) args[2]);
+            if (method.equals("heartbeat")) published.add((boolean) args[5]);
             return result;
         });
         var runner = BackgroundRunner.builder()
@@ -116,7 +155,7 @@ class BackgroundRunnerCoverageTest {
         var published = new LinkedBlockingQueue<Boolean>();
         var observed = StoreInterceptor.around(store, (method, args, real) -> {
             var result = real.proceed();
-            if (method.equals("heartbeat")) published.add((boolean) args[2]);
+            if (method.equals("heartbeat")) published.add((boolean) args[5]);
             return result;
         });
         var runner = BackgroundRunner.builder()

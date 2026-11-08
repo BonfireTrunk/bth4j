@@ -73,7 +73,7 @@ class DefaultAdminOpsCoverageTest {
         clock.advance(Duration.ofSeconds(61));
 
         assertThat(admin.unservedWork()).containsExactly(new UnservedWork("main", null, 1));
-        store.heartbeat(worker, 0, true);
+        store.heartbeat(worker, "worker", Set.of(queue), Set.of(type), 0, true);
         assertThat(admin.unservedWork()).isEmpty();
     }
 
@@ -150,12 +150,12 @@ class DefaultAdminOpsCoverageTest {
         enqueue(queue, type);
         enqueue(queue, otherType);
         int quiet = store.allocateWorkerId("quiet", Set.of(queue), Set.of(type, otherType));
-        store.heartbeat(quiet, 1, false);
+        store.heartbeat(quiet, "quiet", Set.of(queue), Set.of(type, otherType), 1, false);
         assertThat(admin.unservedWork()).containsExactly(new UnservedWork("main", null, 2));
 
         store.allocateWorkerId("accepting", Set.of(queue), Set.of(type));
         assertThat(admin.unservedWork()).containsExactly(new UnservedWork("main", "export", 1));
-        store.heartbeat(quiet, 0, true);
+        store.heartbeat(quiet, "quiet", Set.of(queue), Set.of(type, otherType), 0, true);
         assertThat(admin.unservedWork()).isEmpty();
     }
 

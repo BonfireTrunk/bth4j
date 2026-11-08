@@ -2864,7 +2864,7 @@ public abstract class StoreContract {
         assertThat(w.queueIds()).containsExactly(queue);
         assertThat(w.typeIds()).containsExactly(type);
         advance(PAST_SHORT);
-        store.heartbeat(worker, 4, false);
+        store.heartbeat(worker, "renamed", Set.of(), Set.of(), 4, false);
         WorkerInfo after = store.workers().stream()
                 .filter(x -> x.id() == worker)
                 .findFirst()
@@ -2880,8 +2880,8 @@ public abstract class StoreContract {
 
     @Test
     void heartbeatCanResumeAcceptingWork() {
-        store.heartbeat(worker, 1, false);
-        store.heartbeat(worker, 0, true);
+        beat(worker, 1, false);
+        beat(worker, 0, true);
         assertThat(store.workers())
                 .filteredOn(w -> w.id() == worker)
                 .singleElement()
@@ -2931,8 +2931,8 @@ public abstract class StoreContract {
         var expectedTypes = Set.copyOf(types);
         queues.clear();
         types.clear();
-        store.heartbeat(known, 1, true);
-        store.heartbeat(empty, 0, true);
+        store.heartbeat(known, "known", expectedQueues, expectedTypes, 1, true);
+        store.heartbeat(empty, "empty", Set.of(), Set.of(), 0, true);
 
         assertThat(store.workers())
                 .filteredOn(w -> w.id() == known)
@@ -2954,10 +2954,38 @@ public abstract class StoreContract {
     void purgeWorkersDeletesOnlyWorkersNotSeenRecently() {
         int stale = store.allocateWorkerId("stale", Set.of(), Set.of());
         advance(PAST_SHORT);
-        store.heartbeat(worker, 0, true);
+        beat(worker, 0, true);
         assertThat(store.purgeWorkers(SHORT)).isEqualTo(1);
         assertThat(store.workers()).extracting(WorkerInfo::id).contains(worker).doesNotContain(stale);
         assertThat(store.purgeWorkers(SHORT)).isZero();
+    }
+
+    @Test
+    void aHeartbeatRestoresAPurgedWorkerUnderTheSameId() {
+        advance(PAST_SHORT);
+        assertThat(store.purgeWorkers(SHORT)).isEqualTo(1);
+        assertThat(store.workers()).extracting(WorkerInfo::id).doesNotContain(worker);
+        Instant before = now().truncatedTo(ChronoUnit.MILLIS);
+
+        store.heartbeat(worker, "contract-test", Set.of(queue), Set.of(type), 2, false);
+
+        assertThat(store.workers())
+                .filteredOn(w -> w.id() == worker)
+                .singleElement()
+                .satisfies(w -> {
+                    assertThat(w.label()).isEqualTo("contract-test");
+                    assertThat(w.queueIds()).containsExactly(queue);
+                    assertThat(w.typeIds()).containsExactly(type);
+                    assertThat(w.running()).isEqualTo(2);
+                    assertThat(w.accepting()).isFalse();
+                    assertThat(w.startedAt()).isAfterOrEqualTo(before).isEqualTo(w.lastSeen());
+                });
+        assertThat(store.purgeWorkers(SHORT)).isZero();
+        assertThat(store.allocateWorkerId("next", Set.of(), Set.of())).isGreaterThan(worker);
+    }
+
+    private void beat(int workerId, int running, boolean accepting) {
+        store.heartbeat(workerId, "contract-test", Set.of(queue), Set.of(type), running, accepting);
     }
 
     @Test

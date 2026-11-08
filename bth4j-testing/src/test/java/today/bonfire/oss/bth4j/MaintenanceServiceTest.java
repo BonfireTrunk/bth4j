@@ -48,6 +48,8 @@ class MaintenanceServiceTest {
     private int batchSize = 100;
     private int purgeBatchSize = 500;
     private int workerId;
+    private Set<Integer> workerQueueIds = Set.of();
+    private Set<Integer> workerTypeIds = Set.of();
     private int runningTasks;
     private boolean accepting = true;
     private Duration workerStaleAfter = Duration.ofMinutes(10);
@@ -722,6 +724,31 @@ class MaintenanceServiceTest {
         assertThat(status.issues()).hasSize(1);
     }
 
+    @Test
+    void aCycleRestoresTheWorkersRowAfterAnotherRunnerPurgedItUnderTheSameId() throws Exception {
+        int typeId = store.typeId("work");
+        workerQueueIds = Set.of(queueId);
+        workerTypeIds = Set.of(typeId);
+        workerId = store.allocateWorkerId("worker-a", workerQueueIds, workerTypeIds);
+        clock.advance(workerStaleAfter.plusSeconds(1));
+        purge();
+        assertThat(store.workers()).isEmpty();
+        runningTasks = 2;
+
+        cycle();
+
+        assertThat(store.workers()).singleElement().satisfies(w -> {
+            assertThat(w.id()).isEqualTo(workerId);
+            assertThat(w.label()).isEqualTo("worker-a");
+            assertThat(w.queueIds()).containsExactly(queueId);
+            assertThat(w.typeIds()).containsExactly(typeId);
+            assertThat(w.startedAt()).isEqualTo(clock.instant());
+            assertThat(w.lastSeen()).isEqualTo(clock.instant());
+            assertThat(w.running()).isEqualTo(2);
+            assertThat(w.accepting()).isTrue();
+        });
+    }
+
     // ---- stale workers --------------------------------------------------------------------------------
 
     @Test
@@ -900,7 +927,7 @@ class MaintenanceServiceTest {
                 .keepDead(keepDead)
                 .batchSize(batchSize)
                 .purgeBatchSize(purgeBatchSize)
-                .worker(workerId, () -> runningTasks)
+                .worker(workerId, "worker-a", workerQueueIds, workerTypeIds, () -> runningTasks)
                 .accepting(() -> accepting)
                 .workerStaleAfter(workerStaleAfter)
                 .checkInterval(checkInterval)

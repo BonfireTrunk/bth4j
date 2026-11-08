@@ -172,10 +172,10 @@ class RedisScriptsIT {
     @Test
     void heartbeatUsesOneScriptAndKeepsTheWorkerIndexAndHashTimeEqual() {
         var worker = store.allocateWorkerId("worker", Set.of(queue), Set.of(type));
-        spied.heartbeat(worker, 0, true);
+        spied.heartbeat(worker, "worker", Set.of(queue), Set.of(type), 0, true);
         spy.clearEvents();
 
-        spied.heartbeat(worker, 4, false);
+        spied.heartbeat(worker, "worker", Set.of(queue), Set.of(type), 4, false);
 
         assertThat(spy.events()).containsExactly("evalsha");
         assertThat(jedis.hget(keys.worker(worker), Keys.F_SEEN))

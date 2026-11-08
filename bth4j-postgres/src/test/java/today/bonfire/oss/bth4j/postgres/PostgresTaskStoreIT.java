@@ -1240,7 +1240,7 @@ class PostgresTaskStoreIT {
     @Test
     void heartbeatsAreListedAndStaleWorkersPurged() throws Exception {
         int second = store.allocateWorkerId("host:2", Set.of(), Set.of());
-        store.heartbeat(worker, 5, false);
+        store.heartbeat(worker, "host:1", Set.of(), Set.of(), 5, false);
 
         var workers = store.workers();
         assertThat(workers).extracting(w -> w.id()).containsExactly(worker, second);
@@ -1251,7 +1251,7 @@ class PostgresTaskStoreIT {
         assertThat(w.lastSeen()).isAfterOrEqualTo(w.startedAt());
         assertThat(workers.get(1).running()).isZero();
         assertThat(workers.get(1).accepting()).isTrue();
-        store.heartbeat(worker, 0, true);
+        store.heartbeat(worker, "host:1", Set.of(), Set.of(), 0, true);
         assertThat(store.workers().getFirst().accepting()).isTrue();
 
         assertThat(store.purgeWorkers(Duration.ofHours(1))).isZero();

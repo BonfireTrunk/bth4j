@@ -1127,10 +1127,17 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public void heartbeat(int workerId, int running, boolean accepting) {
+    public void heartbeat(
+            int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
         guard(() -> scripts.run(
                 RedisScripts.HEARTBEAT,
-                List.of(String.valueOf(workerId), String.valueOf(running), accepting ? "1" : "0")));
+                List.of(
+                        String.valueOf(workerId),
+                        String.valueOf(running),
+                        accepting ? "1" : "0",
+                        label == null ? "" : label,
+                        Json.write(queueIds),
+                        Json.write(typeIds))));
     }
 
     @Override

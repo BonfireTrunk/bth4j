@@ -589,14 +589,14 @@ class RedisWave2IT {
         assertThat(registered.startedAt()).isNotNull();
         assertThat(registered.lastSeen()).isNotNull();
 
-        store.heartbeat(b, 4, false);
+        store.heartbeat(b, "b", Set.of(), Set.of(), 4, false);
 
         var workers = store.workers();
         assertThat(workers).extracting(WorkerInfo::id).containsExactly(a, b);
         assertThat(workers).extracting(WorkerInfo::label).containsExactly("a", "b");
         assertThat(workers.get(1).running()).isEqualTo(4);
         assertThat(workers.get(1).accepting()).isFalse();
-        store.heartbeat(b, 2, true);
+        store.heartbeat(b, "b", Set.of(), Set.of(), 2, true);
         assertThat(store.workers().get(1).accepting()).isTrue();
         assertThat(workers.get(1).lastSeen()).isAfterOrEqualTo(workers.get(1).startedAt());
         assertThat(jedis.zscore(keys.workers, String.valueOf(b))).isNotNull();
@@ -613,8 +613,8 @@ class RedisWave2IT {
         assertThat(store.workers()).extracting(WorkerInfo::id).containsExactly(fresh);
         assertThat(jedis.exists(keys.worker(stale))).isFalse();
         assertThat(store.purgeWorkers(Duration.ofMinutes(10))).isZero();
-        store.heartbeat(stale, 1, true);
-        assertThat(store.workers()).extracting(WorkerInfo::id).containsExactly(fresh);
+        store.heartbeat(stale, "stale", Set.of(), Set.of(), 1, true);
+        assertThat(store.workers()).extracting(WorkerInfo::id).containsExactly(stale, fresh);
     }
 
     // ---- recurring -----------------------------------------------------------------------------------

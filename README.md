@@ -559,7 +559,10 @@ the worker registry every `maintenanceCheckInterval`. New workers accept work. `
 stop accepting; `resume()` accepts again. Quiet and resume request an immediate heartbeat on the
 maintenance thread without blocking the caller on the store. Maintenance deletes workers that were
 silent for `workerStaleAfter` (10 minutes by default). `admin.workers()` lists them, including `accepting`,
-the queue ids they process and their registered task type ids, recorded at startup.
+the queue ids they process and their registered task type ids, recorded at startup. A runner that is still
+alive, for example one that could not reach the store for longer than `workerStaleAfter`, writes its row again
+with its next heartbeat, under the same id and with its label, queues and types; the row's start time is then
+the time it was written again.
 
 `admin.unservedWork()` finds queued work that no worker seen within the last minute can process;
 `admin.unservedWork(Duration)` chooses another heartbeat window using the admin clock. Paused queues
@@ -845,7 +848,8 @@ run as one script per group of tasks. `init` migrates a namespace of an older su
 step per version under a lock in the namespace; stop the runners of the older library version before you start
 the new one, because they would keep writing the old layout. Type names use `reg:type` and `seq:type`; task and
 recurring-definition hashes store the type id in `ty`. Worker registration sets `accepting` to 1, and one
-heartbeat script atomically updates the worker's time, running count and accepting flag.
+heartbeat script atomically updates the worker's time, running count and accepting flag, and writes the hash of
+a removed worker again with its label, queues and types.
 
 Memory: the task hash stays a listpack only while every value is at most `hash-max-listpack-value` bytes
 (default 64). A header map, account, unique key, progress text or cancel reason longer than that makes the
@@ -894,8 +898,9 @@ Without policies each queue has `share = cap = count`, preserving queue preferen
 types stay unchanged, including their due times; a null `knownTypeIds` accepts every type.
 
 `InspectionStore.queuedByType()` returns exact QUEUED counts as queue id to type id to count, with
-only non-zero entries. `AdminStore.heartbeat(workerId, running, accepting)` persists the worker's
-accepting state, exposed by `WorkerInfo.accepting()`. `allocateWorkerId` creates accepting workers.
+only non-zero entries. `AdminStore.heartbeat(workerId, label, queueIds, typeIds, running, accepting)` persists
+the worker's accepting state, exposed by `WorkerInfo.accepting()`, and creates the row again under the same id
+when maintenance purged it. `allocateWorkerId` creates accepting workers.
 `StoreContract` covers these behaviours for every store implementation.
 
 ## Testing

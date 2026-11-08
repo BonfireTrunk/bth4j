@@ -505,24 +505,31 @@ public class PostgresTaskStore implements FullStore {
     @Override
     public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
         if (label == null) throw new IllegalArgumentException("label is required");
-        return withConnection(c -> {
-            Array queues = c.createArrayOf("int2", queueIds.toArray(Integer[]::new));
-            try {
-                Array types = c.createArrayOf("int2", typeIds.toArray(Integer[]::new));
-                try (var ps = c.prepareStatement("INSERT INTO " + worker
-                        + " (label, started_at, last_seen, accepting, queue_ids, type_ids)"
-                        + " VALUES (?, now(), now(), true, ?, ?) RETURNING id")) {
-                    ps.setString(1, label);
-                    ps.setArray(2, queues);
-                    ps.setArray(3, types);
-                    return (int) single(ps);
-                } finally {
-                    types.free();
-                }
-            } finally {
-                queues.free();
+        return withConnection(c -> withWorkerArrays(c, queueIds, typeIds, (queues, types) -> {
+            try (var ps = c.prepareStatement("INSERT INTO " + worker
+                    + " (label, started_at, last_seen, accepting, queue_ids, type_ids)"
+                    + " VALUES (?, now(), now(), true, ?, ?) RETURNING id")) {
+                ps.setString(1, label);
+                ps.setArray(2, queues);
+                ps.setArray(3, types);
+                return (int) single(ps);
             }
-        });
+        }));
+    }
+
+    private static <T> T withWorkerArrays(
+            Connection c, Set<Integer> queueIds, Set<Integer> typeIds, WorkerArraysFunction<T> fn) throws SQLException {
+        Array queues = c.createArrayOf("int2", queueIds.toArray(Integer[]::new));
+        try {
+            Array types = c.createArrayOf("int2", typeIds.toArray(Integer[]::new));
+            try {
+                return fn.apply(queues, types);
+            } finally {
+                types.free();
+            }
+        } finally {
+            queues.free();
+        }
     }
 
     @Override
@@ -1482,6 +1489,11 @@ public class PostgresTaskStore implements FullStore {
         void bind(PreparedStatement ps) throws SQLException;
     }
 
+    @FunctionalInterface
+    private interface WorkerArraysFunction<T> {
+        T apply(Array queues, Array types) throws SQLException;
+    }
+
     private boolean update(String sql, SqlBinder binder) {
         return withConnection(c -> {
             try (var ps = c.prepareStatement(sql)) {
@@ -1791,12 +1803,24 @@ public class PostgresTaskStore implements FullStore {
     }
 
     @Override
-    public void heartbeat(int workerId, int running, boolean accepting) {
-        update("UPDATE " + worker + " SET last_seen = now(), running = ?, accepting = ? WHERE id = ?", ps -> {
-            ps.setInt(1, running);
-            ps.setBoolean(2, accepting);
-            ps.setInt(3, workerId);
-        });
+    public void heartbeat(
+            int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
+        if (label == null) throw new IllegalArgumentException("label is required");
+        withConnection(c -> withWorkerArrays(c, queueIds, typeIds, (queues, types) -> {
+            try (var ps = c.prepareStatement("INSERT INTO " + worker
+                    + " (id, label, started_at, last_seen, running, accepting, queue_ids, type_ids)"
+                    + " VALUES (?, ?, now(), now(), ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE"
+                    + " SET last_seen = excluded.last_seen, running = excluded.running,"
+                    + " accepting = excluded.accepting")) {
+                ps.setInt(1, workerId);
+                ps.setString(2, label);
+                ps.setInt(3, running);
+                ps.setBoolean(4, accepting);
+                ps.setArray(5, queues);
+                ps.setArray(6, types);
+                return ps.executeUpdate();
+            }
+        }));
     }
 
     @Override

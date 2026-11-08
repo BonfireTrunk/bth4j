@@ -4,6 +4,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
@@ -48,6 +49,9 @@ class MaintenanceService extends CustomThread {
     private final int batchSize;
     private final int purgeBatchSize;
     private final int workerId;
+    private final String workerLabel;
+    private final Set<Integer> workerQueueIds;
+    private final Set<Integer> workerTypeIds;
     private final IntSupplier running;
     private final BooleanSupplier accepting;
     private final Duration workerStaleAfter;
@@ -68,6 +72,9 @@ class MaintenanceService extends CustomThread {
         this.batchSize = b.batchSize;
         this.purgeBatchSize = b.purgeBatchSize;
         this.workerId = b.workerId;
+        this.workerLabel = b.workerLabel;
+        this.workerQueueIds = b.workerQueueIds;
+        this.workerTypeIds = b.workerTypeIds;
         this.running = b.running;
         this.accepting = b.accepting;
         this.workerStaleAfter = b.workerStaleAfter;
@@ -243,7 +250,15 @@ class MaintenanceService extends CustomThread {
 
     private void heartbeat() {
         try {
-            if (workerId > 0) store.heartbeat(workerId, running.getAsInt(), accepting.getAsBoolean());
+            if (workerId > 0) {
+                store.heartbeat(
+                        workerId,
+                        workerLabel,
+                        workerQueueIds,
+                        workerTypeIds,
+                        running.getAsInt(),
+                        accepting.getAsBoolean());
+            }
             status.maintained();
         } catch (Exception e) {
             status.storeError(e);
@@ -321,6 +336,9 @@ class MaintenanceService extends CustomThread {
         private int batchSize = 100;
         private int purgeBatchSize = 500;
         private int workerId;
+        private String workerLabel;
+        private Set<Integer> workerQueueIds = Set.of();
+        private Set<Integer> workerTypeIds = Set.of();
         private IntSupplier running = () -> 0;
         private BooleanSupplier accepting = () -> true;
         private Duration workerStaleAfter = Duration.ofMinutes(10);
@@ -401,9 +419,15 @@ class MaintenanceService extends CustomThread {
             return this;
         }
 
-        /** The worker whose heartbeat this service records; 0 records none. */
-        Builder worker(int workerId, IntSupplier running) {
+        /**
+         * The worker whose heartbeat this service records, with what it registered so that the heartbeat can
+         * restore a purged row; 0 records none.
+         */
+        Builder worker(int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, IntSupplier running) {
             this.workerId = workerId;
+            this.workerLabel = label;
+            this.workerQueueIds = queueIds;
+            this.workerTypeIds = typeIds;
             this.running = running;
             return this;
         }

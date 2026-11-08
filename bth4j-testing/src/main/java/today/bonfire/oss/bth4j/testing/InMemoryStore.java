@@ -1033,23 +1033,25 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public void heartbeat(int workerId, int running, boolean accepting) {
+    public void heartbeat(
+            int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
         lock.lock();
         try {
+            Instant now = clock.instant();
             WorkerInfo w = workers.get(workerId);
-            if (w != null) {
-                workers.put(
-                        workerId,
-                        new WorkerInfo(
-                                w.id(),
-                                w.label(),
-                                w.startedAt(),
-                                clock.instant(),
-                                running,
-                                accepting,
-                                w.queueIds(),
-                                w.typeIds()));
-            }
+            workers.put(
+                    workerId,
+                    w == null
+                            ? new WorkerInfo(workerId, label, now, now, running, accepting, queueIds, typeIds)
+                            : new WorkerInfo(
+                                    w.id(),
+                                    w.label(),
+                                    w.startedAt(),
+                                    now,
+                                    running,
+                                    accepting,
+                                    w.queueIds(),
+                                    w.typeIds()));
         } finally {
             lock.unlock();
         }

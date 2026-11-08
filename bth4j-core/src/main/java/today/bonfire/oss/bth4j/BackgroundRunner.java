@@ -64,6 +64,8 @@ public final class BackgroundRunner {
     private volatile boolean stopRequested;
     private volatile boolean quiet;
     private volatile int workerId;
+    private volatile Set<Integer> workerQueueIds;
+    private volatile Set<Integer> workerTypeIds;
     private volatile ScheduledFuture<?> monitoringTask;
     private volatile TaskProcessorService taskProcessorService;
     private volatile CustomThread scheduledTaskService;
@@ -200,7 +202,9 @@ public final class BackgroundRunner {
             config.queuePolicies.forEach((q, p) -> policies.put(names.queueId(q), p));
             var typeIds = new HashSet<Integer>();
             for (var e : registry.typeNames()) typeIds.add(names.typeId(e));
-            workerId = store.allocateWorkerId(config.workerLabel, Set.copyOf(queueIds), Set.copyOf(typeIds));
+            workerQueueIds = Set.copyOf(queueIds);
+            workerTypeIds = Set.copyOf(typeIds);
+            workerId = store.allocateWorkerId(config.workerLabel, workerQueueIds, workerTypeIds);
             services = new RunnerServices(
                     store,
                     names,
@@ -463,7 +467,7 @@ public final class BackgroundRunner {
                 .failureDetail(config.failureDetail)
                 .batchSize(config.claimBatchSize * 4)
                 .purgeBatchSize(config.purgeBatchSize)
-                .worker(workerId, runningTasks::size)
+                .worker(workerId, config.workerLabel, workerQueueIds, workerTypeIds, runningTasks::size)
                 .accepting(() -> !quiet && !stopRequested)
                 .workerStaleAfter(config.workerStaleAfter)
                 .create();
