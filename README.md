@@ -1009,6 +1009,10 @@ The integration tests of the store modules start containers with Testcontainers:
 `valkey/valkey:9.1.3-alpine`, and `-Dbth4j.redis.image=...` or `-Dbth4j.postgres.image=...` selects any
 other image.
 
+Test output (logs included) goes to `target/surefire-reports` and `target/failsafe-reports` of each module, one
+`*-output.txt` file per test class, so the build log shows only results and failures. Add
+`-Dmaven.test.redirectTestOutputToFile=false` to see it on the console.
+
 ## Upgrading from 2.x
 
 3.0 cannot read 2.x data. Let the 2.x runners drain their queues, then start 3.0, or use a new Redis

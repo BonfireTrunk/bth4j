@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A recurring task that cannot be evaluated because of an invalid cron expression or time zone is logged as one ERROR line with the reason, without a stack trace; other failures to evaluate one still log the stack trace.
+- `Cron.next` throws `TaskValidationException` for an expression that does not parse, with the same message as `Cron.validate`, instead of the cron library's `IllegalArgumentException`.
+
 ## [4.1.0] - 2026-11-08
 
 ### Added

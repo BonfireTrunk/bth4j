@@ -35,6 +35,7 @@
         <micrometer.version>1.15.0</micrometer.version>
         <hikaricp.version>7.1.0</hikaricp.version>
         <maven-failsafe-plugin.version>3.6.1</maven-failsafe-plugin.version>
+        <maven.test.redirectTestOutputToFile>true</maven.test.redirectTestOutputToFile>
     </properties>
 
     <name>${project.groupId}:${project.artifactId}</name>
