@@ -1917,18 +1917,23 @@ public abstract class StoreContract {
     }
 
     @Test
-    void purgeRemovesCancelledAndExpiredTasksWhileTheirKeyStaysTaken() {
+    void purgeRemovesCancelledAndExpiredTasksWhoseKeyIsStillHeldAndTheKeyStaysTaken() {
         for (TaskState state : PURGED_TERMINALS) {
             String key = "held-" + state;
             long id = inState(state, task().uniqueKey(key).keyKeep(MID));
+            advance(Duration.ofMillis(50));
 
-            assertThat(store.purge(state, Duration.ZERO, 10)).as("%s", state).isEqualTo(1);
-            assertThat(store.getTask(id)).isEmpty();
+            assertThat(store.purge(state, Duration.ofMillis(10), 10))
+                    .as("%s held", state)
+                    .isEqualTo(1);
+            assertThat(store.getTask(id)).as("%s removed", state).isEmpty();
             assertThat(store.taskByKey(key)).isEmpty();
             assertThat(store.enqueue(task().uniqueKey(key).build())).isEqualTo(new EnqueueOutcome.DuplicateKey(id));
+            assertThat(store.purge(state, Duration.ofMillis(10), 10))
+                    .as("%s again", state)
+                    .isZero();
 
             advance(PAST_MID);
-
             put(task().uniqueKey(key));
         }
     }
@@ -2464,6 +2469,43 @@ public abstract class StoreContract {
                 .count();
         assertThat(stored).isEqualTo(1);
         assertThat(store.recurringSchedules()).containsOnly(Map.entry("nightly", next));
+    }
+
+    @Test
+    void commitRecurringWithATakenOccurrenceIdWritesNothing() {
+        long taken = putNew();
+        Instant fire = millis(now().plusSeconds(1));
+        store.putRecurring(definition("nightly", "* * * * *"), fire, fire);
+        DueSchedule due = store.dueRecurring(fire, 10).get(0);
+        TaskRecord occurrence = task().id(taken)
+                .scheduleId("nightly")
+                .due(fire)
+                .state(TaskState.SCHEDULED)
+                .build();
+        assertThat(store.commitRecurring(due, millis(now().plusSeconds(3600)), occurrence))
+                .isFalse();
+        assertThat(store.recurringSchedules()).containsOnly(Map.entry("nightly", fire));
+        assertThat(get(taken).state()).isEqualTo(TaskState.QUEUED);
+        assertThat(get(taken).scheduleId()).isNull();
+    }
+
+    @Test
+    void commitRecurringOfAFixedDelayWithATakenOccurrenceIdLeavesItUnparked() {
+        long taken = putNew();
+        Instant fire = millis(now().plusSeconds(1));
+        store.putRecurring(fullDefinition("a"), fire, fire);
+        DueSchedule due = dueOf("a", fire);
+        TaskRecord occurrence =
+                fixedDelayOccurrence("a", fire).toBuilder().id(taken).build();
+        assertThat(store.commitRecurring(due, parkedFire(), occurrence)).isFalse();
+        assertThat(nextFireOf("a")).isEqualTo(fire);
+        assertThat(get(taken).uniqueKey()).isNull();
+
+        TaskRecord fresh = fixedDelayOccurrence("a", fire);
+        Instant parked = parkedFire();
+        assertThat(store.commitRecurring(dueOf("a", fire), parked, fresh)).isTrue();
+        assertThat(get(fresh.id()).state()).isEqualTo(TaskState.SCHEDULED);
+        assertThat(nextFireOf("a")).isEqualTo(parked);
     }
 
     // wave 2: cancel, retry, delete, pause, expire, workers

@@ -36,7 +36,8 @@ public interface ScheduleStore extends TaskStore {
      * {@code nextFire}, unless the definition's revision or next fire time changed meanwhile. When the
      * occurrence names a unique key that another task holds, the definition is still advanced and the
      * method still reports true, but the occurrence is not stored; this is how an overlapping occurrence is
-     * skipped. For a fixed-delay definition the store records the stored occurrence as the one in flight, which
+     * skipped. When a task with the occurrence's id exists, nothing is written and the method reports false: ids
+     * are handed out once, so that task is not an occurrence of this fire. For a fixed-delay definition the store records the stored occurrence as the one in flight, which
      * is what a {@link ScheduleEffect} of that occurrence is checked against; a skipped occurrence leaves the
      * recorded one alone, so the running occurrence still re-arms the definition.
      *

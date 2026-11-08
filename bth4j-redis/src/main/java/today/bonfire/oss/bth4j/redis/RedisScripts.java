@@ -812,8 +812,8 @@ final class RedisScripts {
      * ARGV: schedule id, definition revision, fire at ms, next fire ms, occurrence id, unique key or '', queue
      * id, start-by ms or '', has payload (1 or ''), payload, then the occurrence's field/value pairs. Stores the occurrence as
      * SCHEDULED for the fire time and advances the definition, unless the revision or the stored fire time
-     * changed or the definition is paused. An occurrence that exists already or whose unique key is held is not
-     * stored again; the definition still advances. A stored occurrence of a fixed-delay definition becomes its
+     * changed or the definition is paused, or a task with the occurrence's id exists. An occurrence whose unique key
+     * is held is not stored; the definition still advances. A stored occurrence of a fixed-delay definition becomes its
      * occ field; when the unique key is held, occ is empty and the holder belongs to the schedule, the holder becomes it. Returns 1 when committed.
      */
     static final String CRON_COMMIT = PRELUDE + """
@@ -826,6 +826,7 @@ final class RedisScripts {
             local sb = ARGV[9] ~= '' and ARGV[9] or nil
             local data = ARGV[10] == '1' and ARGV[11] or nil
             local stored = store(ARGV[6], ARGV[4], uk, ARGV[8], sb, data, 12, #ARGV, true)
+            if stored[1] == 0 then return 0 end
             flush()
             if redis.call('HEXISTS', ckey, 'fd') == 1 then
               if stored[1] == 1 then
