@@ -18,7 +18,9 @@ import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
+import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
+import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /** {@link AdminOps} over a store; health and issues come from the runner when there is one. */
@@ -100,7 +102,7 @@ final class DefaultAdminOps implements AdminOps {
             throw new TaskValidationException("reason longer than " + MAX_REASON + " characters");
         }
         // a waiting fixed-delay occurrence re-arms nothing, so the store pauses its definition with the cancel
-        var pause = RecurringTaskService.pauseEffect(store.getTask(id).orElse(null));
+        var pause = RecurringTaskService.pauseEffect(readable(id));
         return store.cancel(id, revision, reason == null || reason.isBlank() ? "cancelled by operator" : reason, pause);
     }
 
@@ -114,8 +116,21 @@ final class DefaultAdminOps implements AdminOps {
 
     @Override
     public boolean delete(long id, int revision) {
-        var pause = RecurringTaskService.pauseEffect(store.getTask(id).orElse(null));
+        var pause = RecurringTaskService.pauseEffect(readable(id));
         return store.delete(id, revision, pause);
+    }
+
+    /**
+     * The task as far as a schedule effect needs it; null when it is missing or cannot be read, so that an
+     * operator can still cancel or delete a task with a corrupt stored value. Such a task is not treated as a
+     * fixed-delay occurrence.
+     */
+    private TaskRecord readable(long id) {
+        try {
+            return store.getTask(id).orElse(null);
+        } catch (UnreadableTaskException e) {
+            return null;
+        }
     }
 
     @Override
@@ -190,17 +205,16 @@ final class DefaultAdminOps implements AdminOps {
 
     @Override
     public boolean pauseSchedule(String id, boolean paused) {
-        if (!paused) {
-            // a fixed-delay definition parks its next fire while paused; the re-arm goes first, while it is
-            // still paused, so the runner cannot commit an occurrence in between and fire again one delay later
-            store.recurringDefinitions().stream()
-                    .filter(s -> s.definition().scheduleId().equals(id)
-                            && s.definition().isFixedDelay())
-                    .findFirst()
-                    .ifPresent(s -> store.setNextFire(
-                            id, clock.instant().plusMillis(s.definition().fixedDelayMs())));
-        }
-        return store.pauseRecurring(id, paused);
+        if (paused) return store.pauseRecurring(id);
+        // a fixed-delay definition parks its next fire while paused, so it resumes one delay from now; the store
+        // applies that only to a definition that is paused, so resuming a running one changes nothing
+        var next = store.recurringDefinitions().stream()
+                .filter(s ->
+                        s.definition().scheduleId().equals(id) && s.definition().isFixedDelay())
+                .findFirst()
+                .map(s -> clock.instant().plusMillis(s.definition().fixedDelayMs()))
+                .orElse(null);
+        return store.resumeRecurring(id, next);
     }
 
     @Override

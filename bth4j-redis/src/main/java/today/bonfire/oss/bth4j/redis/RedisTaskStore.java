@@ -39,6 +39,7 @@ import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
 import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
+import today.bonfire.oss.bth4j.spi.PutRecurringResult;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecordJson;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
@@ -65,23 +66,12 @@ import today.bonfire.oss.bth4j.spi.WorkerInfo;
  */
 public class RedisTaskStore implements FullStore {
     /**
-     * The key layout this class writes, stored in the namespace's {@code meta} hash. {@link #init} migrates a
-     * namespace written with layout {@value #FIRST_MIGRATED_LAYOUT} or later forward and refuses an older or a newer
-     * one. 3.0 wrote layout 1; layout 2 was only in 4.0.0 snapshots; 4.0.0 wrote layout 3, which lacks the worker
-     * coverage this layout relies on; layout 4 was only in 4.1.0 snapshots.
+     * The key layout this class writes, stored in the namespace's {@code meta} hash. {@link #init} refuses a
+     * namespace with any other layout. 3.0 wrote layout 1; layout 2 was only in 4.0.0 snapshots; 4.0.0 wrote
+     * layout 3, which lacks the worker coverage this layout relies on; layout 4 and earlier forms of layout 5
+     * were only in 4.1.0 snapshots.
      */
     public static final int LAYOUT_VERSION = 5;
-
-    /** The oldest layout {@link #init} migrates from. */
-    public static final int FIRST_MIGRATED_LAYOUT = 4;
-
-    /**
-     * How long one runner's migration holds the lock; a runner that waits for it gives up after this too. Every
-     * step can run again, so a migration that outlives the lock and is taken over does no harm.
-     */
-    private static final long MIGRATION_LOCK_MS = 600_000;
-
-    private static final int MIGRATION_PAGE = 500;
 
     private static final int PAGE_CHUNK = 500;
 
@@ -165,81 +155,20 @@ public class RedisTaskStore implements FullStore {
     }
 
     /**
-     * Writes the layout version of a new namespace, or migrates an older one forward step by step under the
-     * {@code migrating} lock, recording each version reached. Runners of the older library version must be stopped
-     * first: they would keep writing the old layout.
+     * Writes the layout version of a new namespace and checks it on an existing one.
      *
-     * @throws TaskStoreException when the namespace has a layout older than {@value #FIRST_MIGRATED_LAYOUT} or newer
-     *     than {@value #LAYOUT_VERSION}, or another runner's migration did not finish in time
+     * @throws TaskStoreException when the namespace has a layout other than {@value #LAYOUT_VERSION}
      */
     @Override
     public void init() {
         guard(() -> {
             jedis.hsetnx(keys.meta, SCHEMA, String.valueOf(LAYOUT_VERSION));
-            var found = layout();
-            if (found == LAYOUT_VERSION) return;
-            if (found < FIRST_MIGRATED_LAYOUT || found > LAYOUT_VERSION) {
-                throw new TaskStoreException("Redis namespace " + keys.namespace + " has layout version "
-                        + jedis.hget(keys.meta, SCHEMA) + ", expected " + LAYOUT_VERSION);
+            var found = jedis.hget(keys.meta, SCHEMA);
+            if (!String.valueOf(LAYOUT_VERSION).equals(found)) {
+                throw new TaskStoreException("Redis namespace " + keys.namespace + " has layout version " + found
+                        + ", expected " + LAYOUT_VERSION);
             }
-            migrate();
         });
-    }
-
-    /** The stored layout version; one that is not a number reads as 0, so that init refuses it. */
-    private int layout() {
-        try {
-            return Integer.parseInt(jedis.hget(keys.meta, SCHEMA));
-        } catch (NumberFormatException e) {
-            return 0;
-        }
-    }
-
-    private void migrate() {
-        var token = Long.toString(ThreadLocalRandom.current().nextLong());
-        var lockArgs = List.of(token, String.valueOf(MIGRATION_LOCK_MS));
-        var deadline = System.nanoTime() + Duration.ofMillis(MIGRATION_LOCK_MS).toNanos();
-        while (num(scripts.run(RedisScripts.MIGRATION_LOCK, lockArgs)) != 1) {
-            if (layout() == LAYOUT_VERSION) return;
-            if (System.nanoTime() > deadline) {
-                throw new TaskStoreException("Redis namespace " + keys.namespace + " is being migrated by another"
-                        + " runner that did not finish within " + Duration.ofMillis(MIGRATION_LOCK_MS));
-            }
-            try {
-                Thread.sleep(200);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new TaskStoreException("interrupted while waiting for the layout migration", e);
-            }
-        }
-        try {
-            for (var from = layout(); from < LAYOUT_VERSION; from++) {
-                if (from == 4) migrate4To5();
-                jedis.hset(keys.meta, SCHEMA, String.valueOf(from + 1));
-            }
-        } finally {
-            scripts.run(RedisScripts.MIGRATION_UNLOCK, List.of(token));
-        }
-    }
-
-    /**
-     * Fills {@code active:<qid>}, moves held terminal tasks from {@code idx} to {@code hidx} and drops the
-     * {@code rm:<state>:<qid>} zsets, whose entries {@code idx} now holds.
-     */
-    private void migrate4To5() {
-        for (var qid : sortedQueueIds()) {
-            var queue = String.valueOf(qid);
-            scripts.run(RedisScripts.MIGRATE_ACTIVE, List.of(queue));
-            for (var state = TaskState.SUCCEEDED.code(); state <= TaskState.EXPIRED.code(); state++) {
-                var read = MIGRATION_PAGE;
-                for (var offset = 0; read == MIGRATION_PAGE; offset += MIGRATION_PAGE) {
-                    var args = List.of(
-                            String.valueOf(state), queue, String.valueOf(offset), String.valueOf(MIGRATION_PAGE));
-                    read = (int) num(scripts.run(RedisScripts.MIGRATE_HELD, args));
-                }
-                jedis.unlink(keys.prefix + "rm:" + state + ":" + qid);
-            }
-        }
     }
 
     @Override
@@ -403,9 +332,11 @@ public class RedisTaskStore implements FullStore {
         });
         var r = claimReply(guard(() -> scripts.run(RedisScripts.CLAIM, args)));
         if (num(r.get(0)) < 0) {
-            var ids = types.ids().stream().map(String::valueOf).toArray(String[]::new);
+            var setArgs = new ArrayList<String>(types.ids().size() + 1);
+            setArgs.add(types.digest());
+            types.ids().forEach(id -> setArgs.add(String.valueOf(id)));
             r = claimReply(guard(() -> {
-                jedis.sadd(keys.typeSet(types.digest()), ids);
+                scripts.run(RedisScripts.TYPE_SET, setArgs);
                 return scripts.run(RedisScripts.CLAIM, args);
             }));
             if (num(r.get(0)) < 0) throw new TaskStoreException("Redis type set " + types.digest() + " vanished");
@@ -643,18 +574,43 @@ public class RedisTaskStore implements FullStore {
                     orphans.add(ids.get(i));
                     continue;
                 }
-                out.add(new ExpiredLease(
-                        Long.parseLong(ids.get(i)),
-                        Integer.parseInt(v.get(0)),
-                        Integer.parseInt(v.get(1)),
-                        Integer.parseInt(v.get(2)),
-                        Integer.parseInt(v.get(3)),
-                        v.get(4) != null));
+                var lease = expiredLease(Long.parseLong(ids.get(i)), v);
+                if (lease != null) {
+                    out.add(lease);
+                } else {
+                    orphans.add(ids.get(i));
+                }
             }
-            // a leased entry whose hash is gone cannot be reclaimed; failExpired would find no task anyway
+            // a leased entry whose hash is gone, or whose revision cannot be read, cannot be reclaimed
             if (!orphans.isEmpty()) jedis.zrem(keys.leased, orphans.toArray(String[]::new));
             return out;
         });
+    }
+
+    /**
+     * One reclaimed lease from its hash fields (rev, att, max, ty, cra). A task whose other numbers cannot be read
+     * comes back with its revision and zero counts, so that maintenance finds it unreadable and ends it. One whose
+     * revision cannot be read cannot be fenced: it is null, and leaves the {@code leased} zset so that it does not
+     * take a place in every later batch.
+     */
+    private static ExpiredLease expiredLease(long id, List<String> v) {
+        int revision;
+        try {
+            revision = Integer.parseInt(v.get(0));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+        try {
+            return new ExpiredLease(
+                    id,
+                    revision,
+                    Integer.parseInt(v.get(1)),
+                    Integer.parseInt(v.get(2)),
+                    Integer.parseInt(v.get(3)),
+                    v.get(4) != null);
+        } catch (NumberFormatException e) {
+            return new ExpiredLease(id, revision, 0, 0, 0, v.get(4) != null);
+        }
     }
 
     @Override
@@ -697,7 +653,7 @@ public class RedisTaskStore implements FullStore {
     // ---- schedules -----------------------------------------------------------------------------------
 
     @Override
-    public PutRecurringOutcome putRecurring(RecurringDefinition d, Instant nextFire, Instant keepUntil) {
+    public PutRecurringResult putRecurring(RecurringDefinition d, Instant nextFire, Instant keepUntil) {
         var args = new ArrayList<String>();
         args.add(d.scheduleId());
         args.add(ms(nextFire));
@@ -741,7 +697,9 @@ public class RedisTaskStore implements FullStore {
         if (d.encodedPayload() != null) {
             args.addAll(List.of(F_DATA, d.encodedPayload()));
         }
-        return PutRecurringOutcome.valueOf((String) guard(() -> scripts.run(RedisScripts.CRON_PUT, args)));
+        var r = (List<?>) guard(() -> scripts.run(RedisScripts.CRON_PUT, args));
+        return new PutRecurringResult(
+                PutRecurringOutcome.valueOf((String) r.get(0)), Instant.ofEpochMilli(num(r.get(1))));
     }
 
     @Override
@@ -914,8 +872,8 @@ public class RedisTaskStore implements FullStore {
     }
 
     /**
-     * Lists from the structures that hold the state: {@code idx:<state>:<qid>} for LEASED, that and
-     * {@code hidx:<state>:<qid>} for the terminal states, {@code q:<qid>:<tid>} of the types in
+     * Lists from the structures that hold the state: {@code idx:<state>:<qid>} for LEASED and the terminal
+     * states, {@code q:<qid>:<tid>} of the types in
      * {@code active:<qid>} for QUEUED and {@code sched:<qid>} for SCHEDULED. Order is by the zset score, then numeric
      * id: stateChanged for the indexed states, due for QUEUED and SCHEDULED. The cursor is
      * {@code <score>:<id>} of the last entry of the page. Pages merge the zsets of each queue, preserving the same
@@ -959,7 +917,7 @@ public class RedisTaskStore implements FullStore {
                 entries.addAll(page(zset, after, limit));
             }
         }
-        var ordered = entries.stream().distinct().sorted(ORDER).toList();
+        var ordered = entries.stream().sorted(ORDER).toList();
         return ordered.subList(0, Math.min(limit, ordered.size()));
     }
 
@@ -975,26 +933,25 @@ public class RedisTaskStore implements FullStore {
                         .map(tid -> keys.queue(qid, Integer.parseInt(tid)))
                         .toList();
             case SCHEDULED -> List.of(keys.scheduled(qid));
-            case LEASED -> List.of(keys.index(state.code(), qid));
-            // purge moves a task from hidx to idx with its score and never back, so reading hidx first sees a task
-            // moved between the two reads once or twice (listing drops the copy), never not at all
-            default -> List.of(keys.heldIndex(state.code(), qid), keys.index(state.code(), qid));
+            default -> List.of(keys.index(state.code(), qid));
         };
     }
 
     /**
      * Reads one zset in (score, numeric id) order after the cursor. Redis breaks score ties by member bytes, so a
-     * chunk's trailing score group is re-read whole before it is ordered by number.
+     * chunk's trailing score group is re-read whole before it is ordered by number. A chunk is no longer than the
+     * page needs.
      */
     private List<Entry> page(String zset, Entry after, int limit) {
         var out = new ArrayList<Entry>();
         var min = after == null ? "-inf" : String.valueOf((long) after.score());
+        var size = Math.min(PAGE_CHUNK, limit);
         while (out.size() < limit) {
-            var chunk = jedis.zrangeByScoreWithScores(zset, min, "+inf", 0, PAGE_CHUNK);
+            var chunk = jedis.zrangeByScoreWithScores(zset, min, "+inf", 0, size);
             if (chunk.isEmpty()) {
                 break;
             }
-            var full = chunk.size() == PAGE_CHUNK;
+            var full = chunk.size() == size;
             var lastScore = chunk.getLast().getScore();
             String nextMin = null;
             if (full) {
@@ -1202,9 +1159,14 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public boolean pauseRecurring(String scheduleId, boolean paused) {
-        var args = List.of(scheduleId, paused ? "1" : "0");
-        return num(guard(() -> scripts.run(RedisScripts.CRON_PAUSE, args))) == 1;
+    public boolean pauseRecurring(String scheduleId) {
+        return num(guard(() -> scripts.run(RedisScripts.CRON_PAUSE, List.of(scheduleId)))) == 1;
+    }
+
+    @Override
+    public boolean resumeRecurring(String scheduleId, Instant nextFire) {
+        var args = List.of(scheduleId, nextFire == null ? "" : ms(nextFire));
+        return num(guard(() -> scripts.run(RedisScripts.CRON_RESUME, args))) == 1;
     }
 
     @Override

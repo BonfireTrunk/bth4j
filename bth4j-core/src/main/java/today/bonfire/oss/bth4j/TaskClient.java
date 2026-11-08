@@ -304,6 +304,7 @@ public final class TaskClient {
         }
         var b = TaskRecord.builder()
                 .id(id)
+                .revision(IdAllocator.firstRevision())
                 .queueId(names.queueId(queues.validQueue(request.queue())))
                 .typeId(names.typeId(type.name()))
                 .payloadVersion(type.payloadVersion())
@@ -344,7 +345,7 @@ public final class TaskClient {
      * such as a parked fixed-delay definition, resets it. A fixed-delay definition first fires one delay from
      * now.
      *
-     * @return the next fire time
+     * @return the next fire time it has after the put: the stored one when it was kept
      */
     public <T> Instant putSchedule(ScheduleDefinition<T> definition) {
         var now = clock.instant();
@@ -379,7 +380,9 @@ public final class TaskClient {
                 definition.maxRunTime() == null ? null : definition.maxRunTime().toMillis(),
                 false,
                 0);
-        var outcome = store.putRecurring(stored, next, keepUntil);
+        var result = store.putRecurring(stored, next, keepUntil);
+        var outcome = result.outcome();
+        next = result.nextFire();
         var timing = definition.isFixedDelay() ? "every " + definition.fixedDelay() : definition.cron();
         if (outcome == PutRecurringOutcome.UNCHANGED) {
             log.debug("Schedule {} ({}) is registered already", definition.id(), timing);

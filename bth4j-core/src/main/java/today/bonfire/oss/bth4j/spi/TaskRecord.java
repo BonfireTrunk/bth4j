@@ -11,7 +11,8 @@ import java.util.Map;
  *
  * @param id                unique per namespace, allocated by the client from {@link TaskStore#allocateIds}
  * @param revision          +1 on every state change; never on renew, step or progress writes; the fence every
- *                          transition checks
+ *                          transition checks. The client starts a new task at a random value, so that a lease
+ *                          on an earlier task with the same id cannot match it
  * @param queueId           see {@link TaskStore#queueId}
  * @param typeId            see {@link TaskStore#typeId}
  * @param payloadVersion    the task type's payload version when the task was enqueued

@@ -2,6 +2,7 @@ package today.bonfire.oss.bth4j.redis;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -27,9 +28,6 @@ import redis.clients.jedis.ConnectionPoolConfig;
 import redis.clients.jedis.DefaultJedisClientConfig;
 import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.RedisClient;
-import redis.clients.jedis.UnifiedJedis;
-import redis.clients.jedis.providers.PooledConnectionProvider;
-import redis.clients.jedis.resps.Tuple;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
@@ -37,6 +35,7 @@ import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
+import today.bonfire.oss.bth4j.spi.PutRecurringResult;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.RecordJson;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
@@ -160,57 +159,12 @@ class RedisTaskStoreIT {
     }
 
     @Test
-    void initMigratesALayout4NamespaceOfAnEarlier41Snapshot() {
-        store.enqueue(task(2).build());
-        var kept = claim(1).getFirst();
-        assertThat(store.ack(kept.id(), kept.revision(), true, true, null)).isTrue();
-        store.enqueue(task(3).uniqueKey("k").keyKeep(Duration.ofHours(1)).build());
-        var held = claim(1).getFirst();
-        assertThat(store.ack(held.id(), held.revision(), true, true, null)).isTrue();
-        store.enqueue(task(1).build());
-        // back to layout 4: no active sets, held tasks in idx, unheld ones in idx and rm
-        var succeeded = TaskState.SUCCEEDED.code();
-        var heldScore = jedis.zscore(keys.heldIndex(succeeded, queue), "3");
-        jedis.del(keys.activeTypes(queue), keys.heldIndex(succeeded, queue));
-        jedis.zadd(keys.index(succeeded, queue), heldScore, "3");
-        var rm = keys.prefix + "rm:" + succeeded + ":" + queue;
-        jedis.zadd(rm, jedis.zscore(keys.index(succeeded, queue), "2"), "2");
+    void initRefusesTheLayout4NamespaceOfAnEarlier41Snapshot() {
         jedis.hset(keys.meta, "schema", "4");
 
-        store.init();
-
-        assertThat(jedis.hget(keys.meta, "schema")).isEqualTo("5");
-        assertThat(jedis.smembers(keys.activeTypes(queue))).containsExactly(String.valueOf(type));
-        assertThat(jedis.zrange(keys.index(succeeded, queue), 0, -1)).containsExactly("2");
-        assertThat(jedis.zscore(keys.heldIndex(succeeded, queue), "3")).isEqualTo(heldScore);
-        assertThat(jedis.exists(rm)).isFalse();
-        assertThat(jedis.exists(keys.prefix + "migrating")).isFalse();
-        assertThat(store.counts().get(queue).succeeded()).isEqualTo(2);
-        assertThat(claim(5)).extracting(TaskRecord::id).containsExactly(1L);
-        assertThat(store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10)).isEqualTo(1);
-        assertThat(store.getTask(3)).isPresent();
-        store.init();
-        assertThat(jedis.hget(keys.meta, "schema")).isEqualTo("5");
-    }
-
-    @Test
-    void initWaitsForAnotherRunnersMigrationInsteadOfRunningItTwice() throws Exception {
-        jedis.hset(keys.meta, "schema", "4");
-        jedis.set(keys.prefix + "migrating", "other");
-        var other = Thread.ofVirtual().start(() -> {
-            try {
-                Thread.sleep(300);
-            } catch (InterruptedException e) {
-                throw new IllegalStateException(e);
-            }
-            jedis.hset(keys.meta, "schema", "5");
-            jedis.del(keys.prefix + "migrating");
-        });
-
-        store.init();
-
-        other.join();
-        assertThat(jedis.hget(keys.meta, "schema")).isEqualTo("5");
+        assertThatThrownBy(store::init)
+                .isInstanceOf(TaskStoreException.class)
+                .hasMessageContaining("layout version 4, expected 5");
     }
 
     @Test
@@ -379,7 +333,7 @@ class RedisTaskStoreIT {
     }
 
     @Test
-    void keyKeepWindowHoldsTheKeyViaPexpireAndKeepsTheHashEvenWithoutKeep() {
+    void keyKeepWindowHoldsTheKeyViaPexpireAndOutlivesTheHashWithoutKeep() {
         store.enqueue(task(1).uniqueKey("k").keyKeep(Duration.ofMinutes(5)).build());
         store.enqueue(task(2).encodedPayload("p")
                 .uniqueKey("j")
@@ -395,10 +349,9 @@ class RedisTaskStoreIT {
         assertThat(jedis.pttl(keys.uniqueKey("j")))
                 .isBetween(1L, Duration.ofMinutes(5).toMillis());
         assertThat(store.getTask(1).orElseThrow().keyUntil()).isNotNull();
-        var kept = store.getTask(2).orElseThrow();
-        assertThat(kept.state()).isEqualTo(TaskState.SUCCEEDED);
-        assertThat(kept.encodedPayload()).isNull();
-        assertThat(kept.keyUntil()).isNotNull();
+        assertThat(store.getTask(2)).isEmpty();
+        assertThat(jedis.exists(keys.task(2), keys.data(2))).isZero();
+        assertThat(jedis.get(keys.uniqueKey("j"))).isEqualTo("2");
         assertThat(store.enqueue(task(3).uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(1));
         assertThat(store.enqueue(task(4).uniqueKey("j").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(2));
         jedis.pexpire(keys.uniqueKey("k"), 1);
@@ -504,6 +457,46 @@ class RedisTaskStoreIT {
     }
 
     @Test
+    void aClaimLeasesATaskWhoseNumbersCannotBeReadAndStillLeasesTheOthersInTheSameRun() {
+        var now = Instant.now().minusSeconds(100);
+        store.enqueue(task(1).due(now).build());
+        store.enqueue(task(2).due(now.plusSeconds(1)).build());
+        store.enqueue(task(3).due(now.plusSeconds(2)).build());
+        jedis.hset(keys.task(2), Map.of("rev", "x", "att", "y", "sb", "z"));
+
+        var claimed = claim(3);
+
+        assertThat(claimed).extracting(TaskRecord::id).containsExactly(1L, 3L);
+        assertThat(jedis.hget(keys.task(2), "state")).isEqualTo("2");
+        assertThat(jedis.zscore(keys.queue(queue, type), "2")).isNull();
+        assertThat(store.reclaim(10)).extracting(ExpiredLease::id).containsExactly(2L);
+        assertThatThrownBy(() -> store.getTask(2)).isInstanceOf(UnreadableTaskException.class);
+        assertThat(counts().leased()).isEqualTo(3);
+    }
+
+    @Test
+    void reclaimReturnsALeaseWithUnreadableCountsAndDropsOneWithoutAReadableRevision() {
+        for (var id = 1L; id <= 3; id++) {
+            store.enqueue(task(id).build());
+        }
+        claim(3);
+        for (var id = 1L; id <= 3; id++) {
+            expireLease(id);
+        }
+        jedis.hset(keys.task(1), "att", "x");
+        jedis.hset(keys.task(2), "rev", "y");
+        var revision = Integer.parseInt(jedis.hget(keys.task(1), "rev"));
+
+        var expired = store.reclaim(10);
+
+        assertThat(expired)
+                .extracting(ExpiredLease::id, ExpiredLease::revision, ExpiredLease::attempts)
+                .containsExactlyInAnyOrder(tuple(1L, revision, 0), tuple(3L, revision, 1));
+        assertThat(jedis.zscore(keys.leased, "2")).isNull();
+        assertThat(store.reclaim(10)).extracting(ExpiredLease::id).containsExactlyInAnyOrder(1L, 3L);
+    }
+
+    @Test
     void endingTheLeasesOfUnreadableTasksLeavesTasksOfAnotherClaimAlone() {
         var leased = claimOne(1);
         long claimedAt = leased.claimedAt().toEpochMilli();
@@ -536,7 +529,7 @@ class RedisTaskStoreIT {
     }
 
     @Test
-    void unknownTypesAreUntouchedIncludingWhenTheirStartByHasPassed() {
+    void unknownTypesAreUntouchedAndAPassedStartByIsLeftToMaintenance() {
         var unknown = store.typeId("unknown");
         store.enqueue(task(1).typeId(unknown).startBy(Instant.EPOCH).build());
         store.enqueue(task(2).typeId(unknown).build());
@@ -558,7 +551,8 @@ class RedisTaskStoreIT {
         assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, 1, Set.of(unknown))))
                 .extracting(TaskRecord::id)
                 .containsExactly(2L);
-        assertThat(store.getTask(1).orElseThrow().state()).isEqualTo(TaskState.EXPIRED);
+        assertThat(store.getTask(1).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
+        assertThat(jedis.zscore(keys.startBy, "1")).isEqualTo(startBy);
     }
 
     @Test
@@ -937,17 +931,18 @@ class RedisTaskStoreIT {
     }
 
     @Test
-    void deadTaskWithKeyWindowIsKeptEvenWhenNotKept() {
+    void deadTaskWithKeyWindowIsRemovedWhenNotKeptAndItsKeyStringStays() {
         store.enqueue(task(1).uniqueKey("k").keyKeep(Duration.ofMinutes(1)).build());
         var t = claim(1).getFirst();
 
         assertThat(store.fail(1, t.revision(), failure(1), null, false, null)).isEqualTo(FailOutcome.DEAD);
 
-        var back = store.getTask(1).orElseThrow();
-        assertThat(back.state()).isEqualTo(TaskState.DEAD);
-        assertThat(back.keyUntil()).isNotNull();
-        assertThat(back.workerId()).isEqualTo(1);
-        assertThat(store.purge(TaskState.DEAD, Duration.ZERO, 10)).isZero();
+        assertThat(store.getTask(1)).isEmpty();
+        assertThat(jedis.exists(keys.task(1), keys.data(1), keys.failures(1))).isZero();
+        assertThat(jedis.get(keys.uniqueKey("k"))).isEqualTo("1");
+        assertThat(jedis.pttl(keys.uniqueKey("k")))
+                .isBetween(1L, Duration.ofMinutes(1).toMillis());
+        assertThat(jedis.zcard(keys.index(TaskState.DEAD.code(), queue))).isZero();
     }
 
     @Test
@@ -1176,7 +1171,7 @@ class RedisTaskStoreIT {
     }
 
     @Test
-    void purgeRemovesOldTerminalTasksOnlyAndKeepsHeldKeys() {
+    void purgeRemovesOldTerminalTasksOnlyAndLeavesTheKeyStringOfAnOpenWindow() {
         store.enqueue(task(1).build());
         store.enqueue(task(2).build());
         store.enqueue(task(3).uniqueKey("k").keyKeep(Duration.ofMinutes(5)).build());
@@ -1189,50 +1184,18 @@ class RedisTaskStoreIT {
         sleep(150);
 
         assertThat(store.purge(TaskState.SUCCEEDED, Duration.ofMinutes(1), 10)).isZero();
-        assertThat(store.purge(TaskState.SUCCEEDED, Duration.ofMillis(100), 10)).isEqualTo(2);
+        assertThat(store.purge(TaskState.SUCCEEDED, Duration.ofMillis(100), 10)).isEqualTo(3);
 
         assertThat(store.getTask(1)).isEmpty();
-        assertThat(store.getTask(3)).isPresent();
+        assertThat(store.getTask(3)).isEmpty();
         assertThat(store.getTask(4)).isPresent();
-        assertThat(jedis.exists(keys.uniqueKey("k"))).isTrue();
-        assertThat(counts().succeeded()).isEqualTo(1);
+        assertThat(jedis.get(keys.uniqueKey("k"))).isEqualTo("3");
+        assertThat(jedis.pttl(keys.uniqueKey("k"))).isPositive();
+        assertThat(counts().succeeded()).isZero();
         assertThat(counts().dead()).isEqualTo(1);
         assertThat(store.purge(TaskState.DEAD, Duration.ofMillis(100), 10)).isEqualTo(1);
         assertThatThrownBy(() -> store.purge(TaskState.QUEUED, Duration.ZERO, 1))
                 .isInstanceOf(IllegalArgumentException.class);
-    }
-
-    @Test
-    void aListingSeesAFinishedTaskThatPurgeMovesOutOfTheHeldIndexDuringTheRead() {
-        store.enqueue(task(1).uniqueKey("k").keyKeep(Duration.ofMillis(50)).build());
-        store.enqueue(task(2).build());
-        store.enqueue(task(3).build());
-        for (var t : claim(3)) store.ack(t.id(), t.revision(), true, true, null);
-        sleep(150);
-        var reads = new AtomicInteger();
-        var redis = new HostAndPort(REDIS.getHost(), REDIS.getMappedPort(6379));
-        try (var interposed =
-                new UnifiedJedis(
-                        new PooledConnectionProvider(
-                                redis,
-                                DefaultJedisClientConfig.builder().resp3().build()),
-                        1,
-                        Duration.ofSeconds(1)) {
-                    @Override
-                    public List<Tuple> zrangeByScoreWithScores(
-                            String key, String min, String max, int offset, int count) {
-                        var found = super.zrangeByScoreWithScores(key, min, max, offset, count);
-                        // the key window of task 1 has passed: purge moves it from hidx to idx between the two reads
-                        if (reads.getAndIncrement() == 0) store.purge(TaskState.SUCCEEDED, Duration.ofMinutes(1), 10);
-                        return found;
-                    }
-                }) {
-            var page = new RedisTaskStore(interposed, keys.namespace).tasks(TaskState.SUCCEEDED, queue, null, 2);
-
-            assertThat(page.items()).extracting(TaskRecord::id).containsExactly(1L, 2L);
-        }
-        assertThat(jedis.zscore(keys.index(TaskState.SUCCEEDED.code(), queue), "1"))
-                .isNotNull();
     }
 
     @Test
@@ -1249,14 +1212,14 @@ class RedisTaskStoreIT {
         RedisFixtures.assertPopulated(jedis, keys, 1);
         RedisFixtures.assertPopulated(jedis, keys, 2);
 
-        assertThat(store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10)).isEqualTo(1);
+        assertThat(store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10)).isEqualTo(2);
         assertThat(store.purge(TaskState.DEAD, Duration.ZERO, 10)).isEqualTo(1);
 
         RedisFixtures.assertGone(jedis, keys, 1);
         RedisFixtures.assertGone(jedis, keys, 2);
-        RedisFixtures.assertPopulated(jedis, keys, 3);
-        assertThat(jedis.exists(keys.uniqueKey("held"))).isTrue();
-        assertThat(counts().succeeded()).isEqualTo(1);
+        RedisFixtures.assertGone(jedis, keys, 3);
+        assertThat(jedis.get(keys.uniqueKey("held"))).isEqualTo("3");
+        assertThat(counts().succeeded()).isZero();
     }
 
     private TaskRecord claimEnqueued(TaskRecord.Builder b) {
@@ -1265,7 +1228,7 @@ class RedisTaskStoreIT {
     }
 
     @Test
-    void purgeHonoursTheLimitAndHeldTasksDoNotStarveIt() {
+    void purgeHonoursTheLimitAndTakesHeldTasksToo() {
         store.enqueue(task(1).uniqueKey("k").keyKeep(Duration.ofMinutes(5)).build());
         for (var i = 2; i <= 5; i++) {
             store.enqueue(task(i).build());
@@ -1276,9 +1239,10 @@ class RedisTaskStoreIT {
         sleep(50);
 
         assertThat(store.purge(TaskState.SUCCEEDED, Duration.ZERO, 2)).isEqualTo(2);
-        assertThat(store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10)).isEqualTo(2);
+        assertThat(store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10)).isEqualTo(3);
         assertThat(store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10)).isZero();
-        assertThat(store.getTask(1)).isPresent();
+        assertThat(store.getTask(1)).isEmpty();
+        assertThat(store.enqueue(task(6).uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(1));
     }
 
     // ---- inspection ----------------------------------------------------------------------------------
@@ -1440,15 +1404,18 @@ class RedisTaskStoreIT {
         var rev1 = store.dueRecurring(first, 1).getFirst().definition().revision();
 
         assertThat(store.putRecurring(definition("s", "* * * * *"), second, second))
+                .extracting(PutRecurringResult::outcome)
                 .isEqualTo(PutRecurringOutcome.UNCHANGED);
         assertThat(store.recurringSchedules()).containsEntry("s", first);
         assertThat(store.dueRecurring(first, 1).getFirst().definition().revision())
                 .isEqualTo(rev1);
         assertThat(store.putRecurring(otherData("s", "* * * * *"), second, second))
+                .extracting(PutRecurringResult::outcome)
                 .isEqualTo(PutRecurringOutcome.CHANGED);
         assertThat(store.recurringSchedules()).containsEntry("s", first);
         var rev2 = store.dueRecurring(first, 1).getFirst().definition().revision();
         assertThat(store.putRecurring(definition("s", "0 * * * *"), second, second))
+                .extracting(PutRecurringResult::outcome)
                 .isEqualTo(PutRecurringOutcome.CHANGED);
 
         assertThat(rev2).isGreaterThan(rev1);

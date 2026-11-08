@@ -40,9 +40,26 @@ public final class MutableClock extends Clock {
         return ZoneOffset.UTC;
     }
 
+    /** @return a clock in that zone that shows this clock's time, also after it moves */
     @Override
     public Clock withZone(ZoneId zone) {
-        return this;
+        var source = this;
+        return new Clock() {
+            @Override
+            public ZoneId getZone() {
+                return zone;
+            }
+
+            @Override
+            public Clock withZone(ZoneId other) {
+                return source.withZone(other);
+            }
+
+            @Override
+            public Instant instant() {
+                return source.instant();
+            }
+        };
     }
 
     @Override

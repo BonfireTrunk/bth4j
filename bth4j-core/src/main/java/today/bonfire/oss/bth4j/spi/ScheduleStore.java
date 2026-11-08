@@ -18,9 +18,9 @@ public interface ScheduleStore extends TaskStore {
      * next fire time is kept, and no finished occurrence is recorded as in flight) keeps the revision. The paused
      * flag of an existing definition is not compared, because a put never changes it.
      *
-     * @return whether the definition was created, changed or found unchanged
+     * @return whether the definition was created, changed or found unchanged, with the next fire time it has
      */
-    PutRecurringOutcome putRecurring(RecurringDefinition definition, Instant nextFire, Instant keepUntil);
+    PutRecurringResult putRecurring(RecurringDefinition definition, Instant nextFire, Instant keepUntil);
 
     /** @return true when a definition with that id existed */
     boolean deleteRecurring(String scheduleId);
@@ -48,16 +48,27 @@ public interface ScheduleStore extends TaskStore {
     List<RecurringSchedule> recurringDefinitions();
 
     /**
-     * Pauses or resumes a definition. A paused definition keeps its next fire time but is left out of
-     * {@link #dueRecurring}.
+     * Pauses a definition. A paused definition keeps its next fire time but is left out of {@link #dueRecurring}.
      *
      * @return false when no definition with that id exists
      */
-    boolean pauseRecurring(String scheduleId, boolean paused);
+    boolean pauseRecurring(String scheduleId);
+
+    /**
+     * Resumes a paused definition in one step. A {@code nextFire} that is not null replaces its next fire time and
+     * assigns a new revision, as {@link #setNextFire(String, Instant)} does; a fixed-delay definition needs one,
+     * because it parks its next fire while paused. The recorded occurrence is kept. A definition that is not paused
+     * is left unchanged.
+     *
+     * @return false when no definition with that id exists
+     */
+    boolean resumeRecurring(String scheduleId, Instant nextFire);
 
     /**
      * Operator write: replaces the next fire time (trigger now) and assigns a new revision, so that a runner
-     * write based on the old revision, such as the re-arm of an occurrence that is still running, does nothing.
+     * write based on the old revision does nothing. It also forgets the recorded occurrence, so that the effect
+     * of an occurrence that is still running (a re-arm or a pause) does nothing either; when the triggered
+     * occurrence is skipped because that occurrence still holds the key, the skipped commit records it again.
      *
      * @return false when no definition with that id exists
      */

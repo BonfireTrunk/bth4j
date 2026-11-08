@@ -1,5 +1,6 @@
 package today.bonfire.oss.bth4j;
 
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.ReentrantLock;
 import today.bonfire.oss.bth4j.spi.TaskStore;
 
@@ -18,6 +19,15 @@ final class IdAllocator {
     IdAllocator(TaskStore store, int blockSize) {
         this.store = store;
         this.blockSize = Math.max(1, blockSize);
+    }
+
+    /**
+     * The revision a new task starts at: random, so that a worker still holding a lease on an earlier task with the
+     * same id (enqueued again after that task was removed) cannot match the new task's revisions. Below 2^30, so the
+     * revision has room to count up.
+     */
+    static int firstRevision() {
+        return ThreadLocalRandom.current().nextInt(1 << 30);
     }
 
     long nextId() {
