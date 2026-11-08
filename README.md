@@ -25,17 +25,17 @@ Add `bth4j-core` and one store module. Add `bth4j-testing` for tests.
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-core</artifactId>
-    <version>4.0.0</version>
+    <version>4.1.0</version>
 </dependency>
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-redis</artifactId>       <!-- or bth4j-postgres -->
-    <version>4.0.0</version>
+    <version>4.1.0</version>
 </dependency>
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-testing</artifactId>
-    <version>4.0.0</version>
+    <version>4.1.0</version>
     <scope>test</scope>
 </dependency>
 ```
@@ -46,12 +46,12 @@ The metrics and the admin HTTP server are separate modules; add them when you us
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-micrometer</artifactId>
-    <version>4.0.0</version>
+    <version>4.1.0</version>
 </dependency>
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-admin-http</artifactId>
-    <version>4.0.0</version>
+    <version>4.1.0</version>
 </dependency>
 ```
 
