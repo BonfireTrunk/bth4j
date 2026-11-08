@@ -70,6 +70,9 @@ public final class InMemoryStore implements FullStore {
 
     private final Map<Long, TaskRecord> tasks = new HashMap<>();
     private final Map<String, Long> keyHolders = new HashMap<>();
+    /** Keys of removed tasks whose keep window is still open; the task is gone, its key stays taken. */
+    private final Map<String, KeptKey> keptKeys = new HashMap<>();
+
     private final Map<String, Recurring> recurring = new HashMap<>();
     private final Map<String, Integer> queueIds = new LinkedHashMap<>();
     private final Map<String, Integer> typeIds = new LinkedHashMap<>();
@@ -227,6 +230,10 @@ public final class InMemoryStore implements FullStore {
                 }
                 releaseKey(holderId);
             }
+            Long keptBy = keptKeyHolder(key, now);
+            if (keptBy != null) {
+                return new EnqueueOutcome.DuplicateKey(keptBy);
+            }
         }
         Instant due = forcedDue != null ? forcedDue : task.due() != null ? task.due() : now;
         TaskState state = forcedDue != null || due.isAfter(now) ? TaskState.SCHEDULED : TaskState.QUEUED;
@@ -242,6 +249,19 @@ public final class InMemoryStore implements FullStore {
     private static boolean keyHeld(TaskRecord holder, Instant now) {
         return !holder.state().isTerminal()
                 || (holder.keyUntil() != null && holder.keyUntil().isAfter(now));
+    }
+
+    /** The id of the removed task that still keeps this key taken; a passed window is dropped here. */
+    private Long keptKeyHolder(String key, Instant now) {
+        KeptKey kept = keptKeys.get(key);
+        if (kept == null) {
+            return null;
+        }
+        if (kept.until().isAfter(now)) {
+            return kept.id();
+        }
+        keptKeys.remove(key);
+        return null;
     }
 
     private void releaseKey(long id) {
@@ -342,8 +362,8 @@ public final class InMemoryStore implements FullStore {
             }
             Instant now = clock.instant();
             applyEffect(effect);
-            if (!keep && t.keyKeep() == null) {
-                remove(t);
+            if (!keep) {
+                removeFinished(t, now);
                 return true;
             }
             TaskRecord.Builder b = t.toBuilder()
@@ -390,6 +410,19 @@ public final class InMemoryStore implements FullStore {
         tasks.remove(t.id());
         if (t.uniqueKey() != null) {
             keyHolders.remove(t.uniqueKey(), t.id());
+        }
+    }
+
+    /** Removes a task that just ended; a key with a keep window stays taken by its id until the window ends. */
+    private void removeFinished(TaskRecord t, Instant now) {
+        removeKeepingKey(t, t.uniqueKey() != null && t.keyKeep() != null ? now.plus(t.keyKeep()) : null, now);
+    }
+
+    private void removeKeepingKey(TaskRecord t, Instant keyUntil, Instant now) {
+        boolean held = t.uniqueKey() != null && Objects.equals(keyHolders.get(t.uniqueKey()), t.id());
+        remove(t);
+        if (held && keyUntil != null && keyUntil.isAfter(now)) {
+            keptKeys.put(t.uniqueKey(), new KeptKey(t.id(), keyUntil));
         }
     }
 
@@ -446,8 +479,8 @@ public final class InMemoryStore implements FullStore {
             return FailOutcome.RETRY;
         }
         applyEffect(effect);
-        if (!keepDead && t.keyKeep() == null) {
-            remove(t);
+        if (!keepDead) {
+            removeFinished(t, now);
             return FailOutcome.DEAD;
         }
         finish(t, b.state(TaskState.DEAD), now);
@@ -567,11 +600,10 @@ public final class InMemoryStore implements FullStore {
             Instant cutoff = now.minus(retention);
             List<TaskRecord> old = tasks.values().stream()
                     .filter(t -> t.state() == state && t.stateChangedAt().isBefore(cutoff))
-                    .filter(t -> t.keyUntil() == null || !t.keyUntil().isAfter(now))
                     .sorted(Comparator.comparing(TaskRecord::stateChangedAt).thenComparingLong(TaskRecord::id))
                     .limit(limit)
                     .toList();
-            old.forEach(this::remove);
+            old.forEach(t -> removeKeepingKey(t, t.keyUntil(), now));
             return old.size();
         } finally {
             lock.unlock();
@@ -592,7 +624,16 @@ public final class InMemoryStore implements FullStore {
                     .map(TaskRecord::id)
                     .toList();
             expired.forEach(this::releaseKey);
-            return expired.size();
+            List<String> passed = keptKeys.entrySet().stream()
+                    .filter(e -> !e.getValue().until().isAfter(now))
+                    .sorted(Comparator.comparing((Map.Entry<String, KeptKey> e) ->
+                                    e.getValue().until())
+                            .thenComparingLong(e -> e.getValue().id()))
+                    .limit(limit - expired.size())
+                    .map(Map.Entry::getKey)
+                    .toList();
+            passed.forEach(keptKeys::remove);
+            return expired.size() + passed.size();
         } finally {
             lock.unlock();
         }
@@ -798,6 +839,8 @@ public final class InMemoryStore implements FullStore {
 
     private record Position(Instant at, long id) {}
 
+    private record KeptKey(long id, Instant until) {}
+
     private static boolean isAfter(Instant at, long id, Position p) {
         int c = at.compareTo(p.at());
         return c > 0 || (c == 0 && id > p.id());
@@ -964,6 +1007,9 @@ public final class InMemoryStore implements FullStore {
                         return RetryOutcome.DUPLICATE;
                     }
                     releaseKey(holderId);
+                }
+                if (keptKeyHolder(key, now) != null) {
+                    return RetryOutcome.DUPLICATE;
                 }
                 keyHolders.put(key, id);
             }
