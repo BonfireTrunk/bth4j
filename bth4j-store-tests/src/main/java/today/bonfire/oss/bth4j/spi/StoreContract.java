@@ -2050,9 +2050,11 @@ public abstract class StoreContract {
         int empty = store.queueId("empty");
         var firstIds = new ArrayList<Long>();
         var secondIds = new ArrayList<Long>();
+        // Distinct due times: Redis orders tasks due in the same millisecond by id as text, so 10 before 8.
+        Instant past = millis(now().minusSeconds(60));
         for (int i = 0; i < 5; i++) {
-            firstIds.add(put(task()));
-            secondIds.add(put(task(second, type)));
+            firstIds.add(put(task().due(past.plusMillis(2 * i))));
+            secondIds.add(put(task(second, type).due(past.plusMillis(2 * i + 1))));
         }
         var grants = List.of(new QueueGrant(queue, 1, 2), new QueueGrant(empty, 3, 3), new QueueGrant(second, 1, 4));
 
