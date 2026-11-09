@@ -48,6 +48,7 @@ import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
+import today.bonfire.oss.bth4j.spi.StoreArguments;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
@@ -179,15 +180,14 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public long allocateIds(int count) {
-        if (count < 1) {
-            throw new IllegalArgumentException("count must be positive");
-        }
+        StoreArguments.requireCount(count);
         return guard(() -> jedis.incrBy(keys.seqId, count)) - count + 1;
     }
 
     @Override
     public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
-        var args = List.of(label == null ? "" : label, Json.write(queueIds), Json.write(typeIds));
+        StoreArguments.requireLabel(label);
+        var args = List.of(label, Json.write(queueIds), Json.write(typeIds));
         return (int) num(guard(() -> scripts.run(RedisScripts.WORKER_REGISTER, args)));
     }
 
@@ -202,6 +202,7 @@ public class RedisTaskStore implements FullStore {
     }
 
     private int register(String kind, String name, Map<String, Integer> cache) {
+        StoreArguments.requireName(kind, name);
         var cached = cache.get(name);
         if (cached != null) {
             return cached;
@@ -524,6 +525,7 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public boolean reschedule(long id, int revision, Instant due) {
+        StoreArguments.requireDue(due);
         var args = List.of(String.valueOf(id), String.valueOf(revision), ms(due));
         return num(guard(() -> scripts.run(RedisScripts.RESCHEDULE, args))) == 1;
     }
@@ -624,9 +626,7 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public long purge(TaskState state, Duration retention, int limit) {
-        if (!state.isTerminal()) {
-            throw new IllegalArgumentException("purge needs a terminal state, got " + state);
-        }
+        StoreArguments.requireTerminal(state);
         var args = List.of(String.valueOf(state.code()), String.valueOf(retention.toMillis()), String.valueOf(limit));
         return num(guard(() -> scripts.run(RedisScripts.PURGE, args)));
     }
@@ -1080,6 +1080,7 @@ public class RedisTaskStore implements FullStore {
     public void pauseQueue(int queueId, boolean paused) {
         guard(() -> {
             if (paused) {
+                if (!jedis.hvals(keys.registry("queue")).contains(String.valueOf(queueId))) return;
                 jedis.sadd(keys.paused, String.valueOf(queueId));
             } else {
                 jedis.srem(keys.paused, String.valueOf(queueId));
@@ -1101,13 +1102,14 @@ public class RedisTaskStore implements FullStore {
     @Override
     public void heartbeat(
             int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
+        StoreArguments.requireLabel(label);
         guard(() -> scripts.run(
                 RedisScripts.HEARTBEAT,
                 List.of(
                         String.valueOf(workerId),
                         String.valueOf(running),
                         accepting ? "1" : "0",
-                        label == null ? "" : label,
+                        label,
                         Json.write(queueIds),
                         Json.write(typeIds))));
     }

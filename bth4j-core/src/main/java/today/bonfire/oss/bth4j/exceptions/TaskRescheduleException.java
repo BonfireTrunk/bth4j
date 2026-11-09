@@ -10,7 +10,10 @@ public final class TaskRescheduleException extends TaskSignal {
 
     private final Duration delay;
 
-    /** @param delay how long to wait before the task runs again, not negative */
+    /**
+     * @param delay how long to wait before the task runs again, not negative; the runner waits at most
+     *     {@link today.bonfire.oss.bth4j.TaskRequest#MAX_TIME_FROM_NOW}
+     */
     public TaskRescheduleException(Duration delay) {
         this(delay, "Reschedule task in " + delay, null);
     }

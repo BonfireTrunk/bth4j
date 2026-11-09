@@ -15,7 +15,8 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
  * {@link Overlap#SKIP} prevents a new occurrence while the previous one has not finished.
  *
  * @param cron       five-field unix expression; null for a fixed-delay definition
- * @param fixedDelay delay between the end of an occurrence and the next; null for a cron definition
+ * @param fixedDelay delay between the end of an occurrence and the next, at least {@link #MIN_FIXED_DELAY} and at
+ *                   most {@link TaskRequest#MAX_TIME_FROM_NOW}; null for a cron definition
  * @param maxRunTime     maximum run time of each occurrence's attempts; null for the runner's
  *                   {@code defaultMaxRunTime}
  */
@@ -40,7 +41,7 @@ public record ScheduleDefinition<T>(
             throw new TaskValidationException("schedule id must be 1 to 128 characters");
         }
         StoredText.require("schedule id", id);
-        StoredText.require("account", account);
+        TaskRequest.requireAccount(account);
         if (type == null) throw new TaskValidationException("type is required");
         if (StringUtils.isBlank(cron) == (fixedDelay == null)) {
             throw new TaskValidationException("exactly one of cron and fixedDelay is required");
@@ -48,6 +49,7 @@ public record ScheduleDefinition<T>(
         if (fixedDelay != null && fixedDelay.compareTo(MIN_FIXED_DELAY) < 0) {
             throw new TaskValidationException("fixedDelay must be at least " + MIN_FIXED_DELAY);
         }
+        StoredTime.require("fixedDelay", fixedDelay);
         if (type.hasPayload() && payload == null) {
             throw new TaskValidationException("Task type " + type + " needs a payload");
         }

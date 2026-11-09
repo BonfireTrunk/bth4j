@@ -164,8 +164,21 @@ class TaskRequestTest {
     }
 
     @Test
+    void aDelayIsAtMostOneHundredYears() {
+        assertThat(TaskRequest.MAX_TIME_FROM_NOW).isEqualTo(Duration.ofDays(36_525));
+        assertThat(TaskRequest.of(VOID)
+                        .delay(TaskRequest.MAX_TIME_FROM_NOW)
+                        .build()
+                        .delay())
+                .isEqualTo(TaskRequest.MAX_TIME_FROM_NOW);
+        assertThatThrownBy(() -> TaskRequest.of(VOID).delay(TaskRequest.MAX_TIME_FROM_NOW.plusMillis(1)))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessageContaining("delay");
+    }
+
+    @Test
     void keepForIsPositiveAndAtMostOneHundredYears() {
-        assertThat(Uniqueness.MAX_KEEP_FOR).isEqualTo(Duration.ofDays(36_525));
+        assertThat(Uniqueness.MAX_KEEP_FOR).isEqualTo(TaskRequest.MAX_TIME_FROM_NOW);
         assertThat(Uniqueness.keepFor(Uniqueness.MAX_KEEP_FOR))
                 .isEqualTo(new Uniqueness.KeepFor(Duration.ofDays(36_525)));
         assertThatThrownBy(() -> Uniqueness.keepFor(Uniqueness.MAX_KEEP_FOR.plusMillis(1)))

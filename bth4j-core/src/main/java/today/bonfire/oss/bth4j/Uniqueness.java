@@ -29,8 +29,11 @@ public sealed interface Uniqueness {
         }
     }
 
-    /** The longest {@link KeepFor} window, 36,525 days (100 years): Redis cannot expire a key much later. */
-    Duration MAX_KEEP_FOR = Duration.ofDays(36_525);
+    /**
+     * The longest {@link KeepFor} window, {@link TaskRequest#MAX_TIME_FROM_NOW} (100 years): Redis cannot expire a
+     * key much later.
+     */
+    Duration MAX_KEEP_FOR = TaskRequest.MAX_TIME_FROM_NOW;
 
     Uniqueness UNTIL_DONE = new UntilDone();
 

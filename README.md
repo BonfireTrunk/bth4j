@@ -203,10 +203,10 @@ most 8192, and all step names and encoded results of a task together at most 655
 | Option | Meaning |
 |---|---|
 | `queue(name)` | target queue; the default queue when absent |
-| `delay(duration)` / `at(instant)` | run later; the last one set wins |
+| `delay(duration)` / `at(instant)` | run later; the last one set wins; at most 100 years from now |
 | `uniqueKey(key)` / `uniqueKey(key, Uniqueness.keepFor(d))` | at most one task holds the key; released when the task finishes, or `d` (at most 100 years) after, also when the task itself was removed sooner (see "Retention"); an operator retry within `d` keeps it |
 | `maxAttempts(n)` | attempts before the task is dead; the runner default when absent |
-| `startBy(instant)` | the task expires if it has not started by then, see "Cancelling tasks"; must not be before the run time |
+| `startBy(instant)` | the task expires if it has not started by then, see "Cancelling tasks"; must not be before the run time; at most 100 years from now |
 | `maxRunTime(duration)` | an attempt running longer is asked to stop, see "Cancelling tasks" |
 | `retryPolicy(name)` | a retry policy registered on the runner with that name, see "Retries" |
 | `account(text)`, `header(name, value)` | application labels, stored with the task (8 KiB of headers) |
@@ -222,6 +222,10 @@ Payloads are limited to 256 KiB.
 No text the library stores may contain U+0000, which PostgreSQL cannot keep: the client refuses it in a request,
 a schedule, a name or a cancel reason on every store, and records text from processor code (failure message and
 stack, progress, step results) with U+FFFD in its place.
+Times follow one rule too, `TaskRequest.MAX_TIME_FROM_NOW` (100 years), so that every store can keep them: the library
+refuses an `at` or `startBy` further than that from now, either way, and a longer `delay`, `keepFor`, fixed delay,
+lease, retention or worker stale-after. A retry policy or a `TaskRescheduleException` that asks for a longer wait
+gets 100 years.
 
 A later enqueue with the same key and a shorter `keepFor` does not shorten the holder's window.
 `AdminOps.cancel` on a DEAD task answers `STALE` and leaves its key held for the window; a successful
@@ -410,7 +414,7 @@ client.enqueue(TaskRequest.of(EXPORT, export)
 ### Recurring tasks
 
 `client.putSchedule(ScheduleDefinition.of(id, type, payload, cron))` creates or replaces a definition and
-returns the next fire time; `.queue(...)`, `.account(...)`, `.maxAttempts(...)` and `.maxRunTime(...)` refine it. The cron
+returns the next fire time; `.queue(...)`, `.account(...)` (at most 128 characters, as for a task), `.maxAttempts(...)` and `.maxRunTime(...)` refine it. The cron
 expression has 5 fields (Unix format). Each fire time creates one task, exactly once across all instances.
 Registering the same id with the same timing (expression, zone and delay) keeps the next fire time while a
 fixed-delay occurrence is still running, or while it is not beyond the second fire after now; changed timing, or a
@@ -824,19 +828,19 @@ All settings are on `BackgroundRunner.builder()`.
 | `failureDetail` | `FailureDetail.FULL` | `FULL` records the class name, message and stack of a failure; `CLASS_NAME_ONLY` keeps only the class name, the attempt and the time. The stored failure, the `TaskEvent` error (a `RedactedFailure` that has the class name as `toString()`), the runner issues and the runner's log lines then carry no message and no stack. A rethrown `VirtualMachineError` reaches the thread's uncaught exception handler with its message and stack, so `CLASS_NAME_ONLY` does not cover that output. The message of a `TaskCancelledException` is not stored as the cancel reason; the operator's reason or "cancel requested" is. Progress text and messages that your own retry policy returns are not touched. Application text is not covered: an operator's cancel reason, `ctx.progress` text and a `RetryPolicy.Decision.dead(reason)` reason are stored, shown by the admin API and logged as given, so hosts must keep personal data out of them |
 | `workerLabel` | JVM name (`pid@host`) | identifies this process in the worker registry; 1 to 128 characters |
 | `threadGroupName` | `bgr` | name of the runner's thread group |
-| `succeededRetention` | 10 minutes | how long succeeded tasks are kept; zero removes them at once |
-| `deadRetention` | 90 days | how long dead tasks are kept; zero removes them at once |
-| `cancelledRetention` | 48 hours | how long cancelled and expired tasks are kept |
+| `succeededRetention` | 10 minutes (at most 100 years) | how long succeeded tasks are kept; zero removes them at once |
+| `deadRetention` | 90 days (at most 100 years) | how long dead tasks are kept; zero removes them at once |
+| `cancelledRetention` | 48 hours (at most 100 years) | how long cancelled and expired tasks are kept |
 | `keepSucceededPayload` | false | keep the payload of succeeded tasks (dropped on success by default) |
 | `purgeInterval` | 1 minute | time between purge runs |
 | `purgeBatchSize` | 500 | tasks removed per purge call; the purge loops until a call removes fewer |
-| `leaseDuration` | 60 s (at least 1 s) | how long a claimed task stays leased without renewal; renewed every third while running. A lapsed lease cannot be renewed any more, so keep it well above the worst pause (GC, container freeze, slow store round trip); a few seconds is fragile |
+| `leaseDuration` | 60 s (1 s to 100 years) | how long a claimed task stays leased without renewal; renewed every third while running. A lapsed lease cannot be renewed any more, so keep it well above the worst pause (GC, container freeze, slow store round trip); a few seconds is fragile |
 | `idlePollInterval` | 500 ms (at least 10 ms) | sleep after a claim that found nothing (cut short when a queue at its `maxConcurrent` frees a slot), and the wait for a free executor slot |
 | `claimBatchSize` | 32 | most tasks claimed in one call, bounded by free executor slots |
 | `shutdownTimeout` | 30 s | how long `stop()` takes at most, waiting for services and running tasks |
 | `serviceCheckInterval` | 10 s | how often a dead service thread is restarted |
 | `maintenanceCheckInterval` | 5 s (at least 1 s) | how often expired leases are looked for, tasks past `startBy` are expired and the worker heartbeat is written |
-| `workerStaleAfter` | 10 minutes | worker registry rows without a heartbeat for this long are deleted by the purge |
+| `workerStaleAfter` | 10 minutes (at most 100 years) | worker registry rows without a heartbeat for this long are deleted by the purge |
 | `scheduledTasksCheckInterval` | 1 s (at least 10 ms) | upper bound of the wait between promotions of due scheduled tasks; it wakes earlier for the next due task |
 | `recurringTasksCheckInterval` | 10 s | how often recurring definitions are checked; twice this value (at least 1 minute) is the misfire threshold |
 | `idBlockSize` | 64 (1 to 100000) | task ids the client reserves per store call; prefer more than 1 for busy producers (see below) |
@@ -1036,6 +1040,8 @@ types stay unchanged, including their due times; a null `knownTypeIds` accepts e
 only non-zero entries. `AdminStore.heartbeat(workerId, label, queueIds, typeIds, running, accepting)` persists
 the worker's accepting state, exposed by `WorkerInfo.accepting()`, and creates the row again under the same id
 when maintenance purged it. `allocateWorkerId` creates accepting workers.
+`StoreArguments` holds the argument checks every store applies, and every time the library hands a store lies
+within `TaskRequest.MAX_TIME_FROM_NOW` of now.
 `StoreContract` covers these behaviours for every store implementation.
 
 ## Testing

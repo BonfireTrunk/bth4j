@@ -150,7 +150,7 @@ class MaintenanceService extends CustomThread {
         if (e.attempts() < e.maxAttempts()
                 && record != null
                 && decide(record) instanceof RetryPolicy.Decision.RetryAfter r) {
-            retryAt = clock.instant().plus(r.delay());
+            retryAt = StoredTime.after(clock.instant(), r.delay());
         }
         var failure = new FailureInfo(
                 e.attempts(), clock.instant(), "lease-expired", "lease expired after attempt " + e.attempts(), null);

@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.fail;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -1041,6 +1042,32 @@ public abstract class RunnerContract {
         pause(300);
         assertThat(ran.getCount()).isEqualTo(1);
         await("the expired event", () -> eventNames(events, id).contains("Expired"));
+    }
+
+    @Test
+    void aRetryOrRescheduleDelayLongerThanOneHundredYearsWaitsOneHundredYears() {
+        var forever = ChronoUnit.FOREVER.getDuration();
+        startRunner(
+                b -> b.retryPolicy("forever", RetryPolicy.fixed(forever)),
+                r -> r.register(VOID_TYPE, (ctx, payload) -> {
+                    if (ctx.headers().containsKey("reschedule")) throw new TaskRescheduleException(forever);
+                    throw new IllegalStateException("boom");
+                }));
+        Instant from = Instant.now();
+
+        long retried = enqueue(TaskRequest.of(VOID_TYPE).retryPolicy("forever").build());
+        long rescheduled =
+                enqueue(TaskRequest.of(VOID_TYPE).header("reschedule", "yes").build());
+
+        for (long id : new long[] {retried, rescheduled}) {
+            var waiting = awaitState(id, TaskState.SCHEDULED);
+            assertThat(waiting.due())
+                    .as("task %d", id)
+                    .isBetween(
+                            from.plus(TaskRequest.MAX_TIME_FROM_NOW).minusSeconds(60),
+                            Instant.now().plus(TaskRequest.MAX_TIME_FROM_NOW).plusSeconds(60));
+        }
+        assertThat(client.task(retried).orElseThrow().failures()).hasSize(1);
     }
 
     @Test

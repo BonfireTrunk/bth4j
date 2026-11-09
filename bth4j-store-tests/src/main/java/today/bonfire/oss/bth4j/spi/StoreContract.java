@@ -388,6 +388,51 @@ public abstract class StoreContract {
         }
     }
 
+    @Test
+    void argumentsThatBreakAnSpiRuleAreRefused() {
+        Map<Integer, String> queues = store.queueNames();
+        Map<Integer, String> types = store.typeNames();
+        for (String bad : new String[] {null, "", " "}) {
+            assertThatThrownBy(() -> store.queueId(bad))
+                    .as("queue name '%s'", bad)
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> store.typeId(bad))
+                    .as("type name '%s'", bad)
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+        assertThat(store.queueNames()).isEqualTo(queues);
+        assertThat(store.typeNames()).isEqualTo(types);
+
+        assertThatThrownBy(() -> store.allocateIds(0)).isInstanceOf(IllegalArgumentException.class);
+        int workers = store.workers().size();
+        assertThatThrownBy(() -> store.allocateWorkerId(null, Set.of(queue), Set.of(type)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.heartbeat(worker, null, Set.of(queue), Set.of(type), 0, true))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(store.workers()).hasSize(workers);
+
+        TaskRecord t = leased(task());
+        assertThatThrownBy(() -> store.reschedule(t.id(), t.revision(), null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(get(t.id())).isEqualTo(t);
+    }
+
+    @Test
+    void pausingAQueueIdThatWasNeverRegisteredChangesNothing() {
+        List<QueueInfo> before = store.queues();
+        int unknown = before.stream().mapToInt(QueueInfo::id).max().orElse(0) + 1;
+        store.pauseQueue(unknown, true);
+        assertThat(store.queues()).isEqualTo(before);
+
+        int registered = store.queueId("registered-after-a-pause");
+        assertThat(store.queues())
+                .filteredOn(q -> q.id() == registered)
+                .singleElement()
+                .satisfies(q -> assertThat(q.paused())
+                        .as("queue %d, registered after id %d was paused", registered, unknown)
+                        .isFalse());
+    }
+
     // enqueue
 
     @Test
@@ -800,6 +845,51 @@ public abstract class StoreContract {
                             .isEqualTo(t.stateChangedAt().plus(longest)));
         });
         assertThat(store.getTask(removed.id())).isEmpty();
+    }
+
+    @Test
+    void timesAsFarFromNowAsTheLibraryAllowsAreKept() {
+        Duration longest = TaskRequest.MAX_TIME_FROM_NOW;
+        Instant ahead = millis(now().plus(longest));
+        Instant back = millis(now().minus(longest));
+
+        long scheduled = put(task().state(TaskState.SCHEDULED).due(ahead).startBy(ahead));
+        assertThat(get(scheduled).due()).isEqualTo(ahead);
+        assertThat(get(scheduled).startBy()).isEqualTo(ahead);
+        assertThat(store.promote(10).moved()).isZero();
+        assertThat(store.expire(10)).isEmpty();
+        assertThat(store.nextDue()).isEqualTo(ahead);
+
+        long overdue = put(task().due(back));
+        assertThat(get(overdue).due()).isEqualTo(back);
+        TaskRecord claimed = claimOne();
+        assertThat(claimed.id()).isEqualTo(overdue);
+        assertThat(store.fail(claimed.id(), claimed.revision(), failure(1), ahead, true, null))
+                .isEqualTo(FailOutcome.RETRY);
+        assertThat(get(overdue).due()).isEqualTo(ahead);
+
+        put(task());
+        TaskRecord rescheduled = claimOne();
+        assertThat(store.reschedule(rescheduled.id(), rescheduled.revision(), ahead))
+                .isTrue();
+        assertThat(get(rescheduled.id()).due()).isEqualTo(ahead);
+
+        put(task());
+        Instant before = now();
+        TaskRecord held = claim(1, longest, null).get(0);
+        assertThat(held.leaseUntil())
+                .isBetween(
+                        before.plus(longest).minusSeconds(5),
+                        now().plus(longest).plusSeconds(5));
+        assertThat(store.renew(List.of(new LeaseRef(held.id(), held.revision())), longest))
+                .containsExactly(new LeaseStatus(held.id(), true, false));
+        assertThat(store.reclaim(10)).isEmpty();
+        assertThat(store.ack(held.id(), held.revision(), true, true, null)).isTrue();
+
+        assertThat(store.purge(TaskState.SUCCEEDED, longest, 10)).isZero();
+        assertThat(store.getTask(held.id())).isPresent();
+        assertThat(store.purgeWorkers(longest)).isZero();
+        assertThat(store.workers()).extracting(WorkerInfo::id).contains(worker);
     }
 
     // sibling paths, terminal bookkeeping, what a transition leaves behind, instants the caller supplies
@@ -6676,6 +6766,16 @@ public abstract class StoreContract {
                 .containsExactly(inSecond);
         assertThat(store.tasks(TaskState.DEAD, null, null, 10).items()).isEmpty();
         assertThat(store.tasks(TaskState.QUEUED, null, null, 1).items()).hasSize(1);
+    }
+
+    @Test
+    void countsCoverEveryRegisteredQueueWithZerosForAnEmptyOne() {
+        putNew();
+        Map<Integer, StateCounts> counts = store.counts();
+        assertThat(counts.keySet())
+                .containsExactlyInAnyOrderElementsOf(store.queueNames().keySet());
+        assertThat(counts.get(idle)).isEqualTo(new StateCounts(0, 0, 0, 0, 0, 0, 0));
+        assertThat(counts.get(queue).queued()).isEqualTo(1);
     }
 
     // awkward text, ordering promises, time boundaries and batch sizes

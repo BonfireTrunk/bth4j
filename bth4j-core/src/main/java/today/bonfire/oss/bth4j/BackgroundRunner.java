@@ -651,9 +651,13 @@ public final class BackgroundRunner {
             return this;
         }
 
-        /** Worker rows without a heartbeat for this long are deleted by the purge. Default 10 minutes. */
+        /**
+         * Worker rows without a heartbeat for this long are deleted by the purge. Default 10 minutes, at most
+         * {@link TaskRequest#MAX_TIME_FROM_NOW}.
+         */
         public Builder workerStaleAfter(Duration staleAfter) {
-            this.workerStaleAfter = requirePositive(staleAfter, "workerStaleAfter");
+            this.workerStaleAfter =
+                    requireStorable(requirePositive(staleAfter, "workerStaleAfter"), "workerStaleAfter");
             return this;
         }
 
@@ -679,21 +683,32 @@ public final class BackgroundRunner {
             return this;
         }
 
-        /** How long succeeded tasks are kept for inspection. Zero removes them at once. Default 10 minutes. */
+        /**
+         * How long succeeded tasks are kept for inspection. Zero removes them at once. Default 10 minutes, at most
+         * {@link TaskRequest#MAX_TIME_FROM_NOW}.
+         */
         public Builder succeededRetention(Duration retention) {
-            this.succeededRetention = requireNonNegative(retention, "succeededRetention");
+            this.succeededRetention =
+                    requireStorable(requireNonNegative(retention, "succeededRetention"), "succeededRetention");
             return this;
         }
 
-        /** How long dead tasks are kept for inspection and retry. Zero removes them at once. Default 90 days. */
+        /**
+         * How long dead tasks are kept for inspection and retry. Zero removes them at once. Default 90 days, at
+         * most {@link TaskRequest#MAX_TIME_FROM_NOW}.
+         */
         public Builder deadRetention(Duration retention) {
-            this.deadRetention = requireNonNegative(retention, "deadRetention");
+            this.deadRetention = requireStorable(requireNonNegative(retention, "deadRetention"), "deadRetention");
             return this;
         }
 
-        /** How long cancelled and expired tasks are kept. Default 48 hours. */
+        /**
+         * How long cancelled and expired tasks are kept. Default 48 hours, at most
+         * {@link TaskRequest#MAX_TIME_FROM_NOW}.
+         */
         public Builder cancelledRetention(Duration retention) {
-            this.cancelledRetention = requireNonNegative(retention, "cancelledRetention");
+            this.cancelledRetention =
+                    requireStorable(requireNonNegative(retention, "cancelledRetention"), "cancelledRetention");
             return this;
         }
 
@@ -728,10 +743,11 @@ public final class BackgroundRunner {
 
         /**
          * How long a claimed task stays leased without renewal. Leases are renewed every third of this duration
-         * while the task runs. A task whose lease expired is retried by maintenance. Default 60 s, at least 1 s.
+         * while the task runs. A task whose lease expired is retried by maintenance. Default 60 s, at least 1 s and
+         * at most {@link TaskRequest#MAX_TIME_FROM_NOW}.
          */
         public Builder leaseDuration(Duration lease) {
-            requirePositive(lease, "leaseDuration");
+            requireStorable(requirePositive(lease, "leaseDuration"), "leaseDuration");
             if (lease.toMillis() < 1000)
                 throw new TaskConfigurationException("leaseDuration cannot be less than 1 second");
             this.leaseDuration = lease;
@@ -891,6 +907,11 @@ public final class BackgroundRunner {
 
         private static Duration requireNonNegative(Duration d, String name) {
             if (d == null || d.isNegative()) throw new TaskConfigurationException(name + " cannot be null or negative");
+            return d;
+        }
+
+        private static Duration requireStorable(Duration d, String name) {
+            if (!StoredTime.fits(d)) throw new TaskConfigurationException(name + " must be at most " + StoredTime.MAX);
             return d;
         }
     }

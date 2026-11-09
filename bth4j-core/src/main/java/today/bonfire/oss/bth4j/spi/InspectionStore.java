@@ -26,8 +26,8 @@ public interface InspectionStore extends TaskStore {
     Optional<TaskRecord> taskByKey(String key);
 
     /**
-     * @return counts per state by queue id, for every queue that has tasks; a queue without tasks may be left
-     *         out or have every count zero
+     * @return counts per state by queue id, for every registered queue; a queue without tasks has every count
+     *         zero
      */
     Map<Integer, StateCounts> counts();
 

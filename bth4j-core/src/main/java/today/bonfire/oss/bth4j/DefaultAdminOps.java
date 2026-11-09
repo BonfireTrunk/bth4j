@@ -178,6 +178,9 @@ final class DefaultAdminOps implements AdminOps {
 
     @Override
     public int purgeStaleWorkers(Duration staleAfter) {
+        if (staleAfter == null || staleAfter.isNegative() || staleAfter.isZero() || !StoredTime.fits(staleAfter)) {
+            throw new IllegalArgumentException("staleAfter must be positive and at most " + StoredTime.MAX);
+        }
         return store.purgeWorkers(staleAfter);
     }
 

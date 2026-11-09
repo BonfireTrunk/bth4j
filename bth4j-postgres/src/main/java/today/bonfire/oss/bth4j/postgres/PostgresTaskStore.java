@@ -47,6 +47,7 @@ import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
+import today.bonfire.oss.bth4j.spi.StoreArguments;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
@@ -514,7 +515,7 @@ public class PostgresTaskStore implements FullStore {
      */
     @Override
     public long allocateIds(int count) {
-        if (count < 1) throw new IllegalArgumentException("count must be positive: " + count);
+        StoreArguments.requireCount(count);
         return inTransaction(c -> {
             try (var ps = c.prepareStatement("SELECT 1 FROM " + meta + " WHERE key = 'schema_version' FOR UPDATE")) {
                 ps.executeQuery().close();
@@ -546,7 +547,7 @@ public class PostgresTaskStore implements FullStore {
 
     @Override
     public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
-        if (label == null) throw new IllegalArgumentException("label is required");
+        StoreArguments.requireLabel(label);
         return withConnection(c -> withWorkerArrays(c, queueIds, typeIds, (queues, types) -> {
             try (var ps = c.prepareStatement("INSERT INTO " + worker
                     + " (label, started_at, last_seen, accepting, queue_ids, type_ids)"
@@ -589,7 +590,7 @@ public class PostgresTaskStore implements FullStore {
      * the smallint sequence, so upserting on every lookup would exhaust it.
      */
     private int registryId(String table, String kind, String name) {
-        if (name == null || name.isBlank()) throw new IllegalArgumentException(kind + " name is required");
+        StoreArguments.requireName(kind, name);
         return withConnection(c -> {
             var found = registryLookup(c, table, name);
             if (found != null) return found;
@@ -1149,7 +1150,7 @@ public class PostgresTaskStore implements FullStore {
 
     @Override
     public boolean reschedule(long id, int revision, Instant due) {
-        if (due == null) throw new IllegalArgumentException("due is required");
+        StoreArguments.requireDue(due);
         return update(rescheduleSql, ps -> {
             setInstant(ps, 1, due);
             ps.setLong(2, id);
@@ -1234,7 +1235,7 @@ public class PostgresTaskStore implements FullStore {
      */
     @Override
     public long purge(TaskState state, Duration retention, int limit) {
-        if (!state.isTerminal()) throw new IllegalArgumentException("only terminal states are purged: " + state);
+        StoreArguments.requireTerminal(state);
         if (limit <= 0) return 0;
         var sql = "WITH x AS (SELECT id, COALESCE(key_until > now(), false) AS held FROM " + task
                 + "   WHERE state = " + state.code() + " AND state_changed <= now() - ? * interval '1 millisecond'"
@@ -1945,7 +1946,7 @@ public class PostgresTaskStore implements FullStore {
     @Override
     public void heartbeat(
             int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
-        if (label == null) throw new IllegalArgumentException("label is required");
+        StoreArguments.requireLabel(label);
         withConnection(c -> withWorkerArrays(c, queueIds, typeIds, (queues, types) -> {
             try (var ps = c.prepareStatement("INSERT INTO " + worker
                     + " (id, label, started_at, last_seen, running, accepting, queue_ids, type_ids)"

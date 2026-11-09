@@ -328,7 +328,7 @@ final class TaskExecution implements Runnable, TaskContext {
                 cancelled(cancelReason());
             }
             case TaskRescheduleException ex -> {
-                var due = s.clock().instant().plus(ex.delay());
+                var due = StoredTime.after(s.clock().instant(), ex.delay());
                 log.info("Rescheduling task {} to {}", record.id(), due);
                 var outcome = apply(() -> s.store().reschedule(record.id(), record.revision(), due));
                 emit(new TaskEvent.Rescheduled(view, due, outcome));
@@ -408,7 +408,7 @@ final class TaskExecution implements Runnable, TaskContext {
     }
 
     private void retry(Throwable e, Duration delay) {
-        var retryAt = s.clock().instant().plus(delay);
+        var retryAt = StoredTime.after(s.clock().instant(), delay);
         if (detail() == FailureDetail.FULL) {
             log.warn("Task {} failed on attempt {} of {}", record.id(), record.attempts(), record.maxAttempts(), e);
         } else {

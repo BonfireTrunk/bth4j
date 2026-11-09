@@ -114,6 +114,7 @@ public interface ExecutionStore extends TaskStore {
     /**
      * Moves a LEASED task to SCHEDULED for {@code due} and gives the attempt back.
      *
+     * @param due not null
      * @return false when the revision did not match
      */
     boolean reschedule(long id, int revision, Instant due);

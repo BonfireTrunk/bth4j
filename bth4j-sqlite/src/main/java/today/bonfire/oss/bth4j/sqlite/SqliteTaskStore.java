@@ -48,6 +48,7 @@ import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
+import today.bonfire.oss.bth4j.spi.StoreArguments;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
@@ -420,7 +421,7 @@ public class SqliteTaskStore implements FullStore {
      */
     @Override
     public long allocateIds(int count) {
-        if (count < 1) throw new IllegalArgumentException("count must be positive: " + count);
+        StoreArguments.requireCount(count);
         return inTransaction(c -> nextValue(c, NEXT_TASK_ID, count));
     }
 
@@ -447,7 +448,7 @@ public class SqliteTaskStore implements FullStore {
 
     @Override
     public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
-        if (label == null) throw new IllegalArgumentException("label is required");
+        StoreArguments.requireLabel(label);
         var queues = idsJson(queueIds);
         var types = idsJson(typeIds);
         return inTransaction(c -> {
@@ -481,7 +482,7 @@ public class SqliteTaskStore implements FullStore {
      * A full registry leaves its counter where it was: the transaction that found it full rolls back.
      */
     private int registryId(String table, String counter, String kind, String name) {
-        if (name == null || name.isBlank()) throw new IllegalArgumentException(kind + " name is required");
+        StoreArguments.requireName(kind, name);
         var found = withConnection(c -> registryLookup(c, table, name));
         if (found != null) return found;
         return inTransaction(c -> {
@@ -956,7 +957,7 @@ public class SqliteTaskStore implements FullStore {
 
     @Override
     public boolean reschedule(long id, int revision, Instant due) {
-        if (due == null) throw new IllegalArgumentException("due is required");
+        StoreArguments.requireDue(due);
         return inTransaction(c -> update(c, rescheduleSql, clock.millis(), id, revision, due) == 1);
     }
 
@@ -1023,7 +1024,7 @@ public class SqliteTaskStore implements FullStore {
      */
     @Override
     public long purge(TaskState state, Duration retention, int limit) {
-        if (!state.isTerminal()) throw new IllegalArgumentException("only terminal states are purged: " + state);
+        StoreArguments.requireTerminal(state);
         if (limit <= 0) return 0;
         var select = "SELECT id, COALESCE(key_until > ?1, 0) FROM " + task + " WHERE state = " + state.code()
                 + " AND state_changed <= ?1 - ?2 ORDER BY state_changed, id LIMIT ?3";
@@ -1772,7 +1773,7 @@ public class SqliteTaskStore implements FullStore {
     @Override
     public void heartbeat(
             int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
-        if (label == null) throw new IllegalArgumentException("label is required");
+        StoreArguments.requireLabel(label);
         var queues = idsJson(queueIds);
         var types = idsJson(typeIds);
         inTransaction(c -> update(

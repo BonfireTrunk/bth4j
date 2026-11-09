@@ -504,6 +504,22 @@ class DefaultAdminOpsTest {
     }
 
     @Test
+    void purgeStaleWorkersNeedsAPositiveAgeOfAtMostOneHundredYears() {
+        handlers.put("purgeWorkers", a -> 0);
+
+        for (Duration bad :
+                new Duration[] {null, Duration.ZERO, Duration.ofSeconds(-1), TaskRequest.MAX_TIME_FROM_NOW.plusMillis(1)
+                }) {
+            assertThatThrownBy(() -> ops.purgeStaleWorkers(bad))
+                    .as("%s", bad)
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+        assertThat(calls).noneMatch(c -> c.startsWith("purgeWorkers"));
+
+        assertThat(ops.purgeStaleWorkers(TaskRequest.MAX_TIME_FROM_NOW)).isZero();
+    }
+
+    @Test
     void schedulesAreViewedWithResolvedNames() {
         handlers.put(
                 "recurringDefinitions",

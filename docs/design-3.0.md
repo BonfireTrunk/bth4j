@@ -860,6 +860,10 @@ Rules every store follows:
 - Calls are made concurrently from many threads and processes; each must be atomic and safe to repeat.
 - A failure to reach the engine throws `TaskStoreException`; callers retry on their next cycle.
 - `init()` creates the schema or verifies the store's schema version (`StoreInfo.schemaVersion`) and refuses another one.
+- Arguments are checked alike on every store with `StoreArguments` (queue and type names, worker label, the
+  `reschedule` due, batch sizes, the purge state); a pause of a queue id that was never registered is ignored.
+- Every time the library hands a store lies within `TaskRequest.MAX_TIME_FROM_NOW` (100 years) of now, and every
+  duration is at most that long, so epoch milliseconds or SQL timestamps hold them.
 
 The tests are `StoreContract` in `bth4j-store-tests`. A store module subclasses it, supplies a fresh,
 isolated store per test from `newStore(namespace)` and, when the test can move time, the clock from

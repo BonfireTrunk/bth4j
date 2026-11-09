@@ -298,6 +298,8 @@ public final class TaskClient {
     private <T> TaskRecord toRecord(TaskRequest<T> request, long id) {
         var type = request.type();
         var now = clock.instant();
+        StoredTime.require("at", request.at(), now);
+        StoredTime.require("startBy", request.startBy(), now);
         Instant due = request.at();
         if (due == null && request.delay() != null) due = now.plus(request.delay());
         if (request.startBy() != null && due != null && request.startBy().isBefore(due)) {
@@ -423,8 +425,8 @@ public final class TaskClient {
     }
 
     /**
-     * @return counts per state by queue name, for every queue that has tasks; a queue without tasks may be left
-     *         out or have every count zero
+     * @return counts per state by queue name, for every registered queue; a queue without tasks has every count
+     *         zero
      */
     public Map<String, StateCounts> counts() {
         var result = new java.util.LinkedHashMap<String, StateCounts>();

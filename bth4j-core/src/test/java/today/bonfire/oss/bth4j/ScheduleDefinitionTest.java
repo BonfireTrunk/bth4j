@@ -128,6 +128,27 @@ class ScheduleDefinitionTest {
     }
 
     @Test
+    void fixedDelayIsAtMostOneHundredYears() {
+        assertThat(ScheduleDefinition.every("id", NO_PAYLOAD, TaskRequest.MAX_TIME_FROM_NOW)
+                        .fixedDelay())
+                .isEqualTo(TaskRequest.MAX_TIME_FROM_NOW);
+        assertThatThrownBy(
+                        () -> ScheduleDefinition.every("id", NO_PAYLOAD, TaskRequest.MAX_TIME_FROM_NOW.plusMillis(1)))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessageContaining("fixedDelay");
+    }
+
+    @Test
+    void anAccountFollowsTheTaskRule() {
+        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *");
+        String longest = "a".repeat(TaskRequest.MAX_ACCOUNT_LENGTH);
+        assertThat(d.account(longest).account()).isEqualTo(longest);
+        assertThatThrownBy(() -> d.account(longest + "a"))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessageContaining("account");
+    }
+
+    @Test
     void anIdOrAccountWithAU0000IsRejected() {
         assertThatThrownBy(() -> ScheduleDefinition.of("night\u0000ly", NO_PAYLOAD, "0 2 * * *"))
                 .isInstanceOf(TaskValidationException.class);

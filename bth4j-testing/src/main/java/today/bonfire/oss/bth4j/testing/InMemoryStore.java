@@ -38,6 +38,7 @@ import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
+import today.bonfire.oss.bth4j.spi.StoreArguments;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
@@ -117,9 +118,7 @@ public final class InMemoryStore implements FullStore {
 
     @Override
     public long allocateIds(int count) {
-        if (count < 1) {
-            throw new IllegalArgumentException("count must be positive: " + count);
-        }
+        StoreArguments.requireCount(count);
         lock.lock();
         try {
             long first = nextTaskId;
@@ -132,6 +131,7 @@ public final class InMemoryStore implements FullStore {
 
     @Override
     public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
+        StoreArguments.requireLabel(label);
         lock.lock();
         try {
             int id = nextWorkerId++;
@@ -154,6 +154,7 @@ public final class InMemoryStore implements FullStore {
     }
 
     private int register(Map<String, Integer> registry, String name, String kind) {
+        StoreArguments.requireName(kind, name);
         lock.lock();
         try {
             Integer existing = registry.get(name);
@@ -495,6 +496,7 @@ public final class InMemoryStore implements FullStore {
 
     @Override
     public boolean reschedule(long id, int revision, Instant due) {
+        StoreArguments.requireDue(due);
         return backToWaiting(id, revision, b -> b.state(TaskState.SCHEDULED).due(due));
     }
 
@@ -600,7 +602,7 @@ public final class InMemoryStore implements FullStore {
 
     @Override
     public long purge(TaskState state, Duration retention, int limit) {
-        if (!state.isTerminal()) throw new IllegalArgumentException("only terminal states are purged: " + state);
+        StoreArguments.requireTerminal(state);
         lock.lock();
         try {
             Instant now = clock.instant();
@@ -798,6 +800,9 @@ public final class InMemoryStore implements FullStore {
         lock.lock();
         try {
             Map<Integer, long[]> raw = new TreeMap<>();
+            for (int queueId : queueIds.values()) {
+                raw.put(queueId, new long[TaskState.values().length]);
+            }
             for (TaskRecord t : tasks.values()) {
                 raw.computeIfAbsent(t.queueId(), q -> new long[TaskState.values().length])[
                         t.state().code()]++;
@@ -1064,7 +1069,7 @@ public final class InMemoryStore implements FullStore {
         lock.lock();
         try {
             if (paused) {
-                pausedQueues.add(queueId);
+                if (queueIds.containsValue(queueId)) pausedQueues.add(queueId);
             } else {
                 pausedQueues.remove(queueId);
             }
@@ -1089,6 +1094,7 @@ public final class InMemoryStore implements FullStore {
     @Override
     public void heartbeat(
             int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
+        StoreArguments.requireLabel(label);
         lock.lock();
         try {
             Instant now = clock.instant();
