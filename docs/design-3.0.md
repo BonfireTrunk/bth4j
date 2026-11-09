@@ -1,5 +1,9 @@
 # bth4j 3.0 design
 
+> This page records the design of 3.0 as it was built. Later releases added methods to the store interfaces,
+> the SQLite store and other changes, so where this page and a guide differ, the guide describes the current
+> behavior. The guides are listed under [Documentation](../README.md#documentation).
+
 3.0 replaces the coordination protocol of 2.x. A task is always in exactly one state, every
 transition between states is atomic together with the ownership check that guards it, and the whole
 protocol is expressed against a store interface (the SPI), so the same services run on any store that
