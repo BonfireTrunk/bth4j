@@ -58,7 +58,7 @@ The metrics and the admin HTTP server are separate modules; add them when you us
 | Module | Content |
 |---|---|
 | `bth4j-core` | task model, runner, services, the store interface (`today.bonfire.oss.bth4j.spi`) |
-| `bth4j-redis` | `RedisTaskStore`: Redis 7.4 or newer or Valkey 9 or newer; uses Jedis. Tested on standalone Redis 8.8 and Valkey 9.1.3; Redis Cluster is not tested (see "Redis") |
+| `bth4j-redis` | `RedisTaskStore`: Redis 7.4 or newer or Valkey 9 or newer; uses Jedis. Tested on standalone Redis 8.10 and Valkey 9.1.3; Redis Cluster is not tested (see "Redis") |
 | `bth4j-postgres` | `PostgresTaskStore`: PostgreSQL 16 or newer, 17 or newer recommended, tested on 18; uses only `java.sql`, the application supplies the JDBC driver and a pooled `DataSource` |
 | `bth4j-sqlite` | `SqliteTaskStore`: SQLite 3.45 or newer in WAL mode, latest recommended, tested on 3.54; uses only `java.sql`, the application supplies the JDBC driver and a pooled `DataSource`; for runners on one machine |
 | `bth4j-testing` | `InMemoryStore` and `MutableClock` for tests of applications |
@@ -1078,7 +1078,7 @@ Awaitility) instead of asserting at once.
 results (`encodeStep(result)`, `decodeStep(text, class)`) exactly as the runner stores them, so a test can pin
 the stored form of a payload version or a step result against the library's own rules.
 
-The integration tests of the store modules start containers with Testcontainers: `redis:8.8-alpine` and
+The integration tests of the store modules start containers with Testcontainers: `redis:8.10-alpine` and
 `postgres:18-alpine` by default. `./mvnw -pl bth4j-redis -am verify -Pvalkey` runs the Redis suite against
 `valkey/valkey:9.1.3-alpine`, and `-Dbth4j.redis.image=...` or `-Dbth4j.postgres.image=...` selects any
 other image. The SQLite tests need no Docker: they run in the `test` phase on a database file in a temporary

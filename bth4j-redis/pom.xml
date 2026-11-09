@@ -18,7 +18,7 @@
 
     <properties>
         <module.name>bonfire.oss.bth4j.redis</module.name>
-        <bth4j.redis.image>redis:8.8-alpine</bth4j.redis.image>
+        <bth4j.redis.image>redis:8.10-alpine</bth4j.redis.image>
     </properties>
 
     <dependencies>
