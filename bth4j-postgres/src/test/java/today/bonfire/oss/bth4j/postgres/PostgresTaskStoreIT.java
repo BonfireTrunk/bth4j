@@ -302,7 +302,7 @@ class PostgresTaskStoreIT {
         assertThat(r.attempts()).isZero();
         assertThat(r.payloadVersion()).isEqualTo(2);
         assertThat(r.due()).isAfter(before).isEqualTo(r.stateChangedAt());
-        assertThat(r.createdAt()).isEqualTo(t.createdAt().truncatedTo(ChronoUnit.MICROS));
+        assertThat(r.createdAt()).isEqualTo(t.createdAt().truncatedTo(ChronoUnit.MILLIS));
         assertThat(r.encodedPayload()).isEqualTo("payload-" + id);
         assertThat(r.account()).isEqualTo("acme");
         assertThat(r.headers()).isEqualTo(Map.of("trace", "abc"));
@@ -312,7 +312,7 @@ class PostgresTaskStoreIT {
         assertThat(r.retryPolicy()).isEqualTo("slow");
         assertThat(r.scheduleId()).isEqualTo("nightly");
         assertThat(r.retryOf()).isEqualTo(7L);
-        assertThat(r.startBy()).isEqualTo(t.startBy().truncatedTo(ChronoUnit.MICROS));
+        assertThat(r.startBy()).isEqualTo(t.startBy().truncatedTo(ChronoUnit.MILLIS));
         assertThat(r.maxRunTime()).isEqualTo(Duration.ofSeconds(9));
         assertThat(r.progress()).as("a new task starts without progress").isNull();
         assertThat(r.steps()).as("a new task starts without steps").isNull();
@@ -325,7 +325,7 @@ class PostgresTaskStoreIT {
     void futureDueIsScheduledAndPastDueIsQueued() {
         long later = newId();
         long earlier = newId();
-        var at = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MICROS);
+        var at = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
         store.enqueue(task(later).due(at).build());
         store.enqueue(task(earlier).due(Instant.now().minusSeconds(60)).build());
 
@@ -420,7 +420,7 @@ class PostgresTaskStoreIT {
         assertThat(t.workerId()).isEqualTo(worker);
         assertThat(t.claimedAt()).isNotNull().isEqualTo(t.stateChangedAt());
         assertThat(t.leaseUntil()).isAfter(t.claimedAt().plus(LEASE).minusSeconds(1));
-        assertThat(t.due()).isEqualTo(now.minusSeconds(30).truncatedTo(ChronoUnit.MICROS));
+        assertThat(t.due()).isEqualTo(now.minusSeconds(30).truncatedTo(ChronoUnit.MILLIS));
         assertThat(claim(5)).extracting(TaskRecord::id).containsExactly(base);
         assertThat(claim(5)).isEmpty();
     }
@@ -678,7 +678,7 @@ class PostgresTaskStoreIT {
     @Test
     void failSchedulesARetryAndRecordsTheFailure() {
         var t = enqueueAndClaim(task(newId()));
-        var retryAt = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MICROS);
+        var retryAt = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
 
         var f = failure(1);
         assertThat(store.fail(t.id(), t.revision(), f, retryAt, true, null)).isEqualTo(FailOutcome.RETRY);
@@ -739,7 +739,7 @@ class PostgresTaskStoreIT {
     @Test
     void rescheduleGivesTheAttemptBack() {
         var t = enqueueAndClaim(task(newId()));
-        var due = Instant.now().plusSeconds(30).truncatedTo(ChronoUnit.MICROS);
+        var due = Instant.now().plusSeconds(30).truncatedTo(ChronoUnit.MILLIS);
         assertThat(store.reschedule(t.id(), t.revision(), due)).isTrue();
 
         var r = get(t.id());
@@ -797,8 +797,8 @@ class PostgresTaskStoreIT {
     void promoteMovesDueTasksKeepingTheirDue() {
         long due = newId();
         long notYet = newId();
-        var past = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MICROS);
-        var future = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MICROS);
+        var past = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MILLIS);
+        var future = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
         store.enqueue(task(due).build());
         var claimed = claim(1).getFirst();
         store.reschedule(due, claimed.revision(), past);
@@ -908,7 +908,7 @@ class PostgresTaskStoreIT {
     @Test
     void queuedTasksOfEveryQueueAreMergedByDueThenIdAcrossPages() {
         int[] queues = {queue, store.queueId("second"), store.queueId("third")};
-        var base = Instant.now().minusSeconds(600).truncatedTo(ChronoUnit.MICROS);
+        var base = Instant.now().minusSeconds(600).truncatedTo(ChronoUnit.MILLIS);
         var expected = new ArrayList<Long>();
         long first = store.allocateIds(9);
         for (int i = 0; i < 9; i++) {
@@ -925,6 +925,29 @@ class PostgresTaskStoreIT {
             page.items().forEach(t -> seen.add(t.id()));
             cursor = page.next();
         } while (cursor != null);
+        assertThat(seen).containsExactlyElementsOf(expected);
+    }
+
+    @Test
+    void tasksWrittenWithMicrosecondsBefore42AreListedOnceAcrossPages() throws SQLException {
+        var base = Instant.now().minusSeconds(600).truncatedTo(ChronoUnit.MILLIS);
+        long first = store.allocateIds(5);
+        var expected = new ArrayList<Long>();
+        for (int i = 0; i < 5; i++) {
+            store.enqueue(task(first + i).due(base).build());
+            expected.add(first + i);
+        }
+        // 4.1.0 kept microseconds: the five due times now differ only below the millisecond
+        sql("UPDATE " + prefix + "_task SET due = due + (id - " + first + " + 1) * interval '1 microsecond'");
+
+        var seen = new ArrayList<Long>();
+        String cursor = null;
+        int pages = 0;
+        do {
+            var page = store.tasks(TaskState.QUEUED, null, cursor, 2);
+            page.items().forEach(t -> seen.add(t.id()));
+            cursor = page.next();
+        } while (cursor != null && ++pages < 10);
         assertThat(seen).containsExactlyElementsOf(expected);
     }
 
@@ -966,7 +989,7 @@ class PostgresTaskStoreIT {
 
     @Test
     void recurringOccurrenceIsCommittedOncePerFireTime() {
-        var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MICROS);
+        var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MILLIS);
         var nextFire = fireAt.plusSeconds(3600);
         store.putRecurring(definition("hourly", "0 * * * *"), fireAt, fireAt);
 
@@ -999,8 +1022,34 @@ class PostgresTaskStoreIT {
     }
 
     @Test
+    void aScheduleWrittenWithMicrosecondsBefore42StillFiresAndMoves() throws SQLException {
+        var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MILLIS);
+        store.putRecurring(definition("old", "0 * * * *"), fireAt, fireAt);
+        sql("UPDATE " + prefix + "_schedule SET next_fire = next_fire + interval '456 microseconds'");
+
+        DueSchedule d = store.dueRecurring(Instant.now(), 10).getFirst();
+        assertThat(d.fireAt()).isEqualTo(fireAt.plusNanos(456_000));
+        long id = newId();
+        var occurrence = task(id).scheduleId("old")
+                .encodedPayload(d.definition().encodedPayload())
+                .maxAttempts(4)
+                .build();
+        assertThat(store.commitRecurring(d, fireAt.plusSeconds(3600), occurrence))
+                .isTrue();
+        assertThat(get(id).scheduleId()).isEqualTo("old");
+        assertThat(store.recurringSchedules()).containsEntry("old", fireAt.plusSeconds(3600));
+
+        sql("UPDATE " + prefix + "_schedule SET next_fire = next_fire + interval '789 microseconds'");
+        var stored = store.recurringDefinitions().getFirst();
+        assertThat(store.setNextFire(
+                        "old", stored.definition().revision(), stored.nextFire(), fireAt.plusSeconds(7200)))
+                .isTrue();
+        assertThat(store.recurringSchedules()).containsEntry("old", fireAt.plusSeconds(7200));
+    }
+
+    @Test
     void putRecurringKeepsTheFireTimeForAnUnchangedCronAndTheRevisionForAnUnchangedDefinition() {
-        var first = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MICROS);
+        var first = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
         assertThat(store.putRecurring(definition("job", "0 * * * *"), first, first))
                 .isEqualTo(new PutRecurringResult(PutRecurringOutcome.CREATED, first));
         long revision = store.dueRecurring(first, 10).getFirst().definition().revision();
@@ -1349,7 +1398,7 @@ class PostgresTaskStoreIT {
 
     @Test
     void recurringDefinitionsRoundTripEveryField() {
-        var at = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MICROS);
+        var at = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
         store.putRecurring(fullDefinition("b-cron"), at, at);
         store.putRecurring(fixedDelay("a-delay", 60_000), at.plusSeconds(1), at.plusSeconds(1));
 
@@ -1373,7 +1422,7 @@ class PostgresTaskStoreIT {
 
     @Test
     void aPausedDefinitionIsNotDueAndCannotCommit() {
-        var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MICROS);
+        var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MILLIS);
         store.putRecurring(definition("p", "0 * * * *"), fireAt, fireAt);
         var due = store.dueRecurring(Instant.now(), 10).getFirst();
 
@@ -1394,7 +1443,7 @@ class PostgresTaskStoreIT {
 
     @Test
     void reputtingADefinitionKeepsItsPausedFlag() {
-        var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MICROS);
+        var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MILLIS);
         store.putRecurring(definition("kept", "0 * * * *"), fireAt, fireAt);
         store.pauseRecurring("kept");
 
@@ -1418,7 +1467,7 @@ class PostgresTaskStoreIT {
 
     @Test
     void setNextFireReplacesTheFireTimeAndFencesAnOlderCommit() {
-        var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MICROS);
+        var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MILLIS);
         store.putRecurring(definition("n", "0 * * * *"), fireAt, fireAt);
         var due = store.dueRecurring(Instant.now(), 10).getFirst();
         var later = fireAt.plusSeconds(120);
@@ -1433,7 +1482,7 @@ class PostgresTaskStoreIT {
 
     @Test
     void anOccurrenceWhoseKeyIsHeldIsSkippedButTheDefinitionAdvances() {
-        var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MICROS);
+        var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MILLIS);
         store.putRecurring(definition("o", "* * * * *"), fireAt, fireAt);
         long first = newId();
         var d1 = store.dueRecurring(Instant.now(), 10).getFirst();
@@ -1528,7 +1577,7 @@ class PostgresTaskStoreIT {
     private record Occurrence(Instant fireAt, DueSchedule due, TaskRecord leased) {}
 
     private Occurrence leasedOccurrenceOfFixedDelay(String scheduleId, String key) {
-        var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MICROS);
+        var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MILLIS);
         store.putRecurring(fixedDelay(scheduleId, 60_000), fireAt, fireAt);
         var due = store.dueRecurring(Instant.now(), 10).getFirst();
         var builder = task(newId());
@@ -1597,7 +1646,7 @@ class PostgresTaskStoreIT {
 
     @Test
     void aRecurringCommitThatFailsAfterTheOccurrenceIsInsertedStoresNothing() throws SQLException {
-        var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MICROS);
+        var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MILLIS);
         store.putRecurring(fixedDelay("commit", 60_000), fireAt, fireAt);
         var due = store.dueRecurring(Instant.now(), 10).getFirst();
         long occurrence = newId();
@@ -1733,7 +1782,7 @@ class PostgresTaskStoreIT {
 
     @Test
     void aPutWaitingOnARecurringCommitSeesTheOccurrenceItStored() throws Exception {
-        var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MICROS);
+        var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MILLIS);
         var parked = fireAt.plus(Duration.ofDays(36_500));
         store.putRecurring(fixedDelay("race", 60_000), fireAt, fireAt);
         long occurrence = newId();

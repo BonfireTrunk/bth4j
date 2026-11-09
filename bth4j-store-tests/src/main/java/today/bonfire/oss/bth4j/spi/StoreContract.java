@@ -892,6 +892,95 @@ public abstract class StoreContract {
         assertThat(store.workers()).extracting(WorkerInfo::id).contains(worker);
     }
 
+    @Test
+    void timesAndDurationsAreKeptInWholeMilliseconds() {
+        Instant odd = millis(now()).plusNanos(456_789);
+        Duration oddWindow = Duration.ofMinutes(10).plusNanos(456_789);
+
+        long waiting = put(task().createdAt(odd)
+                .due(odd.plusSeconds(3600))
+                .startBy(odd.plusSeconds(7200))
+                .uniqueKey("ms-waiting")
+                .keyKeep(oddWindow)
+                .maxRunTime(oddWindow));
+        TaskRecord scheduled = get(waiting);
+        assertWholeMillis(scheduled, "enqueue");
+        assertThat(scheduled.createdAt()).isEqualTo(millis(odd));
+        assertThat(scheduled.due()).isEqualTo(millis(odd.plusSeconds(3600)));
+        assertThat(scheduled.keyKeep()).isEqualTo(Duration.ofMinutes(10));
+        assertThat(scheduled.maxRunTime()).isEqualTo(Duration.ofMinutes(10));
+
+        put(task().createdAt(odd).due(odd.minusSeconds(60)).uniqueKey("ms-done").keyKeep(oddWindow));
+        TaskRecord held = claim(1, LEASE.plusNanos(456_789), null).get(0);
+        assertWholeMillis(held, "claim");
+        assertWholeMillis(get(held.id()), "claim, read back");
+        assertThat(store.cancel(held.id(), held.revision(), "stop", null)).isEqualTo(CancelOutcome.REQUESTED);
+        assertWholeMillis(get(held.id()), "cancel request");
+        assertThat(store.ack(held.id(), held.revision(), true, true, null)).isTrue();
+        assertWholeMillis(get(held.id()), "ack");
+
+        put(task().due(odd.minusSeconds(60)));
+        TaskRecord failing = claimOne();
+        assertThat(store.fail(failing.id(), failing.revision(), failure(1), odd.plusSeconds(300), true, null))
+                .isEqualTo(FailOutcome.RETRY);
+        assertWholeMillis(get(failing.id()), "fail with a retry");
+        assertThat(get(failing.id()).due()).isEqualTo(millis(odd.plusSeconds(300)));
+
+        put(task().due(odd.minusSeconds(60)));
+        TaskRecord later = claimOne();
+        assertThat(store.reschedule(later.id(), later.revision(), odd.plusSeconds(600)))
+                .isTrue();
+        assertWholeMillis(get(later.id()), "reschedule");
+        assertThat(get(later.id()).due()).isEqualTo(millis(odd.plusSeconds(600)));
+
+        assertThat(store.putRecurring(definition("ms-every", "* * * * *"), odd, odd)
+                        .nextFire())
+                .isEqualTo(millis(odd));
+        assertThat(store.recurringSchedules()).containsEntry("ms-every", millis(odd));
+        DueSchedule due = store.dueRecurring(odd, 10).get(0);
+        assertThat(due.fireAt()).isEqualTo(millis(odd));
+        assertThat(store.setNextFire("ms-every", due.definition().revision(), odd, odd.plusSeconds(60)))
+                .as("the expected fire time is compared to the millisecond")
+                .isTrue();
+        assertThat(store.recurringSchedules()).containsEntry("ms-every", millis(odd.plusSeconds(60)));
+
+        store.heartbeat(worker, "contract-test", Set.of(queue), Set.of(type), 0, true);
+        assertThat(store.workers())
+                .filteredOn(w -> w.id() == worker)
+                .singleElement()
+                .satisfies(w -> {
+                    assertThat(w.startedAt().getNano() % 1_000_000)
+                            .as("worker startedAt")
+                            .isZero();
+                    assertThat(w.lastSeen().getNano() % 1_000_000)
+                            .as("worker lastSeen")
+                            .isZero();
+                });
+    }
+
+    private static void assertWholeMillis(TaskRecord t, String step) {
+        Instant[] times = {
+            t.createdAt(),
+            t.due(),
+            t.stateChangedAt(),
+            t.leaseUntil(),
+            t.claimedAt(),
+            t.keyUntil(),
+            t.startBy(),
+            t.cancelRequestedAt()
+        };
+        String[] names = {
+            "createdAt", "due", "stateChangedAt", "leaseUntil", "claimedAt", "keyUntil", "startBy", "cancelRequestedAt"
+        };
+        for (int i = 0; i < times.length; i++) {
+            if (times[i] != null) {
+                assertThat(times[i].getNano() % 1_000_000)
+                        .as("%s after %s", names[i], step)
+                        .isZero();
+            }
+        }
+    }
+
     // sibling paths, terminal bookkeeping, what a transition leaves behind, instants the caller supplies
 
     private static final Duration ENDING_KEY_WINDOW = Duration.ofHours(1);

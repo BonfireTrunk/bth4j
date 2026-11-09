@@ -884,9 +884,9 @@ SQLite and the in-memory store from the `java.time.Clock` the store was given, i
 the runner computes `createdAt`, delays and retry times on its own clock. Keep the application hosts and the
 database server on synchronized clocks; "Retries" says what a skew does.
 
-**Time precision.** PostgreSQL keeps times in microseconds, Redis and SQLite in whole milliseconds, and the
-in-memory store at the precision of its clock. The runner's decisions do not depend on anything finer than a
-millisecond; only the timestamps you read back differ.
+**Time precision.** Every store keeps times and durations in whole milliseconds and drops anything finer, so the
+timestamps you read back are alike on all of them. Rows PostgreSQL wrote before 4.2.0 keep their microseconds
+until they are written again.
 
 **What a crash can lose.** A write the store confirmed and then lost does the same on every store: a lost enqueue
 means the task never runs, and a lost claim or outcome puts the task back, so it runs again after its lease

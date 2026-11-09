@@ -15,7 +15,9 @@ import java.util.Set;
  * <p>
  * Every instant the library hands a store lies within {@link today.bonfire.oss.bth4j.TaskRequest#MAX_TIME_FROM_NOW}
  * (100 years) of now, and every duration (a lease, a key window, a retention, a stale-after) is at most that
- * long, so a store may keep times as epoch milliseconds or SQL timestamps. Arguments that break a rule of this
+ * long, so a store may keep times as epoch milliseconds or SQL timestamps. A store keeps times and durations in
+ * whole milliseconds: it drops what is finer from those it is given, takes its own clock to the millisecond, and
+ * compares a time it is given with a stored one to the millisecond. Arguments that break a rule of this
  * SPI throw {@link IllegalArgumentException}; {@link StoreArguments} holds the shared checks.
  */
 public interface TaskStore {
