@@ -587,6 +587,7 @@ final class RedisScripts {
               record()
               move(id, qid, 2, 1, at, retryAt)
               redis.call('HSET', tkey, 'state', 1, 'sc', at, 'rev', rev + 1, 'due', retryAt, 'fc', 1)
+              redis.call('HDEL', tkey, 'wid')
               track(id, v[9])
               flush()
               return 'RETRY'
@@ -612,6 +613,7 @@ final class RedisScripts {
             local due = tonumber(ARGV[4])
             move(id, tonumber(v[3]), 2, 1, at, due)
             redis.call('HSET', tkey, 'state', 1, 'sc', at, 'rev', tonumber(v[1]) + 1, 'att', tonumber(v[4]) - 1, 'due', due)
+            redis.call('HDEL', tkey, 'wid')
             track(id, v[5])
             flush()
             return 1
@@ -626,6 +628,7 @@ final class RedisScripts {
             local at = now()
             move(id, tonumber(v[3]), 2, 0, at, tonumber(v[6]))
             redis.call('HSET', tkey, 'state', 0, 'sc', at, 'rev', tonumber(v[1]) + 1, 'att', tonumber(v[4]) - 1)
+            redis.call('HDEL', tkey, 'wid')
             track(id, v[5])
             flush()
             return 1
@@ -634,7 +637,8 @@ final class RedisScripts {
     /**
      * ARGV: id, revision, target, value. Writes without touching the revision: target {@code steps} replaces
      * the {@code st:<id>} string and keeps the hs marker field in step with it, any other target is a field of
-     * the task hash. An empty value deletes.
+     * the task hash. The value is '' to delete, else the text after a one-character prefix, so that an empty
+     * text is written as given.
      */
     static final String WRITE = PRELUDE + """
             local id = ARGV[2]
@@ -646,13 +650,13 @@ final class RedisScripts {
                 redis.call('UNLINK', P .. 'st:' .. id)
                 if v[4] then redis.call('HDEL', tkey, 'hs') end
               else
-                redis.call('SET', P .. 'st:' .. id, ARGV[5])
+                redis.call('SET', P .. 'st:' .. id, string.sub(ARGV[5], 2))
                 if not v[4] then redis.call('HSET', tkey, 'hs', 1) end
               end
             elseif ARGV[5] == '' then
               redis.call('HDEL', tkey, ARGV[4])
             else
-              redis.call('HSET', tkey, ARGV[4], ARGV[5])
+              redis.call('HSET', tkey, ARGV[4], string.sub(ARGV[5], 2))
             end
             return 1
             """;
@@ -883,10 +887,10 @@ final class RedisScripts {
             """;
 
     /**
-     * ARGV: id, revision, reason or '', keep payload (1/0), expired only (1/0), then the schedule effect as for
-     * ACK. LEASED to CANCELLED; the worker id stays, the cancel request time is kept when there is one. Returns 1
-     * (2 when the effect changed the definition), or 0 when the fence fails or, with expired only, when the
-     * stored lease is after now.
+     * ARGV: id, revision, reason ('' for none, else the text after a one-character prefix), keep payload (1/0),
+     * expired only (1/0), then the schedule effect as for ACK. LEASED to CANCELLED; the worker id stays, the
+     * cancel request time is kept when there is one, and the reason is the one given (none removes an earlier one). Returns 1 (2 when the effect changed the definition), or 0
+     * when the fence fails or, with expired only, when the stored lease is after now.
      */
     static final String FINISH_CANCELLED = PRELUDE + """
             local id = ARGV[2]
@@ -897,8 +901,9 @@ final class RedisScripts {
             if ARGV[6] == '1' and tonumber(v[7]) > at then return 0 end
             local extra = {}
             if not v[6] then extra = {'cra', at} end
-            if ARGV[4] ~= '' then extra[#extra + 1] = 'crs'; extra[#extra + 1] = ARGV[4] end
+            if ARGV[4] ~= '' then extra[#extra + 1] = 'crs'; extra[#extra + 1] = string.sub(ARGV[4], 2) end
             finish(tkey, id, tonumber(v[3]), 2, 5, at, tonumber(v[1]), v[4], v[5], extra, true)
+            if ARGV[4] == '' then redis.call('HDEL', tkey, 'crs') end
             if ARGV[5] ~= '1' then redis.call('UNLINK', P .. 'd:' .. id) end
             local fx = effect(ARGV[7], ARGV[8], ARGV[9])
             flush()
@@ -906,9 +911,9 @@ final class RedisScripts {
             """;
 
     /**
-     * ARGV: id, revision, reason or '', then the schedule effect as for ACK. Returns CANCELLED (QUEUED or
-     * SCHEDULED, moved; CANCELLED+ when the effect changed the definition), REQUESTED (LEASED, only the request is
-     * stored and the revision stays) or STALE.
+     * ARGV: id, revision, reason as for FINISH_CANCELLED, then the schedule effect as for ACK. Returns CANCELLED
+     * (QUEUED or SCHEDULED, moved; CANCELLED+ when the effect changed the definition), REQUESTED (LEASED, only
+     * the request is stored and the revision stays) or STALE.
      */
     static final String CANCEL = PRELUDE + """
             local id = ARGV[2]
@@ -918,7 +923,8 @@ final class RedisScripts {
             local state = tonumber(v[2])
             local at = now()
             local extra = {'cra', at}
-            if ARGV[4] ~= '' then extra[3] = 'crs'; extra[4] = ARGV[4] end
+            if ARGV[4] ~= '' then extra[3] = 'crs'; extra[4] = string.sub(ARGV[4], 2) end
+            if ARGV[4] == '' and (state == 0 or state == 1 or state == 2) then redis.call('HDEL', tkey, 'crs') end
             if state == 0 or state == 1 then
               finish(tkey, id, v[3], state, 5, at, tonumber(v[1]), v[4], v[5], extra, true)
               zrem(P .. 'startby', id)

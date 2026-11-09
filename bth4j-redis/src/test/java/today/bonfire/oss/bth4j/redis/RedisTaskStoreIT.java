@@ -4,6 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -12,6 +15,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -20,14 +24,20 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import redis.clients.jedis.Connection;
 import redis.clients.jedis.ConnectionPoolConfig;
 import redis.clients.jedis.DefaultJedisClientConfig;
 import redis.clients.jedis.HostAndPort;
+import redis.clients.jedis.Protocol;
 import redis.clients.jedis.RedisClient;
+import redis.clients.jedis.UnifiedJedis;
+import today.bonfire.oss.bth4j.Loggers;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
@@ -165,6 +175,84 @@ class RedisTaskStoreIT {
         assertThatThrownBy(store::init)
                 .isInstanceOf(TaskStoreException.class)
                 .hasMessageContaining("layout version 4, expected 5");
+    }
+
+    @Test
+    void initRefusesAServerThatCanEvictKeys() {
+        jedis.configSet("maxmemory-policy", "volatile-lru");
+        try {
+            assertThatThrownBy(store::init)
+                    .isInstanceOf(TaskConfigurationException.class)
+                    .hasMessageContaining("maxmemory-policy is volatile-lru and this store needs noeviction");
+        } finally {
+            jedis.configSet("maxmemory-policy", "noeviction");
+        }
+        store.init();
+    }
+
+    @Test
+    void initWarnsAndGoesOnWhenTheUserMayNotRunInfo() {
+        var password = UUID.randomUUID().toString();
+        jedis.sendCommand(
+                Protocol.Command.ACL, "SETUSER", "no-info", "on", ">" + password, "~*", "&*", "+@all", "-info");
+        var config = DefaultJedisClientConfig.builder()
+                .user("no-info")
+                .password(password)
+                .build();
+        try (var limited = RedisClient.builder()
+                .hostAndPort(new HostAndPort(REDIS.getHost(), REDIS.getMappedPort(6379)))
+                .clientConfig(config)
+                .build()) {
+            var other = new RedisTaskStore(limited, "T" + NAMESPACES.incrementAndGet());
+
+            assertThat(storeLog(other::init)).singleElement().satisfies(e -> {
+                assertThat(e.getLevel()).isEqualTo(Level.WARN);
+                assertThat(e.getFormattedMessage())
+                        .contains("Redis refused INFO memory (NOPERM")
+                        .contains("did not check that maxmemory-policy is noeviction");
+            });
+            assertThat(limited.hget(other.keys().meta, "schema"))
+                    .isEqualTo(String.valueOf(RedisTaskStore.LAYOUT_VERSION));
+        } finally {
+            jedis.sendCommand(Protocol.Command.ACL, "DELUSER", "no-info");
+        }
+    }
+
+    @Test
+    void initWarnsAndGoesOnWhenInfoHasNoEvictionPolicy() {
+        var connection = new Connection(
+                new HostAndPort(REDIS.getHost(), REDIS.getMappedPort(6379)),
+                DefaultJedisClientConfig.builder().build());
+        try (var proxy = new UnifiedJedis(connection) {
+            @Override
+            public String info(String section) {
+                return "# Memory\r\nused_memory:1024\r\n";
+            }
+        }) {
+            var other = new RedisTaskStore(proxy, "T" + NAMESPACES.incrementAndGet());
+
+            assertThat(storeLog(other::init)).singleElement().satisfies(e -> {
+                assertThat(e.getLevel()).isEqualTo(Level.WARN);
+                assertThat(e.getFormattedMessage())
+                        .contains("Redis INFO memory has no maxmemory_policy, so init did not check");
+            });
+            assertThat(proxy.hget(other.keys().meta, "schema"))
+                    .isEqualTo(String.valueOf(RedisTaskStore.LAYOUT_VERSION));
+        }
+    }
+
+    /** Runs {@code action} and returns what it logged to {@link Loggers#REDIS_STORE}. */
+    private static List<ILoggingEvent> storeLog(Runnable action) {
+        var logger = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(Loggers.REDIS_STORE);
+        var logs = new ListAppender<ILoggingEvent>();
+        logs.start();
+        logger.addAppender(logs);
+        try {
+            action.run();
+        } finally {
+            logger.detachAppender(logs);
+        }
+        return logs.list;
     }
 
     @Test

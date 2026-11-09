@@ -37,12 +37,7 @@ public final class Cron {
 
     /** @throws TaskValidationException when the expression does not parse */
     public static void validate(String expression) {
-        try {
-            PARSER.parse(expression);
-        } catch (RuntimeException e) {
-            throw new TaskValidationException(
-                    "invalid cron expression (5 field unix format expected): " + expression + ": " + e.getMessage());
-        }
+        parse(expression);
     }
 
     /** {@link #next(String, Instant, ZoneId)} in UTC. */
@@ -50,10 +45,13 @@ public final class Cron {
         return next(expression, after, ZoneOffset.UTC);
     }
 
-    /** @return the next fire time strictly after {@code after}, or empty when the expression never fires again */
+    /**
+     * @return the next fire time strictly after {@code after}, or empty when the expression never fires again
+     * @throws TaskValidationException when the expression does not parse
+     */
     public static Optional<Instant> next(String expression, Instant after, ZoneId zone) {
         var executionTime =
-                EXECUTION_TIMES.computeIfAbsent(normalize(expression), c -> ExecutionTime.forCron(PARSER.parse(c)));
+                EXECUTION_TIMES.computeIfAbsent(normalize(expression), c -> ExecutionTime.forCron(parse(c)));
         var z = zone == null ? ZoneOffset.UTC : zone;
         var next =
                 executionTime.nextExecution(ZonedDateTime.ofInstant(after, z)).map(ZonedDateTime::toInstant);
@@ -83,6 +81,15 @@ public final class Cron {
     /** The parsed expressions currently cached; for tests. */
     static int cached() {
         return EXECUTION_TIMES.size();
+    }
+
+    private static com.cronutils.model.Cron parse(String expression) {
+        try {
+            return PARSER.parse(expression);
+        } catch (RuntimeException e) {
+            throw new TaskValidationException(
+                    "invalid cron expression (5 field unix format expected): " + expression + ": " + e.getMessage());
+        }
     }
 
     /** Spaces around and between the fields do not make another expression. */

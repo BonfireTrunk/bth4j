@@ -79,6 +79,7 @@ final class DefaultAdminOps implements AdminOps {
 
     @Override
     public Optional<TaskView> taskByKey(String key) {
+        StoredText.require("uniqueKey", key);
         return store.taskByKey(key).map(names::view);
     }
 
@@ -101,6 +102,7 @@ final class DefaultAdminOps implements AdminOps {
         if (reason != null && reason.length() > MAX_REASON) {
             throw new TaskValidationException("reason longer than " + MAX_REASON + " characters");
         }
+        StoredText.require("reason", reason);
         // a waiting fixed-delay occurrence re-arms nothing, so the store pauses its definition with the cancel
         var pause = RecurringTaskService.pauseEffect(readable(id));
         return store.cancel(id, revision, reason == null || reason.isBlank() ? "cancelled by operator" : reason, pause);
@@ -108,6 +110,7 @@ final class DefaultAdminOps implements AdminOps {
 
     @Override
     public CancelOutcome cancelByKey(String key, String reason) {
+        StoredText.require("uniqueKey", key);
         var holder = store.taskByKey(key).orElse(null);
         if (holder == null) return CancelOutcome.NOT_FOUND;
         if (holder.state().isTerminal()) return CancelOutcome.FINISHED;
@@ -175,6 +178,9 @@ final class DefaultAdminOps implements AdminOps {
 
     @Override
     public int purgeStaleWorkers(Duration staleAfter) {
+        if (staleAfter == null || staleAfter.isNegative() || staleAfter.isZero() || !StoredTime.fits(staleAfter)) {
+            throw new IllegalArgumentException("staleAfter must be positive and at most " + StoredTime.MAX);
+        }
         return store.purgeWorkers(staleAfter);
     }
 

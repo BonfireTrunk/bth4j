@@ -28,6 +28,12 @@ public final class TaskRequest<T> {
     public static final int MAX_HEADERS_BYTES = 8 * 1024;
     public static final int MAX_PAYLOAD_BYTES = 256 * 1024;
 
+    /**
+     * How far from now, either way, a time handed to a store may lie, and the longest duration a store adds to
+     * or takes from now: 36,525 days (100 years), so that every store can keep it.
+     */
+    public static final Duration MAX_TIME_FROM_NOW = Duration.ofDays(36_525);
+
     /** The rule for a maximum run time of a task or schedule; null means none. */
     public static void requireMaxRunTime(Duration maxRunTime) {
         if (maxRunTime != null
@@ -41,6 +47,15 @@ public final class TaskRequest<T> {
         if (key.isBlank() || key.length() > MAX_UNIQUE_KEY_LENGTH) {
             throw new TaskValidationException("uniqueKey must be 1 to " + MAX_UNIQUE_KEY_LENGTH + " characters");
         }
+        StoredText.require("uniqueKey", key);
+    }
+
+    /** The rule for an account, for a task and for a schedule. */
+    public static void requireAccount(String account) {
+        if (account != null && account.length() > MAX_ACCOUNT_LENGTH) {
+            throw new TaskValidationException("account longer than " + MAX_ACCOUNT_LENGTH);
+        }
+        StoredText.require("account", account);
     }
 
     private final TaskType<T> type;
@@ -207,23 +222,25 @@ public final class TaskRequest<T> {
         }
 
         public Builder<T> account(String account) {
-            if (account != null && account.length() > MAX_ACCOUNT_LENGTH) {
-                throw new TaskValidationException("account longer than " + MAX_ACCOUNT_LENGTH);
-            }
+            requireAccount(account);
             this.account = account;
             return this;
         }
 
-        /** Runs the task at the given time instead of as soon as possible. */
+        /**
+         * Runs the task at the given time instead of as soon as possible; within {@link #MAX_TIME_FROM_NOW} of
+         * now when the task is enqueued.
+         */
         public Builder<T> at(Instant at) {
             this.at = at;
             this.delay = null;
             return this;
         }
 
-        /** Runs the task after the given delay. */
+        /** Runs the task after the given delay, at most {@link #MAX_TIME_FROM_NOW}. */
         public Builder<T> delay(Duration delay) {
             if (delay != null && delay.isNegative()) throw new TaskValidationException("delay cannot be negative");
+            StoredTime.require("delay", delay);
             this.delay = delay;
             this.at = null;
             return this;
@@ -259,6 +276,8 @@ public final class TaskRequest<T> {
             if (name == null || name.isBlank() || value == null) {
                 throw new TaskValidationException("header name and value are required");
             }
+            StoredText.require("header name", name);
+            StoredText.require("header value", value);
             if (headers == null) headers = new LinkedHashMap<>();
             headers.put(name, value);
             return this;
@@ -269,7 +288,10 @@ public final class TaskRequest<T> {
             return this;
         }
 
-        /** The task ends EXPIRED without running when it has not been claimed by this time. */
+        /**
+         * The task ends EXPIRED without running when it has not been claimed by this time; within
+         * {@link #MAX_TIME_FROM_NOW} of now when the task is enqueued.
+         */
         public Builder<T> startBy(Instant startBy) {
             this.startBy = startBy;
             return this;
@@ -284,6 +306,7 @@ public final class TaskRequest<T> {
 
         /** Name of a retry policy registered with {@code BackgroundRunner.Builder#retryPolicy(String, RetryPolicy)}; an unknown name falls back to the default policy. */
         public Builder<T> retryPolicy(String name) {
+            StoredText.require("retryPolicy", name);
             this.retryPolicy = name;
             return this;
         }

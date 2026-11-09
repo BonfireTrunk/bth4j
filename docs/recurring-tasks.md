@@ -1,0 +1,178 @@
+# Recurring tasks
+
+A recurring definition creates one task for each of its fire times, from a cron expression or a fixed delay. This page shows how to register a definition and what happens when fire times are missed or overlap. It also covers how an operator pauses, resumes and triggers a definition.
+
+**On this page**
+
+- [Registering a definition](#registering-a-definition)
+- [How a definition fires](#how-a-definition-fires)
+- [Cron definitions and time zones](#cron-definitions-and-time-zones)
+- [Misfires](#misfires)
+- [Overlap](#overlap)
+- [Fixed-delay definitions](#fixed-delay-definitions)
+- [Pausing, resuming and triggering](#pausing-resuming-and-triggering)
+- [Definitions that cannot be evaluated](#definitions-that-cannot-be-evaluated)
+- [Issues recurring tasks record](#issues-recurring-tasks-record)
+- [Related pages](#related-pages)
+
+## Registering a definition
+
+`client.putSchedule(ScheduleDefinition.of(id, type, payload, cron))` creates or replaces a definition and returns the next fire time. The cron expression has 5 fields (Unix format). Each fire time creates one task, exactly once across all instances.
+
+These methods refine a definition:
+
+| Method | What it sets |
+|---|---|
+| `.queue(...)` | the queue |
+| `.account(...)` | the account, at most 128 characters, as for a task |
+| `.maxAttempts(...)` | the maximum attempts |
+| `.maxRunTime(...)` | the maximum run time |
+| `.zone(...)` | the time zone of a cron expression (see [Cron definitions and time zones](#cron-definitions-and-time-zones)) |
+| `.misfire(...)` | what happens to missed fire times (see [Misfires](#misfires)) |
+| `.overlap(...)` | whether an occurrence is skipped while the previous one has not finished (see [Overlap](#overlap)) |
+
+`client.deleteSchedule(id)` removes a definition and `client.schedules()` lists the definitions.
+
+### Registering the same id again
+
+Registering the same id with the same timing (expression, zone and delay) either keeps or resets the stored next fire time:
+
+| Situation | Next fire time |
+|---|---|
+| Same timing, and a fixed-delay occurrence is still running | kept |
+| Same timing, and the next fire time is not beyond the second fire after now | kept |
+| Changed timing | reset |
+| Same timing, but the next fire time is beyond the second fire after now and no occurrence is running (a parked or pushed-out definition) | reset |
+
+What the call logs:
+
+| Registration | Log level |
+|---|---|
+| A definition that is stored already, with its next fire time kept (nothing is written) | DEBUG |
+| A new or changed definition | INFO |
+
+## How a definition fires
+
+A cron definition takes its fire times from the expression. A fixed-delay definition fires one delay after the previous occurrence succeeded.
+
+| | Cron definition | Fixed-delay definition |
+|---|---|---|
+| Created with | `ScheduleDefinition.of(id, type, payload, cron)` | `ScheduleDefinition.every(...)` |
+| Fire times | given by the expression (5 fields, Unix format), in a time zone (UTC by default) | first one delay after registration (the delay is at least 1 second), then one delay after the previous occurrence succeeded |
+| While paused | keeps its stored next fire time | resuming sets the next fire one delay from now |
+
+The diagram shows a cron definition. Each fire time becomes one occurrence task.
+
+```mermaid
+flowchart LR
+    A["Cron expression gives the fire times"] --> B["Recurring check creates one occurrence per fire time"]
+    B --> C["Occurrence runs as a task"]
+    B -.-> D["Misfire and overlap settings apply"]
+```
+
+The diagram shows the life of a fixed-delay definition.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Waiting: registered, first fire one delay later
+    Waiting --> Running: delay elapsed, occurrence created
+    Running --> Waiting: succeeded, next fire one delay later
+    Running --> Paused: DEAD or CANCELLED, issue schedule-paused
+    Paused --> Waiting: operator resumes, next fire one delay from now
+```
+
+## Cron definitions and time zones
+
+A cron expression runs in UTC unless you set a zone. A fire time that does not exist in a DST gap moves to the next valid instant. A repeated hour fires once.
+
+```java
+// cron in a time zone (UTC by default); a fire time that does not exist in a DST gap moves to the next valid
+// instant, a repeated hour fires once
+client.putSchedule(ScheduleDefinition.of("daily-digest", DIGEST, "0 8 * * *")
+        .zone(ZoneId.of("Europe/Berlin")));
+```
+
+## Misfires
+
+A misfire is a fire time that was missed by more than the misfire threshold. The threshold is twice `recurringTasksCheckInterval`, at least one minute. The misfire policy decides what happens then.
+
+```java
+// misfire: what happens when a fire time was missed by more than the threshold (below)
+client.putSchedule(ScheduleDefinition.of("hourly-sync", SYNC, "0 * * * *")
+        .misfire(Misfire.catchUp(3)));          // Misfire.SKIP, Misfire.FIRE_ONCE_NOW (default), Misfire.catchUp(maxFires)
+```
+
+| Policy | What it does |
+|---|---|
+| `SKIP` | creates nothing and continues from now |
+| `FIRE_ONCE_NOW` (default) | creates one task now |
+| `CATCH_UP` | creates one task per missed fire time, up to `maxFires` (the most recent ones when more were missed), and continues from now |
+
+`CATCH_UP` after a long downtime:
+
+- After a downtime of more than `maxFires` fires, it moves in one step to the last `maxFires` missed fires and creates them from that check on.
+- It creates up to about 100 per check, including those late by less than the threshold.
+- Beyond 100,000 missed fires it creates one task now, as `FIRE_ONCE_NOW` does.
+
+Every misfire is recorded as an issue.
+
+## Overlap
+
+With `Overlap.SKIP`, an occurrence is skipped (and an issue `schedule-overlap` recorded) while the task of the previous one is not finished.
+
+```java
+// overlap: no new occurrence while the previous one has not finished
+client.putSchedule(ScheduleDefinition.of("nightly-report", NIGHTLY_REPORT, "30 2 * * *")
+        .overlap(Overlap.SKIP));
+```
+
+The check creates an occurrence up to one `recurringTasksCheckInterval` before its fire time and decides the overlap then.
+
+Overlap protection keys only the occurrence (`sched:<id>`). Tasks its processor enqueues are unique only if the application gives them keys.
+
+## Fixed-delay definitions
+
+With a fixed delay, the next occurrence is due one delay after the previous one succeeded.
+
+```java
+// fixed delay: the next occurrence is due one delay after the previous one succeeded
+client.putSchedule(ScheduleDefinition.every("poll-feed", POLL_FEED, Duration.ofMinutes(5)));
+```
+
+- The delay is at least 1 second.
+- The definition first fires one delay after registration.
+- If an occurrence ends DEAD or CANCELLED, the definition is paused and an issue `schedule-paused` is recorded. This holds whether it ends in its processor, through an expired lease or by an operator cancel.
+- A failing job therefore does not run again until an operator resumes it.
+
+## Pausing, resuming and triggering
+
+Pausing, resuming and triggering a definition are `AdminOps` operations (see [Admin API](admin.md#admin-api)).
+
+| Operation | Effect |
+|---|---|
+| Pause | A paused cron definition keeps its stored next fire time. |
+| Resume | Resuming a definition that is not paused changes nothing. Resuming a fixed-delay definition sets its next fire one delay from now. |
+| Trigger | Moves the next fire time to now. The next recurring check creates the task. A paused definition creates nothing until it is resumed. |
+
+A trigger also forgets the occurrence in flight. When that task ends, it neither re-arms nor pauses the definition.
+
+## Definitions that cannot be evaluated
+
+A definition cannot be evaluated when its cron expression is invalid or its time zone is one the JVM no longer knows. Its next fire is then moved ahead by the greater of one hour and twice the check interval. A `schedule-broken` issue is recorded each time. This way the definition does not hold back the others.
+
+## Issues recurring tasks record
+
+See [Issues](monitoring.md#issues) for how to read issues.
+
+| Issue | Recorded when |
+|---|---|
+| `schedule-misfire` | every misfire |
+| `schedule-overlap` | `Overlap.SKIP` skips an occurrence because the previous task is not finished |
+| `schedule-paused` | an occurrence of a fixed-delay definition ends DEAD or CANCELLED and the definition is paused |
+| `schedule-broken` | a definition cannot be evaluated (each time its next fire is moved ahead) |
+
+## Related pages
+
+- [Configuration](configuration.md#leases-and-timing) for `recurringTasksCheckInterval`.
+- [Enqueueing](enqueueing.md#unique-keys) for unique keys, which the overlap protection uses.
+- [Retries and cancelling](retries-and-cancelling.md) for how an occurrence ends DEAD or CANCELLED.

@@ -77,6 +77,11 @@ class TaskTypeTest {
     }
 
     @Test
+    void aNameWithAU0000IsRejected() {
+        assertThatThrownBy(() -> TaskType.of("send\u0000mail")).isInstanceOf(TaskConfigurationException.class);
+    }
+
+    @Test
     void equalityIsByNameOnly() {
         var a = TaskType.of("same", Payload.class);
         var b = TaskType.of("same", Payload.class).payloadVersion(3);

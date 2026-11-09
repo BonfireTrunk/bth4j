@@ -174,6 +174,13 @@ class CronTest {
     }
 
     @Test
+    void nextRejectsAnExpressionThatDoesNotParseAsValidateDoes() {
+        assertThatThrownBy(() -> Cron.next("not a cron", Instant.parse("2026-01-01T00:00:00Z")))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessageContaining("not a cron");
+    }
+
+    @Test
     void zoneOfAValidIdIsThatZone() {
         assertThat(Cron.zone("Europe/Berlin")).isEqualTo(BERLIN);
         assertThat(Cron.zone("UTC")).isEqualTo(ZoneId.of("UTC"));

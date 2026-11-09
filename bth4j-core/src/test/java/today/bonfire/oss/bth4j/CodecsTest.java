@@ -101,6 +101,23 @@ class CodecsTest {
     }
 
     @Test
+    void anEncodedPayloadWithAU0000IsRejected() {
+        var raw = TaskType.<String>of("raw", new PayloadCodec<>() {
+            @Override
+            public String encode(String payload) {
+                return payload;
+            }
+
+            @Override
+            public String decode(String text) {
+                return text;
+            }
+        });
+
+        assertThatThrownBy(() -> codecs.encode(raw, "a\u0000b")).isInstanceOf(TaskValidationException.class);
+    }
+
+    @Test
     void sizeLimitCountsUtf8BytesNotCharacters() {
         var raw = TaskType.<String>of("raw", new PayloadCodec<>() {
             @Override

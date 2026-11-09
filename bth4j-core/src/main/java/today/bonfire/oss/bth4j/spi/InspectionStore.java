@@ -20,11 +20,15 @@ public interface InspectionStore extends TaskStore {
 
     /**
      * @return the task that holds the unique key now: an open task (QUEUED, SCHEDULED, LEASED) or a finished one
-     *         whose keep window has not passed; empty when no task holds the key
+     *         whose keep window has not passed; empty when no task holds the key, and also when the holder was
+     *         removed inside its keep window and only its key stays taken (see {@link MaintenanceStore#purge})
      */
     Optional<TaskRecord> taskByKey(String key);
 
-    /** @return counts per state for every queue that has or had tasks, by queue id */
+    /**
+     * @return counts per state by queue id, for every registered queue; a queue without tasks has every count
+     *         zero
+     */
     Map<Integer, StateCounts> counts();
 
     /** @return exact QUEUED counts by queue id and type id, with only non-zero entries */

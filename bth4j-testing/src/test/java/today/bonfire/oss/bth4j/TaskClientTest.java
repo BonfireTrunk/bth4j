@@ -1248,6 +1248,36 @@ class TaskClientTest {
     }
 
     @Test
+    void aRunTimeOrStartByMoreThanOneHundredYearsFromNowIsRejected() {
+        var client = builder().build();
+        var now = clock.instant();
+        var longest = TaskRequest.MAX_TIME_FROM_NOW;
+
+        assertThat(client.enqueue(TaskRequest.of(VOID).at(now.plus(longest)).build())
+                        .accepted())
+                .isTrue();
+        assertThat(client.enqueue(TaskRequest.of(VOID).at(now.minus(longest)).build())
+                        .accepted())
+                .isTrue();
+        assertThat(client.enqueue(
+                                TaskRequest.of(VOID).startBy(now.plus(longest)).build())
+                        .accepted())
+                .isTrue();
+        for (var bad :
+                List.of(now.plus(longest).plusMillis(1), now.minus(longest).minusMillis(1), Instant.MAX)) {
+            assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID).at(bad).build()))
+                    .as("at %s", bad)
+                    .isInstanceOf(TaskValidationException.class)
+                    .hasMessageStartingWith("at ");
+            assertThatThrownBy(() ->
+                            client.enqueue(TaskRequest.of(VOID).startBy(bad).build()))
+                    .as("startBy %s", bad)
+                    .isInstanceOf(TaskValidationException.class)
+                    .hasMessageStartingWith("startBy ");
+        }
+    }
+
+    @Test
     void countsAreGroupedByQueueName() {
         var client = builder().build();
         client.enqueue(TaskRequest.of(VOID).build());

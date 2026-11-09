@@ -3,6 +3,7 @@ package today.bonfire.oss.bth4j;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -212,6 +213,19 @@ class MaintenanceServiceTest {
                 .isEqualTo(clock.instant().plus(Duration.ofHours(1)));
         assertThat(errors).containsExactly((Throwable) null);
         assertThat(views).singleElement().satisfies(v -> assertThat(v.id()).isEqualTo(id));
+    }
+
+    @Test
+    void aRetryDelayLongerThanOneHundredYearsRetriesInOneHundredYears() throws Exception {
+        retryPolicies = RetryPolicies.of(RetryPolicy.fixed(ChronoUnit.FOREVER.getDuration()));
+        long id = leased(request().maxAttempts(3).build());
+        clock.advance(LEASE.plusSeconds(1));
+
+        cycle();
+
+        var task = store.getTask(id).orElseThrow();
+        assertThat(task.state()).isEqualTo(TaskState.SCHEDULED);
+        assertThat(task.due()).isEqualTo(clock.instant().plus(TaskRequest.MAX_TIME_FROM_NOW));
     }
 
     @Test

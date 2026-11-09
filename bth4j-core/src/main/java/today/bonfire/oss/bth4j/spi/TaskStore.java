@@ -12,6 +12,13 @@ import java.util.Set;
  * sharing the store. They throw {@link TaskStoreException} when the store cannot be reached; callers retry
  * on their next cycle. The store's own clock decides lease expiry, due times and retention; the client
  * clock only sets {@link TaskRecord#createdAt()} and request-level instants.
+ * <p>
+ * Every instant the library hands a store lies within {@link today.bonfire.oss.bth4j.TaskRequest#MAX_TIME_FROM_NOW}
+ * (100 years) of now, and every duration (a lease, a key window, a retention, a stale-after) is at most that
+ * long, so a store may keep times as epoch milliseconds or SQL timestamps. A store keeps times and durations in
+ * whole milliseconds: it drops what is finer from those it is given, takes its own clock to the millisecond, and
+ * compares a time it is given with a stored one to the millisecond. Arguments that break a rule of this
+ * SPI throw {@link IllegalArgumentException}; {@link StoreArguments} holds the shared checks.
  */
 public interface TaskStore {
 
@@ -29,6 +36,7 @@ public interface TaskStore {
      * Reserves {@code count} task ids. Ids are unique within the store, never reused, and not ordered in time
      * across processes.
      *
+     * @param count at least 1
      * @return the first id; the caller owns {@code [first, first + count)}
      */
     long allocateIds(int count);
@@ -36,7 +44,7 @@ public interface TaskStore {
     /**
      * Registers an accepting worker and returns its id. Ids are never reused.
      *
-     * @param label free text that identifies the process, for example host and pid
+     * @param label free text that identifies the process, for example host and pid; not null
      * @param queueIds queues this worker processes
      * @param typeIds task types this worker processes
      */
@@ -45,10 +53,16 @@ public interface TaskStore {
     /**
      * Resolves a queue name to its id, registering the name when it is new. Ids are permanent, so callers
      * cache them for the life of the process.
+     *
+     * @param name not null or blank
      */
     int queueId(String name);
 
-    /** Resolves a task type name to its id, registering it when new. Permanent, cacheable. */
+    /**
+     * Resolves a task type name to its id, registering it when new. Permanent, cacheable.
+     *
+     * @param name not null or blank
+     */
     int typeId(String name);
 
     /** @return every registered queue, id to name */

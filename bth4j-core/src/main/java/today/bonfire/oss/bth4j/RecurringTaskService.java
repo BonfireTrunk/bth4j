@@ -10,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.common.Cron;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.InspectionStore;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
@@ -184,6 +185,9 @@ class RecurringTaskService extends CustomThread {
             return commitOccurrence(d, nextOrPark(def, after, zone, d.fireAt()));
         } catch (TaskStoreException e) {
             throw e;
+        } catch (TaskValidationException e) {
+            log.error("Recurring task {} cannot be evaluated: {}", d.scheduleId(), e.getMessage());
+            return pushAhead(d, e);
         } catch (Exception e) {
             log.error("Recurring task {} cannot be evaluated", d.scheduleId(), e);
             return pushAhead(d, e);

@@ -152,6 +152,41 @@ class TaskRequestTest {
     }
 
     @Test
+    void textWithAU0000IsRejected() {
+        var builder = TaskRequest.of(VOID);
+
+        assertThatThrownBy(() -> builder.account("a\u0000b")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> builder.uniqueKey("k\u0000")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> builder.header("n\u0000", "v")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> builder.header("n", "v\u0000")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> builder.retryPolicy("p\u0000")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> TaskRequest.requireUniqueKey("k\u0000")).isInstanceOf(TaskValidationException.class);
+    }
+
+    @Test
+    void aDelayIsAtMostOneHundredYears() {
+        assertThat(TaskRequest.MAX_TIME_FROM_NOW).isEqualTo(Duration.ofDays(36_525));
+        assertThat(TaskRequest.of(VOID)
+                        .delay(TaskRequest.MAX_TIME_FROM_NOW)
+                        .build()
+                        .delay())
+                .isEqualTo(TaskRequest.MAX_TIME_FROM_NOW);
+        assertThatThrownBy(() -> TaskRequest.of(VOID).delay(TaskRequest.MAX_TIME_FROM_NOW.plusMillis(1)))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessageContaining("delay");
+    }
+
+    @Test
+    void keepForIsPositiveAndAtMostOneHundredYears() {
+        assertThat(Uniqueness.MAX_KEEP_FOR).isEqualTo(TaskRequest.MAX_TIME_FROM_NOW);
+        assertThat(Uniqueness.keepFor(Uniqueness.MAX_KEEP_FOR))
+                .isEqualTo(new Uniqueness.KeepFor(Duration.ofDays(36_525)));
+        assertThatThrownBy(() -> Uniqueness.keepFor(Uniqueness.MAX_KEEP_FOR.plusMillis(1)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ZERO)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void accountLengthBoundary() {
         var ok = "a".repeat(TaskRequest.MAX_ACCOUNT_LENGTH);
         var builder = TaskRequest.of(VOID);

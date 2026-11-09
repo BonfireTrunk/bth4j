@@ -11,7 +11,7 @@ public interface RetryPolicy {
      * @param task    the task that failed; {@link TaskView#attempts()} counts the failed attempt
      * @param error   what went wrong; null when the lease expired
      * @return when to try again, or {@link Decision#dead} to stop; the runner ends the task as dead anyway when
-     *         the attempts are exhausted
+     *         the attempts are exhausted, and waits at most {@link TaskRequest#MAX_TIME_FROM_NOW}
      */
     Decision decide(TaskView task, Throwable error);
 

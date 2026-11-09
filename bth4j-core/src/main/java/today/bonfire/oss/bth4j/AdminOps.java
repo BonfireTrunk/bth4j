@@ -84,6 +84,12 @@ public interface AdminOps {
      */
     List<UnservedWork> unservedWork(Duration liveWithin);
 
+    /**
+     * Deletes worker rows whose last heartbeat is older than {@code staleAfter}.
+     *
+     * @param staleAfter positive and at most {@link TaskRequest#MAX_TIME_FROM_NOW}
+     * @return how many were deleted
+     */
     int purgeStaleWorkers(Duration staleAfter);
 
     List<ScheduleView> schedules();

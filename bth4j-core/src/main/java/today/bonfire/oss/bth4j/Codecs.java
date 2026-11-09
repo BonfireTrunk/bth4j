@@ -37,6 +37,7 @@ public final class Codecs {
             throw new TaskValidationException(
                     "payload of task type " + type + " exceeds " + TaskRequest.MAX_PAYLOAD_BYTES + " bytes");
         }
+        StoredText.require("payload of task type " + type, text);
         return text;
     }
 

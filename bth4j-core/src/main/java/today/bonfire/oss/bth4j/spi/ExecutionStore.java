@@ -20,6 +20,13 @@ public interface ExecutionStore extends TaskStore {
      * Stores a new task in state QUEUED, or SCHEDULED when {@link TaskRecord#due()} is in the future. The
      * store sets {@code due} to its own time when it is null, and sets {@code stateChanged}.
      * <p>
+     * The fields a producer sets (id, revision, queue, type, payload version, max attempts, created, due,
+     * payload, account, headers, unique key, key keep, retry policy, schedule, retry-of, start-by and max run
+     * time) are stored as given. A new task starts without run fields: the store ignores the record's attempts,
+     * worker, lease, claim time, key-until, cancel request and reason, progress, steps and failures, and stores
+     * the task with none of them and zero attempts. This holds for every way a task gets in, including
+     * {@link #enqueueAll} and {@link ScheduleStore#commitRecurring}.
+     * <p>
      * When the record has a {@link TaskRecord#uniqueKey()} and another task holds it, nothing is stored and
      * {@link EnqueueOutcome.DuplicateKey} names that task. A key is held while its task is not terminal, and
      * after that until {@link TaskRecord#keyUntil()} when {@link TaskRecord#keyKeep()} was set.
@@ -107,6 +114,7 @@ public interface ExecutionStore extends TaskStore {
     /**
      * Moves a LEASED task to SCHEDULED for {@code due} and gives the attempt back.
      *
+     * @param due not null
      * @return false when the revision did not match
      */
     boolean reschedule(long id, int revision, Instant due);

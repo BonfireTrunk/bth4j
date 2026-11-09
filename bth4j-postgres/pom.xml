@@ -7,14 +7,14 @@
     <parent>
         <groupId>today.bonfire.oss</groupId>
         <artifactId>bth4j-parent</artifactId>
-        <version>4.1.0</version>
+        <version>4.2.0</version>
     </parent>
 
     <artifactId>bth4j-postgres</artifactId>
     <packaging>jar</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>PostgreSQL TaskStore for bth4j: one row per task, SKIP LOCKED claims, revision-checked updates. Uses only java.sql; the application supplies the JDBC driver. PostgreSQL 9.5 or newer.</description>
+    <description>PostgreSQL TaskStore for bth4j: one row per task, SKIP LOCKED claims, revision-checked updates. Uses only java.sql; the application supplies the JDBC driver. PostgreSQL 16 or newer, 17 or newer recommended, tested on 18.</description>
 
     <properties>
         <module.name>bonfire.oss.bth4j.postgres</module.name>

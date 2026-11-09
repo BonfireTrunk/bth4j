@@ -21,12 +21,17 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Protocol;
 import redis.clients.jedis.Response;
 import redis.clients.jedis.UnifiedJedis;
+import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.jedis.exceptions.JedisException;
 import redis.clients.jedis.resps.Tuple;
+import today.bonfire.oss.bth4j.Loggers;
 import today.bonfire.oss.bth4j.common.Json;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
@@ -48,6 +53,7 @@ import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
+import today.bonfire.oss.bth4j.spi.StoreArguments;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
@@ -65,6 +71,8 @@ import today.bonfire.oss.bth4j.spi.WorkerInfo;
  * share the work.
  */
 public class RedisTaskStore implements FullStore {
+    private static final Logger log = LoggerFactory.getLogger(Loggers.REDIS_STORE);
+
     /**
      * The key layout this class writes, stored in the namespace's {@code meta} hash. {@link #init} refuses a
      * namespace with any other layout. 3.0 wrote layout 1; layout 2 was only in 4.0.0 snapshots; 4.0.0 wrote
@@ -155,12 +163,17 @@ public class RedisTaskStore implements FullStore {
     }
 
     /**
-     * Writes the layout version of a new namespace and checks it on an existing one.
+     * Checks that the server evicts no keys, then writes the layout version of a new namespace and checks it on an
+     * existing one. The eviction policy comes from {@code INFO memory}; when the server refuses that command (an
+     * ACL without {@code +info}, a renamed or disabled command) or its reply has no {@code maxmemory_policy}, init
+     * logs a warning to {@link Loggers#REDIS_STORE} and goes on without the check.
      *
-     * @throws TaskStoreException when the namespace has a layout other than {@value #LAYOUT_VERSION}
+     * @throws TaskConfigurationException when the server's {@code maxmemory-policy} is not {@code noeviction}
+     * @throws TaskStoreException         when the namespace has a layout other than {@value #LAYOUT_VERSION}
      */
     @Override
     public void init() {
+        checkEvictionPolicy();
         guard(() -> {
             jedis.hsetnx(keys.meta, SCHEMA, String.valueOf(LAYOUT_VERSION));
             var found = jedis.hget(keys.meta, SCHEMA);
@@ -171,6 +184,42 @@ public class RedisTaskStore implements FullStore {
         });
     }
 
+    private void checkEvictionPolicy() {
+        String memory;
+        try {
+            memory = jedis.info("memory");
+        } catch (JedisDataException e) {
+            log.warn(
+                    "Redis refused INFO memory ({}), so init did not check that maxmemory-policy is noeviction;"
+                            + " under any other policy Redis can evict task data and unique keys",
+                    e.getMessage());
+            return;
+        } catch (JedisException e) {
+            throw new TaskStoreException("Redis call failed: " + e.getMessage(), e);
+        }
+        var policy = infoField(memory, "maxmemory_policy");
+        if (policy == null) {
+            log.warn("Redis INFO memory has no maxmemory_policy, so init did not check that it is noeviction;"
+                    + " under any other policy Redis can evict task data and unique keys");
+            return;
+        }
+        if (!"noeviction".equals(policy)) {
+            throw new TaskConfigurationException("the Redis maxmemory-policy is " + policy
+                    + " and this store needs noeviction: under any other policy Redis can evict task data and the"
+                    + " keys that hold unique-key windows when it reaches maxmemory. Set it in redis.conf, with"
+                    + " CONFIG SET maxmemory-policy noeviction, or in the eviction setting of a managed database");
+        }
+    }
+
+    private static String infoField(String info, String name) {
+        if (info == null) return null;
+        var prefix = name + ":";
+        for (var line : info.split("\r?\n")) {
+            if (line.startsWith(prefix)) return line.substring(prefix.length()).strip();
+        }
+        return null;
+    }
+
     @Override
     public long idHighWaterMark() {
         var last = guard(() -> jedis.get(keys.seqId));
@@ -179,15 +228,14 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public long allocateIds(int count) {
-        if (count < 1) {
-            throw new IllegalArgumentException("count must be positive");
-        }
+        StoreArguments.requireCount(count);
         return guard(() -> jedis.incrBy(keys.seqId, count)) - count + 1;
     }
 
     @Override
     public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
-        var args = List.of(label == null ? "" : label, Json.write(queueIds), Json.write(typeIds));
+        StoreArguments.requireLabel(label);
+        var args = List.of(label, Json.write(queueIds), Json.write(typeIds));
         return (int) num(guard(() -> scripts.run(RedisScripts.WORKER_REGISTER, args)));
     }
 
@@ -202,6 +250,7 @@ public class RedisTaskStore implements FullStore {
     }
 
     private int register(String kind, String name, Map<String, Integer> cache) {
+        StoreArguments.requireName(kind, name);
         var cached = cache.get(name);
         if (cached != null) {
             return cached;
@@ -287,8 +336,12 @@ public class RedisTaskStore implements FullStore {
         return args;
     }
 
-    /** queue id, start-by ms or '', payload flag and payload, then the hash fields: what the script's store needs after the key */
-    private static List<String> storeArgs(TaskRecord t) {
+    /**
+     * queue id, start-by ms or '', payload flag and payload, then the hash fields: what the script's store needs
+     * after the key. A new task starts without run fields ({@link TaskRecord#asNew()}).
+     */
+    private static List<String> storeArgs(TaskRecord task) {
+        var t = task.asNew();
         var args = new ArrayList<String>();
         args.add(String.valueOf(t.queueId()));
         args.add(t.startBy() == null ? "" : ms(t.startBy()));
@@ -520,6 +573,7 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public boolean reschedule(long id, int revision, Instant due) {
+        StoreArguments.requireDue(due);
         var args = List.of(String.valueOf(id), String.valueOf(revision), ms(due));
         return num(guard(() -> scripts.run(RedisScripts.RESCHEDULE, args))) == 1;
     }
@@ -541,7 +595,7 @@ public class RedisTaskStore implements FullStore {
     }
 
     private boolean write(long id, int revision, String target, String value) {
-        var args = List.of(String.valueOf(id), String.valueOf(revision), target, value == null ? "" : value);
+        var args = List.of(String.valueOf(id), String.valueOf(revision), target, optionalText(value));
         return num(guard(() -> scripts.run(RedisScripts.WRITE, args))) == 1;
     }
 
@@ -620,9 +674,7 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public long purge(TaskState state, Duration retention, int limit) {
-        if (!state.isTerminal()) {
-            throw new IllegalArgumentException("purge needs a terminal state, got " + state);
-        }
+        StoreArguments.requireTerminal(state);
         var args = List.of(String.valueOf(state.code()), String.valueOf(retention.toMillis()), String.valueOf(limit));
         return num(guard(() -> scripts.run(RedisScripts.PURGE, args)));
     }
@@ -996,8 +1048,9 @@ public class RedisTaskStore implements FullStore {
 
     // ---- wave 2: cancel, expiry, admin, workers ------------------------------------------------------
 
-    private static String reason(String reason) {
-        return reason == null ? "" : reason;
+    /** An optional text for a script: '' for null, else the text after a one-character prefix, so '' is kept. */
+    private static String optionalText(String text) {
+        return text == null ? "" : "=" + text;
     }
 
     @Override
@@ -1016,7 +1069,7 @@ public class RedisTaskStore implements FullStore {
         var args = new ArrayList<>(List.of(
                 String.valueOf(id),
                 String.valueOf(revision),
-                reason(reason),
+                optionalText(reason),
                 keepPayload ? "1" : "0",
                 expiredOnly ? "1" : "0"));
         args.addAll(effectArgs(effect));
@@ -1044,7 +1097,7 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public CancelOutcome cancel(long id, int revision, String reason, ScheduleEffect effect) {
-        var args = new ArrayList<>(List.of(String.valueOf(id), String.valueOf(revision), reason(reason)));
+        var args = new ArrayList<>(List.of(String.valueOf(id), String.valueOf(revision), optionalText(reason)));
         args.addAll(effectArgs(effect));
         var r = (String) guard(() -> scripts.run(RedisScripts.CANCEL, args));
         if (r.endsWith("+")) {
@@ -1075,6 +1128,7 @@ public class RedisTaskStore implements FullStore {
     public void pauseQueue(int queueId, boolean paused) {
         guard(() -> {
             if (paused) {
+                if (!jedis.hvals(keys.registry("queue")).contains(String.valueOf(queueId))) return;
                 jedis.sadd(keys.paused, String.valueOf(queueId));
             } else {
                 jedis.srem(keys.paused, String.valueOf(queueId));
@@ -1096,13 +1150,14 @@ public class RedisTaskStore implements FullStore {
     @Override
     public void heartbeat(
             int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
+        StoreArguments.requireLabel(label);
         guard(() -> scripts.run(
                 RedisScripts.HEARTBEAT,
                 List.of(
                         String.valueOf(workerId),
                         String.valueOf(running),
                         accepting ? "1" : "0",
-                        label == null ? "" : label,
+                        label,
                         Json.write(queueIds),
                         Json.write(typeIds))));
     }

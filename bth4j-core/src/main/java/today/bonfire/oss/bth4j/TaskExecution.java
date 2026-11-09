@@ -328,7 +328,7 @@ final class TaskExecution implements Runnable, TaskContext {
                 cancelled(cancelReason());
             }
             case TaskRescheduleException ex -> {
-                var due = s.clock().instant().plus(ex.delay());
+                var due = StoredTime.after(s.clock().instant(), ex.delay());
                 log.info("Rescheduling task {} to {}", record.id(), due);
                 var outcome = apply(() -> s.store().reschedule(record.id(), record.revision(), due));
                 emit(new TaskEvent.Rescheduled(view, due, outcome));
@@ -338,7 +338,7 @@ final class TaskExecution implements Runnable, TaskContext {
                 emit(new TaskEvent.Retrying(view, event(ex), s.clock().instant(), Outcome.LOST));
             }
             case TaskCancelledException ex ->
-                cancelled(detail() == FailureDetail.FULL ? ex.getMessage() : cancelReason());
+                cancelled(detail() == FailureDetail.FULL ? StoredText.clean(ex.getMessage()) : cancelReason());
             // the processor most likely stopped because of the cancel request (interrupt, closed resource)
             case Throwable ex
             when cancelRequested -> {
@@ -408,7 +408,7 @@ final class TaskExecution implements Runnable, TaskContext {
     }
 
     private void retry(Throwable e, Duration delay) {
-        var retryAt = s.clock().instant().plus(delay);
+        var retryAt = StoredTime.after(s.clock().instant(), delay);
         if (detail() == FailureDetail.FULL) {
             log.warn("Task {} failed on attempt {} of {}", record.id(), record.attempts(), record.maxAttempts(), e);
         } else {
@@ -573,7 +573,7 @@ final class TaskExecution implements Runnable, TaskContext {
         if (progress != null && progress.length() > MAX_PROGRESS) {
             throw new TaskValidationException("progress longer than " + MAX_PROGRESS + " characters");
         }
-        if (!s.store().progress(record.id(), record.revision(), progress)) {
+        if (!s.store().progress(record.id(), record.revision(), StoredText.clean(progress))) {
             leaseLost = true;
             throw new TaskLeaseLostException("lease of task " + record.id() + " was lost");
         }
@@ -584,10 +584,11 @@ final class TaskExecution implements Runnable, TaskContext {
         if (name == null || name.isBlank() || name.length() > MAX_STEP_NAME) {
             throw new TaskValidationException("step name must be 1 to " + MAX_STEP_NAME + " characters");
         }
+        var key = StoredText.clean(name);
         StepResult done;
         stepsLock.lock();
         try {
-            done = steps.get(name);
+            done = steps.get(key);
         } finally {
             stepsLock.unlock();
         }
@@ -597,7 +598,7 @@ final class TaskExecution implements Runnable, TaskContext {
         }
         checkCancelled();
         R result = body.call();
-        var encoded = s.codecs().encodeStep(result);
+        var encoded = StoredText.clean(s.codecs().encodeStep(result));
         if (encoded != null && encoded.length() > MAX_STEP_RESULT) {
             throw new TaskValidationException("result of step " + name + " exceeds " + MAX_STEP_RESULT + " characters");
         }
@@ -605,7 +606,7 @@ final class TaskExecution implements Runnable, TaskContext {
         stepsLock.lock();
         try {
             var updated = new LinkedHashMap<>(steps);
-            updated.put(name, new StepResult(s.clock().instant(), encoded));
+            updated.put(key, new StepResult(s.clock().instant(), encoded));
             long bytes = 0;
             for (var e : updated.entrySet()) {
                 bytes += e.getKey().length()
@@ -622,7 +623,7 @@ final class TaskExecution implements Runnable, TaskContext {
                 throw new TaskLeaseLostException(
                         "lease of task " + record.id() + " was lost before step " + name + " could be recorded");
             }
-            steps.put(name, updated.get(name));
+            steps.put(key, updated.get(key));
         } finally {
             stepsLock.unlock();
         }

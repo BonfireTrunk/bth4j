@@ -1,5 +1,9 @@
 # bth4j 3.0 design
 
+> This page records the design of 3.0 as it was built. Later releases added methods to the store interfaces,
+> the SQLite store and other changes, so where this page and a guide differ, the guide describes the current
+> behavior. The guides are listed under [Documentation](../README.md#documentation).
+
 3.0 replaces the coordination protocol of 2.x. A task is always in exactly one state, every
 transition between states is atomic together with the ownership check that guards it, and the whole
 protocol is expressed against a store interface (the SPI), so the same services run on any store that
@@ -860,6 +864,10 @@ Rules every store follows:
 - Calls are made concurrently from many threads and processes; each must be atomic and safe to repeat.
 - A failure to reach the engine throws `TaskStoreException`; callers retry on their next cycle.
 - `init()` creates the schema or verifies the store's schema version (`StoreInfo.schemaVersion`) and refuses another one.
+- Arguments are checked alike on every store with `StoreArguments` (queue and type names, worker label, the
+  `reschedule` due, batch sizes, the purge state); a pause of a queue id that was never registered is ignored.
+- Every time the library hands a store lies within `TaskRequest.MAX_TIME_FROM_NOW` (100 years) of now, and every
+  duration is at most that long, so epoch milliseconds or SQL timestamps hold them.
 
 The tests are `StoreContract` in `bth4j-store-tests`. A store module subclasses it, supplies a fresh,
 isolated store per test from `newStore(namespace)` and, when the test can move time, the clock from

@@ -14,6 +14,9 @@ public interface AdminStore extends TaskStore {
      * {@code cancelReason} set, unique key handled like a terminal transition). LEASED: only the request is
      * stored ({@code cancelRequestedAt}, {@code cancelReason}, no revision change); the worker learns of it
      * through {@link ExecutionStore#renew} and finishes the task with {@link ExecutionStore#finishCancelled}.
+     * The request stays with the task until it ends or {@link #retry} clears it: when the attempt fails with a
+     * retry, reschedules or is unclaimed, the next attempt's claim and renew report it. The reason is stored as
+     * given; null removes an earlier one, here and in {@code finishCancelled}.
      *
      * @param effect applied to a recurring definition in the same atomic step, only when the task is
      *     cancelled at once; may be null
@@ -42,7 +45,10 @@ public interface AdminStore extends TaskStore {
      */
     boolean delete(long id, int revision, ScheduleEffect effect);
 
-    /** Paused queues are skipped by {@link ExecutionStore#claim} on every runner. */
+    /**
+     * Paused queues are skipped by {@link ExecutionStore#claim} on every runner. An id that was never registered
+     * is ignored: a queue registered later under that id starts unpaused.
+     */
     void pauseQueue(int queueId, boolean paused);
 
     /** @return every queue the store knows, in id order */
@@ -52,7 +58,8 @@ public interface AdminStore extends TaskStore {
      * Records that the worker is alive now, how many tasks it is running and whether it accepts new work. When
      * the worker's row is gone, because {@link MaintenanceStore#purgeWorkers} removed it while the worker could
      * not reach the store, the row is created again under the same id with the label, queues and types given
-     * here and a start time of now. An existing row keeps its own label, queues, types and start time.
+     * here and a start time of now. An existing row keeps its own label, queues, types and start time. The
+     * label is not null.
      */
     void heartbeat(
             int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting);

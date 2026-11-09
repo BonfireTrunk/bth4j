@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.fail;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -25,6 +26,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import today.bonfire.oss.bth4j.exceptions.TaskCancelledException;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
 import today.bonfire.oss.bth4j.exceptions.TaskLeaseLostException;
@@ -60,6 +62,8 @@ public abstract class RunnerContract {
      * within it.
      */
     private static final long HELD_FOR_MS = 300;
+
+    private static final String REPLACEMENT = String.valueOf((char) 0xFFFD);
 
     private static final AtomicInteger NAMESPACES = new AtomicInteger();
 
@@ -374,6 +378,41 @@ public abstract class RunnerContract {
         assertThat(dead.lastFailure().type()).isEqualTo(IllegalStateException.class.getName());
         assertThat(dead.lastFailure().message()).isEqualTo("failure 3");
         assertThat(dead.lastFailure().stack()).contains("failure 3");
+    }
+
+    @Test
+    void aNulCharacterFromProcessorCodeIsRecordedAsTheReplacementCharacter() {
+        // JSON mappers escape U+0000; this one writes a text step result as it is, so the library gets a raw U+0000
+        var verbatim = new JsonMapperTest() {
+            @Override
+            public String toJson(Object o) throws Exception {
+                return o instanceof String text ? text : super.toJson(o);
+            }
+        };
+        startRunner(
+                b -> b.jsonMapper(verbatim),
+                r -> r.register(VOID_TYPE, (ctx, payload) -> {
+                    ctx.progress("half\u0000way");
+                    if (ctx.headers().containsKey("cancel")) throw new TaskCancelledException("stop \u0000 now");
+                    ctx.step("o\u0000ne", String.class, () -> "a\u0000b");
+                    throw new IllegalStateException("bad \u0000 byte");
+                }));
+
+        long failing = enqueue(TaskRequest.of(VOID_TYPE).maxAttempts(1).build());
+        long cancelling =
+                enqueue(TaskRequest.of(VOID_TYPE).header("cancel", "yes").build());
+
+        var dead = awaitState(failing, TaskState.DEAD);
+        assertThat(dead.progress()).isEqualTo("half" + REPLACEMENT + "way");
+        assertThat(dead.steps()).containsOnlyKeys("o" + REPLACEMENT + "ne");
+        assertThat(dead.steps().get("o" + REPLACEMENT + "ne").result()).isEqualTo("a" + REPLACEMENT + "b");
+        assertThat(dead.lastFailure().message()).isEqualTo("bad " + REPLACEMENT + " byte");
+        assertThat(dead.lastFailure().stack())
+                .contains("bad " + REPLACEMENT + " byte")
+                .doesNotContain("\u0000");
+        var cancelled = awaitState(cancelling, TaskState.CANCELLED);
+        assertThat(cancelled.cancelReason()).isEqualTo("stop " + REPLACEMENT + " now");
+        assertThat(cancelled.progress()).isEqualTo("half" + REPLACEMENT + "way");
     }
 
     @Test
@@ -1013,6 +1052,32 @@ public abstract class RunnerContract {
         pause(300);
         assertThat(ran.getCount()).isEqualTo(1);
         await("the expired event", () -> eventNames(events, id).contains("Expired"));
+    }
+
+    @Test
+    void aRetryOrRescheduleDelayLongerThanOneHundredYearsWaitsOneHundredYears() {
+        var forever = ChronoUnit.FOREVER.getDuration();
+        startRunner(
+                b -> b.retryPolicy("forever", RetryPolicy.fixed(forever)),
+                r -> r.register(VOID_TYPE, (ctx, payload) -> {
+                    if (ctx.headers().containsKey("reschedule")) throw new TaskRescheduleException(forever);
+                    throw new IllegalStateException("boom");
+                }));
+        Instant from = Instant.now();
+
+        long retried = enqueue(TaskRequest.of(VOID_TYPE).retryPolicy("forever").build());
+        long rescheduled =
+                enqueue(TaskRequest.of(VOID_TYPE).header("reschedule", "yes").build());
+
+        for (long id : new long[] {retried, rescheduled}) {
+            var waiting = awaitState(id, TaskState.SCHEDULED);
+            assertThat(waiting.due())
+                    .as("task %d", id)
+                    .isBetween(
+                            from.plus(TaskRequest.MAX_TIME_FROM_NOW).minusSeconds(60),
+                            Instant.now().plus(TaskRequest.MAX_TIME_FROM_NOW).plusSeconds(60));
+        }
+        assertThat(client.task(retried).orElseThrow().failures()).hasSize(1);
     }
 
     @Test

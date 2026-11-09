@@ -5,6 +5,50 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.0] - 2026-11-10
+
+### Added
+
+- `bth4j-sqlite`: `SqliteTaskStore`, a store on SQLite 3.45 or newer (latest recommended, tested on 3.54) for runners on one machine, in one process or in several, with the database file on a local disk. It uses only `java.sql`: the application supplies the JDBC driver and a `DataSource`. `init` refuses a connection that is not in WAL mode or whose `busy_timeout` is below 1000 ms and names the setting; `synchronous` is the application's choice. Every write runs in a `BEGIN IMMEDIATE` transaction, the tables are `STRICT`, times are epoch milliseconds from the `java.time.Clock` given to the store, and the schema version is 1. `enqueue(Connection, TaskRecord)` joins the caller's transaction. The store passes the contract tests in the `test` phase, without Docker.
+- Documentation: the README is a short front page, and the guides are focused pages under `docs/` with tables and diagrams. [Stores](docs/stores.md) says how the stores differ: which clock decides, what a crash can lose under each durability setting, memory eviction, enqueueing inside your own transaction (with an outbox for Redis), SQLite's single writer, Redis claims behind tasks past `startBy`, the order of tasks due at the same time and maintenance batches.
+
+### Changed
+
+- Limits every store can keep, refused when a value is handed in:
+  - Times: one limit, `TaskRequest.MAX_TIME_FROM_NOW`, 36,525 days (100 years). The client refuses with `TaskValidationException` an `at` or `startBy` further than that from now, either way, and a longer `delay`; `ScheduleDefinition` refuses a longer fixed delay; the runner builder refuses with `TaskConfigurationException` a longer `leaseDuration`, `succeededRetention`, `deadRetention`, `cancelledRetention` or `workerStaleAfter`. `Uniqueness.keepFor` accepts at most `Uniqueness.MAX_KEEP_FOR`, the same value, and throws `IllegalArgumentException` beyond it. `AdminOps.purgeStaleWorkers` throws `IllegalArgumentException` for an age that is not positive or is longer (a negative age removed every worker row). A retry policy or a `TaskRescheduleException` that asks for a longer wait gets 100 years.
+  - Text: no store is given U+0000, which PostgreSQL cannot keep. The client refuses it with a `TaskValidationException` in an account, unique key (also for `taskByKey` and `cancelByKey`), header name or value, retry policy name, encoded payload, schedule id or schedule account, and in an operator's cancel reason; a task type name, queue name or worker label with it is a `TaskConfigurationException`. Text from processor code (the failure message and stack, progress, step names and results, and the message of a `TaskCancelledException`) is recorded with U+FFFD in its place.
+  - `ScheduleDefinition.account` follows the task rule, at most 128 characters.
+- Redis: `init` refuses a server whose `maxmemory-policy` is not `noeviction` with a `TaskConfigurationException` that names the setting, because any other policy lets Redis remove task data or the keys that hold unique-key windows. When the connection may not run `INFO` (an ACL without `+info`, a renamed command) or the reply has no `maxmemory_policy`, `init` logs a warning to the new logger `Loggers.REDIS_STORE` and starts without the check.
+- Recurring tasks: an invalid cron expression or time zone is logged as one ERROR line with the reason, without a stack trace; other failures to evaluate a definition still log the stack trace. `Cron.next` throws `TaskValidationException` for an expression that does not parse, with the message of `Cron.validate`, instead of the cron library's `IllegalArgumentException`.
+- Store SPI: the stores behave alike in these points, and the contract tests check each one.
+  - `StoreArguments` holds the argument checks: a null or blank queue or type name, a null worker label, a null `reschedule` due, a batch size below 1 and a purge of a state that is not terminal throw `IllegalArgumentException` with the same message on every store, and a pause of a queue id that was never registered is ignored. Every time the library hands a store lies within `TaskRequest.MAX_TIME_FROM_NOW` of now.
+  - A new task starts without run fields on every way in (`enqueue`, `enqueueAll`, `enqueue(Connection, ...)`, `commitRecurring`): a store ignores the record's attempts, worker, lease, claim time, key-until, cancel request and reason, progress, steps and failures. `TaskRecord.asNew()` gives a record in that form. Before, each store kept a different set of these fields; the client never sends them, but a record copied from `getTask(...).toBuilder()` carries them.
+  - Times and durations are kept in whole milliseconds: a store drops what is finer from those it is given, takes its own clock to the millisecond and compares a time it is given with a stored one to the millisecond.
+  - The Javadoc states the rest: `purge` removes the oldest finished tasks within each queue, and a removed task whose key window is open leaves its key taken (the Javadoc said such a task is kept, which no store did); `taskByKey` is empty when only such a key stays taken; `counts()` covers every registered queue; `RetryOutcome.DUPLICATE` never comes from a store that lets only one task record carry a key at a time (PostgreSQL, SQLite); text is stored as given, so an empty string reads back empty; `promote`, `reclaim`, `purge`, `releaseKeys` and `expire` fill their batch while more tasks qualify, because the runner stops a round at the first short batch; a cancel request on a running task stays with it when the attempt fails with a retry, reschedules or is unclaimed, and a cancel or `finishCancelled` without a reason removes an earlier reason.
+- The Redis integration tests run on Redis 8.10 (image `redis:8.10-alpine`), the latest stable release.
+
+### Fixed
+
+- PostgreSQL:
+  - A new recurring occurrence is stored at the random revision the runner gives it, as 4.1.0 describes; it was stored at revision 0. Occurrence ids are always new, so no stale lease could match one.
+  - A processor failure whose message or stack trace contains U+0000 is recorded, and so are progress and cancel reasons with it. Before, the write was rejected, the failure was lost, and the task stayed LEASED until its lease ran out.
+  - Times and durations are kept in whole milliseconds; they were kept in microseconds. The store takes its own time as `current_timestamp(3)`. Rows written by 4.1.0 keep their microseconds until written again: their schedules still fire, and their tasks are listed once across pages.
+- PostgreSQL and SQLite: `commitRecurring` stores the occurrence's `retryOf`; it was dropped (the runner never sets it on an occurrence).
+- Redis and PostgreSQL: a task with a very long `keepFor` window can finish. Before, `ack` failed for every attempt (Redis from somewhere between 1,000 and 5,000 years, PostgreSQL from about 5.9 million years).
+- Redis:
+  - A task that went back to waiting (a failure with a retry, a reschedule or an unclaim) no longer keeps the worker of the attempt that ended, so once it is cancelled or expires `workerId` is null.
+  - An empty progress or cancel reason reads back empty; it read back as null.
+  - A cancel without a reason (`cancel`, `finishCancelled`, `finishCancelledExpired`) removes the reason of an earlier request; the earlier reason was kept.
+  - A null `reschedule` due is refused with `IllegalArgumentException`; it threw `NullPointerException`. A null worker label is refused; it was stored as empty text.
+- In-memory store:
+  - Times and durations are kept in whole milliseconds, and its clock is read to the millisecond; it kept the full precision of its clock. `putRecurring` returns the next fire time as stored.
+  - Arguments are checked as on the other stores; it accepted a null due, a null or blank name and a null label.
+  - `counts()` covers every registered queue; it left out a queue without tasks.
+  - Paging through tasks due after 2262-04-11 ends; the cursor overflowed and the walk repeated its first pages forever.
+  - `purge` throws `IllegalArgumentException` for a state that is not terminal; it removed the live tasks.
+- Redis and the in-memory store: a pause of a queue id that was never registered is ignored; it was kept, so a queue registered later under that id started paused.
+- A retry policy or a `TaskRescheduleException` whose delay goes past what `Instant` or the store can hold (for example `ChronoUnit.FOREVER.getDuration()`) no longer leaves the task leased for good. Before, the end of the attempt could not be written, maintenance failed the same way at every round, and a full reclaim batch of such tasks at the head of the expired leases stopped every expired lease behind them from being recovered.
+
 ## [4.1.0] - 2026-11-08
 
 ### Added

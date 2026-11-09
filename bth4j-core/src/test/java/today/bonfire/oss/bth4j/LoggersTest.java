@@ -20,6 +20,7 @@ class LoggersTest {
         assertThat(Loggers.PROMOTION).isEqualTo("today.bonfire.oss.bth4j.ScheduledTaskService");
         assertThat(Loggers.EXECUTOR).isEqualTo("today.bonfire.oss.bth4j.executor.DefaultVtExecutor");
         assertThat(Loggers.OBSERVERS).isEqualTo("today.bonfire.oss.bth4j.Observers");
+        assertThat(Loggers.REDIS_STORE).isEqualTo("today.bonfire.oss.bth4j.redis.RedisTaskStore");
         assertThat(Loggers.TASKS).isEqualTo("bth4j.tasks");
     }
 

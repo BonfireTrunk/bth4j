@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 
@@ -21,5 +23,35 @@ class BackgroundRunnerBuilderTest {
                 .isInstanceOf(TaskConfigurationException.class);
         assertThatCode(() -> builder.defaultMaxRunTime(TaskRequest.MAX_RUN_TIME))
                 .doesNotThrowAnyException();
+    }
+
+    @Test
+    void durationsThatBecomeStoredTimesAreAtMostOneHundredYears() {
+        var builder = BackgroundRunner.builder();
+        var longest = TaskRequest.MAX_TIME_FROM_NOW;
+        List<Function<Duration, BackgroundRunner.Builder>> settings = List.of(
+                builder::leaseDuration,
+                builder::succeededRetention,
+                builder::deadRetention,
+                builder::cancelledRetention,
+                builder::workerStaleAfter);
+
+        for (var setting : settings) {
+            assertThatCode(() -> setting.apply(longest)).doesNotThrowAnyException();
+            assertThatThrownBy(() -> setting.apply(longest.plusMillis(1)))
+                    .isInstanceOf(TaskConfigurationException.class)
+                    .hasMessageContaining("at most");
+        }
+    }
+
+    @Test
+    void aWorkerLabelOrQueueNameWithAU0000IsRejected() {
+        var builder = BackgroundRunner.builder();
+
+        assertThatThrownBy(() -> builder.workerLabel("host\u00001")).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> builder.configureQueues(List.of("Q\u00001"), null, null))
+                .isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> TaskClient.builder().queues(List.of("Q\u00001"), null))
+                .isInstanceOf(TaskConfigurationException.class);
     }
 }

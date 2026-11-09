@@ -310,6 +310,14 @@ class DefaultAdminOpsTest {
     }
 
     @Test
+    void aReasonOrKeyWithAU0000IsRejectedBeforeTheStore() {
+        assertThatThrownBy(() -> ops.cancel(1, 1, "why\u0000")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.cancelByKey("k\u0000", "why")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.taskByKey("k\u0000")).isInstanceOf(TaskValidationException.class);
+        assertThat(calls).isEmpty();
+    }
+
+    @Test
     void taskByKeyIsEmptyWhenNoTaskHoldsTheKey() {
         handlers.put("taskByKey", a -> Optional.empty());
 
@@ -493,6 +501,22 @@ class DefaultAdminOpsTest {
 
         assertThat(ops.purgeStaleWorkers(Duration.ofMinutes(5))).isEqualTo(3);
         assertThat(calls).contains("purgeWorkers[PT5M]");
+    }
+
+    @Test
+    void purgeStaleWorkersNeedsAPositiveAgeOfAtMostOneHundredYears() {
+        handlers.put("purgeWorkers", a -> 0);
+
+        for (Duration bad :
+                new Duration[] {null, Duration.ZERO, Duration.ofSeconds(-1), TaskRequest.MAX_TIME_FROM_NOW.plusMillis(1)
+                }) {
+            assertThatThrownBy(() -> ops.purgeStaleWorkers(bad))
+                    .as("%s", bad)
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+        assertThat(calls).noneMatch(c -> c.startsWith("purgeWorkers"));
+
+        assertThat(ops.purgeStaleWorkers(TaskRequest.MAX_TIME_FROM_NOW)).isZero();
     }
 
     @Test

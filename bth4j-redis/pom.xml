@@ -7,7 +7,7 @@
     <parent>
         <groupId>today.bonfire.oss</groupId>
         <artifactId>bth4j-parent</artifactId>
-        <version>4.1.0</version>
+        <version>4.2.0</version>
     </parent>
 
     <artifactId>bth4j-redis</artifactId>
@@ -18,7 +18,7 @@
 
     <properties>
         <module.name>bonfire.oss.bth4j.redis</module.name>
-        <bth4j.redis.image>redis:8.8-alpine</bth4j.redis.image>
+        <bth4j.redis.image>redis:8.10-alpine</bth4j.redis.image>
     </properties>
 
     <dependencies>
