@@ -41,6 +41,9 @@ public final class Loggers {
     /** A {@link TaskObserver} that threw. */
     public static final String OBSERVERS = "today.bonfire.oss.bth4j.Observers";
 
+    /** The Redis store: a server setting {@code init} could not read and so did not check. */
+    public static final String REDIS_STORE = "today.bonfire.oss.bth4j.redis.RedisTaskStore";
+
     /** The default logger of {@link LoggingTaskObserver}, one line per {@link TaskEvent}. */
     public static final String TASKS = "bth4j.tasks";
 }

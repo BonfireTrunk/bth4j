@@ -21,12 +21,17 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Protocol;
 import redis.clients.jedis.Response;
 import redis.clients.jedis.UnifiedJedis;
+import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.jedis.exceptions.JedisException;
 import redis.clients.jedis.resps.Tuple;
+import today.bonfire.oss.bth4j.Loggers;
 import today.bonfire.oss.bth4j.common.Json;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
@@ -66,6 +71,8 @@ import today.bonfire.oss.bth4j.spi.WorkerInfo;
  * share the work.
  */
 public class RedisTaskStore implements FullStore {
+    private static final Logger log = LoggerFactory.getLogger(Loggers.REDIS_STORE);
+
     /**
      * The key layout this class writes, stored in the namespace's {@code meta} hash. {@link #init} refuses a
      * namespace with any other layout. 3.0 wrote layout 1; layout 2 was only in 4.0.0 snapshots; 4.0.0 wrote
@@ -156,12 +163,17 @@ public class RedisTaskStore implements FullStore {
     }
 
     /**
-     * Writes the layout version of a new namespace and checks it on an existing one.
+     * Checks that the server evicts no keys, then writes the layout version of a new namespace and checks it on an
+     * existing one. The eviction policy comes from {@code INFO memory}; when the server refuses that command (an
+     * ACL without {@code +info}, a renamed or disabled command) or its reply has no {@code maxmemory_policy}, init
+     * logs a warning to {@link Loggers#REDIS_STORE} and goes on without the check.
      *
-     * @throws TaskStoreException when the namespace has a layout other than {@value #LAYOUT_VERSION}
+     * @throws TaskConfigurationException when the server's {@code maxmemory-policy} is not {@code noeviction}
+     * @throws TaskStoreException         when the namespace has a layout other than {@value #LAYOUT_VERSION}
      */
     @Override
     public void init() {
+        checkEvictionPolicy();
         guard(() -> {
             jedis.hsetnx(keys.meta, SCHEMA, String.valueOf(LAYOUT_VERSION));
             var found = jedis.hget(keys.meta, SCHEMA);
@@ -170,6 +182,42 @@ public class RedisTaskStore implements FullStore {
                         + ", expected " + LAYOUT_VERSION);
             }
         });
+    }
+
+    private void checkEvictionPolicy() {
+        String memory;
+        try {
+            memory = jedis.info("memory");
+        } catch (JedisDataException e) {
+            log.warn(
+                    "Redis refused INFO memory ({}), so init did not check that maxmemory-policy is noeviction;"
+                            + " under any other policy Redis can evict task data and unique keys",
+                    e.getMessage());
+            return;
+        } catch (JedisException e) {
+            throw new TaskStoreException("Redis call failed: " + e.getMessage(), e);
+        }
+        var policy = infoField(memory, "maxmemory_policy");
+        if (policy == null) {
+            log.warn("Redis INFO memory has no maxmemory_policy, so init did not check that it is noeviction;"
+                    + " under any other policy Redis can evict task data and unique keys");
+            return;
+        }
+        if (!"noeviction".equals(policy)) {
+            throw new TaskConfigurationException("the Redis maxmemory-policy is " + policy
+                    + " and this store needs noeviction: under any other policy Redis can evict task data and the"
+                    + " keys that hold unique-key windows when it reaches maxmemory. Set it in redis.conf, with"
+                    + " CONFIG SET maxmemory-policy noeviction, or in the eviction setting of a managed database");
+        }
+    }
+
+    private static String infoField(String info, String name) {
+        if (info == null) return null;
+        var prefix = name + ":";
+        for (var line : info.split("\r?\n")) {
+            if (line.startsWith(prefix)) return line.substring(prefix.length()).strip();
+        }
+        return null;
     }
 
     @Override

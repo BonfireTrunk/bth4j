@@ -549,8 +549,8 @@ BackgroundRunner.builder()
 puts `bth4j.task`, `bth4j.type` and `bth4j.queue` in the MDC; pass your own `Logger` to use another name.
 
 The runner's own log lines go to the logger names in `Loggers`: `RUNNER`, `CLIENT`, `PROCESSOR`, `ATTEMPT`
-(one attempt of a task), `MAINTENANCE`, `RECURRING`, `PROMOTION`, `EXECUTOR` (`DefaultVtExecutor`) and
-`OBSERVERS`, plus `TASKS` for `LoggingTaskObserver`. They follow the class names below `Loggers.ROOT` (`today.bonfire.oss.bth4j`), so a
+(one attempt of a task), `MAINTENANCE`, `RECURRING`, `PROMOTION`, `EXECUTOR` (`DefaultVtExecutor`),
+`OBSERVERS` and `REDIS_STORE` (a Redis setting `init` could not check), plus `TASKS` for `LoggingTaskObserver`. They follow the class names below `Loggers.ROOT` (`today.bonfire.oss.bth4j`), so a
 level set on that prefix covers them all except `TASKS`, and they do not change when an internal class moves.
 
 ### Inspection
@@ -872,6 +872,92 @@ the task ends unless it overrides `executeWithSlot`. A process that only produce
 
 ## Stores
 
+### How the stores differ
+
+The runner works the same way on Redis, PostgreSQL and SQLite: the same states, leases, retries, unique keys,
+schedules and queue grants, checked by the shared `StoreContract` and `RunnerContract` suites. `InMemoryStore` from
+`bth4j-testing` is for tests: it passes the same suites and keeps nothing once the process ends. What differs, and
+what your own settings decide, is listed here.
+
+**Which clock decides.** PostgreSQL and Redis take the current time from the database server (`now()`, `TIME`),
+SQLite and the in-memory store from the `java.time.Clock` the store was given, in the application. On every store
+the runner computes `createdAt`, delays and retry times on its own clock. Keep the application hosts and the
+database server on synchronized clocks; "Retries" says what a skew does.
+
+**Time precision.** PostgreSQL keeps times in microseconds, Redis and SQLite in whole milliseconds, and the
+in-memory store at the precision of its clock. The runner's decisions do not depend on anything finer than a
+millisecond; only the timestamps you read back differ.
+
+**What a crash can lose.** A write the store confirmed and then lost does the same on every store: a lost enqueue
+means the task never runs, and a lost claim or outcome puts the task back, so it runs again after its lease
+expires. How much can be lost is set by the database, not by bth4j:
+
+| Store | Setting | A crash of the server or its machine loses |
+|---|---|---|
+| Redis | no RDB, no AOF | everything: Redis restarts empty |
+| Redis | RDB snapshots only (the default `save` rules take one after an hour if 1 key changed, 5 minutes if 100 did, 60 s if 10,000 did) | every write since the last snapshot |
+| Redis | `appendonly yes` with `appendfsync everysec` (the default once AOF is on) | about the last second |
+| Redis | `appendonly yes` with `appendfsync always` | nothing confirmed: each write is synced to disk before Redis replies |
+| PostgreSQL | `synchronous_commit = on` and `fsync = on` (the defaults) | nothing confirmed |
+| PostgreSQL | `synchronous_commit = off` | the last commits, at most three times `wal_writer_delay` (600 ms by default); the database stays consistent |
+| PostgreSQL | `fsync = off` | possibly the whole database, on a power loss or operating system crash |
+| SQLite (WAL) | `synchronous = FULL` | nothing confirmed |
+| SQLite (WAL) | `synchronous = NORMAL` | the last commits on a power loss or operating system crash; nothing when only the application crashes |
+| SQLite (WAL) | `synchronous = OFF` | possibly the whole database, on a power loss or operating system crash |
+| in-memory | | everything, whenever the process ends |
+
+Replication adds its own window. Redis replicates asynchronously: a failover to a replica can lose writes the
+primary confirmed, and `WAIT` does not make that a guarantee. PostgreSQL streaming replication is asynchronous by
+default, with the same effect on failover; with synchronous standbys (`synchronous_standby_names`) a commit is
+confirmed only once a standby has it. SQLite has no replication of its own.
+
+**Memory eviction (Redis).** `init` reads `maxmemory_policy` from `INFO memory` and refuses to start with a
+`TaskConfigurationException` unless it is `noeviction`. Under any other policy Redis removes keys when it reaches
+`maxmemory`: under `volatile-*` the keys with an expiry, among them those that hold the unique-key window of a
+removed task, so a duplicate is accepted; under `allkeys-*` task data as well. Redis Cloud databases and most
+Redis Software databases default to `volatile-lru`; a self-hosted Redis or Valkey defaults to `noeviction`. When the connection may
+not run `INFO` (an ACL without `+info`, a renamed command) or the reply has no `maxmemory_policy`, `init` logs a
+warning to `Loggers.REDIS_STORE` and starts without the check. PostgreSQL and SQLite never remove data on their own.
+
+**Enqueue inside your own transaction.** With PostgreSQL and SQLite, `enqueue(Connection, TaskRecord)` writes the
+task on your connection when the task tables are in the same database as your data, so it commits or rolls back
+with your writes (see "Enqueueing"). Redis, or task tables in another database, cannot join your transaction.
+Commit first, then enqueue, and keep a list of what is still to be enqueued (an outbox), so that a crash in between
+loses nothing:
+
+1. Before the transaction, allocate the id: `long id = client.nextId()`.
+2. In the transaction, write your data and an outbox row with that id and what the task needs.
+3. After the commit, enqueue `TaskRequest.of(type, payload).id(id).build()` and delete the outbox row.
+4. A periodic sweep enqueues the outbox rows a crash or an `EnqueueFailedException` left behind. The same id is
+   stored once and answered `Accepted` either way. When a succeeded task can be removed before the sweep comes
+   (a short succeeded retention), also give the request a unique key with a `keepFor` longer than the sweep's
+   reach, so that a resend cannot run it again.
+
+Enqueueing first and cancelling the task when your transaction rolls back does not work: a worker can start the
+task before the rollback, and a crash between the two leaves a task for data that was never committed.
+
+**One writer at a time (SQLite).** All runners on one SQLite database share a single write lock, so they write at
+the rate of one writer. A write that waits longer than `busy_timeout` fails with a `TaskStoreException`, which the
+runner handles like a short outage: a failed claim is logged, health records the store error, and the claim is
+tried again after `idlePollInterval`; an outcome whose write failed is reported as `UNKNOWN`, and if it was not
+written the lease expires and the task runs again. Keep your own write transactions on the database short (see
+"SQLite").
+
+**Claims behind tasks past `startBy` (Redis).** A Redis claim looks at no more than `min(count * 4, 1000)` queued
+tasks per queue, where `count` is the number of tasks it asks for (free slots, at most `claimBatchSize`), and leaves
+a task whose `startBy` has passed in the queue for maintenance to expire. When more such tasks than that sit at the
+front of a queue, the queue claims nothing until the next maintenance pass expires them, at most
+`maintenanceCheckInterval` later (5 s by default). PostgreSQL, SQLite and the in-memory store skip those tasks in
+the claim.
+
+**Tasks due at the same time.** PostgreSQL, SQLite and the in-memory store take tasks with the same due time in id
+order. Redis compares their ids as text, so of two tasks due in the same millisecond, id 1000 runs before id 999.
+The runner promises no order among tasks due at the same time.
+
+**Maintenance batches.** Promotion, expiry, purge and recurring batches pick tasks in a different order on each
+store. The runner calls again while a batch comes back full, so every store handles everything that is due in the
+same maintenance pass.
+
 ### Redis
 
 ```java
@@ -882,7 +968,8 @@ The namespace prefixes every key and carries the Redis Cluster hash tag, so all 
 slot. Redis Cluster is not tested. The scripts declare only one key and derive the others, so the namespace's slot
 must not be resharded while runners use it: during a slot migration a script can fail after part of its writes.
 The store does not close the Jedis client. Redis 7.4 or newer, or Valkey 9 or newer, is required (the
-store expires the key fields of finished tasks with hash field expiry). A namespace written by bth4j 3.0 has
+store expires the key fields of finished tasks with hash field expiry), with `maxmemory-policy noeviction` (see
+"How the stores differ"). A namespace written by bth4j 3.0 has
 another layout and is refused by `init`, and so is one written by 4.0.0, a 4.0.0 snapshot or an earlier 4.1.0
 snapshot (any layout but 5); start with a new namespace. Enqueue writes a random per-record
 token in task hash field `wt` with the other fields. A transport resend with that token returns stored again;
