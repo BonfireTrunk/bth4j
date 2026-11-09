@@ -584,10 +584,11 @@ final class TaskExecution implements Runnable, TaskContext {
         if (name == null || name.isBlank() || name.length() > MAX_STEP_NAME) {
             throw new TaskValidationException("step name must be 1 to " + MAX_STEP_NAME + " characters");
         }
+        var key = StoredText.clean(name);
         StepResult done;
         stepsLock.lock();
         try {
-            done = steps.get(name);
+            done = steps.get(key);
         } finally {
             stepsLock.unlock();
         }
@@ -605,7 +606,7 @@ final class TaskExecution implements Runnable, TaskContext {
         stepsLock.lock();
         try {
             var updated = new LinkedHashMap<>(steps);
-            updated.put(name, new StepResult(s.clock().instant(), encoded));
+            updated.put(key, new StepResult(s.clock().instant(), encoded));
             long bytes = 0;
             for (var e : updated.entrySet()) {
                 bytes += e.getKey().length()
@@ -622,7 +623,7 @@ final class TaskExecution implements Runnable, TaskContext {
                 throw new TaskLeaseLostException(
                         "lease of task " + record.id() + " was lost before step " + name + " could be recorded");
             }
-            steps.put(name, updated.get(name));
+            steps.put(key, updated.get(key));
         } finally {
             stepsLock.unlock();
         }

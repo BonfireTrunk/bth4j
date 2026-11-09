@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [4.2.0] - 2026-11-09
+## [4.2.0] - 2026-11-10
 
 ### Added
 
@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Limits every store can keep, refused when a value is handed in:
   - Times: one limit, `TaskRequest.MAX_TIME_FROM_NOW`, 36,525 days (100 years). The client refuses with `TaskValidationException` an `at` or `startBy` further than that from now, either way, and a longer `delay`; `ScheduleDefinition` refuses a longer fixed delay; the runner builder refuses with `TaskConfigurationException` a longer `leaseDuration`, `succeededRetention`, `deadRetention`, `cancelledRetention` or `workerStaleAfter`. `Uniqueness.keepFor` accepts at most `Uniqueness.MAX_KEEP_FOR`, the same value, and throws `IllegalArgumentException` beyond it. `AdminOps.purgeStaleWorkers` throws `IllegalArgumentException` for an age that is not positive or is longer (a negative age removed every worker row). A retry policy or a `TaskRescheduleException` that asks for a longer wait gets 100 years.
-  - Text: no store is given U+0000, which PostgreSQL cannot keep. The client refuses it with a `TaskValidationException` in an account, unique key (also for `taskByKey` and `cancelByKey`), header name or value, retry policy name, encoded payload, schedule id or schedule account, and in an operator's cancel reason; a task type name, queue name or worker label with it is a `TaskConfigurationException`. Text from processor code (the failure message and stack, progress, step results and the message of a `TaskCancelledException`) is recorded with U+FFFD in its place.
+  - Text: no store is given U+0000, which PostgreSQL cannot keep. The client refuses it with a `TaskValidationException` in an account, unique key (also for `taskByKey` and `cancelByKey`), header name or value, retry policy name, encoded payload, schedule id or schedule account, and in an operator's cancel reason; a task type name, queue name or worker label with it is a `TaskConfigurationException`. Text from processor code (the failure message and stack, progress, step names and results, and the message of a `TaskCancelledException`) is recorded with U+FFFD in its place.
   - `ScheduleDefinition.account` follows the task rule, at most 128 characters.
 - Redis: `init` refuses a server whose `maxmemory-policy` is not `noeviction` with a `TaskConfigurationException` that names the setting, because any other policy lets Redis remove task data or the keys that hold unique-key windows. When the connection may not run `INFO` (an ACL without `+info`, a renamed command) or the reply has no `maxmemory_policy`, `init` logs a warning to the new logger `Loggers.REDIS_STORE` and starts without the check.
 - Recurring tasks: an invalid cron expression or time zone is logged as one ERROR line with the reason, without a stack trace; other failures to evaluate a definition still log the stack trace. `Cron.next` throws `TaskValidationException` for an expression that does not parse, with the message of `Cron.validate`, instead of the cron library's `IllegalArgumentException`.

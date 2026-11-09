@@ -243,7 +243,7 @@ public final class InMemoryStore implements FullStore {
                 return new EnqueueOutcome.DuplicateKey(keptBy);
             }
         }
-        Instant due = forcedDue != null ? forcedDue : task.due() != null ? task.due() : now;
+        Instant due = millis(forcedDue != null ? forcedDue : task.due() != null ? task.due() : now);
         TaskState state = forcedDue != null || due.isAfter(now) ? TaskState.SCHEDULED : TaskState.QUEUED;
         save(task.asNew().toBuilder().state(state).due(due).stateChangedAt(now).build());
         if (key != null) {
@@ -626,7 +626,7 @@ public final class InMemoryStore implements FullStore {
         lock.lock();
         try {
             Instant now = clock.instant();
-            Instant cutoff = now.minus(retention);
+            Instant cutoff = now.minus(millis(retention));
             List<TaskRecord> old = tasks.values().stream()
                     .filter(t -> t.state() == state && !t.stateChangedAt().isAfter(cutoff))
                     .sorted(Comparator.comparing(TaskRecord::stateChangedAt).thenComparingLong(TaskRecord::id))
@@ -972,7 +972,7 @@ public final class InMemoryStore implements FullStore {
     public int purgeWorkers(Duration staleAfter) {
         lock.lock();
         try {
-            Instant cutoff = clock.instant().minus(staleAfter);
+            Instant cutoff = clock.instant().minus(millis(staleAfter));
             int before = workers.size();
             workers.values().removeIf(w -> w.lastSeen().isBefore(cutoff));
             return before - workers.size();

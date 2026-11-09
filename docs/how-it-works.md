@@ -203,7 +203,7 @@ Finished tasks are kept for inspection, then purged by the maintenance service.
 | DEAD | 90 days | `deadRetention` |
 | CANCELLED and EXPIRED | 48 hours | `cancelledRetention` |
 
-A retention of `Duration.ZERO` removes the task at the transition instead.
+A retention of `Duration.ZERO` removes a SUCCEEDED or DEAD task at the transition instead. A CANCELLED or EXPIRED task with a zero `cancelledRetention` is removed at the next purge run (`purgeInterval`).
 
 Retention and the key window are independent:
 

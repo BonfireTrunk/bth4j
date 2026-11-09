@@ -45,7 +45,7 @@ An arrow means "extends".
 | `ExecutionStore` | `enqueue`, `enqueueAll`, `claim`, `renew`, `ack`, `fail`, `failExpired`, `finishCancelled`, `reschedule`, `unclaim`, `saveSteps`, `progress` |
 | `MaintenanceStore` | `promote`, `reclaim`, `expire`, `purge`, `purgeWorkers`, `releaseKeys`, `nextDue` |
 | `ScheduleStore` | `putRecurring`, `deleteRecurring`, `recurringSchedules`, `recurringDefinitions`, `dueRecurring`, `commitRecurring`, `pauseRecurring`, `setNextFire` |
-| `InspectionStore` | `getTask`, `counts`, `tasks` (by state, paged by an opaque cursor on `(stateChangedAt, id)`) |
+| `InspectionStore` | `getTask`, `counts`, `tasks` (by state, paged by an opaque cursor on `(due, id)` for QUEUED and SCHEDULED and on `(stateChangedAt, id)` for the other states) |
 | `AdminStore` | `cancel`, `retry`, `delete`, `pauseQueue`, `queues`, `heartbeat`, `workers` |
 
 ## What a store needs from its engine

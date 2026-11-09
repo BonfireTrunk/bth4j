@@ -112,6 +112,7 @@ A pool that turns auto-commit off together with `transaction_mode=IMMEDIATE` in 
 | A write transaction holds SQLite's single write lock until it ends, and every other writer waits for it | Keep the transaction short. |
 | A transaction reads first and writes later, and another writer committed in between | It can fail with `SQLITE_BUSY`. Begin it with `BEGIN IMMEDIATE`, or use `transaction_mode=IMMEDIATE` with a pool whose connections have auto-commit on. |
 | Before your transaction begins | Call `client.prepare(request)`. It can allocate ids and register queue and type names, which writes on another connection. That write would wait for your transaction's write lock until the busy timeout. |
+| `enqueue` throws a `TaskStoreException` | Roll your transaction back. SQLite undoes only the failed statement, so a commit would keep your other writes without the task. |
 
 ### A backlog of a type no runner handles
 

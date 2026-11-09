@@ -137,7 +137,7 @@ The runner promises no order among tasks due at the same time.
 
 ## Maintenance batches
 
-Promotion, expiry, purge and recurring batches pick tasks in a different order on each store. The runner calls again while a batch comes back full, so every store handles everything that is due in the same maintenance pass.
+Promotion, expiry, purge and recurring batches pick tasks in a different order on each store. The runner calls again while a batch comes back full, so every store handles everything that is due in the same maintenance pass. Recurring schedules are the exception: one cycle takes at most 100 batches, and the rest waits for the next cycle.
 
 ## Behavior that belongs to one store
 

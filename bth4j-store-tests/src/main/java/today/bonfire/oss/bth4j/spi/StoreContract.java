@@ -893,6 +893,45 @@ public abstract class StoreContract {
     }
 
     @Test
+    void aTaskDueWithinTheCurrentMillisecondIsQueued() {
+        long id = put(task().due(millis(now()).plusNanos(456_789)));
+
+        assertThat(get(id).state()).isEqualTo(TaskState.QUEUED);
+    }
+
+    @Test
+    void aPurgeRetentionIsCountedInWholeMilliseconds() {
+        TaskRecord done = leased(task());
+        assertThat(store.ack(done.id(), done.revision(), true, true, null)).isTrue();
+        advance(Duration.ofMillis(1));
+
+        assertThat(store.purge(TaskState.SUCCEEDED, Duration.ofMillis(1).plusNanos(456_789), 10))
+                .isEqualTo(1);
+    }
+
+    @Test
+    void aListingOfQueuedTasksInEveryQueueMergesTheQueuesInDueOrderPageByPage() {
+        int[] queues = {queue, store.queueId("second"), store.queueId("third")};
+        Instant past = millis(now().minusSeconds(60));
+        var expected = new ArrayList<Long>();
+        for (int i = 0; i < 9; i++) {
+            expected.add(put(task(queues[i % 3], type).due(past.plusMillis(i))));
+        }
+
+        var seen = new ArrayList<Long>();
+        String cursor = null;
+        for (int page = 0; page < 10; page++) {
+            TaskPage got = store.tasks(TaskState.QUEUED, null, cursor, 2);
+            assertThat(got.items()).as("page %d", page).hasSizeLessThanOrEqualTo(2);
+            got.items().forEach(t -> seen.add(t.id()));
+            cursor = got.next();
+            if (cursor == null) break;
+        }
+        assertThat(cursor).isNull();
+        assertThat(seen).containsExactlyElementsOf(expected);
+    }
+
+    @Test
     void timesAndDurationsAreKeptInWholeMilliseconds() {
         Instant odd = millis(now()).plusNanos(456_789);
         Duration oddWindow = Duration.ofMinutes(10).plusNanos(456_789);
@@ -7816,11 +7855,11 @@ public abstract class StoreContract {
 
     @Test
     void aLeaseWithTimeLeftIsNotReclaimedAndOneThatRanOutIs() {
-        put(task());
-        TaskRecord shortLease = claim(1, SHORT, null).get(0);
+        TaskRecord longLease = leased(task());
         put(task());
         TaskRecord midLease = claim(1, MID, null).get(0);
-        TaskRecord longLease = leased(task());
+        put(task());
+        TaskRecord shortLease = claim(1, SHORT, null).get(0);
         assertThat(store.reclaim(10)).as("right after the claims").isEmpty();
 
         advance(PAST_SHORT);
@@ -7961,9 +8000,9 @@ public abstract class StoreContract {
         Map<TaskState, Long> older = new LinkedHashMap<>();
         Map<TaskState, Long> younger = new LinkedHashMap<>();
         endOneOfEach(older, claimed.get(toAck.get(0)), claimed.get(toAck.get(1)), cancelOld);
-        advance(Duration.ofMillis(300));
+        advance(Duration.ofMillis(500));
         endOneOfEach(younger, claimed.get(toAck.get(2)), claimed.get(toAck.get(3)), cancelYoung);
-        advance(Duration.ofMillis(400));
+        advance(Duration.ofMillis(200));
 
         for (TaskState state : older.keySet()) {
             assertThat(store.purge(state, MID, 10)).as("%s purge", state).isEqualTo(1);

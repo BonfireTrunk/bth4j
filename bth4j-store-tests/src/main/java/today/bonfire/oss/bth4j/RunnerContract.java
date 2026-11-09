@@ -382,12 +382,21 @@ public abstract class RunnerContract {
 
     @Test
     void aNulCharacterFromProcessorCodeIsRecordedAsTheReplacementCharacter() {
-        startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {
-            ctx.progress("half\u0000way");
-            if (ctx.headers().containsKey("cancel")) throw new TaskCancelledException("stop \u0000 now");
-            ctx.step("one", String.class, () -> "a\u0000b");
-            throw new IllegalStateException("bad \u0000 byte");
-        }));
+        // JSON mappers escape U+0000; this one writes a text step result as it is, so the library gets a raw U+0000
+        var verbatim = new JsonMapperTest() {
+            @Override
+            public String toJson(Object o) throws Exception {
+                return o instanceof String text ? text : super.toJson(o);
+            }
+        };
+        startRunner(
+                b -> b.jsonMapper(verbatim),
+                r -> r.register(VOID_TYPE, (ctx, payload) -> {
+                    ctx.progress("half\u0000way");
+                    if (ctx.headers().containsKey("cancel")) throw new TaskCancelledException("stop \u0000 now");
+                    ctx.step("o\u0000ne", String.class, () -> "a\u0000b");
+                    throw new IllegalStateException("bad \u0000 byte");
+                }));
 
         long failing = enqueue(TaskRequest.of(VOID_TYPE).maxAttempts(1).build());
         long cancelling =
@@ -395,7 +404,8 @@ public abstract class RunnerContract {
 
         var dead = awaitState(failing, TaskState.DEAD);
         assertThat(dead.progress()).isEqualTo("half" + REPLACEMENT + "way");
-        assertThat(dead.steps()).containsOnlyKeys("one");
+        assertThat(dead.steps()).containsOnlyKeys("o" + REPLACEMENT + "ne");
+        assertThat(dead.steps().get("o" + REPLACEMENT + "ne").result()).isEqualTo("a" + REPLACEMENT + "b");
         assertThat(dead.lastFailure().message()).isEqualTo("bad " + REPLACEMENT + " byte");
         assertThat(dead.lastFailure().stack())
                 .contains("bad " + REPLACEMENT + " byte")

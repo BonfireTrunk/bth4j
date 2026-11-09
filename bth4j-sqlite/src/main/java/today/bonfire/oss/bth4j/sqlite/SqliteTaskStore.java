@@ -547,7 +547,8 @@ public class SqliteTaskStore implements FullStore {
      * before the transaction begins: it can allocate ids and register queue and type names, writes that run on
      * another connection and would wait for this transaction's write lock until the busy timeout.
      *
-     * @throws TaskStoreException when a statement fails; the caller's transaction is then aborted
+     * @throws TaskStoreException when a statement fails; roll the caller's transaction back then, because SQLite
+     *     undoes only the failed statement and a commit would keep the rest of the transaction without the task
      */
     public EnqueueOutcome enqueue(Connection connection, TaskRecord task) {
         if (connection == null) throw new IllegalArgumentException("connection is required");
@@ -1323,8 +1324,9 @@ public class SqliteTaskStore implements FullStore {
     /**
      * The cursor is {@code <sort time in epoch milliseconds>:<id>} of the last task of the page; the sort time is
      * due for QUEUED and SCHEDULED, state_changed otherwise. The state is written into the statement, so that the
-     * plan can use the partial indexes. QUEUED across every queue is one bounded scan of {@code _queued} per queue,
-     * merged; that index leads with the queue, so a single scan would sort every queued row.
+     * plan can use the partial indexes. QUEUED across every queue is one bounded scan of {@code _queued} per queue
+     * that reads only due and id, merged, and then reads the tasks of the page; that index leads with the queue, so
+     * a single scan would sort every queued row.
      */
     @Override
     public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
@@ -1332,27 +1334,35 @@ public class SqliteTaskStore implements FullStore {
         if (limit <= 0) return new TaskPage(List.of(), null);
         var column = listedByDue(state) ? "due" : "state_changed";
         var perQueue = queueId == null && state == TaskState.QUEUED;
-        var sql = "SELECT * FROM " + task + " WHERE state = " + state.code()
+        var sql = "SELECT " + (perQueue ? column + ", id" : "*") + " FROM " + task + " WHERE state = " + state.code()
                 + (queueId != null || perQueue ? " AND queue_id = ?" : "")
                 + (position != null ? " AND (" + column + ", id) > (?, ?)" : "")
                 + " ORDER BY " + column + ", id LIMIT ?";
         var rows = snapshot(c -> {
-            var queues = new ArrayList<Integer>();
-            if (perQueue) queryEach(c, "SELECT id FROM " + queue + " ORDER BY id", rs -> queues.add(rs.getInt(1)));
-            else if (queueId != null) queues.add(queueId);
-            else queues.add(null);
             var out = new ArrayList<Listed>();
-            for (var q : queues) {
-                var args = new ArrayList<Object>();
-                if (q != null) args.add(q);
-                if (position != null) {
-                    args.add(position.at());
-                    args.add(position.id());
-                }
-                args.add((long) limit + 1);
-                queryEach(c, sql, rs -> out.add(listed(rs, column)), args.toArray());
+            if (!perQueue) {
+                queryEach(c, sql, rs -> out.add(listed(rs, column)), listingArgs(queueId, position, limit));
+                return out;
             }
-            if (queues.size() > 1) out.sort(Comparator.comparing(Listed::at).thenComparingLong(Listed::id));
+            var queues = new ArrayList<Integer>();
+            queryEach(c, "SELECT id FROM " + queue + " ORDER BY id", rs -> queues.add(rs.getInt(1)));
+            var found = new ArrayList<Position>();
+            for (var q : queues) {
+                queryEach(
+                        c,
+                        sql,
+                        rs -> found.add(new Position(getInstant(rs, column), rs.getLong("id"))),
+                        listingArgs(q, position, limit));
+            }
+            found.sort(Comparator.comparing(Position::at).thenComparingLong(Position::id));
+            for (var p : found.subList(0, (int) Math.min((long) limit + 1, found.size()))) {
+                if (out.size() < limit) {
+                    queryEach(c, "SELECT * FROM " + task + " WHERE id = ?", rs -> out.add(listed(rs, column)), p.id());
+                } else {
+                    // the row after the page only tells that a next page exists
+                    out.add(new Listed(p.at(), p.id(), null));
+                }
+            }
             return out;
         });
         var page = rows.subList(0, Math.min(limit, rows.size()));
@@ -1360,6 +1370,17 @@ public class SqliteTaskStore implements FullStore {
         if (rows.size() <= limit) return new TaskPage(items, null);
         var last = page.getLast();
         return new TaskPage(items, last.at().toEpochMilli() + ":" + last.id());
+    }
+
+    private static Object[] listingArgs(Integer queueId, Position position, int limit) {
+        var args = new ArrayList<Object>();
+        if (queueId != null) args.add(queueId);
+        if (position != null) {
+            args.add(position.at());
+            args.add(position.id());
+        }
+        args.add((long) limit + 1);
+        return args.toArray();
     }
 
     /** A listed row; an unreadable task is left out of the page (null) but still positions the cursor. */

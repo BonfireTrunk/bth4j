@@ -66,7 +66,7 @@ No text the library stores may contain U+0000, which PostgreSQL cannot keep. The
 | Text | What happens to U+0000 |
 |---|---|
 | A request, a schedule, a name or a cancel reason | The client refuses it. |
-| Text from processor code (failure message and stack, progress, step results) | It is recorded with U+FFFD in its place. |
+| Text from processor code (failure message and stack, progress, step names and results) | It is recorded with U+FFFD in its place. |
 
 ### Time limits
 
