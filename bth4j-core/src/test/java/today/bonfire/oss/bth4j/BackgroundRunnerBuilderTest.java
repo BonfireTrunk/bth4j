@@ -45,6 +45,24 @@ class BackgroundRunnerBuilderTest {
     }
 
     @Test
+    void anIntervalAnExecutorSchedulesByIsAtLeastOneMillisecond() {
+        var builder = BackgroundRunner.builder();
+        List<Function<Duration, BackgroundRunner.Builder>> settings =
+                List.of(builder::purgeInterval, builder::serviceCheckInterval);
+
+        for (var setting : settings) {
+            assertThatCode(() -> setting.apply(Duration.ofMillis(1))).doesNotThrowAnyException();
+            for (Duration bad :
+                    new Duration[] {null, Duration.ZERO, Duration.ofNanos(999_999), Duration.ofMillis(-1)}) {
+                assertThatThrownBy(() -> setting.apply(bad))
+                        .as("%s", bad)
+                        .isInstanceOf(TaskConfigurationException.class)
+                        .hasMessageContaining("at least 1 millisecond");
+            }
+        }
+    }
+
+    @Test
     void aWorkerLabelOrQueueNameWithAU0000IsRejected() {
         var builder = BackgroundRunner.builder();
 

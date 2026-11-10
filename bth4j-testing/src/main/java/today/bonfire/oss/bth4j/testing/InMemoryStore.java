@@ -858,7 +858,7 @@ public final class InMemoryStore implements FullStore {
                             .sorted(order)
                             .limit((long) limit + 1)
                             .toList();
-            if (found.size() <= limit) return new TaskPage(found, null);
+            if (limit <= 0 || found.size() <= limit) return new TaskPage(found, null);
             var items = found.subList(0, limit);
             var last = items.getLast();
             return new TaskPage(items, encodeCursor(sortTime.apply(last), last.id()));
@@ -1202,9 +1202,12 @@ public final class InMemoryStore implements FullStore {
                 return true;
             }
             RecurringDefinition resumed = r.definition().withPaused(false);
+            TaskRecord occurrence = r.occurrence() == null ? null : tasks.get(r.occurrence());
+            boolean occurrenceRunning =
+                    occurrence != null && !occurrence.state().isTerminal();
             recurring.put(
                     scheduleId,
-                    nextFire == null
+                    nextFire == null || occurrenceRunning
                             ? new Recurring(resumed, r.nextFire(), r.occurrence())
                             : new Recurring(resumed.withRevision(++recurringRevision), nextFire, r.occurrence()));
             return true;

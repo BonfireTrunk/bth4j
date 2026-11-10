@@ -128,8 +128,10 @@ the work without locks.
 | PostgreSQL | One SQL statement per transition, with `FOR UPDATE SKIP LOCKED` for claims. |
 | SQLite | Every write runs in a `BEGIN IMMEDIATE` transaction. A claim is several statements in one such transaction. |
 
-The design, the record layout, the store contract and the Redis and PostgreSQL storage layouts are in
-[design-3.0.md](design-3.0.md). The SQLite store is described in [SQLite](stores/sqlite.md).
+Each store page describes its storage layout: [Redis](stores/redis.md#inside-the-redis-store),
+[PostgreSQL](stores/postgresql.md#inside-the-postgresql-store) and [SQLite](stores/sqlite.md#inside-the-sqlite-store). The design, the
+record layout and the store contract as they were decided for 3.0 are in [design-3.0.md](design-3.0.md); where
+that page and a guide differ, the guide is current.
 
 ## One attempt
 

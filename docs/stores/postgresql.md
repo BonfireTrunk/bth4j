@@ -29,7 +29,7 @@ Runners with the same prefix on the same database share the work.
 | Module | `bth4j-postgres`, which uses only `java.sql`. The application supplies the JDBC driver and a pooled `DataSource`. |
 | PostgreSQL | 16 or newer is supported, 17 or newer recommended. The tests run on 18. |
 | Isolation level | The store runs at the connection's isolation level. It is written for READ COMMITTED, PostgreSQL's default. |
-| Table prefix | Lower case letters, digits and underscores, at most 41 characters |
+| Table prefix | Lower case letters, digits and underscores, starting with a letter, at most 41 characters |
 | Schema version | 3. `init` refuses tables written by bth4j 3.0 or 4.0.0 (schema version 1 or 2). Start with a new prefix or drop the tables. |
 | Privileges of a runner role on existing tables | SELECT, INSERT, UPDATE and DELETE on the tables, and USAGE on the sequences |
 | Query timeouts | None set by the store. Configure them on the driver and pool (see [No query timeout](#no-query-timeout)). |

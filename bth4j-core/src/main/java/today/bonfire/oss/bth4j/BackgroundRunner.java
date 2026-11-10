@@ -264,7 +264,7 @@ public final class BackgroundRunner {
 
     /** Stops the services a failed {@link #start()} got going, so that nothing runs and the next start is clean. */
     private void abandonStart() {
-        var deadline = System.nanoTime() + config.shutdownTimeout.toNanos();
+        var deadline = System.nanoTime() + waitNanos(config.shutdownTimeout);
         var processor = taskProcessorService;
         var threads = new CustomThread[] {processor, scheduledTaskService, recurringTaskService, maintenanceService};
         for (var service : threads) {
@@ -315,7 +315,7 @@ public final class BackgroundRunner {
      */
     public boolean drain(Duration timeout) {
         quiet();
-        var deadline = System.nanoTime() + timeout.toNanos();
+        var deadline = System.nanoTime() + waitNanos(timeout);
         while (!admission.idle()) {
             if (System.nanoTime() >= deadline) return false;
             try {
@@ -359,7 +359,8 @@ public final class BackgroundRunner {
             } finally {
                 lifecycleLock.unlock();
             }
-        } catch (Exception e) {
+        } catch (Exception | Error e) {
+            // a periodic job that throws is never run again by its executor, so an Error must not leave the check
             log.error("Error in service monitoring", e);
         }
     }
@@ -376,7 +377,7 @@ public final class BackgroundRunner {
         }
         log.info("Stopping background runner {}", threadGroup.getName());
         // one monotonic deadline for every wait below: the shutdown timeout bounds the whole of stop()
-        var deadline = System.nanoTime() + config.shutdownTimeout.toNanos();
+        var deadline = System.nanoTime() + waitNanos(config.shutdownTimeout);
         // before the lock: a start() that is stuck in a store call checks it when the call returns
         stopRequested = true;
         final TaskProcessorService processor;
@@ -476,13 +477,24 @@ public final class BackgroundRunner {
         return service;
     }
 
+    /** A wait for a monotonic deadline; one longer than {@link StoredTime#MAX} is cut to it, which nanoseconds can count. */
+    private static long waitNanos(Duration wait) {
+        return (StoredTime.fits(wait) ? wait : StoredTime.MAX).toNanos();
+    }
+
+    private int serviceBatchSize() {
+        return (int) Math.min(Integer.MAX_VALUE, config.claimBatchSize * 4L);
+    }
+
     private CustomThread startScheduledTaskService() {
         var service = new ScheduledTaskService.Builder()
                 .setGroup(threadGroup)
                 .setThreadName("ScheduledTaskService")
                 .setStore(store)
+                .setClock(config.clock)
+                .setStatus(status)
                 .setPollInterval(config.scheduledTasksCheckInterval)
-                .setBatchSize(config.claimBatchSize * 4)
+                .setBatchSize(serviceBatchSize())
                 .create();
         service.start();
         return service;
@@ -499,7 +511,7 @@ public final class BackgroundRunner {
                 .clock(config.clock)
                 .status(status)
                 .checkInterval(config.recurringTasksCheckInterval)
-                .batchSize(config.claimBatchSize * 4)
+                .batchSize(serviceBatchSize())
                 .create();
         service.start();
         return service;
@@ -525,7 +537,7 @@ public final class BackgroundRunner {
                 .retention(retention)
                 .keepDead(!config.deadRetention.isZero())
                 .failureDetail(config.failureDetail)
-                .batchSize(config.claimBatchSize * 4)
+                .batchSize(serviceBatchSize())
                 .purgeBatchSize(config.purgeBatchSize)
                 .worker(workerId, config.workerLabel, workerQueueIds, workerTypeIds, admission::running)
                 .accepting(() -> !admission.quiet() && !stopRequested)
@@ -730,7 +742,7 @@ public final class BackgroundRunner {
 
         /** Time between purge runs. Default 1 minute. */
         public Builder purgeInterval(Duration interval) {
-            this.purgeInterval = requirePositive(interval, "purgeInterval");
+            this.purgeInterval = requireMillisecond(interval, "purgeInterval");
             return this;
         }
 
@@ -798,7 +810,7 @@ public final class BackgroundRunner {
         }
 
         public Builder serviceCheckInterval(Duration interval) {
-            this.serviceCheckInterval = requirePositive(interval, "serviceCheckInterval");
+            this.serviceCheckInterval = requireMillisecond(interval, "serviceCheckInterval");
             return this;
         }
 
@@ -846,6 +858,7 @@ public final class BackgroundRunner {
          * Configures the queues.
          * <p>
          * A queue may appear more than once in {@code queuesToProcess} to give it more turns in the round robin.
+         * Once a queue has a {@link QueuePolicy} every queue counts once and the weights set the shares.
          *
          * @param availableQueues all queues tasks can be enqueued to. Duplicates are removed.
          * @param queuesToProcess the queues this instance processes, in round robin order. Must be a subset of
@@ -902,6 +915,13 @@ public final class BackgroundRunner {
         private static Duration requirePositive(Duration d, String name) {
             if (d == null || d.isZero() || d.isNegative())
                 throw new TaskConfigurationException(name + " must be positive");
+            return d;
+        }
+
+        /** For an interval an executor schedules by, which counts in whole milliseconds. */
+        private static Duration requireMillisecond(Duration d, String name) {
+            if (d == null || d.toMillis() < 1)
+                throw new TaskConfigurationException(name + " must be at least 1 millisecond");
             return d;
         }
 

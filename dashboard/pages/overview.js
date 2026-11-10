@@ -110,7 +110,7 @@ export default {
             <p v-for="work in unserved.data.value" :key="JSON.stringify([work.queue, work.type])">
               <span class="tag issue">UNSERVED</span>
               <template v-if="work.type === null">No live worker processes queue {{ work.queue }} ({{ work.waiting }} waiting)</template>
-              <template v-else>No live worker on queue {{ work.queue }} handles type {{ work.type }} (at least {{ work.waiting }} waiting)</template>
+              <template v-else>No live worker on queue {{ work.queue }} handles type {{ work.type }} ({{ work.waiting }} waiting)</template>
             </p>
           </div>
           <h2>Runner in this process</h2>

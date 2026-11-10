@@ -7,6 +7,7 @@ import io.micrometer.core.instrument.Tags;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.OptionalInt;
 import java.util.concurrent.ConcurrentHashMap;
@@ -201,7 +202,7 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
         return stateValues.computeIfAbsent(new StateKey(queue, state), key -> {
             var value = new AtomicLong();
             meters.add(Gauge.builder(TASKS_STATE, value, AtomicLong::get)
-                    .tags(commonTags.and("state", state.name().toLowerCase(), "queue", queue))
+                    .tags(commonTags.and("state", state.name().toLowerCase(Locale.ROOT), "queue", queue))
                     .description("Tasks per state and queue as of the last refresh")
                     .strongReference(true)
                     .register(registry));

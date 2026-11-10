@@ -310,6 +310,22 @@ class DefaultAdminOpsTest {
     }
 
     @Test
+    void aMissingKeyIsRejectedBeforeTheStore() {
+        assertThatThrownBy(() -> ops.cancelByKey(null, "why")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.taskByKey(null)).isInstanceOf(TaskValidationException.class);
+        assertThat(calls).isEmpty();
+    }
+
+    @Test
+    void aScheduleIdWithAU0000IsRejectedBeforeTheStore() {
+        assertThatThrownBy(() -> ops.pauseSchedule("s\u0000", true)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.pauseSchedule("s\u0000", false)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.triggerSchedule("s\u0000")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.deleteSchedule("s\u0000")).isInstanceOf(TaskValidationException.class);
+        assertThat(calls).isEmpty();
+    }
+
+    @Test
     void aReasonOrKeyWithAU0000IsRejectedBeforeTheStore() {
         assertThatThrownBy(() -> ops.cancel(1, 1, "why\u0000")).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> ops.cancelByKey("k\u0000", "why")).isInstanceOf(TaskValidationException.class);

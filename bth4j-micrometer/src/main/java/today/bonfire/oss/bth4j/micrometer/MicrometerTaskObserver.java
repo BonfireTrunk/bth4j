@@ -1,10 +1,7 @@
 package today.bonfire.oss.bth4j.micrometer;
 
-import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Tags;
-import io.micrometer.core.instrument.Timer;
 import java.util.Locale;
 import today.bonfire.oss.bth4j.TaskEvent;
 import today.bonfire.oss.bth4j.TaskObserver;
@@ -60,7 +57,7 @@ public final class MicrometerTaskObserver implements TaskObserver {
             case TaskEvent.Started e -> {}
             case TaskEvent.Succeeded e -> {
                 countTask(e.task(), "succeeded", e.outcome());
-                timer(
+                registry.timer(
                                 DURATION,
                                 commonTags.and(
                                         "type",
@@ -76,11 +73,12 @@ public final class MicrometerTaskObserver implements TaskObserver {
             case TaskEvent.LeaseExpired e -> count(UNKNOWN, UNKNOWN, "lease_lost", TaskEvent.Outcome.APPLIED);
             case TaskEvent.Expired e -> count(UNKNOWN, UNKNOWN, "expired", TaskEvent.Outcome.APPLIED);
             case TaskEvent.Deferred e ->
-                counter(DEFERRED, commonTags.and("type", e.type())).increment();
+                registry.counter(DEFERRED, commonTags.and("type", e.type())).increment();
             case TaskEvent.ScheduleFired e ->
-                counter(SCHEDULE_FIRED, commonTags).increment();
+                registry.counter(SCHEDULE_FIRED, commonTags).increment();
             case TaskEvent.Purged e ->
-                counter(PURGED, commonTags.and("state", e.state().name().toLowerCase()))
+                registry.counter(
+                                PURGED, commonTags.and("state", e.state().name().toLowerCase(Locale.ROOT)))
                         .increment(e.count());
         }
     }
@@ -95,16 +93,6 @@ public final class MicrometerTaskObserver implements TaskObserver {
                 "queue", queue,
                 "result", result,
                 "outcome", outcome.name().toLowerCase(Locale.ROOT));
-        counter(TASKS, tags).increment();
-    }
-
-    // MeterRegistry has counter(String, Tags) and timer(String, Tags) only in newer Micrometer versions; a call
-    // compiled against those fails on the older ones, so the meters go through the Iterable overloads
-    private Counter counter(String name, Iterable<Tag> tags) {
-        return registry.counter(name, tags);
-    }
-
-    private Timer timer(String name, Iterable<Tag> tags) {
-        return registry.timer(name, tags);
+        registry.counter(TASKS, tags).increment();
     }
 }

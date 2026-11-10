@@ -1237,6 +1237,26 @@ class TaskClientTest {
     }
 
     @Test
+    void startByInThePastIsRejectedForATaskThatRunsAtOnce() {
+        var client = builder().build();
+        var past = TaskRequest.of(VOID).startBy(clock.instant().minusMillis(1)).build();
+        var now = TaskRequest.of(VOID).startBy(clock.instant()).build();
+
+        assertThatThrownBy(() -> client.enqueue(past))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("startBy is before the run time");
+        assertThat(client.enqueue(now)).isInstanceOf(EnqueueResult.Accepted.class);
+    }
+
+    @Test
+    void aKeyLookupWithoutAKeyAndAScheduleIdWithAU0000AreRejected() {
+        var client = builder().build();
+
+        assertThatThrownBy(() -> client.taskByKey(null)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> client.deleteSchedule("s\u0000")).isInstanceOf(TaskValidationException.class);
+    }
+
+    @Test
     void startByBeforeTheRunTimeIsRejected() {
         var client = builder().build();
         var request = TaskRequest.of(VOID)

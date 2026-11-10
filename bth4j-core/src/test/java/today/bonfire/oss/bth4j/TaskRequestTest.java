@@ -92,6 +92,17 @@ class TaskRequestTest {
     }
 
     @Test
+    void aUniqueKeySetAgainWithoutAUniquenessDropsTheEarlierKeepWindow() {
+        var request = TaskRequest.of(VOID)
+                .uniqueKey("k", Uniqueness.keepFor(Duration.ofMinutes(1)))
+                .uniqueKey("other")
+                .build();
+
+        assertThat(request.uniqueKey()).isEqualTo("other");
+        assertThat(request.uniqueness()).isEqualTo(Uniqueness.UNTIL_DONE);
+    }
+
+    @Test
     void uniqueKeyWithUniquenessKeepsBoth() {
         var request = TaskRequest.of(VOID)
                 .uniqueKey("k", Uniqueness.keepFor(Duration.ofMinutes(1)))

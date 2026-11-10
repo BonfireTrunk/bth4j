@@ -302,7 +302,7 @@ public final class TaskClient {
         StoredTime.require("startBy", request.startBy(), now);
         Instant due = request.at();
         if (due == null && request.delay() != null) due = now.plus(request.delay());
-        if (request.startBy() != null && due != null && request.startBy().isBefore(due)) {
+        if (request.startBy() != null && request.startBy().isBefore(due != null ? due : now)) {
             throw new TaskValidationException("startBy is before the run time");
         }
         var b = TaskRecord.builder()
@@ -402,6 +402,7 @@ public final class TaskClient {
 
     /** @return true when a definition with that id existed */
     public boolean deleteSchedule(String id) {
+        StoredText.require("schedule id", id);
         return store.deleteRecurring(id);
     }
 
@@ -415,12 +416,18 @@ public final class TaskClient {
         return store.getTask(id).map(names::view);
     }
 
+    /** The rule for a unique key that is looked up: any text a store can keep. */
+    static void requireLookupKey(String key) {
+        if (key == null) throw new TaskValidationException("uniqueKey is required");
+        StoredText.require("uniqueKey", key);
+    }
+
     /**
      * @return the task that holds the unique key now, open or finished inside its keep window; empty when no task
      *         holds the key
      */
     public Optional<TaskView> taskByKey(String key) {
-        StoredText.require("uniqueKey", key);
+        requireLookupKey(key);
         return store.taskByKey(key).map(names::view);
     }
 

@@ -20,11 +20,16 @@ public final class MutableClock extends Clock {
         this(Instant.parse("2030-01-01T00:00:00Z"));
     }
 
-    public void set(Instant instant) {
-        this.now = instant;
-    }
-
     private final ReentrantLock lock = new ReentrantLock();
+
+    public void set(Instant instant) {
+        lock.lock();
+        try {
+            this.now = instant;
+        } finally {
+            lock.unlock();
+        }
+    }
 
     public void advance(Duration duration) {
         lock.lock();

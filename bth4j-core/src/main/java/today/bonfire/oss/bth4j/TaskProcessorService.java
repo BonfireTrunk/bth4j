@@ -267,7 +267,8 @@ class TaskProcessorService extends CustomThread {
     /**
      * Shares {@code slots} between the queues by weight, each capped by its remaining concurrency, and claims
      * from each queue with a share. Slots a queue could not fill are offered once more to the queues that
-     * filled theirs, so an empty queue does not idle the others.
+     * filled theirs, and what is left after that to the queues the split gave no share, so an empty queue does
+     * not idle the others.
      */
     private List<TaskRecord> claimShared(int slots) {
         var order = rotatedDistinctQueues();
@@ -303,7 +304,30 @@ class TaskProcessorService extends CustomThread {
         for (int i = 0; i < order.size(); i++) {
             grants.add(new QueueGrant(order.get(i), shares[i], caps[i]));
         }
-        return settings.store().claim(new ClaimRequest(grants, slots, lease, workerId, knownTypeIds));
+        var claimed = settings.store().claim(new ClaimRequest(grants, slots, lease, workerId, knownTypeIds));
+        int left = slots - claimed.size();
+        if (left <= 0) return claimed;
+        // a store skips a grant without a share, also when the queues with a share have nothing to run
+        var skipped = new ArrayList<QueueGrant>();
+        for (int i = 0; i < order.size(); i++) {
+            if (shares[i] == 0 && caps[i] > 0) {
+                skipped.add(new QueueGrant(order.get(i), Math.min(caps[i], left), caps[i]));
+            }
+        }
+        if (skipped.isEmpty()) return claimed;
+        try {
+            var more = settings.store().claim(new ClaimRequest(skipped, left, lease, workerId, knownTypeIds));
+            if (more.isEmpty()) return claimed;
+            var all = new ArrayList<TaskRecord>(claimed.size() + more.size());
+            all.addAll(claimed);
+            all.addAll(more);
+            return all;
+        } catch (RuntimeException e) {
+            if (claimed.isEmpty()) throw e;
+            // the tasks of the first claim are leased to this worker and still have to run
+            settings.status().storeError(e);
+            return claimed;
+        }
     }
 
     /** A store that returned more tasks than asked for: the extra ones go back to their queue, unrun. */
@@ -394,6 +418,8 @@ class TaskProcessorService extends CustomThread {
                 cancelIfOverrunning(e, now);
                 if (abandonIfStuck(e, now)) continue;
             }
+            // a lost lease cannot be renewed again; the loss was reported when it was found
+            if (e.lostLease()) continue;
             executions.add(e);
         }
         if (executions.isEmpty()) return;

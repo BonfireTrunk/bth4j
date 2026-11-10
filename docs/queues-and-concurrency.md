@@ -12,7 +12,7 @@ A runner serves its queues in turn. A queue policy shares a runner's free execut
 
 ## Queues
 
-A runner processes its queues round robin, one claim covering all of them. A queue listed twice gets two turns.
+A runner processes its queues round robin, one claim covering all of them. A queue listed twice gets two turns, unless a queue has a [queue policy](#queue-policies): then every queue counts once and its weight sets its share.
 
 The default queues are `Q:DEF`, `Q:LOW`, `Q:MED` and `Q:HIGH`. The default queue is `Q:DEF`.
 

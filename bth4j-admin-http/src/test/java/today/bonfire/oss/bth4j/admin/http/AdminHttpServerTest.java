@@ -225,12 +225,33 @@ class AdminHttpServerTest {
     }
 
     @Test
-    void meReportsUserAndRole() throws Exception {
+    void meReportsUserRoleAndTheCsrfTokenOfTheSession() throws Exception {
+        start();
+        var login = viewer();
+
+        assertThat(json(get("/api/v1/me", login)))
+                .containsOnly(
+                        Map.entry("user", "victor"), Map.entry("role", "VIEWER"), Map.entry("csrf", login.csrf()));
+    }
+
+    @Test
+    void aPlusInAQueryValueIsASpace() throws Exception {
         start();
 
-        assertThat(json(get("/api/v1/me", viewer())))
-                .containsEntry("user", "victor")
-                .containsEntry("role", "VIEWER");
+        get("/api/v1/tasks?state=DEAD&queue=bulk+mail", admin());
+
+        assertThat(ops.calls).anyMatch(call -> call.startsWith("tasks DEAD bulk mail "));
+    }
+
+    @Test
+    void anEncodedSlashCannotSpellARouteThatTakesAnId() throws Exception {
+        start();
+        var login = admin();
+
+        var res = send("POST", "/api/v1/schedules%2F%7B%7D%2Ftrigger", login, null, "X-CSRF-Token", login.csrf());
+
+        assertThat(res.statusCode()).isEqualTo(404);
+        assertThat(ops.calls).noneMatch(call -> call.startsWith("triggerSchedule"));
     }
 
     @Test
@@ -988,6 +1009,12 @@ class AdminHttpServerTest {
                 .isInstanceOf(IllegalStateException.class);
         assertThatThrownBy(() -> AdminHttpServer.builder().admin(ops).build())
                 .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void aUserWithAnEmptyPasswordIsRefused() {
+        assertThatThrownBy(() -> AdminHttpServer.builder().user("a", "", Role.ADMIN))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

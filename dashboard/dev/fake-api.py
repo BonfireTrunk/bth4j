@@ -193,7 +193,8 @@ class Handler(BaseHTTPRequestHandler):
     def dispatch(self, method, segs, q):
         head = segs[0]
         if head == "me":
-            return self.send_json(200, {"user": self.session()["user"], "role": self.session()["role"]})
+            s = self.session()
+            return self.send_json(200, {"user": s["user"], "role": s["role"], "csrf": s["csrf"]})
         if head == "health":
             return self.send_json(200, health)
         if head == "overview":

@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
@@ -321,6 +322,44 @@ class BackgroundRunnerCoverageTest {
             assertThat(elapsed).isLessThan(timeout.multipliedBy(2));
         } finally {
             release.countDown();
+        }
+    }
+
+    @Test
+    void aShutdownTimeoutTooLongToCountInNanosecondsStillStopsTheRunner() throws Exception {
+        var store = new InMemoryStore(new MutableClock());
+        var runner = BackgroundRunner.builder()
+                .store(store)
+                .shutdownTimeout(Duration.ofSeconds(Long.MAX_VALUE))
+                .build();
+        runner.registry().register(TaskType.of("work"), (context, payload) -> {});
+        runner.start();
+
+        assertThatCode(runner::stop).doesNotThrowAnyException();
+
+        assertThat(store.workers().getFirst().accepting()).isFalse();
+        assertThat(runner.drain(Duration.ofSeconds(Long.MAX_VALUE))).isTrue();
+    }
+
+    @Test
+    void aClaimBatchSizeAtTheIntLimitGivesTheServicesTheLargestBatchNotANegativeOne() throws Exception {
+        var store = new InMemoryStore(new MutableClock());
+        var limits = new LinkedBlockingQueue<Integer>();
+        var observed = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("promote")) limits.add((int) args[0]);
+            return real.proceed();
+        });
+        var runner = BackgroundRunner.builder()
+                .store(observed)
+                .claimBatchSize(Integer.MAX_VALUE)
+                .build();
+        runner.registry().register(TaskType.of("work"), (context, payload) -> {});
+        try {
+            runner.start();
+
+            assertThat(limits.poll(5, TimeUnit.SECONDS)).isEqualTo(Integer.MAX_VALUE);
+        } finally {
+            runner.stop();
         }
     }
 

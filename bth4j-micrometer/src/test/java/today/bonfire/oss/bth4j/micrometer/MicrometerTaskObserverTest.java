@@ -187,7 +187,7 @@ class MicrometerTaskObserverTest {
         }
 
         @Override
-        public Counter counter(String name, Iterable<Tag> tags) {
+        public Counter counter(String name, Tags tags) {
             counterCalls++;
             if (failCounters) {
                 throw new IllegalStateException("registry down");
@@ -196,7 +196,7 @@ class MicrometerTaskObserverTest {
         }
 
         @Override
-        public Timer timer(String name, Iterable<Tag> tags) {
+        public Timer timer(String name, Tags tags) {
             timerCalls++;
             if (failTimers) {
                 throw new IllegalStateException("registry down");

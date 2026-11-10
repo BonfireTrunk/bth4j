@@ -25,7 +25,7 @@ The namespace prefixes every key and carries the Redis Cluster hash tag, so all 
 | Item | Requirement |
 |---|---|
 | Module | `bth4j-redis`, which uses Jedis |
-| Server | Redis 7.4 or newer, or Valkey 9 or newer. The store expires the key fields of finished tasks with hash field expiry. |
+| Server | Redis 7.4 or newer, or Valkey 9 or newer. The store expires the key fields of finished tasks with hash field expiry, and `init` refuses a server that does not have it. |
 | Tested on | standalone Redis 8.10 and Valkey 9.1.3 |
 | `maxmemory-policy` | `noeviction`. `init` refuses to start under any other policy (see [Memory eviction](#memory-eviction)). |
 | Namespace layout | Layout 5. `init` refuses a namespace written by bth4j 3.0 (another layout), by 4.0.0, by a 4.0.0 snapshot or by an earlier 4.1.0 snapshot (any layout but 5). Start with a new namespace. |

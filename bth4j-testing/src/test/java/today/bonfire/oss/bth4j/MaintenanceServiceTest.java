@@ -654,6 +654,30 @@ class MaintenanceServiceTest {
     // ---- worker heartbeat -----------------------------------------------------------------------------
 
     @Test
+    void theHeartbeatIsRecordedBeforeTheExpiredLeasesAreWorkedOff() throws Exception {
+        workerId = store.allocateWorkerId("worker-a", Set.of(), Set.of());
+        var order = new ArrayList<String>();
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("heartbeat") || method.equals("reclaim") || method.equals("expire")) order.add(method);
+            return real.proceed();
+        });
+
+        cycle();
+
+        assertThat(order).containsExactly("heartbeat", "reclaim", "expire");
+    }
+
+    @Test
+    void aServiceStoppedBeforeItsThreadRanSchedulesNothing() {
+        var service = service();
+        service.stopThread();
+
+        service.run();
+
+        assertThat(service.isRunning()).isFalse();
+    }
+
+    @Test
     void aCycleRecordsTheWorkersHeartbeatWithItsRunningCount() throws Exception {
         workerId = store.allocateWorkerId("worker-a", Set.of(), Set.of());
         var startedAt = clock.instant();

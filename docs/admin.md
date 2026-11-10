@@ -140,7 +140,7 @@ At least one user is required. A server runs once: `start()` after `stop()` thro
 
 ### Signing in and sessions
 
-A client signs in with `POST /api/v1/session` and `{"user", "password"}`. The reply sets the `bth4j_session` cookie and carries a CSRF token. The client sends the token as `X-CSRF-Token` on every POST and DELETE.
+A client signs in with `POST /api/v1/session` and `{"user", "password"}`. The reply sets the `bth4j_session` cookie and carries a CSRF token. The client sends the token as `X-CSRF-Token` on every POST and DELETE. `GET /api/v1/me` returns the token again, so a second browser tab that shares the cookie can ask for it.
 
 ```mermaid
 sequenceDiagram
@@ -168,7 +168,7 @@ Task ids and revisions are JSON strings.
 
 | Endpoint | What it offers |
 |---|---|
-| `me` | The signed-in user. |
+| `me` | The signed-in user, the role and the session's CSRF token. |
 | `session` | Sign-in. |
 | `health` | The runner's health. |
 | `overview` | The overview. |
@@ -232,7 +232,7 @@ The dashboard is the static Vue 3 app in `dashboard/`. It has no build step. It 
 |---|---|
 | Overview | The overview, and unserved work. |
 | Queues | The queues. |
-| Tasks | Tasks with filters, and a detail view: timeline, steps, failures and the payload on request. |
+| Tasks | Tasks with filters, and a detail view: timeline, steps, failures and the payload. |
 | Dead tasks | The dead tasks. |
 | Schedules | The schedules. |
 | Workers | The workers, with coverage and quiet status. |

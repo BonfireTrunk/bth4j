@@ -34,7 +34,8 @@ public sealed interface TaskEvent {
      * The processor failed and the task will run again at {@code retryAt}. With {@link Outcome#LOST} this
      * worker's lease was gone and nothing was written; with {@link Outcome#UNKNOWN} the store call failed and
      * the failure may not have been written. Either way the store's maintenance decides whether and when the
-     * task runs again, and {@code retryAt} is only the time the problem was noticed.
+     * task runs again, and {@code retryAt} is not that time: it is the time this worker asked for after a
+     * failed attempt, or the time the lost lease was noticed when the processor was stopped for it.
      */
     record Retrying(TaskView task, Throwable error, Instant retryAt, Outcome outcome) implements TaskEvent {}
 
@@ -50,7 +51,7 @@ public sealed interface TaskEvent {
     /** Maintenance found an expired lease; the task was retried or died. */
     record LeaseExpired(long id, int attempts, int maxAttempts, boolean dead) implements TaskEvent {}
 
-    /** A claimed task could not be run (no processor, undecodable payload) and was put back. */
+    /** A claimed task could not be run because this runner has no processor for its type, and was put back. */
     record Deferred(long id, String type, String reason) implements TaskEvent {}
 
     /** An occurrence of a recurring definition was created. */

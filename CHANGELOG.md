@@ -5,6 +5,51 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `bth4j-micrometer` needs `micrometer-core` 1.17 or newer on the classpath (tested on 1.17.2). The meters are the same.
+- Redis: `init` refuses a server without hash field expiry (`HPEXPIREAT`: Redis 7.4 or newer, Valkey 9 or newer) with a `TaskConfigurationException` that names the versions, before it writes anything. Such a server passed `init` before, and the first task that finished with a keep window failed inside its script after part of the writes.
+- Arguments that are now refused when they are handed in:
+  - A `startBy` in the past for a task that runs at once is a `TaskValidationException`, as it already was with `delay(Duration.ZERO)`. The task was stored and then expired without running.
+  - `RetryPolicy.exponential` and `RetryPolicy.fixed` throw `TaskConfigurationException` for a null or negative argument. Such a policy turned every failure into a retry at once.
+  - `purgeInterval` and `serviceCheckInterval` below one millisecond are a `TaskConfigurationException` in the builder; they failed in `start()`.
+  - `taskByKey(null)` and `cancelByKey(null, ...)` are a `TaskValidationException`; Redis looked up the key "null".
+  - A schedule id with U+0000 is a `TaskValidationException` in `TaskClient.deleteSchedule` and in `AdminOps.pauseSchedule`, `triggerSchedule` and `deleteSchedule`.
+  - `AdminHttpServer.Builder.user` refuses an empty password, for example from an environment variable that is set but empty.
+- `TaskRequest.Builder.uniqueKey(key)` sets the key to be taken until the task is done; after `uniqueKey(key, keepFor)` on the same builder it kept the earlier keep window.
+- `RetryPolicy.exponential` counts a base or cap longer than `TaskRequest.MAX_TIME_FROM_NOW` as that long.
+- Store SPI: `ScheduleStore.resumeRecurring` ignores the given next fire time while the recorded occurrence of the definition is not finished, and keeps the stored time and revision. A new contract test covers it on every store.
+- Admin HTTP: `GET /me` also returns the session's CSRF token.
+- fastjson2 2.0.66.
+
+### Fixed
+
+- Queue policies: a runner with one free slot gave it to the first queue with a share even when that queue was empty, so a busy queue behind it waited for as long as the first queue stayed empty; a queue whose weight earned no share of the free slots waited the same way while the queues with a share had nothing to run. The runner now claims the leftover slots for the queues that were skipped.
+- A lost lease is reported once. It was logged, counted and its processor thread interrupted again on every renewal round until the processor returned.
+- Recurring tasks: resuming a fixed-delay schedule while its task was still running set the next fire one delay from now, so with `Overlap.ALLOW` a second run started beside the first. The next fire stays parked until that task ends.
+- The promotion loop measures the wait for the next due task on the runner's clock. With a clock behind the wall clock (a test clock, for example) it called the store about every millisecond.
+- Store errors in the promotion loop reach `health()` and the issue list; they were only logged.
+- The runner:
+  - An `Error` in the service check (no native thread for a restart, for example) no longer ends the check for good.
+  - `stop()` and `drain` work with a timeout too long to count in nanoseconds (above about 292 years); `stop()` threw and stopped nothing.
+  - The heartbeat is written before the expired leases are worked off, so a large backlog cannot make the runner look gone.
+  - A `claimBatchSize` from 536,870,912 no longer overflows the batch size of promotion, lease recovery and schedules, which then did nothing.
+  - A runner stopped right after `start()` no longer leaves a `RejectedExecutionException` stack trace from the maintenance thread.
+- `new RetryPolicy.Decision.RetryAfter(null)` counts as no delay, as `Decision.retryAfter(null)` does; the task stayed LEASED.
+- `RetryPolicy.exponential` keeps doubling up to the cap; it stopped at base x 2^20, which is 2.9 hours for a 10 ms base.
+- PostgreSQL: `recurringDefinitions()` lists by the bytes of the id (`COLLATE "C"`), as the other stores do, whatever the collation of the database.
+- Redis: a task listing leaves out a task that left the listed state between the read of the ids and the read of the records.
+- In-memory store: a task listing with a negative limit is an empty page, as on the other stores; it threw. `MutableClock.set` takes the lock `advance` uses.
+- Admin HTTP:
+  - A sign-in in a second browser tab no longer breaks every change in the first: the dashboard asks `GET /me` for the session's CSRF token when a page loads.
+  - A `+` in a query value is a space, so a filter on a queue name with a space works.
+  - An encoded slash (`%2F`) in a path segment answers 404; it reached a route that takes an id without one.
+  - The overview says "N waiting" for the count, which is exact.
+- `bth4j-micrometer`: the `state` tag is lower-cased without the default locale (a Turkish locale wrote `expıred`).
+- Documentation: `Deferred` and `bth4j.deferred` are for a task without a processor on this runner (a payload that cannot be decoded ends the task as dead, which [Tasks](docs/tasks.md) now lists); what `Retrying.retryAt` holds for `LOST` and `UNKNOWN`; when a misfire is recorded as an issue; a queue listed twice under a queue policy; the table prefix starts with a letter; the storage layouts are on the store pages; Redis Cluster in the `RedisTaskStore` Javadoc; the test hooks of `StoreContract`; the task payload in the dashboard.
+
 ## [4.2.0] - 2026-11-10
 
 ### Added

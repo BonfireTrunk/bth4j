@@ -160,7 +160,8 @@ public class SqliteTaskStore implements FullStore {
 
     /**
      * @param dataSource connections to the database; the store does not close it
-     * @param prefix     table name prefix, lower case letters, digits and underscores, at most 41 characters.
+     * @param prefix     table name prefix, lower case letters, digits and underscores, starting with a letter, at
+     *                   most 41 characters.
      *                   Runners with the same prefix on the same database file share the work.
      */
     public SqliteTaskStore(DataSource dataSource, String prefix) {
@@ -1868,17 +1869,24 @@ public class SqliteTaskStore implements FullStore {
     @Override
     public boolean resumeRecurring(String scheduleId, Instant nextFire) {
         return inTransaction(c -> {
-            if (nextFire == null) {
-                update(c, "UPDATE " + schedule + " SET paused = 0 WHERE id = ? AND paused <> 0", scheduleId);
-            } else if (queryOne(
-                            c, "SELECT 1 FROM " + schedule + " WHERE id = ? AND paused <> 0", rs -> true, scheduleId)
-                    != null) {
+            boolean replacesFire = nextFire != null
+                    && queryOne(
+                                    c,
+                                    "SELECT 1 FROM " + schedule + " s WHERE s.id = ? AND s.paused <> 0"
+                                            + " AND NOT EXISTS (SELECT 1 FROM " + task
+                                            + " o WHERE o.id = s.occurrence_id AND o.state < 3)",
+                                    rs -> true,
+                                    scheduleId)
+                            != null;
+            if (replacesFire) {
                 update(
                         c,
                         "UPDATE " + schedule + " SET paused = 0, next_fire = ?, rev = ? WHERE id = ?",
                         nextFire,
                         nextValue(c, NEXT_SCHEDULE_REV, 1),
                         scheduleId);
+            } else {
+                update(c, "UPDATE " + schedule + " SET paused = 0 WHERE id = ? AND paused <> 0", scheduleId);
             }
             return queryOne(c, "SELECT 1 FROM " + schedule + " WHERE id = ?", rs -> true, scheduleId) != null;
         });

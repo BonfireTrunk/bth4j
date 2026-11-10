@@ -79,7 +79,7 @@ final class DefaultAdminOps implements AdminOps {
 
     @Override
     public Optional<TaskView> taskByKey(String key) {
-        StoredText.require("uniqueKey", key);
+        TaskClient.requireLookupKey(key);
         return store.taskByKey(key).map(names::view);
     }
 
@@ -110,7 +110,7 @@ final class DefaultAdminOps implements AdminOps {
 
     @Override
     public CancelOutcome cancelByKey(String key, String reason) {
-        StoredText.require("uniqueKey", key);
+        TaskClient.requireLookupKey(key);
         var holder = store.taskByKey(key).orElse(null);
         if (holder == null) return CancelOutcome.NOT_FOUND;
         if (holder.state().isTerminal()) return CancelOutcome.FINISHED;
@@ -211,9 +211,10 @@ final class DefaultAdminOps implements AdminOps {
 
     @Override
     public boolean pauseSchedule(String id, boolean paused) {
+        StoredText.require("schedule id", id);
         if (paused) return store.pauseRecurring(id);
         // a fixed-delay definition parks its next fire while paused, so it resumes one delay from now; the store
-        // applies that only to a definition that is paused, so resuming a running one changes nothing
+        // applies that only to a paused definition whose occurrence is not still running
         var next = store.recurringDefinitions().stream()
                 .filter(s ->
                         s.definition().scheduleId().equals(id) && s.definition().isFixedDelay())
@@ -225,11 +226,13 @@ final class DefaultAdminOps implements AdminOps {
 
     @Override
     public boolean triggerSchedule(String id) {
+        StoredText.require("schedule id", id);
         return store.setNextFire(id, clock.instant());
     }
 
     @Override
     public boolean deleteSchedule(String id) {
+        StoredText.require("schedule id", id);
         return store.deleteRecurring(id);
     }
 

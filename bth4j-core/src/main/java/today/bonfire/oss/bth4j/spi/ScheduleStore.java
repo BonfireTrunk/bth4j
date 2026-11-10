@@ -58,8 +58,10 @@ public interface ScheduleStore extends TaskStore {
     /**
      * Resumes a paused definition in one step. A {@code nextFire} that is not null replaces its next fire time and
      * assigns a new revision, as {@link #setNextFire(String, Instant)} does; a fixed-delay definition needs one,
-     * because it parks its next fire while paused. The recorded occurrence is kept. A definition that is not paused
-     * is left unchanged.
+     * because it parks its next fire while paused. While the recorded occurrence is not finished, {@code nextFire}
+     * is ignored and the stored time and revision stay: the end of that occurrence sets the next fire, and a time
+     * given here would start a second occurrence beside it. The recorded occurrence is kept. A definition that is
+     * not paused is left unchanged.
      *
      * @return false when no definition with that id exists
      */

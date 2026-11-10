@@ -11,7 +11,7 @@ import java.util.List;
  * what the caller expects. Only the worker holding the current revision of a LEASED task can move it on.
  * <p>
  * Revision rules: claim, promote, every terminal transition, reschedule, unclaim and admin changes to a
- * task that is not LEASED add one to the revision. {@link #renew}, {@link #saveStep}, {@link #progress} and
+ * task that is not LEASED add one to the revision. {@link #renew}, {@link #saveSteps}, {@link #progress} and
  * admin changes to a LEASED task do not, so a running worker keeps its fence.
  */
 public interface ExecutionStore extends TaskStore {

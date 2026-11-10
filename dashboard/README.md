@@ -52,9 +52,11 @@ global build compiles the `template:` strings of the pages in the browser with `
 
 Sign in with a user configured on the admin server. The login response carries a CSRF token which the
 dashboard keeps in memory and in `sessionStorage` (cleared when the tab closes) and sends as
-`X-CSRF-Token` on every mutation. A `401` returns you to the login page.
+`X-CSRF-Token` on every mutation. When a page loads, the dashboard asks `GET /me` for the session's
+token, so a new tab uses the session of the other tabs without a second sign-in. A `401` returns you to
+the login page.
 
-- **Viewer**: can look at everything, including task payloads on request. Every action button
+- **Viewer**: can look at everything, including task payloads. Every action button
   (retry, cancel, delete, pause/resume, trigger, retry-all) is visible but disabled.
 - **Admin**: all of the above. Every mutation asks for confirmation; cancel also requires a reason.
   Task actions send the revision shown on screen. If the task changed meanwhile the server answers `409`

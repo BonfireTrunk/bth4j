@@ -27,6 +27,7 @@ Delivery is at least once, so a processor must be safe to repeat. What a process
 | returns normally | the task succeeded |
 | throws `TaskRescheduleException(delay)` | runs again after the delay, the attempt is not counted |
 | throws `TaskUnrecoverableException` | the task is dead at once |
+| throws `TaskDataException`, or the payload cannot be decoded | the task is dead at once |
 | throws any other exception or `Error` | the attempt failed; the retry policy decides the delay, or dead when attempts are used up |
 
 The same choices as a picture:
@@ -35,7 +36,7 @@ The same choices as a picture:
 flowchart TD
     P["Processor ends"] --> R1["Returns normally"]
     P --> R2["Throws TaskRescheduleException(delay)"]
-    P --> R3["Throws TaskUnrecoverableException"]
+    P --> R3["Throws TaskUnrecoverableException or TaskDataException"]
     P --> R4["Throws any other exception or Error"]
     R1 --> S1["Task succeeded"]
     R2 --> S2["Runs again after the delay, attempt not counted"]

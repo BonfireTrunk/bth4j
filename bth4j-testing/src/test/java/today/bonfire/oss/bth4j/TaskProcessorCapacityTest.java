@@ -273,6 +273,75 @@ class TaskProcessorCapacityTest {
     }
 
     @Test
+    void aSingleFreeSlotGoesToTheBusyQueueWhenTheQueueAheadOfItIsEmpty() throws Exception {
+        int empty = names.queueId("Q:EMPTY");
+        int busy = names.queueId("Q:BUSY");
+        var executor = new ManualExecutor(1);
+        var processor = processor(
+                executor,
+                1,
+                List.of(empty, busy),
+                Map.of(empty, QueuePolicy.maxConcurrent(5), busy, QueuePolicy.maxConcurrent(5)));
+        var busyIds = enqueue(10, "Q:BUSY");
+
+        processOnce(processor);
+
+        assertThat(leased(busyIds)).isEqualTo(1);
+        assertThat(reservations.running(busy)).isEqualTo(1);
+    }
+
+    @Test
+    void aQueueWhoseWeightEarnsNoShareTakesTheSlotsTheHeavyQueueLeaves() throws Exception {
+        int heavy = names.queueId("Q:HEAVY");
+        int light = names.queueId("Q:LIGHT");
+        var executor = new ManualExecutor(4);
+        var processor = processor(
+                executor,
+                4,
+                List.of(heavy, light),
+                Map.of(heavy, QueuePolicy.weight(100), light, QueuePolicy.weight(1)));
+        var lightIds = enqueue(10, "Q:LIGHT");
+
+        processOnce(processor);
+
+        assertThat(leased(lightIds)).isEqualTo(4);
+    }
+
+    @Test
+    void aFailedClaimForTheLeftoverSlotsStillRunsWhatTheFirstClaimLeased() throws Exception {
+        int first = names.queueId("Q:FIRST");
+        int empty = names.queueId("Q:EMPTY");
+        int busy = names.queueId("Q:BUSY");
+        var executor = new ManualExecutor(2);
+        var claims = new AtomicInteger();
+        var processor = processorOn(
+                StoreInterceptor.around(store, (method, args, real) -> {
+                    if (method.equals("claim") && claims.incrementAndGet() == 2) {
+                        throw new TaskStoreException("claim failed");
+                    }
+                    return real.proceed();
+                }),
+                executor,
+                2,
+                List.of(first, empty, busy),
+                Map.of(
+                        first, QueuePolicy.maxConcurrent(5),
+                        empty, QueuePolicy.maxConcurrent(5),
+                        busy, QueuePolicy.maxConcurrent(5)));
+        var firstIds = enqueue(1, "Q:FIRST");
+        var busyIds = enqueue(3, "Q:BUSY");
+
+        processOnce(processor);
+
+        assertThat(claims).hasValue(2);
+        assertThat(leased(firstIds)).isEqualTo(1);
+        assertThat(leased(busyIds)).isZero();
+        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        executor.runNext();
+        assertThat(state(firstIds.getFirst())).isEqualTo(TaskState.SUCCEEDED);
+    }
+
+    @Test
     void aPausedQueueGivesItsShareToTheOtherQueueUntilItIsResumed() throws Exception {
         int paused = names.queueId("Q:PAUSED");
         int busy = names.queueId("Q:BUSY");
@@ -491,6 +560,32 @@ class TaskProcessorCapacityTest {
         executor.runNext();
         assertThat(state(id)).isEqualTo(TaskState.SUCCEEDED);
         assertThat(reservations.running(queueId)).isZero();
+    }
+
+    @Test
+    void aLostLeaseIsReportedOnceHoweverManyRenewalRoundsFollow() throws Exception {
+        var executor = new ManualExecutor(1);
+        var renewed = new AtomicInteger();
+        var processor = processorOn(
+                StoreInterceptor.around(store, (method, args, real) -> {
+                    if (method.equals("renew")) renewed.incrementAndGet();
+                    return real.proceed();
+                }),
+                executor,
+                1);
+        long id = enqueue();
+        processOnce(processor);
+        clock.advance(LEASE.plusMillis(1));
+
+        processor.renewOnce();
+        processor.renewOnce();
+        processor.renewOnce();
+
+        assertThat(status.issues())
+                .filteredOn(i -> i.kind().equals("lease-lost"))
+                .singleElement()
+                .satisfies(i -> assertThat(i.taskId()).isEqualTo(id));
+        assertThat(renewed).hasValue(1);
     }
 
     @Test

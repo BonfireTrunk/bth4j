@@ -176,6 +176,11 @@ final class TaskExecution implements Runnable, TaskContext {
         interruptWorker(true);
     }
 
+    /** @return true once this attempt is known to have lost its lease */
+    boolean lostLease() {
+        return leaseLost;
+    }
+
     private void interruptWorker(boolean leaseLoss) {
         if (!interruptOnCancel) return;
         workerLock.lock();

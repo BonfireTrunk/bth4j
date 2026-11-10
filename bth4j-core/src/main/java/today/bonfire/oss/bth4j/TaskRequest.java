@@ -248,11 +248,14 @@ public final class TaskRequest<T> {
 
         /**
          * Makes the task record unique: while the key is taken, another request with the same key is answered with
-         * {@link EnqueueResult.Duplicate} instead of being stored. See {@link Uniqueness} for lease-loss limits.
+         * {@link EnqueueResult.Duplicate} instead of being stored. The key is taken until the task is done, also
+         * when an earlier call on this builder asked for a keep window. See {@link Uniqueness} for lease-loss
+         * limits.
          */
         public Builder<T> uniqueKey(String key) {
             if (key != null) requireUniqueKey(key);
             this.uniqueKey = key;
+            this.uniqueness = Uniqueness.UNTIL_DONE;
             return this;
         }
 

@@ -59,7 +59,7 @@ A cron definition takes its fire times from the expression. A fixed-delay defini
 |---|---|---|
 | Created with | `ScheduleDefinition.of(id, type, payload, cron)` | `ScheduleDefinition.every(...)` |
 | Fire times | given by the expression (5 fields, Unix format), in a time zone (UTC by default) | first one delay after registration (the delay is at least 1 second), then one delay after the previous occurrence succeeded |
-| While paused | keeps its stored next fire time | resuming sets the next fire one delay from now |
+| While paused | keeps its stored next fire time | resuming sets the next fire one delay from now, or one delay after the task still running succeeds |
 
 The diagram shows a cron definition. Each fire time becomes one occurrence task.
 
@@ -114,7 +114,7 @@ client.putSchedule(ScheduleDefinition.of("hourly-sync", SYNC, "0 * * * *")
 - It creates up to about 100 per check, including those late by less than the threshold.
 - Beyond 100,000 missed fires it creates one task now, as `FIRE_ONCE_NOW` does.
 
-Every misfire is recorded as an issue.
+A misfire is recorded as an issue, except a `CATCH_UP` that creates every missed fire (no more than `maxFires` were missed).
 
 ## Overlap
 
@@ -151,7 +151,7 @@ Pausing, resuming and triggering a definition are `AdminOps` operations (see [Ad
 | Operation | Effect |
 |---|---|
 | Pause | A paused cron definition keeps its stored next fire time. |
-| Resume | Resuming a definition that is not paused changes nothing. Resuming a fixed-delay definition sets its next fire one delay from now. |
+| Resume | Resuming a definition that is not paused changes nothing. Resuming a fixed-delay definition sets its next fire one delay from now. If its task is still running, the next fire comes one delay after that task succeeds instead, so a second task never runs beside it. |
 | Trigger | Moves the next fire time to now. The next recurring check creates the task. A paused definition creates nothing until it is resumed. |
 
 A trigger also forgets the occurrence in flight. When that task ends, it neither re-arms nor pauses the definition.
@@ -166,7 +166,7 @@ See [Issues](monitoring.md#issues) for how to read issues.
 
 | Issue | Recorded when |
 |---|---|
-| `schedule-misfire` | every misfire |
+| `schedule-misfire` | a misfire, except a `CATCH_UP` that creates every missed fire |
 | `schedule-overlap` | `Overlap.SKIP` skips an occurrence because the previous task is not finished |
 | `schedule-paused` | an occurrence of a fixed-delay definition ends DEAD or CANCELLED and the definition is paused |
 | `schedule-broken` | a definition cannot be evaluated (each time its next fire is moved ahead) |

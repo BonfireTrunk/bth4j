@@ -67,8 +67,9 @@ import today.bonfire.oss.bth4j.spi.WorkerInfo;
  * Redis 8 and Valkey 9): one hash per task with the payload, steps and failures in keys of their own, sorted
  * sets for the queues and the state indexes, and one Lua script per transition so that every check and its
  * writes run as one unit (see {@link Keys} for the layout and {@link RedisScripts} for the scripts). All keys
- * carry the namespace as a hash tag, so the store also works on Redis Cluster. Runners that share a namespace
- * share the work.
+ * carry the namespace as a hash tag, so a namespace lies in one slot of a Redis Cluster; the store is not
+ * tested on a cluster, and the scripts derive their keys, so that slot must not be resharded while runners use
+ * it. Runners that share a namespace share the work.
  */
 public class RedisTaskStore implements FullStore {
     private static final Logger log = LoggerFactory.getLogger(Loggers.REDIS_STORE);
@@ -163,17 +164,19 @@ public class RedisTaskStore implements FullStore {
     }
 
     /**
-     * Checks that the server evicts no keys, then writes the layout version of a new namespace and checks it on an
-     * existing one. The eviction policy comes from {@code INFO memory}; when the server refuses that command (an
-     * ACL without {@code +info}, a renamed or disabled command) or its reply has no {@code maxmemory_policy}, init
-     * logs a warning to {@link Loggers#REDIS_STORE} and goes on without the check.
+     * Checks that the server evicts no keys and has hash field expiry, then writes the layout version of a new
+     * namespace and checks it on an existing one. The eviction policy comes from {@code INFO memory}; when the
+     * server refuses that command (an ACL without {@code +info}, a renamed or disabled command) or its reply has no
+     * {@code maxmemory_policy}, init logs a warning to {@link Loggers#REDIS_STORE} and goes on without the check.
      *
-     * @throws TaskConfigurationException when the server's {@code maxmemory-policy} is not {@code noeviction}
+     * @throws TaskConfigurationException when the server's {@code maxmemory-policy} is not {@code noeviction}, or
+     *                                    the server does not know {@code HPEXPIREAT}
      * @throws TaskStoreException         when the namespace has a layout other than {@value #LAYOUT_VERSION}
      */
     @Override
     public void init() {
         checkEvictionPolicy();
+        checkHashFieldExpiry();
         guard(() -> {
             jedis.hsetnx(keys.meta, SCHEMA, String.valueOf(LAYOUT_VERSION));
             var found = jedis.hget(keys.meta, SCHEMA);
@@ -208,6 +211,27 @@ public class RedisTaskStore implements FullStore {
                     + " and this store needs noeviction: under any other policy Redis can evict task data and the"
                     + " keys that hold unique-key windows when it reaches maxmemory. Set it in redis.conf, with"
                     + " CONFIG SET maxmemory-policy noeviction, or in the eviction setting of a managed database");
+        }
+    }
+
+    /**
+     * The scripts end a kept key window with {@code HPEXPIREAT}, after they wrote the task. A server without the
+     * command would fail them there and leave the transition half applied, so it is refused here.
+     */
+    private void checkHashFieldExpiry() {
+        try {
+            // the field is never written, so the call changes nothing on a server that knows the command
+            jedis.hpexpireAt(keys.meta, System.currentTimeMillis(), "hash-field-expiry-check");
+        } catch (JedisDataException e) {
+            if (e.getMessage() != null && e.getMessage().startsWith("ERR unknown command")) {
+                throw new TaskConfigurationException(
+                        "the server does not know HPEXPIREAT and this store needs hash field expiry: use Redis 7.4"
+                                + " or newer, or Valkey 9 or newer",
+                        e);
+            }
+            throw new TaskStoreException("Redis call failed: " + e.getMessage(), e);
+        } catch (JedisException e) {
+            throw new TaskStoreException("Redis call failed: " + e.getMessage(), e);
         }
     }
 
@@ -951,7 +975,10 @@ public class RedisTaskStore implements FullStore {
             var probe = (int) Math.min((long) limit + 1, Integer.MAX_VALUE);
             var found = listing(state, queueId, position, probe);
             var entries = found.subList(0, Math.min(limit, found.size()));
-            var items = load(entries.stream().map(Entry::id).toList(), true);
+            // a task can leave the state between the read of the ids and the read of the records
+            var items = load(entries.stream().map(Entry::id).toList(), true).stream()
+                    .filter(t -> t.state() == state)
+                    .toList();
             var last = entries.isEmpty() ? null : entries.getLast();
             var next = found.size() > limit ? (long) last.score() + ":" + last.id() : null;
             return new TaskPage(items, next);

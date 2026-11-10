@@ -18,6 +18,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.AfterAll;
@@ -29,13 +30,17 @@ import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import redis.clients.jedis.AbstractPipeline;
 import redis.clients.jedis.Connection;
 import redis.clients.jedis.ConnectionPoolConfig;
 import redis.clients.jedis.DefaultJedisClientConfig;
 import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.Protocol;
 import redis.clients.jedis.RedisClient;
+import redis.clients.jedis.RedisProtocol;
 import redis.clients.jedis.UnifiedJedis;
+import redis.clients.jedis.exceptions.JedisDataException;
+import redis.clients.jedis.providers.PooledConnectionProvider;
 import today.bonfire.oss.bth4j.Loggers;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
@@ -71,6 +76,7 @@ class RedisTaskStoreIT {
     private static RedisClient jedis;
 
     private RedisTaskStore store;
+    private String namespace;
     private Keys keys;
     private int queue;
     private int type;
@@ -103,7 +109,8 @@ class RedisTaskStoreIT {
 
     @BeforeEach
     void fresh() {
-        store = new RedisTaskStore(jedis, "T" + NAMESPACES.incrementAndGet());
+        namespace = "T" + NAMESPACES.incrementAndGet();
+        store = new RedisTaskStore(jedis, namespace);
         keys = store.keys();
         store.init();
         queue = store.queueId("default");
@@ -175,6 +182,52 @@ class RedisTaskStoreIT {
         assertThatThrownBy(store::init)
                 .isInstanceOf(TaskStoreException.class)
                 .hasMessageContaining("layout version 4, expected 5");
+    }
+
+    @Test
+    void initRefusesAServerWithoutHashFieldExpiryAndWritesNothing() {
+        var connection = new Connection(
+                new HostAndPort(REDIS.getHost(), REDIS.getMappedPort(6379)),
+                DefaultJedisClientConfig.builder().build());
+        try (var old = new UnifiedJedis(connection) {
+            @Override
+            public List<Long> hpexpireAt(String key, long unixTimeMillis, String... fields) {
+                throw new JedisDataException(
+                        "ERR unknown command 'HPEXPIREAT', with args beginning with: 'k' '1' 'FIELDS' '1' 'f'");
+            }
+        }) {
+            var other = new RedisTaskStore(old, "T" + NAMESPACES.incrementAndGet());
+
+            assertThatThrownBy(other::init)
+                    .isInstanceOf(TaskConfigurationException.class)
+                    .hasMessageContaining("Redis 7.4 or newer, or Valkey 9 or newer");
+            assertThat(old.exists(other.keys().meta)).isFalse();
+        }
+    }
+
+    @Test
+    void aListingLeavesOutATaskThatLeftTheStateBetweenTheReadOfTheIdsAndOfTheRecords() {
+        enqueued(1);
+        enqueued(2);
+        var provider = new PooledConnectionProvider(
+                new HostAndPort(REDIS.getHost(), REDIS.getMappedPort(6379)),
+                DefaultJedisClientConfig.builder().resp3().build());
+        var raced = new AtomicBoolean();
+        try (var racing = new UnifiedJedis(provider, RedisProtocol.RESP3) {
+            // the listing reads the ids with plain calls and the records through its first pipeline
+            @Override
+            public AbstractPipeline pipelined() {
+                if (raced.compareAndSet(false, true)) claim(1);
+                return super.pipelined();
+            }
+        }) {
+            var page = new RedisTaskStore(racing, namespace).tasks(TaskState.QUEUED, queue, null, 10);
+
+            assertThat(raced).isTrue();
+            assertThat(page.items())
+                    .hasSize(1)
+                    .allSatisfy(t -> assertThat(t.state()).isEqualTo(TaskState.QUEUED));
+        }
     }
 
     @Test

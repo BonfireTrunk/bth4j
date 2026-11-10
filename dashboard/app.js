@@ -53,7 +53,7 @@ const App = {
   components: { Login },
   setup() {
     const route = ref(parseHash());
-    const checking = ref(!!session.csrf);
+    const checking = ref(true);
     const navOpen = ref(false);
 
     const onHash = () => {
@@ -62,13 +62,12 @@ const App = {
     };
     onMounted(async () => {
       window.addEventListener('hashchange', onHash);
-      if (session.csrf) {
-        try {
-          const me = await api.me();
-          setSession({ user: me.user, role: me.role });
-        } catch (e) {
-          clearSession();
-        }
+      // every tab asks: the cookie is shared between tabs, the token kept by this one may be stale or missing
+      try {
+        const me = await api.me();
+        setSession({ user: me.user, role: me.role, csrf: me.csrf });
+      } catch (e) {
+        if (e.status === 401) clearSession();
       }
       checking.value = false;
       guard();

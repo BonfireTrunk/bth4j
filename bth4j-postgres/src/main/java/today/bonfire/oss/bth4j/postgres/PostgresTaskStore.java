@@ -158,7 +158,8 @@ public class PostgresTaskStore implements FullStore {
 
     /**
      * @param dataSource connections to the database; the store does not close it
-     * @param prefix     table name prefix, lower case letters, digits and underscores, at most 41 characters.
+     * @param prefix     table name prefix, lower case letters, digits and underscores, starting with a letter, at
+     *                   most 41 characters.
      *                   Runners with the same prefix on the same database share the work.
      */
     public PostgresTaskStore(DataSource dataSource, String prefix) {
@@ -290,8 +291,7 @@ public class PostgresTaskStore implements FullStore {
                     .append(" IS NOT DISTINCT FROM EXCLUDED.")
                     .append(column);
         }
-        var occurrenceRunning =
-                "EXISTS (SELECT 1 FROM " + task + " o WHERE o.id = " + schedule + ".occurrence_id AND o.state < 3)";
+        var occurrenceRunning = occurrenceRunning();
         var keepFire = sameTiming + " AND (" + occurrenceRunning + " OR " + schedule + ".next_fire <= ?)";
         putScheduleSql = "INSERT INTO " + schedule
                 + " (id, type_id, payload_version, queue_id, account, cron, zone, misfire, catch_up_max,"
@@ -2042,7 +2042,7 @@ public class PostgresTaskStore implements FullStore {
     public List<RecurringSchedule> recurringDefinitions() {
         return withConnection(c -> {
             var result = new ArrayList<RecurringSchedule>();
-            try (var ps = c.prepareStatement("SELECT * FROM " + schedule + " ORDER BY id");
+            try (var ps = c.prepareStatement("SELECT * FROM " + schedule + " ORDER BY id COLLATE \"C\"");
                     var rs = ps.executeQuery()) {
                 while (rs.next()) result.add(new RecurringSchedule(readDefinition(rs), getInstant(rs, "next_fire")));
             }
@@ -2060,8 +2060,10 @@ public class PostgresTaskStore implements FullStore {
     public boolean resumeRecurring(String scheduleId, Instant nextFire) {
         return withConnection(c -> {
             try (var ps = c.prepareStatement("WITH u AS (UPDATE " + schedule + " SET paused = false,"
-                    + "   next_fire = COALESCE(?::timestamptz, next_fire),"
-                    + "   rev = CASE WHEN ?::timestamptz IS NULL THEN rev ELSE nextval('" + scheduleSeq + "') END"
+                    + "   next_fire = CASE WHEN " + occurrenceRunning() + " THEN next_fire"
+                    + "     ELSE COALESCE(?::timestamptz, next_fire) END,"
+                    + "   rev = CASE WHEN ?::timestamptz IS NULL OR " + occurrenceRunning() + " THEN rev"
+                    + "     ELSE nextval('" + scheduleSeq + "') END"
                     + "   WHERE id = ? AND paused RETURNING 1)"
                     + " SELECT EXISTS (SELECT 1 FROM u) OR EXISTS (SELECT 1 FROM " + schedule + " WHERE id = ?)")) {
                 setInstant(ps, 1, nextFire);
@@ -2074,6 +2076,11 @@ public class PostgresTaskStore implements FullStore {
                 }
             }
         });
+    }
+
+    /** @return the SQL condition that the task a schedule row records as its occurrence is not finished */
+    private String occurrenceRunning() {
+        return "EXISTS (SELECT 1 FROM " + task + " o WHERE o.id = " + schedule + ".occurrence_id AND o.state < 3)";
     }
 
     /** A commit already in flight for the old definition fails, because it checks the revision and fire time it read. */

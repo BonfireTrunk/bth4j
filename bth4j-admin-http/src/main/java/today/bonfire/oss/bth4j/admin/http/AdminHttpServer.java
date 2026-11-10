@@ -294,6 +294,10 @@ public final class AdminHttpServer {
             throw new HttpError(404, "not found");
         }
         var first = segments.get(0);
+        // an encoded slash in a single segment would otherwise spell a route that takes an id, without one
+        if (first.indexOf('/') >= 0) {
+            throw new HttpError(404, "not found");
+        }
         var key = method
                 + ' '
                 + first
@@ -305,7 +309,7 @@ public final class AdminHttpServer {
                 sendJson(
                         ex,
                         200,
-                        Views.obj("user", session.user(), "role", session.role().name()));
+                        Views.obj("user", session.user(), "role", session.role().name(), "csrf", session.csrf()));
             case "DELETE session" -> logout(ex, session);
             case "GET health" -> health(ex);
             case "GET overview" -> sendJson(ex, 200, overview());
@@ -638,16 +642,22 @@ public final class AdminHttpServer {
             for (var pair : raw.split("&")) {
                 var eq = pair.indexOf('=');
                 if (eq > 0) {
-                    out.put(decode(pair.substring(0, eq)), decode(pair.substring(eq + 1)));
+                    out.put(decodeQuery(pair.substring(0, eq)), decodeQuery(pair.substring(eq + 1)));
                 }
             }
         }
         return out;
     }
 
+    /** Decodes a path segment, where a plus sign stands for itself. */
     private static String decode(String s) {
+        return decodeQuery(s.replace("+", "%2B"));
+    }
+
+    /** Decodes a query name or value, where a plus sign stands for a space. */
+    private static String decodeQuery(String s) {
         try {
-            return URLDecoder.decode(s.replace("+", "%2B"), StandardCharsets.UTF_8);
+            return URLDecoder.decode(s, StandardCharsets.UTF_8);
         } catch (IllegalArgumentException e) {
             throw new HttpError(400, "malformed URL encoding");
         }
@@ -731,7 +741,7 @@ public final class AdminHttpServer {
 
         /** Adds a user; at least one is required. Only a random salt and the SHA3-384 digest of the salt and password are kept. */
         public Builder user(String name, String password, Role role) {
-            if (name == null || name.isEmpty() || password == null || role == null) {
+            if (name == null || name.isEmpty() || password == null || password.isEmpty() || role == null) {
                 throw new IllegalArgumentException("name, password and role are required");
             }
             users.put(name, User.of(password, role));

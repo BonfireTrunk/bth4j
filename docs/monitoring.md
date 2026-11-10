@@ -29,7 +29,7 @@ A `TaskObserver` receives `TaskEvent`s. It runs on the thread that produced the 
 | `Cancelled` | The task ended as cancelled. | Yes |
 | `Expired` | A task passed its `startBy` before it could run and was moved to EXPIRED. | No |
 | `LeaseExpired` | Maintenance found an expired lease, and the task was retried or died. | No |
-| `Deferred` | A claimed task could not be run (no processor, undecodable payload) and was put back. | No |
+| `Deferred` | A claimed task could not be run because this runner has no processor for its type, and was put back. | No |
 | `ScheduleFired` | An occurrence of a recurring definition was created. | No |
 | `Purged` | Maintenance removed finished tasks that were past their retention. | No |
 
@@ -190,7 +190,7 @@ Both results come from `InspectionStore.queuedByType()` at the time of that read
 
 ## Metrics
 
-`bth4j-micrometer` needs `micrometer-core` on the classpath. It is tested on Micrometer 1.17.2 and works on 1.15 and later. Register the observer for events and bind the gauges for state:
+`bth4j-micrometer` needs `micrometer-core` 1.17 or newer on the classpath (tested on 1.17.2). Register the observer for events and bind the gauges for state:
 
 ```java
 MeterRegistry registry = ...;                      // your Micrometer registry

@@ -2,6 +2,7 @@ package today.bonfire.oss.bth4j.spi;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.time.Clock;
@@ -5221,8 +5222,8 @@ public abstract class StoreContract {
         assertThat(running.id()).isEqualTo(first.id());
 
         Instant again = millis(now().minusSeconds(10));
-        assertThat(store.pauseRecurring("fixed")).isTrue();
-        assertThat(store.resumeRecurring("fixed", again)).isTrue();
+        assertThat(store.setNextFire("fixed", revisionOf("fixed"), neverAfter(fire), again))
+                .isTrue();
         TaskRecord skipped = commitRunnerFire("fixed", again, neverAfter(again));
 
         assertThat(store.getTask(skipped.id())).isEmpty();
@@ -5654,6 +5655,17 @@ public abstract class StoreContract {
     }
 
     @Test
+    void recurringDefinitionsAreListedByTheCodeUnitsOfTheirIdsNotByALocale() {
+        Instant fire = millis(now().plusSeconds(60));
+        for (String id : new String[] {"b", "A", "a", "B"}) {
+            store.putRecurring(definition(id, "0 3 * * *"), fire, fire);
+        }
+        assertThat(store.recurringDefinitions())
+                .extracting(s -> s.definition().scheduleId())
+                .containsExactly("A", "B", "a", "b");
+    }
+
+    @Test
     void recurringDefinitionsRoundTripEveryField() {
         Instant fire = millis(now().plusSeconds(60));
         store.putRecurring(fullDefinition("fixed"), fire, fire);
@@ -5833,6 +5845,41 @@ public abstract class StoreContract {
                 .contains("a");
         assertThat(pausedOf("b")).isFalse();
         assertThat(nextFireOf("b")).isEqualTo(fire);
+    }
+
+    @Test
+    void resumingWhileTheRecordedOccurrenceRunsKeepsTheStoredFireUntilThatOccurrenceEnds() {
+        TaskRecord running = runningFixedDelayOccurrence("a");
+        Instant parked = nextFireOf("a");
+        long revision = revisionOf("a");
+        store.pauseRecurring("a");
+
+        assertThat(store.resumeRecurring("a", millis(now().plusSeconds(60)))).isTrue();
+
+        assertThat(pausedOf("a")).isFalse();
+        assertThat(nextFireOf("a")).isEqualTo(parked);
+        assertThat(revisionOf("a")).isEqualTo(revision);
+        Instant rearmed = millis(now().plusSeconds(90));
+        ScheduleEffect end = ScheduleEffect.rearm("a", running.id(), rearmed);
+        assertThat(store.ack(running.id(), running.revision(), true, true, end)).isTrue();
+        assertThat(end.applied()).isTrue();
+        assertThat(nextFireOf("a")).isEqualTo(rearmed);
+    }
+
+    @Test
+    void resumingAfterTheRecordedOccurrenceFinishedTakesTheGivenFire() {
+        TaskRecord running = runningFixedDelayOccurrence("a");
+        long revision = revisionOf("a");
+        store.pauseRecurring("a");
+        assertThat(store.ack(running.id(), running.revision(), true, true, null))
+                .isTrue();
+        Instant next = millis(now().plusSeconds(60));
+
+        assertThat(store.resumeRecurring("a", next)).isTrue();
+
+        assertThat(pausedOf("a")).isFalse();
+        assertThat(nextFireOf("a")).isEqualTo(next);
+        assertThat(revisionOf("a")).isNotEqualTo(revision);
     }
 
     @Test
@@ -6841,6 +6888,27 @@ public abstract class StoreContract {
             assertThatThrownBy(() -> store.tasks(TaskState.QUEUED, null, bad, 10))
                     .as("cursor '%s'", bad)
                     .isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    @Test
+    void aCursorNamingATimeFarFromAnyClockIsRefusedOrReadAsAPositionAndNeverFailsTheStore() {
+        putNew();
+        for (String far : new String[] {Long.MIN_VALUE + ":1", "-300000000000000000:1", Long.MAX_VALUE + ":1"}) {
+            Throwable refused = catchThrowable(() -> store.tasks(TaskState.QUEUED, null, far, 10));
+            if (refused != null) {
+                assertThat(refused).as("cursor '%s'", far).isInstanceOf(IllegalArgumentException.class);
+            }
+        }
+    }
+
+    @Test
+    void aListingWithALimitBelowOneIsAnEmptyLastPage() {
+        putNew();
+        for (int limit : new int[] {0, -1, Integer.MIN_VALUE}) {
+            TaskPage page = store.tasks(TaskState.QUEUED, null, (String) null, limit);
+            assertThat(page.items()).as("limit %d", limit).isEmpty();
+            assertThat(page.next()).as("limit %d", limit).isNull();
         }
     }
 

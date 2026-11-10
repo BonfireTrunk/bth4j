@@ -1,5 +1,6 @@
 package today.bonfire.oss.bth4j;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import org.slf4j.Logger;
@@ -11,12 +12,16 @@ class ScheduledTaskService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(Loggers.PROMOTION);
 
     private final MaintenanceStore store;
+    private final Clock clock;
+    private final RunnerStatus status;
     private final Duration pollInterval;
     private final int batchSize;
 
     ScheduledTaskService(Builder builder) {
         super(builder.group, builder.threadName);
         this.store = builder.store;
+        this.clock = builder.clock;
+        this.status = builder.status;
         this.pollInterval = builder.pollInterval;
         this.batchSize = builder.batchSize;
     }
@@ -41,6 +46,7 @@ class ScheduledTaskService extends CustomThread {
                         log.debug("Scheduled task service Thread interrupted while stopping");
                     }
                 } catch (Exception e) {
+                    status.storeError(e);
                     log.error("Scheduled task service Thread error", e);
                     sleepAfterError();
                 }
@@ -50,11 +56,12 @@ class ScheduledTaskService extends CustomThread {
         }
     }
 
-    private Duration sleepTime(Instant nextDue) {
+    Duration sleepTime(Instant nextDue) {
         if (nextDue == null) {
             return pollInterval;
         }
-        var untilDue = Duration.between(Instant.now(), nextDue);
+        // by the runner's clock, which is the one the store's due times follow
+        var untilDue = Duration.between(clock.instant(), nextDue);
         var wait = untilDue.compareTo(Duration.ofMillis(1)) < 0 ? Duration.ofMillis(1) : untilDue;
         return wait.compareTo(pollInterval) < 0 ? wait : pollInterval;
     }
@@ -75,6 +82,8 @@ class ScheduledTaskService extends CustomThread {
         private ThreadGroup group;
         private String threadName;
         private MaintenanceStore store;
+        private Clock clock = Clock.systemUTC();
+        private RunnerStatus status;
         private Duration pollInterval = Duration.ofSeconds(1);
         private int batchSize = 100;
 
@@ -92,6 +101,16 @@ class ScheduledTaskService extends CustomThread {
 
         Builder setStore(MaintenanceStore store) {
             this.store = store;
+            return this;
+        }
+
+        Builder setClock(Clock clock) {
+            this.clock = clock;
+            return this;
+        }
+
+        Builder setStatus(RunnerStatus status) {
+            this.status = status;
             return this;
         }
 

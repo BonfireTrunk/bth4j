@@ -1,6 +1,6 @@
 # Writing a store
 
-A store keeps tasks and makes every state change atomic. bth4j defines the store as an interface, so you can add a store on another engine. This page lists the interfaces, the rules every store follows, how a claim works, and how to test your store. For the deeper design see [design-3.0.md](design-3.0.md#the-store-spi-and-how-to-implement-a-store).
+A store keeps tasks and makes every state change atomic. bth4j defines the store as an interface, so you can add a store on another engine. This page lists the interfaces, the rules every store follows, how a claim works, and how to test your store. For the reasoning behind the interface see [design-3.0.md](design-3.0.md#the-store-spi-and-how-to-implement-a-store), which records the 3.0 design; for how the existing stores keep their data today, see the store pages ([Redis](stores/redis.md#inside-the-redis-store), [PostgreSQL](stores/postgresql.md#inside-the-postgresql-store), [SQLite](stores/sqlite.md#inside-the-sqlite-store)).
 
 On this page:
 
@@ -130,10 +130,15 @@ flowchart TD
 
 The tests every store must pass are `StoreContract` and `RunnerContract` in `bth4j-store-tests`, which is not published. A store module subclasses `StoreContract` and supplies:
 
-| Method | What you supply |
-|---|---|
-| `newStore(namespace)` | A fresh, isolated store per test |
-| `clock()` | The clock, when the test can move time |
+| Method | Needed | What you supply |
+|---|---|---|
+| `newStore(namespace)` | Always | A fresh, isolated store per test |
+| `clock()` | When the test can move time | The clock the store reads. The default is the system clock. |
+| `advance(duration)` | When the test can move time | Lets store time pass. The default sleeps. |
+| `releasesKeysOnItsOwn()` | When the store ends key windows itself | `true`, so that the tests expect `releaseKeys` to count nothing |
+| `corruptStoredValue(namespace, taskId)` | When the store can hold a value it cannot read | Overwrites a stored value of the task with an unreadable one and returns `true`. The default returns `false`, which skips the tests that need one. |
+| `registryBound()` | When the largest queue or type id is not 32767 | The largest id the store accepts |
+| `fillRegistry(...)` | When the bound is large | Moves the id counter directly instead of registering filler names |
 
 Where the existing stores run it:
 

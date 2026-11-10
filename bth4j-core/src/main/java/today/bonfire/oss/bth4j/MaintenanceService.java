@@ -88,9 +88,14 @@ class MaintenanceService extends CustomThread {
     @Override
     public void run() {
         var delay = checkInterval.toMillis();
-        executor.scheduleWithFixedDelay(survivingErrors(this::cycle), delay, delay, TimeUnit.MILLISECONDS);
-        executor.scheduleWithFixedDelay(
-                survivingErrors(this::purge), delay, purgeInterval.toMillis(), TimeUnit.MILLISECONDS);
+        try {
+            executor.scheduleWithFixedDelay(survivingErrors(this::cycle), delay, delay, TimeUnit.MILLISECONDS);
+            executor.scheduleWithFixedDelay(
+                    survivingErrors(this::purge), delay, purgeInterval.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException e) {
+            // stopped before this thread got to run: there is nothing left to schedule
+            if (!executor.isShutdown()) throw e;
+        }
     }
 
     /** A periodic job that throws is never run again by its executor, so an Error must not leave the job. */
@@ -105,9 +110,11 @@ class MaintenanceService extends CustomThread {
     }
 
     void cycle() {
+        // first, so that a long backlog of expired leases cannot make this worker look gone
+        boolean seen = heartbeat();
         reclaimExpiredLeases();
         expireMissedStarts();
-        heartbeat();
+        if (seen) status.maintained();
     }
 
     private void reclaimExpiredLeases() {
@@ -245,14 +252,17 @@ class MaintenanceService extends CustomThread {
 
     void heartbeatNow() {
         try {
-            executor.execute(survivingErrors(this::heartbeat));
+            executor.execute(survivingErrors(() -> {
+                if (heartbeat()) status.maintained();
+            }));
         } catch (RejectedExecutionException e) {
             // A concurrent stop leaves the next service generation to publish the state.
             if (!executor.isShutdown()) throw e;
         }
     }
 
-    private void heartbeat() {
+    /** @return false when the store call failed */
+    private boolean heartbeat() {
         try {
             if (workerId > 0) {
                 store.heartbeat(
@@ -263,10 +273,11 @@ class MaintenanceService extends CustomThread {
                         running.getAsInt(),
                         accepting.getAsBoolean());
             }
-            status.maintained();
+            return true;
         } catch (Exception e) {
             status.storeError(e);
             log.error("Heartbeat of worker {} failed", workerId, e);
+            return false;
         }
     }
 
