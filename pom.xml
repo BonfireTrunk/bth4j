@@ -7,7 +7,7 @@
     <parent>
         <groupId>today.bonfire.oss</groupId>
         <artifactId>bonfire-oss-parent</artifactId>
-        <version>2.1.1</version>
+        <version>2.2.0</version>
     </parent>
 
     <groupId>today.bonfire.oss</groupId>
@@ -30,13 +30,11 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <jedis.version>8.0.2</jedis.version>
         <cron-utils.version>9.2.1</cron-utils.version>
-        <testcontainers.version>2.0.5</testcontainers.version>
         <fastjson2.version>2.0.66</fastjson2.version>
         <postgresql.version>42.7.14</postgresql.version>
         <sqlite-jdbc.version>3.54.1.0</sqlite-jdbc.version>
         <micrometer.version>1.17.2</micrometer.version>
         <hikaricp.version>7.1.0</hikaricp.version>
-        <maven-failsafe-plugin.version>3.6.1</maven-failsafe-plugin.version>
         <maven.test.redirectTestOutputToFile>true</maven.test.redirectTestOutputToFile>
     </properties>
 
@@ -119,50 +117,16 @@
                 <artifactId>fastjson2</artifactId>
                 <version>${fastjson2.version}</version>
             </dependency>
-            <dependency>
-                <groupId>org.testcontainers</groupId>
-                <artifactId>testcontainers-bom</artifactId>
-                <version>${testcontainers.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
         </dependencies>
     </dependencyManagement>
 
     <build>
-        <plugins>
-            <plugin>
-                <artifactId>maven-jar-plugin</artifactId>
-                <configuration>
-                    <archive>
-                        <manifestFile>${project.build.outputDirectory}/META-INF/MANIFEST.MF</manifestFile>
-                        <manifestEntries>
-                            <Automatic-Module-Name>${module.name}</Automatic-Module-Name>
-                        </manifestEntries>
-                    </archive>
-                </configuration>
-            </plugin>
-        </plugins>
         <pluginManagement>
             <plugins>
-                <plugin>
-                    <groupId>org.apache.felix</groupId>
-                    <artifactId>maven-bundle-plugin</artifactId>
-                    <executions>
-                        <execution>
-                            <id>bundle-manifest</id>
-                            <phase>process-classes</phase>
-                            <goals>
-                                <goal>manifest</goal>
-                            </goals>
-                        </execution>
-                    </executions>
-                </plugin>
                 <plugin>
                     <!-- runs *IT classes (Testcontainers) in the integration-test phase; unit tests stay with surefire -->
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-failsafe-plugin</artifactId>
-                    <version>${maven-failsafe-plugin.version}</version>
                     <executions>
                         <execution>
                             <goals>
