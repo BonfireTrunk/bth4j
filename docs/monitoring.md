@@ -190,7 +190,7 @@ Both results come from `InspectionStore.queuedByType()` at the time of that read
 
 ## Metrics
 
-`bth4j-micrometer` needs `micrometer-core` on the classpath. Register the observer for events and bind the gauges for state:
+`bth4j-micrometer` needs `micrometer-core` on the classpath. It is tested on Micrometer 1.17.2 and works on 1.15 and later. Register the observer for events and bind the gauges for state:
 
 ```java
 MeterRegistry registry = ...;                      // your Micrometer registry
