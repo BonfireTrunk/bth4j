@@ -1249,6 +1249,46 @@ class TaskClientTest {
     }
 
     @Test
+    void aResendWithACallerIdIsAcceptedAfterItsStartByPassedOrItsDelayMovedPastIt() {
+        var client = builder().build();
+        var atOnce = TaskRequest.of(VOID)
+                .id(client.nextId())
+                .startBy(clock.instant().plusSeconds(5))
+                .build();
+        var delayed = TaskRequest.of(VOID)
+                .id(client.nextId())
+                .delay(Duration.ofSeconds(60))
+                .startBy(clock.instant().plusSeconds(90))
+                .build();
+        var neverSent = TaskRequest.of(VOID)
+                .id(client.nextId())
+                .startBy(clock.instant().plusSeconds(5))
+                .build();
+        assertThat(client.enqueue(atOnce)).isEqualTo(new EnqueueResult.Accepted(atOnce.id()));
+        assertThat(client.enqueue(delayed)).isEqualTo(new EnqueueResult.Accepted(delayed.id()));
+
+        clock.advance(Duration.ofSeconds(45));
+
+        assertThat(client.enqueue(atOnce)).isEqualTo(new EnqueueResult.Accepted(atOnce.id()));
+        assertThat(client.enqueue(delayed)).isEqualTo(new EnqueueResult.Accepted(delayed.id()));
+        assertThat(client.enqueueAll(List.of(atOnce, delayed)))
+                .containsExactly(new EnqueueResult.Accepted(atOnce.id()), new EnqueueResult.Accepted(delayed.id()));
+        assertThatThrownBy(() -> client.enqueue(neverSent))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("startBy is before the run time");
+    }
+
+    @Test
+    void aJsonPayloadWithoutAMapperIsAConfigurationError() {
+        var client = TaskClient.builder().store(store).clock(clock).build();
+
+        assertThatThrownBy(() ->
+                        client.enqueue(TaskRequest.of(TYPED, new Payload("a")).build()))
+                .isInstanceOf(TaskConfigurationException.class);
+        assertThat(client.enqueue(TaskRequest.of(VOID).build())).isInstanceOf(EnqueueResult.Accepted.class);
+    }
+
+    @Test
     void aKeyLookupWithoutAKeyAndAScheduleIdWithAU0000AreRejected() {
         var client = builder().build();
 

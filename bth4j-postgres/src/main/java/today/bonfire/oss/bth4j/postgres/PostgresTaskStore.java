@@ -74,7 +74,7 @@ import today.bonfire.oss.bth4j.spi.WorkerInfo;
  * {@link #queueId} and {@link #typeId}. Only {@code java.sql} is used: the application supplies the JDBC
  * driver and a {@link DataSource}, normally pooled.
  */
-public class PostgresTaskStore implements FullStore {
+public final class PostgresTaskStore implements FullStore {
     /**
      * The schema this class writes, stored in the {@code meta} table. {@link #init} refuses tables written with
      * another one; there is no migration between schemas. Version 1 is the 3.0 schema.

@@ -6,10 +6,13 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tags;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.OptionalInt;
+import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -39,6 +42,12 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
     static final String UP = "bth4j.runner.up";
     static final String ABANDONED = "bth4j.runner.abandoned";
     static final String TASKS_STATE = "bth4j.tasks.state";
+
+    /**
+     * The tag sets bound per registry. A registry hands a second gauge with the same name and tags the first
+     * one back, so a second binding would show the first runner's values and its close would remove them.
+     */
+    private static final Map<MeterRegistry, Set<Tags>> BOUND = new WeakHashMap<>();
 
     private final MeterRegistry registry;
     private final AdminOps admin;
@@ -98,6 +107,8 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
      * @param runner supplies the admin view, running tasks and concurrency limit
      * @param registry where the gauges are registered
      * @param refresh how often health and counts are read; must be positive
+     * @throws IllegalArgumentException when the refresh is not positive, or the registry already has runner
+     *     metrics with the same tags that are not closed
      */
     public static MicrometerRunnerMetrics bind(BackgroundRunner runner, MeterRegistry registry, Duration refresh) {
         return bind(runner, registry, Tags.empty(), refresh);
@@ -130,7 +141,19 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
         if (refresh.isZero() || refresh.isNegative()) {
             throw new IllegalArgumentException("refresh must be positive");
         }
-        return new MicrometerRunnerMetrics(admin, running, limit, registry, commonTags, refresh);
+        var tags = commonTags == null ? Tags.empty() : commonTags;
+        synchronized (BOUND) {
+            if (!BOUND.computeIfAbsent(registry, r -> new HashSet<>()).add(tags)) {
+                throw new IllegalArgumentException(
+                        "This registry already has runner metrics with these tags; give each runner its own tags");
+            }
+        }
+        try {
+            return new MicrometerRunnerMetrics(admin, running, limit, registry, tags, refresh);
+        } catch (RuntimeException | Error e) {
+            unbind(registry, tags);
+            throw e;
+        }
     }
 
     /** Reads health and counts once; also called by the poller. A failing store leaves the last counts in place. */
@@ -210,12 +233,20 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
         });
     }
 
+    private static void unbind(MeterRegistry registry, Tags tags) {
+        synchronized (BOUND) {
+            var bound = BOUND.get(registry);
+            if (bound != null) bound.remove(tags);
+        }
+    }
+
     /** Stops the polling thread and removes every meter this instance registered. */
     @Override
     public void close() {
         poller.shutdownNow();
         metersLock.lock();
         try {
+            if (!closed) unbind(registry, commonTags);
             closed = true;
             meters.forEach(registry::remove);
             meters.clear();

@@ -179,12 +179,14 @@ public final class BackgroundRunner {
      * start fails, for example because the store cannot be reached, what was started is stopped again and the
      * exception is rethrown; {@code start()} can then be called again.
      *
-     * @throws TaskConfigurationException when no processor is registered
+     * @throws TaskConfigurationException when no processor is registered, or a registered task type has a JSON
+     *     payload and the runner has no {@code jsonMapper}
      */
     public void start() {
         if (registry.isEmpty()) {
             throw new TaskConfigurationException("No task processor registered; register processors before start()");
         }
+        requireMapperForJsonTypes();
         if (!started.compareAndSet(false, true)) {
             log.warn("Background runner {} is already started, ignoring start()", threadGroup.getName());
             return;
@@ -262,6 +264,19 @@ public final class BackgroundRunner {
                 TimeUnit.MILLISECONDS);
     }
 
+    /** Without this check the runner would claim the tasks of such a type and end each one as dead. */
+    private void requireMapperForJsonTypes() {
+        if (config.jsonMapper != null) return;
+        for (var name : registry.typeNames()) {
+            var type = registry.get(name).type();
+            if (type.hasPayload() && type.codec() == null) {
+                throw new TaskConfigurationException("Task type " + name
+                        + " has a JSON payload and the runner has no jsonMapper; set one on the builder or give"
+                        + " the type a codec");
+            }
+        }
+    }
+
     /** Stops the services a failed {@link #start()} got going, so that nothing runs and the next start is clean. */
     private void abandonStart() {
         var deadline = System.nanoTime() + waitNanos(config.shutdownTimeout);
@@ -317,7 +332,7 @@ public final class BackgroundRunner {
         quiet();
         var deadline = System.nanoTime() + waitNanos(timeout);
         while (!admission.idle()) {
-            if (System.nanoTime() >= deadline) return false;
+            if (deadline - System.nanoTime() <= 0) return false;
             try {
                 Thread.sleep(20);
             } catch (InterruptedException e) {
@@ -548,16 +563,17 @@ public final class BackgroundRunner {
         return service;
     }
 
-    public static final class Builder {
+    public static final class Builder implements Cloneable {
         private FullStore store;
         private TaskProcessorRegistry registry;
         private JsonMapper jsonMapper;
         private Clock clock = Clock.systemUTC();
         private Concurrency concurrency = Concurrency.defaultConcurrency();
+        private boolean concurrencySet;
         private BackgroundExecutor taskExecutor;
         private RetryPolicy retryPolicy = RetryPolicy.defaultPolicy();
-        private final Map<String, RetryPolicy> namedRetryPolicies = new LinkedHashMap<>();
-        private final Map<String, QueuePolicy> queuePolicies = new LinkedHashMap<>();
+        private Map<String, RetryPolicy> namedRetryPolicies = new LinkedHashMap<>();
+        private Map<String, QueuePolicy> queuePolicies = new LinkedHashMap<>();
         private Duration workerStaleAfter = Duration.ofMinutes(10);
         private TaskObserver observer;
         private String workerLabel = defaultWorkerLabel();
@@ -618,14 +634,21 @@ public final class BackgroundRunner {
             return this;
         }
 
-        /** How many tasks run at once. Default twice the number of processors, fixed. */
+        /**
+         * How many tasks run at once. Default twice the number of processors, fixed. Not together with
+         * {@link #taskExecutor}.
+         */
         public Builder concurrency(Concurrency concurrency) {
             if (concurrency == null) throw new TaskConfigurationException("concurrency cannot be null");
             this.concurrency = concurrency;
+            this.concurrencySet = true;
             return this;
         }
 
-        /** A custom executor instead of the one built from {@link #concurrency}. The runner shuts it down. */
+        /**
+         * A custom executor instead of the one built from {@link #concurrency}; set one of the two, not both. The
+         * runner shuts it down.
+         */
         public Builder taskExecutor(BackgroundExecutor executor) {
             this.taskExecutor = executor;
             return this;
@@ -643,8 +666,9 @@ public final class BackgroundRunner {
          * unknown policy uses the default one and the runner records an issue.
          */
         public Builder retryPolicy(String name, RetryPolicy retryPolicy) {
-            if (StringUtils.isBlank(name) || name.length() > 64) {
-                throw new TaskConfigurationException("retry policy name must be 1 to 64 characters");
+            if (StringUtils.isBlank(name) || name.length() > TaskRequest.MAX_RETRY_POLICY_LENGTH) {
+                throw new TaskConfigurationException(
+                        "retry policy name must be 1 to " + TaskRequest.MAX_RETRY_POLICY_LENGTH + " characters");
             }
             if (retryPolicy == null) throw new TaskConfigurationException("retryPolicy cannot be null");
             this.namedRetryPolicies.put(name, retryPolicy);
@@ -740,9 +764,9 @@ public final class BackgroundRunner {
             return this;
         }
 
-        /** Time between purge runs. Default 1 minute. */
+        /** Time between purge runs. Default 1 minute, at least 1 ms. */
         public Builder purgeInterval(Duration interval) {
-            this.purgeInterval = requireMillisecond(interval, "purgeInterval");
+            this.purgeInterval = requireInterval(interval, Duration.ofMillis(1), "purgeInterval");
             return this;
         }
 
@@ -789,10 +813,7 @@ public final class BackgroundRunner {
          * 500 ms, at least 10 ms.
          */
         public Builder idlePollInterval(Duration interval) {
-            requirePositive(interval, "idlePollInterval");
-            if (interval.toMillis() < 10)
-                throw new TaskConfigurationException("idlePollInterval cannot be less than 10ms");
-            this.idlePollInterval = interval;
+            this.idlePollInterval = requireInterval(interval, Duration.ofMillis(10), "idlePollInterval");
             return this;
         }
 
@@ -809,32 +830,30 @@ public final class BackgroundRunner {
             return this;
         }
 
+        /** Time between checks that the runner's services are alive. Default 10 s, at least 1 ms. */
         public Builder serviceCheckInterval(Duration interval) {
-            this.serviceCheckInterval = requireMillisecond(interval, "serviceCheckInterval");
+            this.serviceCheckInterval = requireInterval(interval, Duration.ofMillis(1), "serviceCheckInterval");
             return this;
         }
 
         /** Time between checks for expired leases. Default 5 s, at least 1 s. */
         public Builder maintenanceCheckInterval(Duration interval) {
-            requirePositive(interval, "maintenanceCheckInterval");
-            if (interval.toMillis() < 1000)
-                throw new TaskConfigurationException("maintenanceCheckInterval cannot be less than 1 second");
-            this.maintenanceCheckInterval = interval;
+            this.maintenanceCheckInterval =
+                    requireInterval(interval, Duration.ofSeconds(1), "maintenanceCheckInterval");
             return this;
         }
 
         /** Upper bound of the wait between checks for due scheduled tasks. Default 1 s, at least 10 ms. */
         public Builder scheduledTasksCheckInterval(Duration interval) {
-            requirePositive(interval, "scheduledTasksCheckInterval");
-            if (interval.toMillis() < 10)
-                throw new TaskConfigurationException("scheduledTasksCheckInterval cannot be less than 10ms");
-            this.scheduledTasksCheckInterval = interval;
+            this.scheduledTasksCheckInterval =
+                    requireInterval(interval, Duration.ofMillis(10), "scheduledTasksCheckInterval");
             return this;
         }
 
-        /** Time between checks for due recurring definitions. Default 10 s. */
+        /** Time between checks for due recurring definitions. Default 10 s, at least 10 ms. */
         public Builder recurringTasksCheckInterval(Duration interval) {
-            this.recurringTasksCheckInterval = requirePositive(interval, "recurringTasksCheckInterval");
+            this.recurringTasksCheckInterval =
+                    requireInterval(interval, Duration.ofMillis(10), "recurringTasksCheckInterval");
             return this;
         }
 
@@ -860,7 +879,8 @@ public final class BackgroundRunner {
          * A queue may appear more than once in {@code queuesToProcess} to give it more turns in the round robin.
          * Once a queue has a {@link QueuePolicy} every queue counts once and the weights set the shares.
          *
-         * @param availableQueues all queues tasks can be enqueued to. Duplicates are removed.
+         * @param availableQueues all queues tasks can be enqueued to, each name 1 to 128 characters. Duplicates
+         *                        are removed.
          * @param queuesToProcess the queues this instance processes, in round robin order. Must be a subset of
          *                        availableQueues. If null or empty, all available queues are processed in order.
          * @param defaultQueue    the queue of tasks that do not name one. Must be in availableQueues. If null or
@@ -870,10 +890,7 @@ public final class BackgroundRunner {
                 List<String> availableQueues, List<String> queuesToProcess, String defaultQueue) {
             if (ObjectUtils.isEmpty(availableQueues))
                 throw new TaskConfigurationException("Available queues cannot be empty");
-            availableQueues.forEach(s -> {
-                if (StringUtils.isBlank(s)) throw new TaskConfigurationException("Queue names cannot be blank");
-                if (!StoredText.storable(s)) throw new TaskConfigurationException("Queue name contains U+0000");
-            });
+            availableQueues.forEach(QueuesHolder::requireName);
             // LinkedHashSet keeps the order given by the caller, a HashSet would make it random
             this.availableQueues = new LinkedHashSet<>(availableQueues);
             this.queuesToProcess = ObjectUtils.isEmpty(queuesToProcess)
@@ -909,7 +926,28 @@ public final class BackgroundRunner {
         public BackgroundRunner build() {
             if (store == null) throw new TaskConfigurationException("Cannot build runner without a store");
             queues();
-            return new BackgroundRunner(this);
+            if (concurrencySet && taskExecutor != null) {
+                throw new TaskConfigurationException("Set concurrency or taskExecutor, not both");
+            }
+            // the heartbeat is written once per maintenance check; below three of them one late write would
+            // get a live worker purged
+            if (workerStaleAfter.compareTo(maintenanceCheckInterval.multipliedBy(3)) < 0) {
+                throw new TaskConfigurationException(
+                        "workerStaleAfter must be at least three times maintenanceCheckInterval");
+            }
+            return new BackgroundRunner(snapshot());
+        }
+
+        /** The runner reads its settings later too, so it gets a copy that further calls on this builder leave alone. */
+        private Builder snapshot() {
+            try {
+                var copy = (Builder) clone();
+                copy.namedRetryPolicies = new LinkedHashMap<>(namedRetryPolicies);
+                copy.queuePolicies = new LinkedHashMap<>(queuePolicies);
+                return copy;
+            } catch (CloneNotSupportedException e) {
+                throw new AssertionError(e);
+            }
         }
 
         private static Duration requirePositive(Duration d, String name) {
@@ -918,11 +956,12 @@ public final class BackgroundRunner {
             return d;
         }
 
-        /** For an interval an executor schedules by, which counts in whole milliseconds. */
-        private static Duration requireMillisecond(Duration d, String name) {
-            if (d == null || d.toMillis() < 1)
-                throw new TaskConfigurationException(name + " must be at least 1 millisecond");
-            return d;
+        /** Compares durations, so that one too long to count in milliseconds is refused and does not overflow. */
+        private static Duration requireInterval(Duration d, Duration min, String name) {
+            if (d == null || d.compareTo(min) < 0) {
+                throw new TaskConfigurationException(name + " must be at least " + min.toMillis() + " ms");
+            }
+            return requireStorable(d, name);
         }
 
         private static Duration requireNonNegative(Duration d, String name) {

@@ -90,4 +90,12 @@ class TaskTypeTest {
         assertThat(a).isNotEqualTo(TaskType.of("other", Payload.class));
         assertThat(a).hasToString("same");
     }
+
+    @Test
+    void aJsonPayloadClassAndACodecCannotBeNull() {
+        assertThatThrownBy(() -> TaskType.of("typed", (Class<String>) null))
+                .isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> TaskType.of("coded", (PayloadCodec<String>) null))
+                .isInstanceOf(TaskConfigurationException.class);
+    }
 }

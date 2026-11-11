@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
+import today.bonfire.oss.bth4j.executor.FixedExecutor;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStoreException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
@@ -63,6 +64,7 @@ class BackgroundRunnerCoverageTest {
                 .configureQueues(List.of("main"), List.of("main"), "main")
                 .workerLabel("restored")
                 .maintenanceCheckInterval(Duration.ofHours(1))
+                .workerStaleAfter(Duration.ofHours(3))
                 .build();
         runner.registry().register(TaskType.of("send"), (context, payload) -> {});
         try {
@@ -110,6 +112,7 @@ class BackgroundRunnerCoverageTest {
         var runner = BackgroundRunner.builder()
                 .store(observed)
                 .maintenanceCheckInterval(Duration.ofHours(1))
+                .workerStaleAfter(Duration.ofHours(3))
                 .build();
         runner.registry().register(TaskType.of("work"), (context, payload) -> {});
         try {
@@ -144,6 +147,7 @@ class BackgroundRunnerCoverageTest {
         var runner = BackgroundRunner.builder()
                 .store(observed)
                 .maintenanceCheckInterval(Duration.ofHours(1))
+                .workerStaleAfter(Duration.ofHours(3))
                 .build();
         runner.registry().register(TaskType.of("work"), (context, payload) -> {});
         runner.start();
@@ -167,6 +171,7 @@ class BackgroundRunnerCoverageTest {
         var runner = BackgroundRunner.builder()
                 .store(observed)
                 .maintenanceCheckInterval(Duration.ofHours(1))
+                .workerStaleAfter(Duration.ofHours(3))
                 .build();
         runner.registry().register(TaskType.of("work"), (context, payload) -> {});
         try {
@@ -194,6 +199,101 @@ class BackgroundRunnerCoverageTest {
         } finally {
             runner.stop();
         }
+    }
+
+    @Test
+    void aStartWithAJsonTaskTypeAndNoMapperIsRefusedSoThatItsTasksAreNotClaimedAndEndedAsDead() {
+        var store = new InMemoryStore(new MutableClock());
+        var runner = BackgroundRunner.builder().store(store).build();
+        PayloadCodec<String> codec = new PayloadCodec<>() {
+            @Override
+            public String encode(String payload) {
+                return payload;
+            }
+
+            @Override
+            public String decode(String text) {
+                return text;
+            }
+        };
+        runner.registry().register(TaskType.of("coded", codec), (context, payload) -> {});
+        runner.registry().register(TaskType.of("plain"), (context, payload) -> {});
+        try {
+            runner.registry().register(TaskType.of("json", String.class), (context, payload) -> {});
+            assertThatThrownBy(runner::start)
+                    .isInstanceOf(TaskConfigurationException.class)
+                    .hasMessageContaining("json")
+                    .hasMessageContaining("jsonMapper");
+            assertThat(store.workers()).isEmpty();
+        } finally {
+            runner.stop();
+        }
+
+        var codecsOnly = BackgroundRunner.builder().store(store).build();
+        codecsOnly.registry().register(TaskType.of("coded", codec), (context, payload) -> {});
+        codecsOnly.registry().register(TaskType.of("plain"), (context, payload) -> {});
+        try {
+            assertThatCode(codecsOnly::start).doesNotThrowAnyException();
+        } finally {
+            codecsOnly.stop();
+        }
+    }
+
+    @Test
+    void aRunnerKeepsTheSettingsItWasBuiltWithWhenItsBuilderIsUsedAgain() {
+        var store = new InMemoryStore(new MutableClock());
+        var builder = BackgroundRunner.builder()
+                .store(store)
+                .configureQueues(List.of("main", "mail"), List.of("main", "mail"), "main")
+                .queue("main", QueuePolicy.weight(1))
+                .workerLabel("first");
+        var first = builder.build();
+        builder.workerLabel("second")
+                .queue("mail", QueuePolicy.weight(5))
+                .configureQueues(List.of("other"), null, null);
+        first.registry().register(TaskType.of("work"), (context, payload) -> {});
+        try {
+            first.start();
+
+            assertThat(store.workers()).singleElement().satisfies(w -> {
+                assertThat(w.label()).isEqualTo("first");
+                assertThat(w.queueIds()).containsExactlyInAnyOrder(store.queueId("main"), store.queueId("mail"));
+            });
+        } finally {
+            first.stop();
+        }
+    }
+
+    @Test
+    void settingsThatMustAgreeAreCheckedWhenTheRunnerIsBuilt() {
+        var store = new InMemoryStore(new MutableClock());
+
+        assertThatThrownBy(() -> BackgroundRunner.builder()
+                        .store(store)
+                        .concurrency(Concurrency.fixed(2))
+                        .taskExecutor(new FixedExecutor(2))
+                        .build())
+                .isInstanceOf(TaskConfigurationException.class)
+                .hasMessageContaining("not both");
+        assertThatCode(() -> BackgroundRunner.builder()
+                        .store(store)
+                        .taskExecutor(new FixedExecutor(2))
+                        .build())
+                .doesNotThrowAnyException();
+
+        assertThatThrownBy(() -> BackgroundRunner.builder()
+                        .store(store)
+                        .maintenanceCheckInterval(Duration.ofSeconds(10))
+                        .workerStaleAfter(Duration.ofSeconds(29))
+                        .build())
+                .isInstanceOf(TaskConfigurationException.class)
+                .hasMessageContaining("workerStaleAfter");
+        assertThatCode(() -> BackgroundRunner.builder()
+                        .store(store)
+                        .maintenanceCheckInterval(Duration.ofSeconds(10))
+                        .workerStaleAfter(Duration.ofSeconds(30))
+                        .build())
+                .doesNotThrowAnyException();
     }
 
     @Test

@@ -2,7 +2,6 @@ package today.bonfire.oss.bth4j;
 
 import java.time.Clock;
 import java.time.Duration;
-import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -199,7 +198,7 @@ final class DefaultAdminOps implements AdminOps {
                 names.queueName(d.queueId()),
                 d.account(),
                 d.cron(),
-                d.zone() == null ? null : ZoneId.of(d.zone()),
+                d.zone(),
                 RecurringDefinition.misfire(d.misfire(), d.catchUpMaxFires()),
                 d.fixedDelayMs() == null ? null : Duration.ofMillis(d.fixedDelayMs()),
                 d.overlapSkip() ? Overlap.SKIP : Overlap.ALLOW,

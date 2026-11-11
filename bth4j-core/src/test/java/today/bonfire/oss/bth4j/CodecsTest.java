@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import org.junit.jupiter.api.Test;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskDataException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
@@ -52,12 +53,15 @@ class CodecsTest {
     }
 
     @Test
-    void jsonTypeWithoutMapperFailsWithADataException() {
+    void aMissingMapperIsAConfigurationErrorNotADataErrorWhichWouldEndTheTaskAsDead() {
         var withoutMapper = new Codecs(null);
 
         assertThatThrownBy(() -> withoutMapper.encode(JSON_TYPE, new Payload("a", 1)))
-                .isInstanceOf(TaskDataException.class)
-                .hasRootCauseInstanceOf(TaskDataException.class);
+                .isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> withoutMapper.decode(JSON_TYPE, "{}")).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> withoutMapper.encodeStep("result")).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> withoutMapper.decodeStep("\"result\"", String.class))
+                .isInstanceOf(TaskConfigurationException.class);
     }
 
     @Test

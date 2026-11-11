@@ -395,7 +395,7 @@ class AdminHttpServerTest {
                 mutate("POST", "/api/v1/queues/default/resume", login, null),
                 mutate("POST", "/api/v1/tasks/1/retry", login, revisionBody),
                 mutate("POST", "/api/v1/tasks/1/cancel", login, revisionBody),
-                mutate("POST", "/api/v1/tasks/by-key/order-1/cancel", login, "{}"),
+                mutate("POST", "/api/v1/tasks/by-key/cancel?key=order-1", login, "{}"),
                 mutate("DELETE", "/api/v1/tasks/1?revision=7", login, null),
                 mutate("POST", "/api/v1/schedules/nightly/pause", login, null),
                 mutate("POST", "/api/v1/schedules/nightly/resume", login, null),
@@ -598,14 +598,19 @@ class AdminHttpServerTest {
     @Test
     void taskByKeyIsReadableByViewersAndDecodesTheKey() throws Exception {
         ops.keyHolders.put("order 1/a+b", 1L);
+        ops.keyHolders.put("..", 3L);
+        ops.keyHolders.put(" padded ", 3L);
         start();
         var login = viewer();
 
-        var found = get("/api/v1/tasks/by-key/order%201%2Fa%2Bb", login);
+        var found = get("/api/v1/tasks/by-key?key=order%201%2Fa%2Bb", login);
 
         assertThat(found.statusCode()).isEqualTo(200);
         assertThat(json(found)).containsEntry("id", "1");
-        assertThat(get("/api/v1/tasks/by-key/missing", login).statusCode()).isEqualTo(404);
+        assertThat(json(get("/api/v1/tasks/by-key?key=..", login))).containsEntry("id", "3");
+        assertThat(json(get("/api/v1/tasks/by-key?key=%20padded%20", login))).containsEntry("id", "3");
+        assertThat(get("/api/v1/tasks/by-key", login).statusCode()).isEqualTo(400);
+        assertThat(get("/api/v1/tasks/by-key?key=missing", login).statusCode()).isEqualTo(404);
     }
 
     @Test
@@ -614,15 +619,18 @@ class AdminHttpServerTest {
         start();
         var login = admin();
 
-        var cancel = mutate("POST", "/api/v1/tasks/by-key/order-1/cancel", login, "{\"reason\":\"why\"}");
+        var cancel = mutate("POST", "/api/v1/tasks/by-key/cancel?key=order-1", login, "{\"reason\":\"why\"}");
 
         assertThat(cancel.statusCode()).isEqualTo(200);
         assertThat(json(cancel)).containsEntry("outcome", "REQUESTED");
         assertThat(ops.calls).containsExactly("cancelByKey order-1 why");
-        assertThat(mutate("POST", "/api/v1/tasks/by-key/order-1/cancel", login, "{\"reason\":5}")
+        assertThat(mutate("POST", "/api/v1/tasks/by-key/cancel?key=order-1", login, "{\"reason\":5}")
                         .statusCode())
                 .isEqualTo(400);
-        assertThat(get("/api/v1/tasks/by-key/order-1/cancel", login).statusCode())
+        assertThat(get("/api/v1/tasks/by-key/cancel?key=order-1", login).statusCode())
+                .isEqualTo(404);
+        assertThat(mutate("POST", "/api/v1/tasks/by-key/order-1/cancel", login, "{}")
+                        .statusCode())
                 .isEqualTo(404);
     }
 
@@ -633,10 +641,10 @@ class AdminHttpServerTest {
         start();
         var login = admin();
 
-        var missing = mutate("POST", "/api/v1/tasks/by-key/missing/cancel", login, "{}");
-        var finished = mutate("POST", "/api/v1/tasks/by-key/done/cancel", login, "{}");
+        var missing = mutate("POST", "/api/v1/tasks/by-key/cancel?key=missing", login, "{}");
+        var finished = mutate("POST", "/api/v1/tasks/by-key/cancel?key=done", login, "{}");
         ops.staleKeys.add("racy");
-        var stale = mutate("POST", "/api/v1/tasks/by-key/racy/cancel", login, "{}");
+        var stale = mutate("POST", "/api/v1/tasks/by-key/cancel?key=racy", login, "{}");
 
         assertThat(missing.statusCode()).isEqualTo(404);
         assertThat(json(missing)).containsEntry("error", "no task holds this key");
@@ -652,11 +660,12 @@ class AdminHttpServerTest {
         start();
         var login = admin();
 
-        var noToken = send("POST", "/api/v1/tasks/by-key/42/cancel", login, "{}");
+        var noToken = send("POST", "/api/v1/tasks/by-key/cancel?key=42", login, "{}");
 
         assertThat(noToken.statusCode()).isEqualTo(403);
-        assertThat(get("/api/v1/tasks/by-key/42", login).statusCode()).isEqualTo(200);
-        assertThat(mutate("POST", "/api/v1/tasks/by-key/42/cancel", login, "{}").statusCode())
+        assertThat(get("/api/v1/tasks/by-key?key=42", login).statusCode()).isEqualTo(200);
+        assertThat(mutate("POST", "/api/v1/tasks/by-key/cancel?key=42", login, "{}")
+                        .statusCode())
                 .isEqualTo(200);
         assertThat(ops.calls).containsExactly("cancelByKey 42 null");
     }
@@ -667,9 +676,10 @@ class AdminHttpServerTest {
         var login = admin();
         var tooLong = "k".repeat(257);
 
-        assertThat(get("/api/v1/tasks/by-key/" + tooLong, login).statusCode()).isEqualTo(400);
-        assertThat(get("/api/v1/tasks/by-key/%20", login).statusCode()).isEqualTo(400);
-        assertThat(mutate("POST", "/api/v1/tasks/by-key/" + tooLong + "/cancel", login, "{}")
+        assertThat(get("/api/v1/tasks/by-key?key=" + tooLong, login).statusCode())
+                .isEqualTo(400);
+        assertThat(get("/api/v1/tasks/by-key?key=%20", login).statusCode()).isEqualTo(400);
+        assertThat(mutate("POST", "/api/v1/tasks/by-key/cancel?key=" + tooLong, login, "{}")
                         .statusCode())
                 .isEqualTo(400);
     }
@@ -777,7 +787,7 @@ class AdminHttpServerTest {
 
         assertThat(res.statusCode()).isEqualTo(422);
         assertThat(res.body()).contains("UNREADABLE_TASK").doesNotContain("secret");
-        assertThat(get("/api/v1/tasks/by-key/welcome", login).statusCode()).isEqualTo(422);
+        assertThat(get("/api/v1/tasks/by-key?key=welcome", login).statusCode()).isEqualTo(422);
     }
 
     @Test
@@ -1130,6 +1140,14 @@ class AdminHttpServerTest {
     }
 
     @Test
+    void aSecondUserWithTheSameNameIsRefusedSoThatNeitherPasswordIsDroppedUnseen() {
+        var builder = AdminHttpServer.builder().user("alice", "first", Role.ADMIN);
+
+        assertThatThrownBy(() -> builder.user("alice", "second", Role.VIEWER))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void aUserWithAnEmptyPasswordIsRefused() {
         assertThatThrownBy(() -> AdminHttpServer.builder().user("a", "", Role.ADMIN))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -1181,8 +1199,9 @@ class AdminHttpServerTest {
 
     @Test
     void theLoggedRouteHidesPathParameters() {
-        assertThat(AdminHttpServer.routeTemplate("/api/v1/tasks/by-key/order-42/cancel"))
-                .isEqualTo("/api/v1/tasks/by-key/{key}/cancel");
+        assertThat(AdminHttpServer.routeTemplate("/api/v1/tasks/by-key/cancel"))
+                .isEqualTo("/api/v1/tasks/by-key/cancel");
+        assertThat(AdminHttpServer.routeTemplate("/api/v1/tasks/by-key")).isEqualTo("/api/v1/tasks/by-key");
         assertThat(AdminHttpServer.routeTemplate("/api/v1/tasks/7/payload")).isEqualTo("/api/v1/tasks/{}/payload");
         assertThat(AdminHttpServer.routeTemplate("/api/v1/health")).isEqualTo("/api/v1/health");
         assertThat(AdminHttpServer.routeTemplate("/secret/file")).doesNotContain("secret");

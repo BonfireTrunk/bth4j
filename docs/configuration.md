@@ -26,7 +26,7 @@ How the runner finds its store, its processors and its JSON mapping, and how it 
 |---|---|---|
 | `store` | required | `new RedisTaskStore(jedis, "namespace")`, `new PostgresTaskStore(dataSource, "prefix")`, `new SqliteTaskStore(dataSource, "prefix")` or `new InMemoryStore()` |
 | `registry` | new registry | the processor registry; by default created by the runner and reached with `runner.registry()` |
-| `jsonMapper` | none | payloads and step results as JSON; needed unless every task type has its own codec |
+| `jsonMapper` | none | payloads and step results as JSON; needed unless every task type has its own codec. A runner without one refuses to start when a registered task type has a JSON payload |
 | `clock` | `Clock.systemUTC()` | clock for client-side instants (`createdAt`, delays, retry times) |
 | `workerLabel` | JVM name (`pid@host`) | identifies this process in the worker registry; 1 to 128 characters |
 | `threadGroupName` | `bgr` | name of the runner's thread group |
@@ -38,7 +38,7 @@ How many tasks a runner runs at once. See [Concurrency](queues-and-concurrency.m
 | Setting | Default | Meaning |
 |---|---|---|
 | `concurrency` | `Concurrency.fixed(max(2, 2 x processors))` | how many tasks run at once; `fixed(n)` or `adaptive(min, max[, cpuTarget, memoryTarget])`; adaptive defaults: CPU 0.90, memory 0.80, `HEAP` |
-| `taskExecutor` | built from `concurrency` | a custom `BackgroundExecutor`; the runner shuts it down |
+| `taskExecutor` | built from `concurrency` | a custom `BackgroundExecutor`; the runner shuts it down. Set this or `concurrency`, not both |
 
 ## Queues
 
@@ -61,7 +61,7 @@ How long a task waits after a failed attempt and how many attempts it gets. See 
 
 ## Leases and timing
 
-How long a claimed task is leased, how often the runner polls and how often each service runs. See [How it works](how-it-works.md) for the services, [Recurring tasks](recurring-tasks.md) for `recurringTasksCheckInterval` and the misfire threshold, and [Cancelling tasks](retries-and-cancelling.md#cancelling-tasks) for how a cancel request reaches a running task through lease renewal.
+How long a claimed task is leased, how often the runner polls and how often each service runs. Every interval is at most 100 years. See [How it works](how-it-works.md) for the services, [Recurring tasks](recurring-tasks.md) for `recurringTasksCheckInterval` and the misfire threshold, and [Cancelling tasks](retries-and-cancelling.md#cancelling-tasks) for how a cancel request reaches a running task through lease renewal.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -69,10 +69,10 @@ How long a claimed task is leased, how often the runner polls and how often each
 | `idlePollInterval` | 500 ms (at least 10 ms) | sleep after a claim that found nothing (cut short when a queue at its `maxConcurrent` frees a slot), and the wait for a free executor slot |
 | `claimBatchSize` | 32 | most tasks claimed in one call, bounded by free executor slots |
 | `shutdownTimeout` | 30 s | how long `stop()` takes at most, waiting for services and running tasks |
-| `serviceCheckInterval` | 10 s | how often a dead service thread is restarted |
+| `serviceCheckInterval` | 10 s (at least 1 ms) | how often a dead service thread is restarted |
 | `maintenanceCheckInterval` | 5 s (at least 1 s) | how often expired leases are looked for, tasks past `startBy` are expired and the worker heartbeat is written |
 | `scheduledTasksCheckInterval` | 1 s (at least 10 ms) | upper bound of the wait between promotions of due scheduled tasks; it wakes earlier for the next due task |
-| `recurringTasksCheckInterval` | 10 s | how often recurring definitions are checked; twice this value (at least 1 minute) is the misfire threshold |
+| `recurringTasksCheckInterval` | 10 s (at least 10 ms) | how often recurring definitions are checked; twice this value (at least 1 minute) is the misfire threshold |
 
 ## Retention and purge
 
@@ -84,9 +84,9 @@ How long finished tasks stay readable and how the purge removes them. See [Reten
 | `deadRetention` | 90 days (at most 100 years) | how long dead tasks are kept; zero removes them at once |
 | `cancelledRetention` | 48 hours (at most 100 years) | how long cancelled and expired tasks are kept |
 | `keepSucceededPayload` | false | keep the payload of succeeded tasks (dropped on success by default) |
-| `purgeInterval` | 1 minute | time between purge runs |
+| `purgeInterval` | 1 minute (at least 1 ms) | time between purge runs |
 | `purgeBatchSize` | 500 | tasks removed per purge call; the purge loops until a call removes fewer |
-| `workerStaleAfter` | 10 minutes (at most 100 years) | worker registry rows without a heartbeat for this long are deleted by the purge |
+| `workerStaleAfter` | 10 minutes (at least three times `maintenanceCheckInterval`, at most 100 years) | worker registry rows without a heartbeat for this long are deleted by the purge |
 
 ## Task ids
 

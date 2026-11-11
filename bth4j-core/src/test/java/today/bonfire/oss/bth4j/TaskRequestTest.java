@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
@@ -171,6 +172,12 @@ class TaskRequestTest {
         assertThatThrownBy(() -> builder.header("n\u0000", "v")).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> builder.header("n", "v\u0000")).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> builder.retryPolicy("p\u0000")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> builder.retryPolicy(" ")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> builder.retryPolicy("p".repeat(TaskRequest.MAX_RETRY_POLICY_LENGTH + 1)))
+                .isInstanceOf(TaskValidationException.class);
+        assertThatCode(() -> builder.retryPolicy("p".repeat(TaskRequest.MAX_RETRY_POLICY_LENGTH)))
+                .doesNotThrowAnyException();
+        assertThatCode(() -> builder.retryPolicy(null)).doesNotThrowAnyException();
         assertThatThrownBy(() -> TaskRequest.requireUniqueKey("k\u0000")).isInstanceOf(TaskValidationException.class);
     }
 

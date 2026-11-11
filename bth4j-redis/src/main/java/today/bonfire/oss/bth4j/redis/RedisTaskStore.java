@@ -72,7 +72,7 @@ import today.bonfire.oss.bth4j.spi.WorkerInfo;
  * tested on a cluster, and the scripts derive their keys, so that slot must not be resharded while runners use
  * it. Runners that share a namespace share the work.
  */
-public class RedisTaskStore implements FullStore {
+public final class RedisTaskStore implements FullStore {
     private static final Logger log = LoggerFactory.getLogger(Loggers.REDIS_STORE);
 
     /**
@@ -112,13 +112,14 @@ public class RedisTaskStore implements FullStore {
      *                  close it.
      * @param namespace prefix of all keys; runners with the same namespace share the work. Must not be blank or
      *                  contain braces.
+     * @throws TaskConfigurationException when the client is null or the namespace is not allowed
      */
     public RedisTaskStore(UnifiedJedis jedis, String namespace) {
         if (jedis == null) {
-            throw new IllegalArgumentException("Jedis client is required");
+            throw new TaskConfigurationException("Jedis client is required");
         }
         if (namespace == null || namespace.isBlank() || namespace.contains("{") || namespace.contains("}")) {
-            throw new IllegalArgumentException("namespace cannot be blank or contain braces");
+            throw new TaskConfigurationException("namespace cannot be blank or contain braces");
         }
         this.jedis = jedis;
         this.keys = new Keys(namespace);

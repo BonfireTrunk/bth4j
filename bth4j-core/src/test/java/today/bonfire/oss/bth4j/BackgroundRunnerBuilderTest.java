@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
@@ -45,21 +46,40 @@ class BackgroundRunnerBuilderTest {
     }
 
     @Test
-    void anIntervalAnExecutorSchedulesByIsAtLeastOneMillisecond() {
+    void everyIntervalHasAShortestValueAndIsAtMostOneHundredYears() {
         var builder = BackgroundRunner.builder();
-        List<Function<Duration, BackgroundRunner.Builder>> settings =
-                List.of(builder::purgeInterval, builder::serviceCheckInterval);
+        Map<Duration, List<Function<Duration, BackgroundRunner.Builder>>> settingsByShortest = Map.of(
+                Duration.ofMillis(1), List.of(builder::purgeInterval, builder::serviceCheckInterval),
+                Duration.ofMillis(10),
+                        List.of(
+                                builder::idlePollInterval,
+                                builder::scheduledTasksCheckInterval,
+                                builder::recurringTasksCheckInterval),
+                Duration.ofSeconds(1), List.of(builder::maintenanceCheckInterval));
 
-        for (var setting : settings) {
-            assertThatCode(() -> setting.apply(Duration.ofMillis(1))).doesNotThrowAnyException();
-            for (Duration bad :
-                    new Duration[] {null, Duration.ZERO, Duration.ofNanos(999_999), Duration.ofMillis(-1)}) {
-                assertThatThrownBy(() -> setting.apply(bad))
-                        .as("%s", bad)
-                        .isInstanceOf(TaskConfigurationException.class)
-                        .hasMessageContaining("at least 1 millisecond");
+        settingsByShortest.forEach((shortest, settings) -> {
+            for (var setting : settings) {
+                assertThatCode(() -> setting.apply(shortest)).doesNotThrowAnyException();
+                assertThatCode(() -> setting.apply(TaskRequest.MAX_TIME_FROM_NOW))
+                        .doesNotThrowAnyException();
+                for (Duration bad :
+                        new Duration[] {null, Duration.ZERO, shortest.minusNanos(1), Duration.ofMillis(-1)}) {
+                    assertThatThrownBy(() -> setting.apply(bad))
+                            .as("%s", bad)
+                            .isInstanceOf(TaskConfigurationException.class)
+                            .hasMessageContaining("at least " + shortest.toMillis() + " ms");
+                }
+                // too long to count in milliseconds: refused, not an ArithmeticException
+                for (Duration bad :
+                        new Duration[] {TaskRequest.MAX_TIME_FROM_NOW.plusMillis(1), Duration.ofSeconds(Long.MAX_VALUE)
+                        }) {
+                    assertThatThrownBy(() -> setting.apply(bad))
+                            .as("%s", bad)
+                            .isInstanceOf(TaskConfigurationException.class)
+                            .hasMessageContaining("at most");
+                }
             }
-        }
+        });
     }
 
     @Test

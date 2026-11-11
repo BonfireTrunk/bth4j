@@ -29,6 +29,8 @@ public interface TaskStore {
      * {@link #info()} reports.
      *
      * @throws TaskStoreException when the stored schema version differs
+     * @throws today.bonfire.oss.bth4j.exceptions.TaskConfigurationException when the engine is not set up as the
+     *     store needs it, for example a Redis server that evicts keys or an SQLite connection that is not in WAL mode
      */
     void init();
 

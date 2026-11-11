@@ -1379,7 +1379,7 @@ public abstract class RunnerContract {
                 .filter(s -> s.id().equals("kolkata"))
                 .findFirst()
                 .orElseThrow();
-        assertThat(view.zone()).isEqualTo(java.time.ZoneId.of("Asia/Kolkata"));
+        assertThat(view.zone()).isEqualTo("Asia/Kolkata");
         assertThat(view.misfire()).isEqualTo(Misfire.SKIP);
         assertThat(view.cron()).isEqualTo("30 9 * * *");
         assertThat(view.nextFire().atZone(java.time.ZoneId.of("Asia/Kolkata")).getHour())

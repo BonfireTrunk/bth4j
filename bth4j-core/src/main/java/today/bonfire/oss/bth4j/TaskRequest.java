@@ -25,6 +25,7 @@ public final class TaskRequest<T> {
 
     public static final int MAX_UNIQUE_KEY_LENGTH = 256;
     public static final int MAX_ACCOUNT_LENGTH = 128;
+    public static final int MAX_RETRY_POLICY_LENGTH = 64;
     public static final int MAX_HEADERS_BYTES = 8 * 1024;
     public static final int MAX_PAYLOAD_BYTES = 256 * 1024;
 
@@ -309,6 +310,10 @@ public final class TaskRequest<T> {
 
         /** Name of a retry policy registered with {@code BackgroundRunner.Builder#retryPolicy(String, RetryPolicy)}; an unknown name falls back to the default policy. */
         public Builder<T> retryPolicy(String name) {
+            if (name != null && (name.isBlank() || name.length() > MAX_RETRY_POLICY_LENGTH)) {
+                throw new TaskValidationException(
+                        "retryPolicy must be 1 to " + MAX_RETRY_POLICY_LENGTH + " characters");
+            }
             StoredText.require("retryPolicy", name);
             this.retryPolicy = name;
             return this;

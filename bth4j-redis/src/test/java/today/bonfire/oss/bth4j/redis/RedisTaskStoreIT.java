@@ -1747,9 +1747,9 @@ class RedisTaskStoreIT {
 
     @Test
     void namespaceIsValidated() {
-        assertThatThrownBy(() -> new RedisTaskStore(null, "ok")).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new RedisTaskStore(jedis, " ")).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new RedisTaskStore(jedis, "a{b")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new RedisTaskStore(null, "ok")).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> new RedisTaskStore(jedis, " ")).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> new RedisTaskStore(jedis, "a{b")).isInstanceOf(TaskConfigurationException.class);
     }
 
     private static void awaitExpiry(BooleanSupplier expired) {

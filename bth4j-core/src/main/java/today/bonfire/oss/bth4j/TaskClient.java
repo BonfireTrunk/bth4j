@@ -18,6 +18,7 @@ import today.bonfire.oss.bth4j.common.Cron;
 import today.bonfire.oss.bth4j.common.JsonMapper;
 import today.bonfire.oss.bth4j.exceptions.EnqueueFailedException;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
+import today.bonfire.oss.bth4j.exceptions.TaskDataException;
 import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
@@ -80,6 +81,8 @@ public final class TaskClient {
      *
      * @throws TaskValidationException when the request is invalid or exceeds a size limit, or sets an id that
      *                                 was never allocated
+     * @throws TaskDataException       when the payload cannot be encoded
+     * @throws TaskConfigurationException when the task type has no codec and this client has no JSON mapper
      * @throws TaskIdReusedException   when the request sets an id that belongs to a task with other content
      * @throws EnqueueFailedException  when the store could not be reached or all three generated ids were taken;
      *                                 with an id the task may already be stored (retry with that id); with no
@@ -291,6 +294,14 @@ public final class TaskClient {
         return true;
     }
 
+    /**
+     * A request with a caller id may be the resend of one that was accepted: its {@code startBy} can have passed
+     * since, and a {@code delay} counts from now again. The store then answers that the id exists.
+     */
+    private boolean alreadyStored(Long callerId) {
+        return callerId != null && store.getTask(callerId).isPresent();
+    }
+
     <T> TaskRecord toRecord(TaskRequest<T> request) {
         return toRecord(request, request.id() != null ? request.id() : ids.nextId());
     }
@@ -302,7 +313,9 @@ public final class TaskClient {
         StoredTime.require("startBy", request.startBy(), now);
         Instant due = request.at();
         if (due == null && request.delay() != null) due = now.plus(request.delay());
-        if (request.startBy() != null && request.startBy().isBefore(due != null ? due : now)) {
+        if (request.startBy() != null
+                && request.startBy().isBefore(due != null ? due : now)
+                && !alreadyStored(request.id())) {
             throw new TaskValidationException("startBy is before the run time");
         }
         var b = TaskRecord.builder()
@@ -534,17 +547,15 @@ public final class TaskClient {
         }
 
         /**
-         * The queues tasks may be enqueued to and the one used when a request names none. Default
+         * The queues tasks may be enqueued to, each name 1 to 128 characters, and the one used when a request
+         * names none. Default
          * {@code Q:DEF, Q:LOW, Q:MED, Q:HIGH} with {@code Q:DEF} as default.
          */
         public Builder queues(List<String> availableQueues, String defaultQueue) {
             if (availableQueues == null || availableQueues.isEmpty()) {
                 throw new TaskConfigurationException("availableQueues cannot be empty");
             }
-            for (var q : availableQueues) {
-                if (StringUtils.isBlank(q)) throw new TaskConfigurationException("queue names cannot be blank");
-                if (!StoredText.storable(q)) throw new TaskConfigurationException("queue name contains U+0000");
-            }
+            availableQueues.forEach(QueuesHolder::requireName);
             Set<String> available = new LinkedHashSet<>(availableQueues);
             var def = StringUtils.isBlank(defaultQueue) ? availableQueues.getFirst() : defaultQueue;
             if (!available.contains(def))

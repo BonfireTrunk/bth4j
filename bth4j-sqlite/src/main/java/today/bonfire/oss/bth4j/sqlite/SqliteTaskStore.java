@@ -84,7 +84,7 @@ import today.bonfire.oss.bth4j.spi.WorkerInfo;
  * {@link #typeId}. Only {@code java.sql} is used: the application supplies the JDBC driver and a
  * {@link DataSource}, normally pooled.
  */
-public class SqliteTaskStore implements FullStore {
+public final class SqliteTaskStore implements FullStore {
     /** The schema this class writes, stored in the {@code meta} table. {@link #init} refuses tables written with another one. */
     public static final int SCHEMA_VERSION = 1;
 

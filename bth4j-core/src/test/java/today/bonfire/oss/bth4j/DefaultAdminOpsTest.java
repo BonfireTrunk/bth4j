@@ -7,7 +7,6 @@ import java.lang.reflect.Proxy;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -536,6 +535,30 @@ class DefaultAdminOpsTest {
     }
 
     @Test
+    void aScheduleWhoseZoneThisJvmDoesNotKnowIsListedWithTheOthers() {
+        handlers.put(
+                "recurringDefinitions",
+                a -> List.of(
+                        new RecurringSchedule(
+                                definition(
+                                        "lost-zone",
+                                        "0 2 * * *",
+                                        null,
+                                        false,
+                                        "Mars/Olympus_Mons",
+                                        RecurringDefinition.MISFIRE_SKIP,
+                                        0,
+                                        false),
+                                NOW),
+                        new RecurringSchedule(definition("nightly", "0 2 * * *", null, false), NOW)));
+
+        var views = ops.schedules();
+
+        assertThat(views).extracting(ScheduleView::id).containsExactly("lost-zone", "nightly");
+        assertThat(views.get(0).zone()).isEqualTo("Mars/Olympus_Mons");
+    }
+
+    @Test
     void schedulesAreViewedWithResolvedNames() {
         handlers.put(
                 "recurringDefinitions",
@@ -552,7 +575,7 @@ class DefaultAdminOpsTest {
         assertThat(nightly.queue()).isEqualTo("Q:OTHER");
         assertThat(nightly.account()).isEqualTo("acme");
         assertThat(nightly.cron()).isEqualTo("0 2 * * *");
-        assertThat(nightly.zone()).isEqualTo(ZoneId.of("Europe/Berlin"));
+        assertThat(nightly.zone()).isEqualTo("Europe/Berlin");
         assertThat(nightly.misfire()).isEqualTo(Misfire.SKIP);
         assertThat(nightly.fixedDelay()).isNull();
         assertThat(nightly.overlap()).isEqualTo(Overlap.SKIP);
@@ -586,7 +609,7 @@ class DefaultAdminOpsTest {
 
         var views = ops.schedules();
 
-        assertThat(views.get(0).zone()).isEqualTo(ZoneId.of("Europe/Berlin"));
+        assertThat(views.get(0).zone()).isEqualTo("Europe/Berlin");
         assertThat(views.get(0).misfire()).isEqualTo(Misfire.catchUp(4));
         assertThat(views.get(0).overlap()).isEqualTo(Overlap.ALLOW);
         assertThat(views.get(1).zone()).isNull();

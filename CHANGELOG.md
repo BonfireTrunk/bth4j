@@ -13,6 +13,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Breaking: `ScheduleView.zone` is the zone id as text, not a `ZoneId`. `AdminOps.schedules()` threw for every schedule when one stored zone was unknown to the JVM (other time zone data, for example); it now lists them all.
+- Breaking, admin HTTP: the by-key routes take the key as a query value, `GET tasks/by-key?key=` and `POST tasks/by-key/cancel?key=`. A path could not carry the keys `.` and `..`, which a client resolves away. The dashboard no longer trims the key it looks up.
+- Breaking: `RedisTaskStore`, `PostgresTaskStore` and `SqliteTaskStore` are final, as `InMemoryStore` is. `new RedisTaskStore(...)` throws `TaskConfigurationException` for a missing client or a namespace that is not allowed, as the other stores do; it threw `IllegalArgumentException`.
+- A missing `jsonMapper` is a `TaskConfigurationException`, not a `TaskDataException`:
+  - `BackgroundRunner.start()` refuses to start when a registered task type has a JSON payload and the runner has no mapper. Such a runner started, claimed the tasks of that type and ended each one as dead.
+  - `TaskClient.enqueue` throws it for a JSON payload on a client without a mapper; the Javadoc now lists it and `TaskDataException`.
+- Runner settings that are now checked when they are set or when the runner is built, each with a `TaskConfigurationException`:
+  - Every interval has a shortest value and is at most 100 years: `recurringTasksCheckInterval` at least 10 ms (any positive value passed, and one nanosecond polled the store without pause). A duration too long to count in milliseconds is refused; it threw `ArithmeticException`.
+  - `concurrency` and `taskExecutor` together are refused; the executor won without a word.
+  - `workerStaleAfter` must be at least three times `maintenanceCheckInterval`, which is how often the heartbeat is written; below that the purge removed live workers.
+  - A queue name is at most 128 characters, as a task type name is.
+  - `TaskType.of(name, (Class) null)` and `TaskType.of(name, (PayloadCodec) null)` are refused; the tasks of such a type ended as dead.
+- `TaskRequest.Builder.retryPolicy(name)` takes a name of 1 to 64 characters (`TaskRequest.MAX_RETRY_POLICY_LENGTH`), the rule the runner has for the names it registers; null still means the default policy.
+- `TaskView` has `retryPolicy()`, `keyKeep()` and `keyUntil()`. `TaskViewPage` and `TaskPage` copy the list they are given.
+- `AdminHttpServer.Builder.user` refuses a second user with the same name; the later one replaced the earlier without a word.
+- `MicrometerRunnerMetrics.bind` refuses a second binding with the same tags on one registry while the first is open, with an `IllegalArgumentException`. The registry handed the second one the gauges of the first, so it showed the first runner's values, and closing either removed the gauges of both. Null tags count as no tags.
 - Admin HTTP: failed logins are also counted by the user name they give, known or not: the fifth failure blocks logins with that name from any address for 10 seconds. Before, a client with many addresses could guess without limit. IPv6 addresses are counted by their /64 network. Failures are forgotten when no attempt followed them for 10 minutes; they were kept until the server stopped, so a fifth mistyped password weeks later still blocked.
 
 - `bth4j-micrometer` needs `micrometer-core` 1.17 or newer on the classpath (tested on 1.17.2). The meters are the same.
@@ -41,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A runner no longer shares its settings with its builder: using the builder again (for a second runner, say) changed the queue policies, the worker label and every other setting of a runner that was built before and not yet started.
+- A request with a caller id that is sent again is accepted when its `startBy` has passed since, or when its `delay` now ends after `startBy`. The check added for a `startBy` in the past refused such a resend, against the rule that a resend with the same id answers `Accepted`.
+- `BackgroundRunner.drain` compares its deadline in a way that survives the wrap of the nanosecond clock.
 - Queue policies: a runner with one free slot gave it to the first queue with a share even when that queue was empty, so a busy queue behind it waited for as long as the first queue stayed empty; a queue whose weight earned no share of the free slots waited the same way while the queues with a share had nothing to run. The runner now claims the leftover slots for the queues that were skipped.
 - A lost lease is reported once. It was logged, counted and its processor thread interrupted again on every renewal round until the processor returned.
 - Recurring tasks: resuming a fixed-delay schedule while its task was still running set the next fire one delay from now, so with `Overlap.ALLOW` a second run started beside the first. The next fire stays parked until that task ends.

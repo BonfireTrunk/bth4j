@@ -3,12 +3,15 @@ package today.bonfire.oss.bth4j;
 import java.util.List;
 import java.util.Set;
 import org.apache.commons.lang3.StringUtils;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /**
  * Queue configuration of a runner, with logical queue names (without namespace). Immutable.
  */
 final class QueuesHolder {
+    static final int MAX_NAME_LENGTH = 128;
+
     final String defaultQueue;
     final Set<String> availableQueues;
     final List<String> queuesToProcess;
@@ -17,6 +20,14 @@ final class QueuesHolder {
         this.availableQueues = Set.copyOf(availableQueues);
         this.queuesToProcess = List.copyOf(queuesToProcess);
         this.defaultQueue = defaultQueue;
+    }
+
+    /** @throws TaskConfigurationException when the name is blank, longer than 128 characters or holds U+0000 */
+    static void requireName(String name) {
+        if (StringUtils.isBlank(name) || name.length() > MAX_NAME_LENGTH) {
+            throw new TaskConfigurationException("Queue names must be 1 to " + MAX_NAME_LENGTH + " characters");
+        }
+        if (!StoredText.storable(name)) throw new TaskConfigurationException("Queue name contains U+0000");
     }
 
     /**

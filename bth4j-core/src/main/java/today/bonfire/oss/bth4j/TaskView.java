@@ -100,6 +100,21 @@ public final class TaskView {
         return record.uniqueKey();
     }
 
+    /** @return how long the unique key stays taken after the task ends, or null when it is released at once */
+    public Duration keyKeep() {
+        return record.keyKeep();
+    }
+
+    /** @return when the key of this finished task is released, or null when the task holds no key that way */
+    public Instant keyUntil() {
+        return record.keyUntil();
+    }
+
+    /** @return the name of the retry policy the request chose, or null for the runner's default */
+    public String retryPolicy() {
+        return record.retryPolicy();
+    }
+
     public String scheduleId() {
         return record.scheduleId();
     }

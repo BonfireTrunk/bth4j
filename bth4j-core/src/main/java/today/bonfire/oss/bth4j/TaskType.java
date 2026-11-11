@@ -43,11 +43,13 @@ public final class TaskType<T> {
 
     /** A task type whose payload is written as JSON by the configured mapper. */
     public static <T> TaskType<T> of(String name, Class<T> payloadClass) {
+        if (payloadClass == null) throw new TaskConfigurationException("payloadClass cannot be null");
         return new TaskType<>(name, payloadClass, null, 1);
     }
 
     /** A task type with its own codec. */
     public static <T> TaskType<T> of(String name, PayloadCodec<T> codec) {
+        if (codec == null) throw new TaskConfigurationException("codec cannot be null");
         return new TaskType<>(name, null, codec, 1);
     }
 

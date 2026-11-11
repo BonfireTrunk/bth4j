@@ -131,7 +131,7 @@ final class Views {
                 "queue", s.queue(),
                 "account", s.account(),
                 "cron", s.cron(),
-                "zone", s.zone() == null ? null : s.zone().getId(),
+                "zone", s.zone(),
                 "misfire", RecurringDefinition.misfireCode(s.misfire()),
                 "fixedDelay", text(s.fixedDelay()),
                 "overlap", s.overlap().name(),

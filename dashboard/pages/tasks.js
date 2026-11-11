@@ -126,9 +126,9 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
       });
 
       async function findByKey() {
-        const key = keyText.value.trim();
+        const key = keyText.value;
         keyMissing.value = false;
-        if (!key || finding.value) return;
+        if (!key.trim() || finding.value) return;
         finding.value = true;
         try {
           const task = await api.taskByKey(key);

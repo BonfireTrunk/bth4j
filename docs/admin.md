@@ -34,7 +34,7 @@ admin.cancel(id, revision, "reason");              // CANCELLED, REQUESTED or ST
 admin.cancelByKey("welcome-42", "reason");         // the holder of the key: CANCELLED, REQUESTED, STALE (changed meanwhile), NOT_FOUND (also a removed holder) or FINISHED
 admin.delete(id, revision);                        // any state but LEASED
 admin.pauseQueue("mail", true);
-admin.schedules();                                 // ScheduleView: cron, zone, misfire, fixed delay, paused, next fire
+admin.schedules();                                 // ScheduleView: cron, zone id, misfire, fixed delay, paused, next fire
 admin.pauseSchedule("poll-feed", false);           // resume a paused one; a fixed-delay definition is re-armed one delay from now
 admin.triggerSchedule("nightly-report");           // fires at the next recurring check
 admin.deleteSchedule("nightly-report");
@@ -222,8 +222,8 @@ Task ids and revisions are JSON strings.
 | `overview` | The overview. |
 | `queues` | The queues, with `pause` and `resume`. |
 | `tasks` | A list with `state`, `queue`, `cursor` and `limit` (up to 200). One task, its `payload`, `retry`, `cancel` and delete. |
-| `tasks/by-key/{key}` | Reads the task that holds a unique key. |
-| `tasks/by-key/{key}/cancel` | Cancels the task that holds the key, with a body of `{"reason"}` and no revision. |
+| `tasks/by-key?key=` | Reads the task that holds a unique key. |
+| `tasks/by-key/cancel?key=` | Cancels the task that holds the key, with a body of `{"reason"}` and no revision. |
 | `schedules` | The schedules, with `pause`, `resume`, `trigger` and delete. |
 | `workers` | The workers. |
 | `unserved` | Queued work that no live accepting worker can process. |
@@ -256,7 +256,7 @@ Viewers may read, and admins may also change (see [Roles](#roles)).
 
 | Status | When |
 |---|---|
-| 400 | A malformed `cursor`. An unknown queue name in the tasks filter. A blank by-key key, or one over 256 characters. |
+| 400 | A malformed `cursor`. An unknown queue name in the tasks filter. A missing or blank by-key key, or one over 256 characters. |
 | 403 | A viewer sent a mutation. |
 | 404 | An unknown id. An unknown queue name on pause and resume. No task holds the key on a by-key read or cancel. |
 | 409 | A stale revision. A by-key cancel when the holder is already finished or changed meanwhile. A retry blocked by a held key, with `{"code":"KEY_HELD", ...}`. |

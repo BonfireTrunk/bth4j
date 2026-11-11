@@ -287,6 +287,33 @@ class MicrometerRunnerMetricsTest {
     }
 
     @Test
+    void aSecondBindingWithTheSameTagsOnOneRegistryIsRefusedUntilTheFirstIsClosed() {
+        var tags = Tags.of("runner", "a");
+        var first = MicrometerRunnerMetrics.bind(admin, () -> 1, registry, tags, Duration.ofHours(1));
+        try {
+            assertThatThrownBy(() -> MicrometerRunnerMetrics.bind(
+                            admin, () -> 2, registry, Tags.of("runner", "a"), Duration.ofHours(1)))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("tags");
+            assertThat(gauge("bth4j.runner.running", "runner", "a")).isEqualTo(1);
+
+            try (var other = MicrometerRunnerMetrics.bind(
+                            admin, () -> 2, registry, Tags.of("runner", "b"), Duration.ofHours(1));
+                    var untagged = MicrometerRunnerMetrics.bind(admin, () -> 3, registry, null, Duration.ofHours(1));
+                    var elsewhere = MicrometerRunnerMetrics.bind(
+                            admin, () -> 4, new SimpleMeterRegistry(), tags, Duration.ofHours(1))) {
+                assertThat(gauge("bth4j.runner.running", "runner", "b")).isEqualTo(2);
+            }
+        } finally {
+            first.close();
+        }
+
+        try (var again = MicrometerRunnerMetrics.bind(admin, () -> 5, registry, tags, Duration.ofHours(1))) {
+            assertThat(gauge("bth4j.runner.running", "runner", "a")).isEqualTo(5);
+        }
+    }
+
+    @Test
     void refreshMustBePositive() {
         assertThatThrownBy(() -> MicrometerRunnerMetrics.bind(admin, () -> 0, registry, Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);

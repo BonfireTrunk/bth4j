@@ -295,7 +295,7 @@ public final class AdminHttpServer {
                 throw new HttpError(403, "this action needs the ADMIN role");
             }
         }
-        var byKey = segments.size() >= 3
+        var byKey = segments.size() >= 2
                 && segments.get(0).equals("tasks")
                 && segments.get(1).equals("by-key");
         if (byKey) {
@@ -350,19 +350,27 @@ public final class AdminHttpServer {
         }
     }
 
+    /** The key is a query value: a path cannot carry every key, a client resolves the segments "." and "..". */
     private void byKey(HttpExchange ex, String method, List<String> segments) throws IOException {
-        var key = segments.get(2);
+        var read = segments.size() == 2 && method.equals("GET");
+        var cancel =
+                segments.size() == 3 && method.equals("POST") && segments.get(2).equals("cancel");
+        if (!read && !cancel) {
+            throw new HttpError(404, "not found");
+        }
+        var key = query(ex).get("key");
+        if (key == null) {
+            throw new HttpError(400, "key is required");
+        }
         try {
             TaskRequest.requireUniqueKey(key);
         } catch (TaskValidationException e) {
             throw new HttpError(400, e.getMessage());
         }
-        if (segments.size() == 3 && method.equals("GET")) {
+        if (read) {
             var task = admin.taskByKey(key).orElseThrow(() -> new HttpError(404, "no task holds this key"));
             sendJson(ex, 200, Views.task(task));
-        } else if (segments.size() == 4
-                && method.equals("POST")
-                && segments.get(3).equals("cancel")) {
+        } else {
             var reason = readObject(ex).get("reason");
             if (reason != null && !(reason instanceof String)) {
                 throw new HttpError(400, "reason must be a string");
@@ -374,8 +382,6 @@ public final class AdminHttpServer {
                 case STALE -> throw new HttpError(409, "the task changed meanwhile, retry");
                 default -> sendJson(ex, 200, Views.obj("ok", true, "outcome", outcome.name()));
             }
-        } else {
-            throw new HttpError(404, "not found");
         }
     }
 
@@ -467,12 +473,10 @@ public final class AdminHttpServer {
                 parts.add(part);
             }
         }
-        var byKey = parts.size() >= 3
+        var byKey = parts.size() >= 2
                 && parts.get(0).equals("tasks")
                 && parts.get(1).equals("by-key");
-        if (byKey) {
-            parts.set(2, "{key}");
-        } else if (parts.size() >= 2) {
+        if (!byKey && parts.size() >= 2) {
             parts.set(1, "{}");
         }
         return API + '/' + String.join("/", parts.subList(0, Math.min(parts.size(), 4)));
@@ -777,12 +781,19 @@ public final class AdminHttpServer {
             return this;
         }
 
-        /** Adds a user; at least one is required. Only a random salt and the SHA3-384 digest of the salt and password are kept. */
+        /**
+         * Adds a user; at least one is required. Only a random salt and the SHA3-384 digest of the salt and password
+         * are kept.
+         *
+         * @throws IllegalArgumentException when a part is missing or a user with that name was added before
+         */
         public Builder user(String name, String password, Role role) {
             if (name == null || name.isEmpty() || password == null || password.isEmpty() || role == null) {
                 throw new IllegalArgumentException("name, password and role are required");
             }
-            users.put(name, User.of(password, role));
+            if (users.putIfAbsent(name, User.of(password, role)) != null) {
+                throw new IllegalArgumentException("a user with this name was added before");
+            }
             return this;
         }
 
