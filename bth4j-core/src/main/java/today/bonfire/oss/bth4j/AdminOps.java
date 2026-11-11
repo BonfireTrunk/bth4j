@@ -38,7 +38,8 @@ public interface AdminOps {
     /**
      * @param queue null for all queues
      * @param cursor {@link TaskViewPage#next()} of the previous page; null starts at the beginning
-     * @throws IllegalArgumentException if the cursor is malformed
+     * @param limit the most tasks one page holds, at least 1
+     * @throws IllegalArgumentException if the cursor is malformed or the limit is below 1
      */
     TaskViewPage tasks(TaskState state, String queue, String cursor, int limit);
 

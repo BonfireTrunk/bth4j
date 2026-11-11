@@ -49,6 +49,7 @@ import today.bonfire.oss.bth4j.spi.ExpiredLease;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
+import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
 import today.bonfire.oss.bth4j.spi.PutRecurringResult;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
@@ -688,6 +689,50 @@ class RedisTaskStoreIT {
     }
 
     @Test
+    void failEndsATaskWhoseQueueLeaseOrAttemptsCannotBeRead() {
+        for (var id = 1L; id <= 3; id++) {
+            store.enqueue(task(id).build());
+        }
+        var revision = claim(3).getFirst().revision();
+        jedis.hset(keys.task(1), "q", "x");
+        jedis.hset(keys.task(2), "lease", "y");
+        jedis.hset(keys.task(3), "att", "z");
+        var retryAt = Instant.now().plusSeconds(60);
+
+        assertThat(store.fail(1, revision, failure(1), retryAt, true, null)).isEqualTo(FailOutcome.DEAD);
+        assertThat(store.failExpired(2, revision, failure(1), null, true, null)).isEqualTo(FailOutcome.DEAD);
+        assertThat(store.fail(3, revision, failure(1), retryAt, true, null)).isEqualTo(FailOutcome.DEAD);
+
+        assertThat(jedis.exists(keys.task(1)))
+                .as("a task that no queue can hold is removed")
+                .isFalse();
+        assertThat(jedis.hget(keys.task(2), "state")).isEqualTo("4");
+        assertThat(jedis.hget(keys.task(3), "state")).isEqualTo("4");
+        assertThat(jedis.zcard(keys.leased)).isZero();
+        assertThat(jedis.zcard(keys.scheduled(queue))).isZero();
+        assertThat(counts().dead()).isEqualTo(2);
+    }
+
+    @Test
+    void renewAnswersNotOwnedForALeaseThatCannotBeReadAndStillRenewsTheOthersInTheCall() {
+        for (var id = 1L; id <= 3; id++) {
+            store.enqueue(task(id).build());
+        }
+        var revision = claim(3).getFirst().revision();
+        jedis.hset(keys.task(2), "lease", "y");
+
+        var statuses = store.renew(
+                List.of(new LeaseRef(1, revision), new LeaseRef(2, revision), new LeaseRef(3, revision)),
+                Duration.ofMinutes(10));
+
+        assertThat(statuses).extracting(LeaseStatus::owned).containsExactly(true, false, true);
+        var renewed = (double) Instant.now().plus(Duration.ofMinutes(9)).toEpochMilli();
+        assertThat(jedis.zscore(keys.leased, "1")).isGreaterThan(renewed);
+        assertThat(jedis.zscore(keys.leased, "3")).isGreaterThan(renewed);
+        assertThat(jedis.zscore(keys.leased, "2")).isLessThan(renewed);
+    }
+
+    @Test
     void endingTheLeasesOfUnreadableTasksLeavesTasksOfAnotherClaimAlone() {
         var leased = claimOne(1);
         long claimedAt = leased.claimedAt().toEpochMilli();
@@ -880,18 +925,18 @@ class RedisTaskStoreIT {
     }
 
     @Test
-    void queuedListingMergesTypesWithNumericTiesAndSurvivesTheCursorTypeDisappearing() {
+    void queuedListingMergesTypesWithTiesByIdTextAndSurvivesTheCursorTypeDisappearing() {
         var second = store.typeId("second");
-        store.enqueue(task(2).due(Instant.EPOCH).build());
-        store.enqueue(task(10).typeId(second).due(Instant.EPOCH).build());
+        store.enqueue(task(10).due(Instant.EPOCH).build());
+        store.enqueue(task(2).typeId(second).due(Instant.EPOCH).build());
         store.enqueue(task(3).typeId(second).due(Instant.ofEpochMilli(1)).build());
         var first = store.tasks(TaskState.QUEUED, queue, null, 1);
-        assertThat(first.items()).extracting(TaskRecord::id).containsExactly(2L);
-        assertThat(store.delete(2, 0, null)).isTrue();
+        assertThat(first.items()).extracting(TaskRecord::id).containsExactly(10L);
+        assertThat(store.delete(10, 0, null)).isTrue();
         assertThat(queuedTypes()).containsExactly(second);
 
         var next = store.tasks(TaskState.QUEUED, queue, first.next(), 1);
-        assertThat(next.items()).extracting(TaskRecord::id).containsExactly(10L);
+        assertThat(next.items()).extracting(TaskRecord::id).containsExactly(2L);
         assertThat(store.tasks(TaskState.QUEUED, null, next.next(), 10).items())
                 .extracting(TaskRecord::id)
                 .containsExactly(3L);
@@ -1477,12 +1522,11 @@ class RedisTaskStoreIT {
         done.forEach(id -> byTime.add(store.getTask(id).orElseThrow()));
         assertThat(byTime)
                 .isSortedAccordingTo(java.util.Comparator.comparing(TaskRecord::stateChangedAt)
-                        .thenComparingLong(TaskRecord::id));
+                        .thenComparing(t -> Long.toString(t.id())));
         assertThat(store.tasks(TaskState.SUCCEEDED, other, null, 100).items())
                 .extracting(TaskRecord::id)
                 .containsExactlyInAnyOrder(3L, 6L, 9L, 12L);
         assertThat(store.tasks(TaskState.DEAD, null, null, 10).items()).isEmpty();
-        assertThat(store.tasks(TaskState.SUCCEEDED, null, null, 0).items()).isEmpty();
     }
 
     @Test
@@ -1506,22 +1550,59 @@ class RedisTaskStoreIT {
         assertThat(seen.stream().map(TaskRecord::id).distinct().count()).isEqualTo(1100);
         assertThat(seen)
                 .isSortedAccordingTo(
-                        java.util.Comparator.comparing(TaskRecord::due).thenComparingLong(TaskRecord::id));
+                        java.util.Comparator.comparing(TaskRecord::due).thenComparing(t -> Long.toString(t.id())));
+    }
+
+    /** Gives the queued tasks one due time, as a batch stored in one millisecond has. */
+    private void dueTogether(long... ids) {
+        for (var id : ids) {
+            var typeId = Integer.parseInt(jedis.hget(keys.task(id), "ty"));
+            jedis.zadd(keys.queue(queue, typeId), 5_000, String.valueOf(id));
+            jedis.hset(keys.task(id), "due", "5000");
+        }
     }
 
     @Test
-    void numericIdOrderBreaksTiesBetweenEqualScores() {
+    void tasksDueTogetherAreListedInTheOrderAClaimTakesThemTheIdAsText() {
         for (var id : new long[] {9, 10, 100, 11}) {
             enqueued(id);
-            jedis.zadd(keys.queue(queue, type), 5_000, String.valueOf(id));
-            jedis.hset(keys.task(id), "due", "5000");
         }
+        dueTogether(9, 10, 100, 11);
 
         var first = store.tasks(TaskState.QUEUED, queue, null, 2);
         var second = store.tasks(TaskState.QUEUED, queue, first.next(), 10).items();
 
-        assertThat(first.items()).extracting(TaskRecord::id).containsExactly(9L, 10L);
-        assertThat(second).extracting(TaskRecord::id).containsExactly(11L, 100L);
+        assertThat(first.items()).extracting(TaskRecord::id).containsExactly(10L, 100L);
+        assertThat(second).extracting(TaskRecord::id).containsExactly(11L, 9L);
+        assertThat(claim(4)).extracting(TaskRecord::id).containsExactly(10L, 100L, 11L, 9L);
+    }
+
+    @Test
+    void aPageFindsItsPlaceAmongTasksDueTogetherWhenTheCursorTaskIsOfAnotherTypeOrGone() {
+        var otherType = store.typeId("report");
+        var ids = new ArrayList<Long>();
+        for (var id = 1L; id <= 60; id++) {
+            store.enqueue(task(id).typeId(id % 2 == 0 ? type : otherType).build());
+            ids.add(id);
+        }
+        dueTogether(ids.stream().mapToLong(Long::longValue).toArray());
+
+        var seen = new ArrayList<Long>();
+        String cursor = null;
+        do {
+            var page = store.tasks(TaskState.QUEUED, queue, cursor, 7);
+            page.items().forEach(t -> seen.add(t.id()));
+            cursor = page.next();
+            if (!page.items().isEmpty() && cursor != null) {
+                var last = page.items().getLast();
+                assertThat(store.delete(last.id(), last.revision(), null)).isTrue();
+            }
+        } while (cursor != null);
+
+        assertThat(seen)
+                .containsExactlyElementsOf(ids.stream()
+                        .sorted(java.util.Comparator.comparing(String::valueOf))
+                        .toList());
     }
 
     @Test

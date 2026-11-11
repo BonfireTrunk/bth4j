@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j.redis;
 
 import java.time.Duration;
+import java.util.Comparator;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.testcontainers.containers.GenericContainer;
@@ -55,6 +56,11 @@ class RedisStoreContractIT extends StoreContract {
     @Override
     protected boolean releasesKeysOnItsOwn() {
         return true;
+    }
+
+    @Override
+    protected Comparator<Long> orderOfIdsThatShareATime() {
+        return Comparator.comparing(String::valueOf);
     }
 
     @Override

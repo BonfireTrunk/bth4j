@@ -7,7 +7,8 @@ import java.util.List;
 /**
  * Background housekeeping. Any runner may call these; the store makes them safe to run concurrently. A call
  * with a limit fills the batch while more qualify (an index entry the store finds broken and drops may take a
- * place in it): the runner calls again while a batch comes back full, and a short batch ends the round.
+ * place in it): the runner calls again while a batch comes back full, and a short batch ends the round. A
+ * limit is at least 1; a lower one throws {@link IllegalArgumentException}.
  */
 public interface MaintenanceStore extends TaskStore {
 
@@ -25,7 +26,6 @@ public interface MaintenanceStore extends TaskStore {
      * {@link EnqueueOutcome.DuplicateKey} with the removed task's id.
      *
      * @param state SUCCEEDED, DEAD, CANCELLED or EXPIRED; any other state throws {@link IllegalArgumentException}
-     * @param limit at least 1
      * @return how many were removed
      */
     long purge(TaskState state, Duration retention, int limit);
@@ -34,7 +34,7 @@ public interface MaintenanceStore extends TaskStore {
      * Releases unique keys of finished tasks whose {@link TaskRecord#keyUntil()} has passed, including the keys
      * that removed tasks left taken.
      *
-     * @param limit at least 1; the most keys one call releases
+     * @param limit the most keys one call releases
      * @return how many were released
      */
     int releaseKeys(int limit);

@@ -93,10 +93,11 @@ public record TaskRecord(
     /**
      * @return this record as {@link ExecutionStore#enqueue} stores a new task: the fields a producer sets, zero
      *         attempts, and no worker, lease, claim time, key-until, cancel request or reason, progress, steps or
-     *         failures
+     *         failures. A {@link #keyKeep()} without a {@link #uniqueKey()} keeps nothing and is dropped.
      */
     public TaskRecord asNew() {
         return toBuilder()
+                .keyKeep(uniqueKey == null ? null : keyKeep)
                 .attempts(0)
                 .workerId(null)
                 .leaseUntil(null)

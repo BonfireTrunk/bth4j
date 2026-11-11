@@ -447,7 +447,8 @@ public final class TaskClient {
      *
      * @param queue  a queue name, or null for every queue
      * @param cursor {@link TaskViewPage#next()} of the previous page; null starts at the beginning
-     * @throws IllegalArgumentException if the cursor is malformed
+     * @param limit  the most tasks one page holds, at least 1
+     * @throws IllegalArgumentException if the cursor is malformed or the limit is below 1
      */
     public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
         var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.validQueue(queue)));

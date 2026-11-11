@@ -63,9 +63,11 @@ import today.bonfire.oss.bth4j.spi.WorkerInfo;
  * definitions in {@code <prefix>_schedule}. Each transition's check and writes commit together: claims use
  * {@code FOR UPDATE SKIP LOCKED}, the fenced transitions are {@code UPDATE ... WHERE id = ? AND revision = ?
  * AND state = 2}, and {@link #fail} locks the row before it reads the failures it appends to. Runners that
- * share the tables share the work. The database clock ({@code current_timestamp(3)}) decides due times, leases and
- * retention. A task removed while its unique key's keep window is open leaves a key-only row, which holds the
- * key until the window ends and is invisible to every read.
+ * share the tables share the work. The database clock decides due times, leases and retention: every statement
+ * reads the time it started at ({@code statement_timestamp()}, in whole milliseconds), also inside a caller's
+ * transaction, where {@code current_timestamp} would stand still at the transaction's start. A task removed
+ * while its unique key's keep window is open leaves a key-only row, which holds the key until the window ends
+ * and is invisible to every read.
  * <p>
  * The tables are created by {@link #init()}, or by running {@link #schemaStatements()} from the
  * application's migration tool. There are no foreign keys; the registries are only written through
@@ -89,7 +91,7 @@ public class PostgresTaskStore implements FullStore {
     private static final String KEY_RELEASE =
             " unique_key = CASE WHEN key_keep_ms IS NULL THEN NULL ELSE unique_key END,"
                     + " key_until = CASE WHEN key_keep_ms IS NULL OR unique_key IS NULL THEN NULL"
-                    + " ELSE current_timestamp(3) + key_keep_ms * interval '1 millisecond' END";
+                    + " ELSE statement_timestamp()::timestamptz(3) + key_keep_ms * interval '1 millisecond' END";
 
     /**
      * Store-internal state code of a key-only row: a task removed while its unique key's keep window is open.
@@ -100,7 +102,7 @@ public class PostgresTaskStore implements FullStore {
 
     /** Turns a row into a key-only row; each statement sets the revision and, when the task ends here, key_until. */
     private static final String TO_KEY_ONLY =
-            " state = " + KEY_ONLY + ", state_changed = current_timestamp(3), data = NULL,"
+            " state = " + KEY_ONLY + ", state_changed = statement_timestamp()::timestamptz(3), data = NULL,"
                     + " account = NULL, headers = NULL, retry_policy = NULL, schedule_id = NULL, retry_of = NULL,"
                     + " start_by = NULL, max_run_ms = NULL, cancel_requested_at = NULL, cancel_reason = NULL,"
                     + " progress = NULL, steps = NULL, failures = NULL, worker_id = NULL, lease_until = NULL,"
@@ -108,7 +110,7 @@ public class PostgresTaskStore implements FullStore {
 
     /** Starts the keep window of a task that ends here as a key-only row. */
     private static final String KEY_WINDOW =
-            " key_until = current_timestamp(3) + key_keep_ms * interval '1 millisecond'";
+            " key_until = statement_timestamp()::timestamptz(3) + key_keep_ms * interval '1 millisecond'";
 
     /**
      * The fire time a schedule commit expects, compared to the millisecond as the other stores compare it; a row
@@ -188,8 +190,9 @@ public class PostgresTaskStore implements FullStore {
                 + " due, state_changed, data, account, headers, unique_key, key_keep_ms, retry_policy, schedule_id,"
                 + " retry_of, start_by, max_run_ms)"
                 + " SELECT u.id, u.revision, u.queue_id, u.type_id, u.payload_version,"
-                + " CASE WHEN u.due > current_timestamp(3) THEN 1 ELSE 0 END, 0, u.max_attempts, u.created,"
-                + " COALESCE(u.due, current_timestamp(3)), current_timestamp(3), u.data, u.account, u.headers::jsonb, u.unique_key, u.key_keep_ms,"
+                + " CASE WHEN u.due > statement_timestamp()::timestamptz(3) THEN 1 ELSE 0 END, 0, u.max_attempts,"
+                + " COALESCE(u.created, statement_timestamp()::timestamptz(3)),"
+                + " COALESCE(u.due, statement_timestamp()::timestamptz(3)), statement_timestamp()::timestamptz(3), u.data, u.account, u.headers::jsonb, u.unique_key, u.key_keep_ms,"
                 + " u.retry_policy, u.schedule_id, u.retry_of, u.start_by, u.max_run_ms"
                 + " FROM unnest(?::bigint[], ?::int[], ?::int[], ?::int[], ?::int[], ?::int[],"
                 + " ?::timestamptz[], ?::timestamptz[], ?::text[], ?::text[], ?::text[], ?::text[], ?::bigint[],"
@@ -204,16 +207,17 @@ public class PostgresTaskStore implements FullStore {
         // renew and ackAll lock their rows in id order, so a renewal and a batch of the same worker's acks that
         // overlap wait for each other instead of deadlocking
         renewSql = "WITH l AS (SELECT t.id FROM " + task + " t JOIN unnest(?::bigint[], ?::int[]) AS u(id, revision)"
-                + "   ON t.id = u.id AND t.revision = u.revision WHERE t.state = 2 AND t.lease_until > current_timestamp(3)"
+                + "   ON t.id = u.id AND t.revision = u.revision WHERE t.state = 2 AND t.lease_until > statement_timestamp()::timestamptz(3)"
                 + "   ORDER BY t.id FOR UPDATE OF t)"
-                + " UPDATE " + task + " t SET lease_until = current_timestamp(3) + ? * interval '1 millisecond'"
+                + " UPDATE " + task
+                + " t SET lease_until = statement_timestamp()::timestamptz(3) + ? * interval '1 millisecond'"
                 + " FROM l WHERE t.id = l.id"
                 + " RETURNING t.id, t.revision, t.cancel_requested_at IS NOT NULL";
-        finishCancelledSql =
-                "UPDATE " + task + " SET state = 5, revision = revision + 1, state_changed = current_timestamp(3),"
-                        + " cancel_reason = ?, cancel_requested_at = COALESCE(cancel_requested_at, current_timestamp(3)),"
-                        + " lease_until = NULL, data = CASE WHEN ? THEN data ELSE NULL END," + KEY_RELEASE + FENCE;
-        finishCancelledExpiredSql = finishCancelledSql + " AND lease_until <= current_timestamp(3)";
+        finishCancelledSql = "UPDATE " + task
+                + " SET state = 5, revision = revision + 1, state_changed = statement_timestamp()::timestamptz(3),"
+                + " cancel_reason = ?, cancel_requested_at = COALESCE(cancel_requested_at, statement_timestamp()::timestamptz(3)),"
+                + " lease_until = NULL, data = CASE WHEN ? THEN data ELSE NULL END," + KEY_RELEASE + FENCE;
+        finishCancelledExpiredSql = finishCancelledSql + " AND lease_until <= statement_timestamp()::timestamptz(3)";
         // keep = false removes the row, or leaves only its key while the key has a keep window; the three
         // branches exclude each other, so at most one touches the row
         ackSql = "WITH d AS (DELETE FROM " + task + FENCE
@@ -221,7 +225,7 @@ public class PostgresTaskStore implements FullStore {
                 + " k AS (UPDATE " + task + " SET" + TO_KEY_ONLY + ", revision = revision + 1," + KEY_WINDOW
                 + FENCE + " AND NOT ? AND key_keep_ms IS NOT NULL AND unique_key IS NOT NULL RETURNING id),"
                 + " u AS (UPDATE " + task
-                + " SET state = 3, revision = revision + 1, state_changed = current_timestamp(3),"
+                + " SET state = 3, revision = revision + 1, state_changed = statement_timestamp()::timestamptz(3),"
                 + "   lease_until = NULL, data = CASE WHEN ? THEN data ELSE NULL END," + KEY_RELEASE
                 + FENCE + " AND ? RETURNING id)"
                 + " SELECT (SELECT count(*) FROM d) + (SELECT count(*) FROM k) + (SELECT count(*) FROM u)";
@@ -233,37 +237,38 @@ public class PostgresTaskStore implements FullStore {
                 + " k AS (UPDATE " + task + " SET" + TO_KEY_ONLY + ", revision = l.revision + 1," + KEY_WINDOW
                 + "   FROM l WHERE " + task + ".id = l.id AND NOT ? AND l.held RETURNING l.id, l.revision),"
                 + " u AS (UPDATE " + task
-                + " SET state = 3, revision = l.revision + 1, state_changed = current_timestamp(3),"
+                + " SET state = 3, revision = l.revision + 1, state_changed = statement_timestamp()::timestamptz(3),"
                 + "   lease_until = NULL, data = CASE WHEN ? THEN data ELSE NULL END," + KEY_RELEASE
                 + "   FROM l WHERE " + task + ".id = l.id AND ? RETURNING l.id, l.revision)"
                 + " SELECT id, revision FROM d UNION ALL SELECT id, revision FROM k"
                 + " UNION ALL SELECT id, revision FROM u";
         failLockSql = "SELECT attempts, max_attempts, failures::text,"
-                + " key_keep_ms IS NOT NULL AND unique_key IS NOT NULL, lease_until <= current_timestamp(3)"
+                + " key_keep_ms IS NOT NULL AND unique_key IS NOT NULL, lease_until <= statement_timestamp()::timestamptz(3)"
                 + " FROM " + task + FENCE + " FOR UPDATE";
         rescheduleSql = "UPDATE " + task + " SET state = 1, due = ?, attempts = attempts - 1,"
-                + " revision = revision + 1, state_changed = current_timestamp(3), lease_until = NULL, worker_id = NULL"
+                + " revision = revision + 1, state_changed = statement_timestamp()::timestamptz(3), lease_until = NULL, worker_id = NULL"
                 + FENCE;
         unclaimSql = "UPDATE " + task + " SET state = 0, attempts = attempts - 1,"
-                + " revision = revision + 1, state_changed = current_timestamp(3), lease_until = NULL, worker_id = NULL"
+                + " revision = revision + 1, state_changed = statement_timestamp()::timestamptz(3), lease_until = NULL, worker_id = NULL"
                 + FENCE;
         saveStepsSql = "UPDATE " + task + " SET steps = ?::jsonb" + FENCE;
         progressSql = "UPDATE " + task + " SET progress = ?" + FENCE;
         promoteSql = "WITH due AS (SELECT id FROM " + task
-                + " WHERE state = 1 AND due <= current_timestamp(3) ORDER BY due LIMIT ?"
+                + " WHERE state = 1 AND due <= statement_timestamp()::timestamptz(3) ORDER BY due LIMIT ?"
                 + "   FOR UPDATE SKIP LOCKED)"
                 + " UPDATE " + task
-                + " t SET state = 0, revision = t.revision + 1, state_changed = current_timestamp(3)"
+                + " t SET state = 0, revision = t.revision + 1, state_changed = statement_timestamp()::timestamptz(3)"
                 + " FROM due WHERE t.id = due.id";
         nextDueSql = "SELECT min(due) FROM " + task + " WHERE state = 1";
         endLeasesSql =
                 "UPDATE " + task + " SET lease_until = claimed_at WHERE id = ANY(?) AND state = 2 AND worker_id = ?";
         reclaimSql = "SELECT id, revision, attempts, max_attempts, type_id, cancel_requested_at IS NOT NULL" + " FROM "
-                + task + " WHERE state = 2 AND lease_until <= current_timestamp(3) ORDER BY lease_until LIMIT ?";
-        releaseKeysSql =
-                releaseKeysSql("key_until <= current_timestamp(3) ORDER BY key_until LIMIT ? FOR UPDATE SKIP LOCKED");
+                + task
+                + " WHERE state = 2 AND lease_until <= statement_timestamp()::timestamptz(3) ORDER BY lease_until LIMIT ?";
+        releaseKeysSql = releaseKeysSql(
+                "key_until <= statement_timestamp()::timestamptz(3) ORDER BY key_until LIMIT ? FOR UPDATE SKIP LOCKED");
         releaseExpiredKeysSql = releaseKeysSql(
-                "unique_key = ANY(?) AND key_until <= current_timestamp(3) ORDER BY unique_key FOR UPDATE");
+                "unique_key = ANY(?) AND key_until <= statement_timestamp()::timestamptz(3) ORDER BY unique_key FOR UPDATE");
         // the stored next fire time survives a re-put that keeps the timing (cron, zone, fixed delay) unchanged
         // and is not past the caller's keep-until bound;
         // paused is only taken from a new definition, so a runner re-putting at start cannot undo an operator's pause;
@@ -319,7 +324,8 @@ public class PostgresTaskStore implements FullStore {
                 + "   (id, revision, queue_id, type_id, payload_version, state, attempts, max_attempts, created,"
                 + "   due, state_changed, data, account, headers, retry_policy, schedule_id, unique_key, key_keep_ms,"
                 + "   start_by, max_run_ms, retry_of)"
-                + "   SELECT ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, current_timestamp(3), ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ? FROM adv"
+                + "   SELECT ?, ?, ?, ?, ?, 1, 0, ?, COALESCE(?::timestamptz, statement_timestamp()::timestamptz(3)), ?,"
+                + "   statement_timestamp()::timestamptz(3), ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ? FROM adv"
                 + "   ON CONFLICT DO NOTHING RETURNING id)"
                 + " SELECT (SELECT count(*) FROM adv), (SELECT count(*) FROM ins)";
     }
@@ -345,9 +351,11 @@ public class PostgresTaskStore implements FullStore {
      * Parameters: [types], queue ids, shares, caps, count, count, count, worker, lease ms.
      */
     private String claimSql(boolean filterTypes) {
-        var eligible = " state = 0 AND queue_id = g.queue_id AND (start_by IS NULL OR start_by > current_timestamp(3))"
-                // as a subquery result the planner does not estimate each of thousands of type ids on every claim
-                + (filterTypes ? " AND type_id = ANY((SELECT types FROM k)::int[])" : "");
+        var eligible =
+                " state = 0 AND queue_id = g.queue_id AND (start_by IS NULL OR start_by > statement_timestamp()::timestamptz(3))"
+                        // as a subquery result the planner does not estimate each of thousands of type ids on every
+                        // claim
+                        + (filterTypes ? " AND type_id = ANY((SELECT types FROM k)::int[])" : "");
         return "WITH " + (filterTypes ? "k AS (SELECT ?::int[] AS types)," : "")
                 + " q AS (SELECT u.queue_id, u.take, u.cap, u.prio FROM unnest(?::int[], ?::int[], ?::int[])"
                 + " WITH ORDINALITY AS u(queue_id, take, cap, prio)"
@@ -366,8 +374,8 @@ public class PostgresTaskStore implements FullStore {
                 + " picked AS (SELECT id, row_number() OVER (ORDER BY pass, prio, due, id) AS ord FROM"
                 + "   (SELECT 1 AS pass, id, prio, due FROM p1 UNION ALL SELECT 2, id, prio, due FROM p2) x),"
                 + " upd AS (UPDATE " + task + " t SET state = 2, revision = t.revision + 1, attempts = t.attempts + 1,"
-                + "   worker_id = ?, claimed_at = current_timestamp(3), state_changed = current_timestamp(3),"
-                + "   lease_until = current_timestamp(3) + ? * interval '1 millisecond'"
+                + "   worker_id = ?, claimed_at = statement_timestamp()::timestamptz(3), state_changed = statement_timestamp()::timestamptz(3),"
+                + "   lease_until = statement_timestamp()::timestamptz(3) + ? * interval '1 millisecond'"
                 // ids as one array so the rows are found by primary key: a join with picked lets the planner,
                 // which cannot see the LIMITs, hash the whole task table instead
                 + "   WHERE t.id = ANY((SELECT array_agg(id) FROM picked)::bigint[]) RETURNING t.*)"
@@ -565,9 +573,10 @@ public class PostgresTaskStore implements FullStore {
     public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
         StoreArguments.requireLabel(label);
         return withConnection(c -> withWorkerArrays(c, queueIds, typeIds, (queues, types) -> {
-            try (var ps = c.prepareStatement("INSERT INTO " + worker
-                    + " (label, started_at, last_seen, accepting, queue_ids, type_ids)"
-                    + " VALUES (?, current_timestamp(3), current_timestamp(3), true, ?, ?) RETURNING id")) {
+            try (var ps = c.prepareStatement(
+                    "INSERT INTO " + worker
+                            + " (label, started_at, last_seen, accepting, queue_ids, type_ids)"
+                            + " VALUES (?, statement_timestamp()::timestamptz(3), statement_timestamp()::timestamptz(3), true, ?, ?) RETURNING id")) {
                 ps.setString(1, label);
                 ps.setArray(2, queues);
                 ps.setArray(3, types);
@@ -695,12 +704,20 @@ public class PostgresTaskStore implements FullStore {
         }
     }
 
+    /**
+     * How often an enqueue is tried again after the holder of its unique key went away between the insert and
+     * the look at who holds it. Every further round needs another holder to take the key and lose it in that
+     * same gap, which a busy key does now and then and nothing does this often; the bound only ends the loop.
+     */
+    static final int SETTLE_ROUNDS = 100;
+
     private List<EnqueueOutcome> enqueueAll(Connection c, List<TaskRecord> tasks) throws SQLException {
+        tasks.forEach(t -> StoreArguments.requireKey(t.uniqueKey()));
         {
             var outcomes = new EnqueueOutcome[tasks.size()];
             var pending = new ArrayList<Integer>();
             for (int i = 0; i < tasks.size(); i++) pending.add(i);
-            for (int round = 0; round < 3 && !pending.isEmpty(); round++) {
+            for (int round = 0; round < SETTLE_ROUNDS && !pending.isEmpty(); round++) {
                 var batch = pending.stream().map(tasks::get).toList();
                 releaseExpiredKeys(c, batch);
                 var stored = insert(c, batch);
@@ -768,7 +785,7 @@ public class PostgresTaskStore implements FullStore {
             typeIds[i] = t.typeId();
             payloadVersions[i] = t.payloadVersion();
             maxAttempts[i] = t.maxAttempts();
-            created[i] = text(t.createdAt() == null ? Instant.now() : t.createdAt());
+            created[i] = text(t.createdAt());
             due[i] = text(t.due());
             data[i] = t.encodedPayload();
             account[i] = t.account();
@@ -1146,7 +1163,8 @@ public class PostgresTaskStore implements FullStore {
                 failures.subList(Math.max(0, failures.size() - MAX_FAILURES), failures.size()));
         if (dead) {
             try (var ps = c.prepareStatement("UPDATE " + task + " SET state = 4, revision = revision + 1,"
-                    + " state_changed = current_timestamp(3), lease_until = NULL, failures = ?::jsonb," + KEY_RELEASE
+                    + " state_changed = statement_timestamp()::timestamptz(3), lease_until = NULL, failures = ?::jsonb,"
+                    + KEY_RELEASE
                     + " WHERE id = ?")) {
                 ps.setString(1, json);
                 ps.setLong(2, id);
@@ -1156,7 +1174,7 @@ public class PostgresTaskStore implements FullStore {
         }
         try (var ps = c.prepareStatement(
                 "UPDATE " + task + " SET state = 1, due = ?, revision = revision + 1,"
-                        + " state_changed = current_timestamp(3), lease_until = NULL, worker_id = NULL, failures = ?::jsonb WHERE id = ?")) {
+                        + " state_changed = statement_timestamp()::timestamptz(3), lease_until = NULL, worker_id = NULL, failures = ?::jsonb WHERE id = ?")) {
             setInstant(ps, 1, retryAt);
             ps.setString(2, json);
             ps.setLong(3, id);
@@ -1206,13 +1224,12 @@ public class PostgresTaskStore implements FullStore {
 
     @Override
     public PromoteResult promote(int limit) {
+        StoreArguments.requireLimit(limit);
         return withConnection(c -> {
-            int moved = 0;
-            if (limit > 0) {
-                try (var ps = c.prepareStatement(promoteSql)) {
-                    ps.setInt(1, limit);
-                    moved = ps.executeUpdate();
-                }
+            int moved;
+            try (var ps = c.prepareStatement(promoteSql)) {
+                ps.setInt(1, limit);
+                moved = ps.executeUpdate();
             }
             try (var ps = c.prepareStatement(nextDueSql);
                     var rs = ps.executeQuery()) {
@@ -1224,7 +1241,7 @@ public class PostgresTaskStore implements FullStore {
 
     @Override
     public List<ExpiredLease> reclaim(int limit) {
-        if (limit <= 0) return List.of();
+        StoreArguments.requireLimit(limit);
         return withConnection(c -> {
             try (var ps = c.prepareStatement(reclaimSql)) {
                 ps.setInt(1, limit);
@@ -1253,15 +1270,17 @@ public class PostgresTaskStore implements FullStore {
     @Override
     public long purge(TaskState state, Duration retention, int limit) {
         StoreArguments.requireTerminal(state);
-        if (limit <= 0) return 0;
-        var sql = "WITH x AS (SELECT id, COALESCE(key_until > current_timestamp(3), false) AS held FROM " + task
-                + "   WHERE state = " + state.code()
-                + " AND state_changed <= current_timestamp(3) - ? * interval '1 millisecond'"
-                + "   ORDER BY state_changed LIMIT ? FOR UPDATE SKIP LOCKED),"
-                + " d AS (DELETE FROM " + task + " t USING x WHERE t.id = x.id AND NOT x.held RETURNING 1),"
-                + " k AS (UPDATE " + task + " t SET" + TO_KEY_ONLY + ", revision = t.revision + 1 FROM x"
-                + "   WHERE t.id = x.id AND x.held RETURNING 1)"
-                + " SELECT (SELECT count(*) FROM d) + (SELECT count(*) FROM k)";
+        StoreArguments.requireLimit(limit);
+        var sql =
+                "WITH x AS (SELECT id, COALESCE(key_until > statement_timestamp()::timestamptz(3), false) AS held FROM "
+                        + task
+                        + "   WHERE state = " + state.code()
+                        + " AND state_changed <= statement_timestamp()::timestamptz(3) - ? * interval '1 millisecond'"
+                        + "   ORDER BY state_changed LIMIT ? FOR UPDATE SKIP LOCKED),"
+                        + " d AS (DELETE FROM " + task + " t USING x WHERE t.id = x.id AND NOT x.held RETURNING 1),"
+                        + " k AS (UPDATE " + task + " t SET" + TO_KEY_ONLY + ", revision = t.revision + 1 FROM x"
+                        + "   WHERE t.id = x.id AND x.held RETURNING 1)"
+                        + " SELECT (SELECT count(*) FROM d) + (SELECT count(*) FROM k)";
         return withConnection(c -> {
             try (var ps = c.prepareStatement(sql)) {
                 ps.setLong(1, retention.toMillis());
@@ -1273,7 +1292,7 @@ public class PostgresTaskStore implements FullStore {
 
     @Override
     public int releaseKeys(int limit) {
-        if (limit <= 0) return 0;
+        StoreArguments.requireLimit(limit);
         return withConnection(c -> {
             try (var ps = c.prepareStatement(releaseKeysSql)) {
                 ps.setInt(1, limit);
@@ -1368,7 +1387,7 @@ public class PostgresTaskStore implements FullStore {
 
     @Override
     public List<DueSchedule> dueRecurring(Instant upTo, int limit) {
-        if (limit <= 0) return List.of();
+        StoreArguments.requireLimit(limit);
         return withConnection(c -> {
             try (var ps = c.prepareStatement(dueScheduleSql)) {
                 setInstant(ps, 1, upTo);
@@ -1394,6 +1413,7 @@ public class PostgresTaskStore implements FullStore {
      */
     @Override
     public boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord o) {
+        StoreArguments.requireKey(o.uniqueKey());
         var fixedDelay = due.definition().isFixedDelay();
         SqlFunction<Boolean> commit = c -> {
             if (o.uniqueKey() != null) {
@@ -1415,7 +1435,7 @@ public class PostgresTaskStore implements FullStore {
                 ps.setInt(8, o.typeId());
                 ps.setInt(9, o.payloadVersion());
                 ps.setInt(10, o.maxAttempts());
-                setInstant(ps, 11, o.createdAt() == null ? Instant.now() : o.createdAt());
+                setInstant(ps, 11, o.createdAt());
                 setInstant(ps, 12, due.fireAt());
                 ps.setString(13, o.encodedPayload());
                 ps.setString(14, o.account());
@@ -1493,7 +1513,7 @@ public class PostgresTaskStore implements FullStore {
     public Optional<TaskRecord> taskByKey(String key) {
         return withConnection(c -> {
             try (var ps = c.prepareStatement("SELECT * FROM " + task
-                    + " WHERE unique_key = ? AND (key_until IS NULL OR key_until > current_timestamp(3))"
+                    + " WHERE unique_key = ? AND (key_until IS NULL OR key_until > statement_timestamp()::timestamptz(3))"
                     + " AND state < " + KEY_ONLY)) {
                 ps.setString(1, key);
                 try (var rs = ps.executeQuery()) {
@@ -1534,8 +1554,8 @@ public class PostgresTaskStore implements FullStore {
      */
     @Override
     public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
+        StoreArguments.requireLimit(limit);
         var position = cursor == null ? null : decodeCursor(cursor);
-        if (limit <= 0) return new TaskPage(List.of(), null);
         var byDue = listedByDue(state);
         var column = byDue ? "due" : "state_changed";
         var perQueue = queueId == null && state == TaskState.QUEUED;
@@ -1842,12 +1862,12 @@ public class PostgresTaskStore implements FullStore {
     /** Oldest deadline first, through the {@code _start_by} partial index. */
     @Override
     public List<Long> expire(int limit) {
-        if (limit <= 0) return List.of();
+        StoreArguments.requireLimit(limit);
         return withConnection(c -> {
             try (var ps = c.prepareStatement("WITH x AS (SELECT id FROM " + task
-                    + "   WHERE start_by <= current_timestamp(3) AND state < 2 ORDER BY start_by, id LIMIT ? FOR UPDATE SKIP LOCKED)"
+                    + "   WHERE start_by <= statement_timestamp()::timestamptz(3) AND state < 2 ORDER BY start_by, id LIMIT ? FOR UPDATE SKIP LOCKED)"
                     + " UPDATE " + task
-                    + " t SET state = 6, revision = t.revision + 1, state_changed = current_timestamp(3),"
+                    + " t SET state = 6, revision = t.revision + 1, state_changed = statement_timestamp()::timestamptz(3),"
                     + KEY_RELEASE + " FROM x WHERE t.id = x.id RETURNING t.id")) {
                 ps.setInt(1, limit);
                 var ids = new ArrayList<Long>();
@@ -1863,7 +1883,7 @@ public class PostgresTaskStore implements FullStore {
     public int purgeWorkers(Duration staleAfter) {
         return withConnection(c -> {
             try (var ps = c.prepareStatement("DELETE FROM " + worker
-                    + " WHERE last_seen < current_timestamp(3) - ? * interval '1 millisecond'")) {
+                    + " WHERE last_seen < statement_timestamp()::timestamptz(3) - ? * interval '1 millisecond'")) {
                 ps.setLong(1, staleAfter.toMillis());
                 return ps.executeUpdate();
             }
@@ -1887,10 +1907,11 @@ public class PostgresTaskStore implements FullStore {
 
     private CancelOutcome cancelStatement(Connection c, long id, int revision, String reason) throws SQLException {
         try (var ps = c.prepareStatement("WITH c AS (UPDATE " + task
-                + "   SET state = 5, revision = revision + 1, state_changed = current_timestamp(3), cancel_requested_at = current_timestamp(3),"
+                + "   SET state = 5, revision = revision + 1, state_changed = statement_timestamp()::timestamptz(3), cancel_requested_at = statement_timestamp()::timestamptz(3),"
                 + "   cancel_reason = ?," + KEY_RELEASE
                 + "   WHERE id = ? AND revision = ? AND state IN (0, 1) RETURNING 1),"
-                + " r AS (UPDATE " + task + " SET cancel_requested_at = current_timestamp(3), cancel_reason = ?" + FENCE
+                + " r AS (UPDATE " + task
+                + " SET cancel_requested_at = statement_timestamp()::timestamptz(3), cancel_reason = ?" + FENCE
                 + "   RETURNING 2)"
                 + " SELECT COALESCE((SELECT 1 FROM c), (SELECT 2 FROM r), 0)")) {
             ps.setString(1, reason);
@@ -1918,11 +1939,11 @@ public class PostgresTaskStore implements FullStore {
     public RetryOutcome retry(long id, int revision) {
         return inTransaction(c -> {
             try (var ps = c.prepareStatement("UPDATE " + task
-                    + " SET state = 0, due = current_timestamp(3), attempts = 0, revision = revision + 1,"
-                    + " state_changed = current_timestamp(3), worker_id = NULL, lease_until = NULL, cancel_requested_at = NULL,"
+                    + " SET state = 0, due = statement_timestamp()::timestamptz(3), attempts = 0, revision = revision + 1,"
+                    + " state_changed = statement_timestamp()::timestamptz(3), worker_id = NULL, lease_until = NULL, cancel_requested_at = NULL,"
                     + " cancel_reason = NULL,"
-                    + " key_keep_ms = CASE WHEN unique_key IS NULL OR key_until <= current_timestamp(3) THEN NULL ELSE key_keep_ms END,"
-                    + " unique_key = CASE WHEN key_until <= current_timestamp(3) THEN NULL ELSE unique_key END, key_until = NULL,"
+                    + " key_keep_ms = CASE WHEN unique_key IS NULL OR key_until <= statement_timestamp()::timestamptz(3) THEN NULL ELSE key_keep_ms END,"
+                    + " unique_key = CASE WHEN key_until <= statement_timestamp()::timestamptz(3) THEN NULL ELSE unique_key END, key_until = NULL,"
                     + " start_by = NULL WHERE id = ? AND revision = ? AND state IN (4, 5, 6)")) {
                 ps.setLong(1, id);
                 ps.setInt(2, revision);
@@ -1974,7 +1995,7 @@ public class PostgresTaskStore implements FullStore {
         withConnection(c -> withWorkerArrays(c, queueIds, typeIds, (queues, types) -> {
             try (var ps = c.prepareStatement("INSERT INTO " + worker
                     + " (id, label, started_at, last_seen, running, accepting, queue_ids, type_ids)"
-                    + " VALUES (?, ?, current_timestamp(3), current_timestamp(3), ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE"
+                    + " VALUES (?, ?, statement_timestamp()::timestamptz(3), statement_timestamp()::timestamptz(3), ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE"
                     + " SET last_seen = excluded.last_seen, running = excluded.running,"
                     + " accepting = excluded.accepting")) {
                 ps.setInt(1, workerId);

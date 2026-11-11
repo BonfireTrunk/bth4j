@@ -566,6 +566,7 @@ public class SqliteTaskStore implements FullStore {
      * rounds, as in PostgreSQL.
      */
     private List<EnqueueOutcome> enqueueAll(Connection c, List<TaskRecord> tasks) throws SQLException {
+        tasks.forEach(t -> StoreArguments.requireKey(t.uniqueKey()));
         long now = clock.millis();
         releaseExpiredKeys(c, now, tasks.stream().map(TaskRecord::uniqueKey).toList());
         var outcomes = new ArrayList<EnqueueOutcome>(tasks.size());
@@ -984,9 +985,10 @@ public class SqliteTaskStore implements FullStore {
     /** Reads the due tasks first, so that a poll that finds none does not take the write lock. */
     @Override
     public PromoteResult promote(int limit) {
+        StoreArguments.requireLimit(limit);
         var select = "SELECT id FROM " + task + " WHERE state = 1 AND due <= ? ORDER BY due, id LIMIT ?";
         long moved = 0;
-        if (limit > 0 && withConnection(c -> queryOne(c, select, rs -> true, clock.millis(), limit) != null)) {
+        if (withConnection(c -> queryOne(c, select, rs -> true, clock.millis(), limit) != null)) {
             moved = inTransaction(c -> {
                 long now = clock.millis();
                 var ids = new ArrayList<Long>();
@@ -1005,7 +1007,7 @@ public class SqliteTaskStore implements FullStore {
 
     @Override
     public List<ExpiredLease> reclaim(int limit) {
-        if (limit <= 0) return List.of();
+        StoreArguments.requireLimit(limit);
         return withConnection(c -> {
             var result = new ArrayList<ExpiredLease>();
             queryEach(
@@ -1027,7 +1029,7 @@ public class SqliteTaskStore implements FullStore {
     @Override
     public long purge(TaskState state, Duration retention, int limit) {
         StoreArguments.requireTerminal(state);
-        if (limit <= 0) return 0;
+        StoreArguments.requireLimit(limit);
         var select = "SELECT id, COALESCE(key_until > ?1, 0) FROM " + task + " WHERE state = " + state.code()
                 + " AND state_changed <= ?1 - ?2 ORDER BY state_changed, id LIMIT ?3";
         if (!withConnection(
@@ -1064,7 +1066,7 @@ public class SqliteTaskStore implements FullStore {
 
     @Override
     public int releaseKeys(int limit) {
-        if (limit <= 0) return 0;
+        StoreArguments.requireLimit(limit);
         var select = "SELECT id, state FROM " + task + " WHERE key_until <= ?1 ORDER BY key_until, id LIMIT ?2";
         if (!withConnection(c -> queryOne(c, select, rs -> true, clock.millis(), limit) != null)) return 0;
         return inTransaction(c -> releaseSelected(c, clock.millis(), select, (long) limit));
@@ -1192,7 +1194,7 @@ public class SqliteTaskStore implements FullStore {
 
     @Override
     public List<DueSchedule> dueRecurring(Instant upTo, int limit) {
-        if (limit <= 0) return List.of();
+        StoreArguments.requireLimit(limit);
         return withConnection(c -> {
             var result = new ArrayList<DueSchedule>();
             queryEach(
@@ -1218,6 +1220,7 @@ public class SqliteTaskStore implements FullStore {
      */
     @Override
     public boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord o) {
+        StoreArguments.requireKey(o.uniqueKey());
         var fixedDelay = due.definition().isFixedDelay();
         return inTransaction(c -> {
             long now = clock.millis();
@@ -1331,8 +1334,8 @@ public class SqliteTaskStore implements FullStore {
      */
     @Override
     public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
+        StoreArguments.requireLimit(limit);
         var position = cursor == null ? null : decodeCursor(cursor);
-        if (limit <= 0) return new TaskPage(List.of(), null);
         var column = listedByDue(state) ? "due" : "state_changed";
         var perQueue = queueId == null && state == TaskState.QUEUED;
         var sql = "SELECT " + (perQueue ? column + ", id" : "*") + " FROM " + task + " WHERE state = " + state.code()
@@ -1665,7 +1668,7 @@ public class SqliteTaskStore implements FullStore {
     /** Oldest deadline first, through the {@code _start_by} partial index. */
     @Override
     public List<Long> expire(int limit) {
-        if (limit <= 0) return List.of();
+        StoreArguments.requireLimit(limit);
         var select = "SELECT id FROM " + task + " WHERE start_by <= ? AND state < 2 ORDER BY start_by, id LIMIT ?";
         if (!withConnection(c -> queryOne(c, select, rs -> true, clock.millis(), limit) != null)) return List.of();
         return inTransaction(c -> {

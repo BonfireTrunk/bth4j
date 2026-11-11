@@ -133,7 +133,7 @@ Enqueueing first and cancelling the task when your transaction rolls back does n
 | PostgreSQL, SQLite, in-memory | id order |
 | Redis | compares their ids as text, so of two tasks due in the same millisecond, id 1000 runs before id 999 |
 
-The runner promises no order among tasks due at the same time.
+A listing of tasks follows the same order on each store. The runner promises no order among tasks due at the same time.
 
 ## Maintenance batches
 

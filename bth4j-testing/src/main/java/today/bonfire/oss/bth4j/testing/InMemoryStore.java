@@ -37,6 +37,7 @@ import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
+import today.bonfire.oss.bth4j.spi.ScheduleStore;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.StoreArguments;
@@ -200,6 +201,7 @@ public final class InMemoryStore implements FullStore {
 
     @Override
     public EnqueueOutcome enqueue(TaskRecord task) {
+        StoreArguments.requireKey(task.uniqueKey());
         lock.lock();
         try {
             return enqueueLocked(task, null);
@@ -210,6 +212,7 @@ public final class InMemoryStore implements FullStore {
 
     @Override
     public List<EnqueueOutcome> enqueueAll(List<TaskRecord> list) {
+        list.forEach(task -> StoreArguments.requireKey(task.uniqueKey()));
         lock.lock();
         try {
             List<EnqueueOutcome> result = new ArrayList<>(list.size());
@@ -246,7 +249,12 @@ public final class InMemoryStore implements FullStore {
         }
         Instant due = millis(forcedDue != null ? forcedDue : task.due() != null ? task.due() : now);
         TaskState state = forcedDue != null || due.isAfter(now) ? TaskState.SCHEDULED : TaskState.QUEUED;
-        save(task.asNew().toBuilder().state(state).due(due).stateChangedAt(now).build());
+        save(task.asNew().toBuilder()
+                .createdAt(task.createdAt() != null ? task.createdAt() : now)
+                .state(state)
+                .due(due)
+                .stateChangedAt(now)
+                .build());
         if (key != null) {
             keyHolders.put(key, task.id());
         }
@@ -577,6 +585,7 @@ public final class InMemoryStore implements FullStore {
 
     @Override
     public PromoteResult promote(int limit) {
+        StoreArguments.requireLimit(limit);
         lock.lock();
         try {
             Instant now = clock.instant();
@@ -600,6 +609,7 @@ public final class InMemoryStore implements FullStore {
 
     @Override
     public List<ExpiredLease> reclaim(int limit) {
+        StoreArguments.requireLimit(limit);
         lock.lock();
         try {
             Instant now = clock.instant();
@@ -624,6 +634,7 @@ public final class InMemoryStore implements FullStore {
     @Override
     public long purge(TaskState state, Duration retention, int limit) {
         StoreArguments.requireTerminal(state);
+        StoreArguments.requireLimit(limit);
         lock.lock();
         try {
             Instant now = clock.instant();
@@ -642,6 +653,7 @@ public final class InMemoryStore implements FullStore {
 
     @Override
     public int releaseKeys(int limit) {
+        StoreArguments.requireLimit(limit);
         lock.lock();
         try {
             Instant now = clock.instant();
@@ -745,6 +757,7 @@ public final class InMemoryStore implements FullStore {
 
     @Override
     public List<DueSchedule> dueRecurring(Instant upTo, int limit) {
+        StoreArguments.requireLimit(limit);
         lock.lock();
         try {
             return recurring.entrySet().stream()
@@ -763,7 +776,11 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord occurrence) {
+    public boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord given) {
+        StoreArguments.requireKey(given.uniqueKey());
+        TaskRecord occurrence = given.scheduleId() != null
+                ? given
+                : given.toBuilder().scheduleId(due.scheduleId()).build();
         lock.lock();
         try {
             Recurring current = recurring.get(due.scheduleId());
@@ -783,7 +800,9 @@ public final class InMemoryStore implements FullStore {
                     occurrenceId = occurrence.id();
                 } else if (outcome instanceof EnqueueOutcome.DuplicateKey held && occurrenceId == null) {
                     TaskRecord holder = tasks.get(held.existingId());
-                    if (holder != null && due.scheduleId().equals(holder.scheduleId())) {
+                    if (holder != null
+                            && !holder.state().isTerminal()
+                            && due.scheduleId().equals(holder.scheduleId())) {
                         occurrenceId = held.existingId();
                     }
                 }
@@ -843,6 +862,7 @@ public final class InMemoryStore implements FullStore {
      */
     @Override
     public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
+        StoreArguments.requireLimit(limit);
         var position = cursor == null ? null : decodeCursor(cursor);
         Function<TaskRecord, Instant> sortTime = state == TaskState.QUEUED || state == TaskState.SCHEDULED
                 ? TaskRecord::due
@@ -850,16 +870,14 @@ public final class InMemoryStore implements FullStore {
         lock.lock();
         try {
             Comparator<TaskRecord> order = Comparator.comparing(sortTime).thenComparingLong(TaskRecord::id);
-            List<TaskRecord> found = limit <= 0
-                    ? List.of()
-                    : tasks.values().stream()
-                            .filter(t -> t.state() == state)
-                            .filter(t -> queueId == null || t.queueId() == queueId)
-                            .filter(t -> position == null || isAfter(sortTime.apply(t), t.id(), position))
-                            .sorted(order)
-                            .limit((long) limit + 1)
-                            .toList();
-            if (limit <= 0 || found.size() <= limit) return new TaskPage(found, null);
+            List<TaskRecord> found = tasks.values().stream()
+                    .filter(t -> t.state() == state)
+                    .filter(t -> queueId == null || t.queueId() == queueId)
+                    .filter(t -> position == null || isAfter(sortTime.apply(t), t.id(), position))
+                    .sorted(order)
+                    .limit((long) limit + 1)
+                    .toList();
+            if (found.size() <= limit) return new TaskPage(found, null);
             var items = found.subList(0, limit);
             var last = items.getLast();
             return new TaskPage(items, encodeCursor(sortTime.apply(last), last.id()));
@@ -944,6 +962,7 @@ public final class InMemoryStore implements FullStore {
 
     @Override
     public List<Long> expire(int limit) {
+        StoreArguments.requireLimit(limit);
         lock.lock();
         try {
             Instant now = clock.instant();
@@ -1167,7 +1186,7 @@ public final class InMemoryStore implements FullStore {
         lock.lock();
         try {
             return recurring.entrySet().stream()
-                    .sorted(Map.Entry.comparingByKey())
+                    .sorted(Map.Entry.comparingByKey(ScheduleStore.ID_ORDER))
                     .map(e -> new RecurringSchedule(
                             e.getValue().definition(), e.getValue().nextFire()))
                     .toList();

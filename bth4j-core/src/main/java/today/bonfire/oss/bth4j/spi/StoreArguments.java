@@ -12,9 +12,19 @@ public final class StoreArguments {
         if (count < 1) throw new IllegalArgumentException("count must be positive: " + count);
     }
 
+    /** @throws IllegalArgumentException when {@code limit} is below 1 */
+    public static void requireLimit(int limit) {
+        if (limit < 1) throw new IllegalArgumentException("limit must be positive: " + limit);
+    }
+
     /** @throws IllegalArgumentException when the queue or type name is null or blank */
     public static void requireName(String kind, String name) {
         if (name == null || name.isBlank()) throw new IllegalArgumentException(kind + " name is required");
+    }
+
+    /** @throws IllegalArgumentException when the unique key is empty; null is a task without a key */
+    public static void requireKey(String uniqueKey) {
+        if (uniqueKey != null && uniqueKey.isEmpty()) throw new IllegalArgumentException("unique key is empty");
     }
 
     /** @throws IllegalArgumentException when the worker label is null */

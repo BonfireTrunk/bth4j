@@ -76,7 +76,7 @@ See [Redis](stores/redis.md), [PostgreSQL](stores/postgresql.md) and [SQLite](st
 | Be safe under concurrency | Calls are made concurrently from many threads and processes. Each must be atomic and safe to repeat. |
 | Throw `TaskStoreException` | A failure to reach the engine throws `TaskStoreException`. Callers retry on their next cycle. |
 | Check the schema in `init()` | `init()` creates the schema or verifies the store's schema version (`StoreInfo.schemaVersion`) and refuses another one. |
-| Check arguments with `StoreArguments` | Arguments are checked alike on every store: queue and type names, worker label, the `reschedule` due, batch sizes and the purge state. A pause of a queue id that was never registered is ignored. |
+| Check arguments with `StoreArguments` | Arguments are checked alike on every store: queue and type names, worker label, the `reschedule` due, every count and limit (at least 1) and the purge state. A pause of a queue id that was never registered is ignored. |
 | Stay within the time limit | Every time the library hands a store lies within `TaskRequest.MAX_TIME_FROM_NOW` (100 years) of now, and every duration is at most that long, so epoch milliseconds or SQL timestamps hold them. |
 
 ## How a claim works
@@ -136,6 +136,7 @@ The tests every store must pass are `StoreContract` and `RunnerContract` in `bth
 | `clock()` | When the test can move time | The clock the store reads. The default is the system clock. |
 | `advance(duration)` | When the test can move time | Lets store time pass. The default sleeps. |
 | `releasesKeysOnItsOwn()` | When the store ends key windows itself | `true`, so that the tests expect `releaseKeys` to count nothing |
+| `orderOfIdsThatShareATime()` | When a listing does not order tasks of one time by id | The order the store documents. It must be total and stable. |
 | `corruptStoredValue(namespace, taskId)` | When the store can hold a value it cannot read | Overwrites a stored value of the task with an unreadable one and returns `true`. The default returns `false`, which skips the tests that need one. |
 | `registryBound()` | When the largest queue or type id is not 32767 | The largest id the store accepts |
 | `fillRegistry(...)` | When the bound is large | Moves the id counter directly instead of registering filler names |

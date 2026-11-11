@@ -22,10 +22,12 @@ public interface ExecutionStore extends TaskStore {
      * <p>
      * The fields a producer sets (id, revision, queue, type, payload version, max attempts, created, due,
      * payload, account, headers, unique key, key keep, retry policy, schedule, retry-of, start-by and max run
-     * time) are stored as given. A new task starts without run fields: the store ignores the record's attempts,
-     * worker, lease, claim time, key-until, cancel request and reason, progress, steps and failures, and stores
-     * the task with none of them and zero attempts. This holds for every way a task gets in, including
-     * {@link #enqueueAll} and {@link ScheduleStore#commitRecurring}.
+     * time) are stored as given, with two exceptions: a record without a created time is created at the store's
+     * time of the call, and a key keep without a unique key is dropped. An empty unique key throws
+     * {@link IllegalArgumentException}. A new task starts without run fields: the store ignores the record's
+     * attempts, worker, lease, claim time, key-until, cancel request and reason, progress, steps and failures,
+     * and stores the task with none of them and zero attempts. This holds for every way a task gets in,
+     * including {@link #enqueueAll} and {@link ScheduleStore#commitRecurring}.
      * <p>
      * When the record has a {@link TaskRecord#uniqueKey()} and another task holds it, nothing is stored and
      * {@link EnqueueOutcome.DuplicateKey} names that task. A key is held while its task is not terminal, and
@@ -97,7 +99,7 @@ public interface ExecutionStore extends TaskStore {
      * {@code retryAt} is null or the attempts are exhausted. The failure is appended to
      * {@link TaskRecord#failures()}, which the store bounds to the last 20. It must work for a task with stored
      * values that cannot be read, so that such a task can still end; the store may drop stored failures it
-     * cannot read.
+     * cannot read, and may remove a task it cannot place in a state whatever {@code keepDead} says.
      *
      * @param keepDead false removes a dead task at once instead of keeping it for inspection
      * @param effect applied to a recurring definition in the same atomic step, only when the outcome is

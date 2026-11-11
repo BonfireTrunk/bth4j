@@ -36,7 +36,9 @@ public interface InspectionStore extends TaskStore {
 
     /**
      * Lists tasks in one state, QUEUED and SCHEDULED by {@code (due, id)} ascending and the other states by
-     * {@code (stateChanged, id)} ascending, paging by an opaque position that the store encodes itself. The
+     * {@code (stateChanged, id)} ascending, paging by an opaque position that the store encodes itself. Among
+     * tasks that share the time, a store may order the ids its own way, as long as the order is total and stable
+     * (the Redis store compares them as text). The
      * position does not depend on the task it was taken from, so that task leaving the listed state neither ends
      * the listing early nor restarts it. A task whose own position moves while the walk runs can still be seen
      * twice (moved later) or missed (moved earlier). A task with a stored value that cannot be read is left out,
@@ -45,7 +47,8 @@ public interface InspectionStore extends TaskStore {
      *
      * @param queueId null for every queue
      * @param cursor {@link TaskPage#next()} of the previous page; null starts at the beginning
-     * @throws IllegalArgumentException if the cursor was not produced by this store
+     * @param limit the most tasks one page holds, at least 1
+     * @throws IllegalArgumentException if the cursor was not produced by this store or the limit is below 1
      */
     TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit);
 }

@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j.spi;
 
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
@@ -28,24 +29,47 @@ public interface ScheduleStore extends TaskStore {
     /** @return every definition's id with its next fire time */
     Map<String, Instant> recurringSchedules();
 
-    /** @return definitions whose next fire time is at or before {@code upTo}, up to the limit */
+    /**
+     * @param limit at least 1
+     * @return definitions whose next fire time is at or before {@code upTo}, up to the limit
+     * @throws IllegalArgumentException if the limit is below 1
+     */
     List<DueSchedule> dueRecurring(Instant upTo, int limit);
 
     /**
      * Stores the occurrence (SCHEDULED for {@link DueSchedule#fireAt()}) and advances the definition to
-     * {@code nextFire}, unless the definition's revision or next fire time changed meanwhile. When the
+     * {@code nextFire}, unless the definition's revision or next fire time changed meanwhile. An occurrence
+     * that names no schedule is stored with the id of this one. When the
      * occurrence names a unique key that another task holds, the definition is still advanced and the
      * method still reports true, but the occurrence is not stored; this is how an overlapping occurrence is
      * skipped. When a task with the occurrence's id exists, nothing is written and the method reports false: ids
      * are handed out once, so that task is not an occurrence of this fire. For a fixed-delay definition the store records the stored occurrence as the one in flight, which
      * is what a {@link ScheduleEffect} of that occurrence is checked against; a skipped occurrence leaves the
-     * recorded one alone, so the running occurrence still re-arms the definition.
+     * recorded one alone, so the running occurrence still re-arms the definition. When none is recorded and the
+     * holder of the key is an open task of this schedule, the holder is recorded.
      *
      * @return true when committed
      */
     boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord occurrence);
 
-    /** @return every definition with its next fire time, in id order */
+    /**
+     * The order of {@link #recurringDefinitions()}: by the code points of the ids, which is also the byte order
+     * of their UTF-8 form, so a database that compares bytes and a store that compares in Java list alike.
+     */
+    Comparator<String> ID_ORDER = (a, b) -> {
+        int i = 0;
+        int j = 0;
+        while (i < a.length() && j < b.length()) {
+            int x = a.codePointAt(i);
+            int y = b.codePointAt(j);
+            if (x != y) return Integer.compare(x, y);
+            i += Character.charCount(x);
+            j += Character.charCount(y);
+        }
+        return Integer.compare(a.length() - i, b.length() - j);
+    };
+
+    /** @return every definition with its next fire time, in {@link #ID_ORDER} */
     List<RecurringSchedule> recurringDefinitions();
 
     /**

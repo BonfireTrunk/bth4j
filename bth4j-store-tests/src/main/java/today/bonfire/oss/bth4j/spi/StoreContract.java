@@ -11,6 +11,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,6 +30,7 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
+import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -64,6 +66,11 @@ public abstract class StoreContract {
     /** @return the clock the store reads, when the test can control it; otherwise the system clock */
     protected Clock clock() {
         return Clock.systemUTC();
+    }
+
+    /** @return how a listing orders the ids of tasks that share its time: id order, unless the store documents another */
+    protected Comparator<Long> orderOfIdsThatShareATime() {
+        return Comparator.naturalOrder();
     }
 
     /** @return whether finished keys are released by the store itself, so that {@link MaintenanceStore#releaseKeys} has nothing to count */
@@ -419,6 +426,35 @@ public abstract class StoreContract {
     }
 
     @Test
+    void aLimitBelowOneIsRefusedByEveryCallThatTakesOneAndChangesNothing() {
+        TaskRecord done = leased(task());
+        assertThat(store.ack(done.id(), done.revision(), true, false, null)).isTrue();
+        long overdue = put(task().startBy(now().plus(SHORT)));
+        Instant fire = millis(now());
+        store.putRecurring(definition("due", "* * * * *"), fire, fire);
+        advance(PAST_SHORT);
+        StateCounts before = counts();
+
+        for (int limit : new int[] {0, -1, Integer.MIN_VALUE}) {
+            Map<String, ThrowingCallable> calls = new LinkedHashMap<>();
+            calls.put("promote", () -> store.promote(limit));
+            calls.put("reclaim", () -> store.reclaim(limit));
+            calls.put("expire", () -> store.expire(limit));
+            calls.put("purge", () -> store.purge(TaskState.SUCCEEDED, Duration.ZERO, limit));
+            calls.put("releaseKeys", () -> store.releaseKeys(limit));
+            calls.put("dueRecurring", () -> store.dueRecurring(fire, limit));
+            calls.put("tasks", () -> store.tasks(TaskState.QUEUED, null, (String) null, limit));
+            calls.forEach((name, call) ->
+                    assertThatThrownBy(call).as("%s(%d)", name, limit).isInstanceOf(IllegalArgumentException.class));
+        }
+
+        assertThat(counts()).isEqualTo(before);
+        assertThat(store.dueRecurring(fire, 10)).hasSize(1);
+        assertThat(store.expire(10)).containsExactly(overdue);
+        assertThat(store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10)).isEqualTo(1);
+    }
+
+    @Test
     void pausingAQueueIdThatWasNeverRegisteredChangesNothing() {
         List<QueueInfo> before = store.queues();
         int unknown = before.stream().mapToInt(QueueInfo::id).max().orElse(0) + 1;
@@ -551,6 +587,94 @@ public abstract class StoreContract {
                         stored.failures()))
                 .as("run fields after %s", path)
                 .containsOnlyNulls();
+    }
+
+    /** A definition due at {@code fire} and an occurrence for it that the builder may still change. */
+    private TaskRecord.Builder occurrenceOfNewSchedule(String scheduleId, Instant fire) {
+        store.putRecurring(definition(scheduleId, "* * * * *"), fire, fire);
+        return task().due(fire).state(TaskState.SCHEDULED);
+    }
+
+    @Test
+    void aNewTaskWithoutACreatedTimeIsCreatedWhenItIsStoredOnEachWayIn() {
+        Instant fire = millis(now().plusSeconds(1));
+        TaskRecord single = task().createdAt(null).build();
+        TaskRecord batched = task().createdAt(null)
+                .due(millis(now().plus(Duration.ofHours(1))))
+                .build();
+        TaskRecord occurrence =
+                occurrenceOfNewSchedule("nightly", fire).createdAt(null).build();
+
+        assertThat(store.enqueue(single)).isEqualTo(EnqueueOutcome.STORED);
+        assertThat(store.enqueueAll(List.of(batched))).containsExactly(EnqueueOutcome.STORED);
+        assertThat(store.commitRecurring(dueOf("nightly", fire), fire.plusSeconds(60), occurrence))
+                .isTrue();
+
+        for (TaskRecord given : List.of(single, batched, occurrence)) {
+            TaskRecord stored = get(given.id());
+            assertThat(stored.createdAt())
+                    .as("created time of task %s", given.id())
+                    .isEqualTo(stored.stateChangedAt());
+        }
+    }
+
+    @Test
+    void aKeyKeepWithoutAUniqueKeyIsDroppedOnEachWayIn() {
+        Instant fire = millis(now().plusSeconds(1));
+        Duration keep = Duration.ofMinutes(5);
+        TaskRecord single = task().keyKeep(keep).build();
+        TaskRecord batched = task().keyKeep(keep).build();
+        TaskRecord occurrence =
+                occurrenceOfNewSchedule("nightly", fire).keyKeep(keep).build();
+
+        assertThat(store.enqueue(single)).isEqualTo(EnqueueOutcome.STORED);
+        assertThat(store.enqueueAll(List.of(batched))).containsExactly(EnqueueOutcome.STORED);
+        assertThat(store.commitRecurring(dueOf("nightly", fire), fire.plusSeconds(60), occurrence))
+                .isTrue();
+
+        for (TaskRecord given : List.of(single, batched, occurrence)) {
+            assertThat(get(given.id()).keyKeep())
+                    .as("key keep of task %s", given.id())
+                    .isNull();
+        }
+    }
+
+    @Test
+    void anOccurrenceThatNamesNoScheduleBelongsToTheOneThatFiredIt() {
+        Instant fire = millis(now().plusSeconds(1));
+        TaskRecord unnamed = occurrenceOfNewSchedule("nightly", fire).build();
+        TaskRecord named =
+                occurrenceOfNewSchedule("weekly", fire).scheduleId("another").build();
+
+        assertThat(store.commitRecurring(dueOf("nightly", fire), fire.plusSeconds(60), unnamed))
+                .isTrue();
+        assertThat(store.commitRecurring(dueOf("weekly", fire), fire.plusSeconds(60), named))
+                .isTrue();
+
+        assertThat(get(unnamed.id()).scheduleId()).isEqualTo("nightly");
+        assertThat(get(named.id()).scheduleId()).isEqualTo("another");
+    }
+
+    @Test
+    void anEmptyUniqueKeyIsRefusedOnEachWayInAndNothingIsStored() {
+        Instant fire = millis(now().plusSeconds(1));
+        TaskRecord single = task().uniqueKey("").build();
+        TaskRecord sound = task().build();
+        TaskRecord batched = task().uniqueKey("").build();
+        TaskRecord occurrence =
+                occurrenceOfNewSchedule("nightly", fire).uniqueKey("").build();
+        DueSchedule due = dueOf("nightly", fire);
+
+        assertThatThrownBy(() -> store.enqueue(single)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.enqueueAll(List.of(sound, batched)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.commitRecurring(due, fire.plusSeconds(60), occurrence))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        for (TaskRecord given : List.of(single, sound, batched, occurrence)) {
+            assertThat(store.getTask(given.id())).as("task %s", given.id()).isEmpty();
+        }
+        assertThat(nextFireOf("nightly")).isEqualTo(fire);
     }
 
     @Test
@@ -5670,14 +5794,31 @@ public abstract class StoreContract {
     }
 
     @Test
-    void recurringDefinitionsAreListedByTheCodeUnitsOfTheirIdsNotByALocale() {
+    void recurringDefinitionsAreListedByTheCodePointsOfTheirIdsNotByALocaleOrByUtf16Units() {
         Instant fire = millis(now().plusSeconds(60));
-        for (String id : new String[] {"b", "A", "a", "B"}) {
+        String privateUse = "\uE000";
+        String beyondTheBasicPlane = "\uD83D\uDE00";
+        for (String id :
+                new String[] {beyondTheBasicPlane, "b", "A", privateUse, "a", "B", "a" + beyondTheBasicPlane}) {
             store.putRecurring(definition(id, "0 3 * * *"), fire, fire);
         }
         assertThat(store.recurringDefinitions())
                 .extracting(s -> s.definition().scheduleId())
-                .containsExactly("A", "B", "a", "b");
+                .containsExactly("A", "B", "a", "a" + beyondTheBasicPlane, "b", privateUse, beyondTheBasicPlane);
+    }
+
+    @Test
+    void workersAreListedInTheOrderOfTheirIds() {
+        List<Integer> ids = new ArrayList<>();
+        ids.add(worker);
+        for (int i = 0; i < 12; i++) {
+            ids.add(store.allocateWorkerId("order-" + i, Set.of(queue), Set.of(type)));
+        }
+        beat(ids.get(7), 1, true);
+        beat(ids.get(2), 0, false);
+
+        assertThat(store.workers()).extracting(WorkerInfo::id).containsExactlyElementsOf(ids);
+        assertThat(ids).isSorted();
     }
 
     @Test
@@ -6337,6 +6478,32 @@ public abstract class StoreContract {
     }
 
     @Test
+    void aSkippedCommitDoesNotAdoptAFinishedOccurrenceThatStillHoldsTheKey() {
+        Instant fire = millis(now().plusSeconds(1));
+        store.putRecurring(fullDefinition("a"), fire, fire);
+        TaskRecord first = fixedDelayOccurrence("a", fire).toBuilder()
+                .keyKeep(Duration.ofHours(1))
+                .build();
+        assertThat(store.commitRecurring(dueOf("a", fire), parkedFire(), first)).isTrue();
+        advance(Duration.ofSeconds(2));
+        store.promote(10);
+        TaskRecord running = claimOne();
+        Instant next = millis(now().plusSeconds(90));
+        assertThat(store.ack(
+                        running.id(), running.revision(), true, true, ScheduleEffect.rearm("a", running.id(), next)))
+                .isTrue();
+
+        TaskRecord second = fixedDelayOccurrence("a", next);
+        Instant parked = parkedFire();
+        assertThat(store.commitRecurring(dueOf("a", next), parked, second)).isTrue();
+        assertThat(store.getTask(second.id())).isEmpty();
+
+        assertThat(store.putRecurring(fullDefinition("a"), parked, parked).outcome())
+                .as("a put of the same definition, which is changed only when an occurrence is recorded")
+                .isEqualTo(PutRecurringOutcome.UNCHANGED);
+    }
+
+    @Test
     void aSkippedCommitDoesNotAdoptAKeyHolderThatIsNotAnOccurrenceOfTheSchedule() {
         Instant fire = millis(now().plusSeconds(1));
         store.putRecurring(fullDefinition("a"), fire, fire);
@@ -6914,16 +7081,6 @@ public abstract class StoreContract {
             if (refused != null) {
                 assertThat(refused).as("cursor '%s'", far).isInstanceOf(IllegalArgumentException.class);
             }
-        }
-    }
-
-    @Test
-    void aListingWithALimitBelowOneIsAnEmptyLastPage() {
-        putNew();
-        for (int limit : new int[] {0, -1, Integer.MIN_VALUE}) {
-            TaskPage page = store.tasks(TaskState.QUEUED, null, (String) null, limit);
-            assertThat(page.items()).as("limit %d", limit).isEmpty();
-            assertThat(page.next()).as("limit %d", limit).isNull();
         }
     }
 
@@ -7877,7 +8034,7 @@ public abstract class StoreContract {
         Function<TaskRecord, Instant> sortKey = waiting ? TaskRecord::due : TaskRecord::stateChangedAt;
         List<TaskRecord> expected = ids.stream()
                 .map(this::get)
-                .sorted(java.util.Comparator.comparing(sortKey).thenComparingLong(TaskRecord::id))
+                .sorted(Comparator.comparing(sortKey).thenComparing(TaskRecord::id, orderOfIdsThatShareATime()))
                 .toList();
         assertThat(expected).extracting(TaskRecord::state).containsOnly(state);
         List<Integer> filters = new ArrayList<>();

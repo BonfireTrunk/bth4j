@@ -51,6 +51,7 @@ import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
+import today.bonfire.oss.bth4j.spi.ScheduleStore;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.StoreArguments;
@@ -349,6 +350,7 @@ public class RedisTaskStore implements FullStore {
     }
 
     static List<String> enqueueArgs(TaskRecord t) {
+        StoreArguments.requireKey(t.uniqueKey());
         var args = new ArrayList<String>();
         args.add(String.valueOf(t.id()));
         args.add(t.due() == null ? "" : ms(t.due()));
@@ -628,6 +630,7 @@ public class RedisTaskStore implements FullStore {
     @Override
     @SuppressWarnings("unchecked")
     public PromoteResult promote(int limit) {
+        StoreArguments.requireLimit(limit);
         var r = (List<Object>) guard(() -> scripts.run(RedisScripts.PROMOTE, List.of(String.valueOf(limit))));
         var next = num(r.get(1));
         return new PromoteResult((int) num(r.get(0)), next < 0 ? null : Instant.ofEpochMilli(next));
@@ -636,6 +639,7 @@ public class RedisTaskStore implements FullStore {
     @Override
     @SuppressWarnings("unchecked")
     public List<ExpiredLease> reclaim(int limit) {
+        StoreArguments.requireLimit(limit);
         return guard(() -> {
             var ids = jedis.zrangeByScore(keys.leased, "-inf", String.valueOf(serverNow()), 0, limit);
             var fields = new ArrayList<Response<List<String>>>(ids.size());
@@ -699,6 +703,7 @@ public class RedisTaskStore implements FullStore {
     @Override
     public long purge(TaskState state, Duration retention, int limit) {
         StoreArguments.requireTerminal(state);
+        StoreArguments.requireLimit(limit);
         var args = List.of(String.valueOf(state.code()), String.valueOf(retention.toMillis()), String.valueOf(limit));
         return num(guard(() -> scripts.run(RedisScripts.PURGE, args)));
     }
@@ -706,6 +711,7 @@ public class RedisTaskStore implements FullStore {
     /** The key fields of a finished task expire with the key itself (hash field expiry), so there is nothing to do. */
     @Override
     public int releaseKeys(int limit) {
+        StoreArguments.requireLimit(limit);
         return 0;
     }
 
@@ -798,6 +804,7 @@ public class RedisTaskStore implements FullStore {
     @Override
     @SuppressWarnings("unchecked")
     public List<DueSchedule> dueRecurring(Instant upTo, int limit) {
+        StoreArguments.requireLimit(limit);
         return guard(() -> {
             var due = jedis.zrangeByScoreWithScores(keys.cron, "-inf", ms(upTo), 0, limit);
             var hashes = new ArrayList<Response<Map<String, String>>>(due.size());
@@ -839,7 +846,11 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord occurrence) {
+    public boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord given) {
+        StoreArguments.requireKey(given.uniqueKey());
+        var occurrence = given.scheduleId() != null
+                ? given
+                : given.toBuilder().scheduleId(due.scheduleId()).build();
         var args = new ArrayList<String>();
         args.add(due.scheduleId());
         args.add(String.valueOf(due.definition().revision()));
@@ -960,17 +971,16 @@ public class RedisTaskStore implements FullStore {
     /**
      * Lists from the structures that hold the state: {@code idx:<state>:<qid>} for LEASED and the terminal
      * states, {@code q:<qid>:<tid>} of the types in
-     * {@code active:<qid>} for QUEUED and {@code sched:<qid>} for SCHEDULED. Order is by the zset score, then numeric
-     * id: stateChanged for the indexed states, due for QUEUED and SCHEDULED. The cursor is
+     * {@code active:<qid>} for QUEUED and {@code sched:<qid>} for SCHEDULED. Order is by the zset score, then the id
+     * as text, which is the order a claim takes them in: stateChanged for the indexed states, due for QUEUED and
+     * SCHEDULED. The cursor is
      * {@code <score>:<id>} of the last entry of the page. Pages merge the zsets of each queue, preserving the same
      * cursor when a task or an entire type leaves the queue.
      */
     @Override
     public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
+        StoreArguments.requireLimit(limit);
         var position = cursor == null ? null : decodeCursor(cursor);
-        if (limit < 1) {
-            return new TaskPage(List.of(), null);
-        }
         return guard(() -> {
             var probe = (int) Math.min((long) limit + 1, Integer.MAX_VALUE);
             var found = listing(state, queueId, position, probe);
@@ -980,7 +990,7 @@ public class RedisTaskStore implements FullStore {
                     .filter(t -> t.state() == state)
                     .toList();
             var last = entries.isEmpty() ? null : entries.getLast();
-            var next = found.size() > limit ? (long) last.score() + ":" + last.id() : null;
+            var next = found.size() > limit ? (long) last.score() + ":" + last.member() : null;
             return new TaskPage(items, next);
         });
     }
@@ -990,7 +1000,8 @@ public class RedisTaskStore implements FullStore {
         try {
             if (colon > 0) {
                 return new Entry(
-                        Long.parseLong(cursor.substring(0, colon)), Long.parseLong(cursor.substring(colon + 1)));
+                        Long.parseLong(cursor.substring(0, colon)),
+                        Long.toString(Long.parseLong(cursor.substring(colon + 1))));
             }
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException("malformed cursor");
@@ -1010,10 +1021,15 @@ public class RedisTaskStore implements FullStore {
         return ordered.subList(0, Math.min(limit, ordered.size()));
     }
 
-    private record Entry(double score, long id) {}
+    /** A zset entry: the member is the id as the decimal text Redis orders equal scores by. */
+    private record Entry(double score, String member) {
+        long id() {
+            return Long.parseLong(member);
+        }
+    }
 
     private static final Comparator<Entry> ORDER =
-            Comparator.comparingDouble(Entry::score).thenComparingLong(Entry::id);
+            Comparator.comparingDouble(Entry::score).thenComparing(Entry::member);
 
     private List<String> stateZsets(TaskState state, int qid) {
         return switch (state) {
@@ -1027,48 +1043,29 @@ public class RedisTaskStore implements FullStore {
     }
 
     /**
-     * Reads one zset in (score, numeric id) order after the cursor. Redis breaks score ties by member bytes, so a
-     * chunk's trailing score group is re-read whole before it is ordered by number. A chunk is no longer than the
-     * page needs.
+     * Reads one zset after the cursor in the order Redis keeps it: score, then the id as text. The script finds
+     * the cursor's place by rank, so tasks that share a score are never read as a whole group, however many they
+     * are. A chunk is no longer than the page needs.
      */
+    @SuppressWarnings("unchecked")
     private List<Entry> page(String zset, Entry after, int limit) {
         var out = new ArrayList<Entry>();
-        var min = after == null ? "-inf" : String.valueOf((long) after.score());
-        var size = Math.min(PAGE_CHUNK, limit);
+        var position = after;
         while (out.size() < limit) {
-            var chunk = jedis.zrangeByScoreWithScores(zset, min, "+inf", 0, size);
-            if (chunk.isEmpty()) {
+            var size = Math.min(PAGE_CHUNK, limit - out.size());
+            var args = List.of(
+                    zset,
+                    position == null ? "" : String.valueOf((long) position.score()),
+                    position == null ? "" : position.member(),
+                    String.valueOf(size));
+            var chunk = (List<Object>) scripts.run(RedisScripts.LIST, args);
+            for (var i = 0; i < chunk.size(); i += 2) {
+                out.add(new Entry(Double.parseDouble((String) chunk.get(i + 1)), (String) chunk.get(i)));
+            }
+            if (chunk.size() < size * 2) {
                 break;
             }
-            var full = chunk.size() == size;
-            var lastScore = chunk.getLast().getScore();
-            String nextMin = null;
-            if (full) {
-                var kept = chunk.stream().filter(t -> t.getScore() < lastScore).toList();
-                if (kept.isEmpty()) {
-                    var group = (long) lastScore;
-                    chunk = jedis.zrangeByScoreWithScores(
-                            zset, String.valueOf(group), String.valueOf(group), 0, Integer.MAX_VALUE);
-                    nextMin = "(" + group;
-                } else {
-                    chunk = kept;
-                    nextMin = String.valueOf((long) lastScore);
-                }
-            }
-            var ordered = new ArrayList<Entry>(chunk.size());
-            for (var t : chunk) {
-                ordered.add(new Entry(t.getScore(), Long.parseLong(t.getElement())));
-            }
-            ordered.sort(ORDER);
-            for (var e : ordered) {
-                if (after == null || ORDER.compare(e, after) > 0) {
-                    out.add(e);
-                }
-            }
-            if (nextMin == null) {
-                break;
-            }
-            min = nextMin;
+            position = out.getLast();
         }
         return out;
     }
@@ -1106,6 +1103,7 @@ public class RedisTaskStore implements FullStore {
     @Override
     @SuppressWarnings("unchecked")
     public List<Long> expire(int limit) {
+        StoreArguments.requireLimit(limit);
         var r = (List<Object>) guard(() -> scripts.run(RedisScripts.EXPIRE, List.of(String.valueOf(limit))));
         return r.stream().map(o -> Long.parseLong((String) o)).toList();
     }
@@ -1232,7 +1230,9 @@ public class RedisTaskStore implements FullStore {
     @Override
     public List<RecurringSchedule> recurringDefinitions() {
         return guard(() -> {
-            var ids = jedis.smembers(keys.cronDefinitions).stream().sorted().toList();
+            var ids = jedis.smembers(keys.cronDefinitions).stream()
+                    .sorted(ScheduleStore.ID_ORDER)
+                    .toList();
             var hashes = new ArrayList<Response<Map<String, String>>>(ids.size());
             try (var pipeline = jedis.pipelined()) {
                 ids.forEach(id -> hashes.add(pipeline.hgetAll(keys.cronDefinition(id))));

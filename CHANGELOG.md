@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RetryPolicy.exponential` counts a base or cap longer than `TaskRequest.MAX_TIME_FROM_NOW` as that long.
 - Store SPI: a task that was removed while its unique key is still kept, sent again with its id and that key, answers `EnqueueOutcome.EXISTS` on every store, so the client returns `Accepted`. Redis and the in-memory store answered `DuplicateKey` with the request's own id (`Duplicate` from the client); PostgreSQL and SQLite already answered `EXISTS`. The task is not stored again on any store, before or now. A new contract test covers it.
 - Store SPI: `ScheduleStore.resumeRecurring` ignores the given next fire time while the recorded occurrence of the definition is not finished, and keeps the stored time and revision. A new contract test covers it on every store.
+- Store SPI: more points where the stores behave alike, each with a contract test.
+  - A `limit` below 1 throws `IllegalArgumentException` on every store, in `promote`, `reclaim`, `expire`, `purge`, `releaseKeys`, `dueRecurring` and `tasks` (`StoreArguments.requireLimit`). The SPI said so and no store did: each answered in its own way, an empty result on most. `TaskClient.tasks` and `AdminOps.tasks` throw it for a limit below 1 too; they returned an empty page.
+  - A new task without a created time is created at the store's time of the call, a key keep without a unique key is dropped (`TaskRecord.asNew()` drops it), and an occurrence that names no schedule belongs to the schedule that fired it. The in-memory store and Redis kept these fields as given; PostgreSQL and SQLite already stored them this way.
+  - An empty unique key throws `IllegalArgumentException` (`StoreArguments.requireKey`). Redis stored the task without enforcing the key. The client never sends one.
+  - A fixed-delay commit that stores nothing, because another task of the schedule holds the unique key, records that task as the running occurrence only while it is not finished. The in-memory store and Redis also recorded a finished task whose key window was still open, and the schedule then waited for a task that had ended.
+  - `recurringDefinitions()` lists by the Unicode code points of the id (`ScheduleStore.ID_ORDER`), which is the order of its UTF-8 bytes. The in-memory store and Redis compared UTF-16 units, which puts characters above U+FFFF elsewhere.
+  - A new contract test pins the order of `workers()`, which was the same on every store already.
+- Redis: a listing orders tasks of the same time by the id as text (10 before 9), the order in which a claim takes them, and finds its page by rank. Before, a page read every task that shared the time of its first entry to sort them by number, however many there were. `StoreContract.orderOfIdsThatShareATime()` lets a store state such an order.
 - Admin HTTP: `GET /me` also returns the session's CSRF token.
 - fastjson2 2.0.66.
 
@@ -48,7 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RetryPolicy.exponential` keeps doubling up to the cap; it stopped at base x 2^20, which is 2.9 hours for a 10 ms base.
 - PostgreSQL: `recurringDefinitions()` lists by the bytes of the id (`COLLATE "C"`), as the other stores do, whatever the collation of the database.
 - Redis: a task listing leaves out a task that left the listed state between the read of the ids and the read of the records.
-- In-memory store: a task listing with a negative limit is an empty page, as on the other stores; it threw. `MutableClock.set` takes the lock `advance` uses.
+- PostgreSQL: the store reads the time when a statement starts (`statement_timestamp()`), not when its transaction began. `enqueue(Connection, ...)` in a long transaction of the caller judged key windows, due times and the created time by the start of that transaction, so a key whose window ended meanwhile still counted as taken.
+- PostgreSQL: `enqueue` settles a contended unique key over up to 100 rounds. It gave up with "did not settle" when the holder of the key was released and replaced three times in a row.
+- Redis: `fail` ends a task whose queue, lease or attempts field cannot be read, and removes it when it has no readable queue to stay in; `renew` answers "not owned" for a lease that cannot be read and renews the other leases of the call. Both raised a script error, which for `renew` failed every lease of the call.
+- In-memory store: `MutableClock.set` takes the lock `advance` uses.
 - Admin HTTP:
   - A sign-in in a second browser tab no longer breaks every change in the first: the dashboard asks `GET /me` for the session's CSRF token when a page loads.
   - A `+` in a query value is a space, so a filter on a queue name with a space works.

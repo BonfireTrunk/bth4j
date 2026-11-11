@@ -978,7 +978,6 @@ class PostgresTaskStoreIT {
                 .extracting(TaskRecord::id)
                 .containsExactly(ids.get(1), ids.get(3), ids.get(4));
         assertThat(store.tasks(TaskState.SUCCEEDED, null, null, 10).items()).isEmpty();
-        assertThat(store.tasks(TaskState.QUEUED, null, null, 0).items()).isEmpty();
     }
 
     // ---- recurring definitions -----------------------------------------------------------------------
@@ -1176,7 +1175,6 @@ class PostgresTaskStoreIT {
         assertThat(get(lateScheduled).state()).isEqualTo(TaskState.EXPIRED);
         assertThat(get(leased.id()).state()).isEqualTo(TaskState.LEASED);
         assertThat(store.expire(10)).isEmpty();
-        assertThat(store.expire(0)).isEmpty();
         assertThat(store.enqueue(task(newId()).uniqueKey("late").build())).isEqualTo(EnqueueOutcome.STORED);
     }
 
@@ -1547,6 +1545,29 @@ class PostgresTaskStoreIT {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test
+    void enqueueOnTheCallersConnectionReadsTheClockWhenItRunsNotWhenTheTransactionBegan() throws Exception {
+        long late = newId();
+        TaskRecord held;
+        try (var c = PostgresTestSupport.dataSource().getConnection()) {
+            c.setAutoCommit(false);
+            try (var st = c.createStatement()) {
+                st.execute("SELECT 1");
+            }
+            held = enqueueAndClaim(task(newId()).uniqueKey("tx-clock").keyKeep(Duration.ofMillis(300)));
+            assertThat(store.ack(held.id(), held.revision(), true, false, null)).isTrue();
+            Thread.sleep(600);
+
+            assertThat(store.enqueue(c, task(late).uniqueKey("tx-clock").build()))
+                    .as("the key window ended after the transaction began and before this statement")
+                    .isEqualTo(EnqueueOutcome.STORED);
+            c.commit();
+            c.setAutoCommit(true);
+        }
+        assertThat(get(late).stateChangedAt()).isAfter(get(held.id()).stateChangedAt());
+        assertThat(get(late).due()).isEqualTo(get(late).stateChangedAt());
+    }
+
     // ---- fault injection: statement-level failures and contention ------------------------------------
 
     private long occurrenceOf(String scheduleId) throws SQLException {
@@ -1886,8 +1907,21 @@ class PostgresTaskStoreIT {
     }
 
     @Test
-    void enqueueGivesUpAfterThreeRoundsOfAKeyHolderThatKeepsDisappearing() throws SQLException {
-        keyHolderAppearsAndVanishes("race", 3);
+    void aKeyHolderThatDisappearsManyTimesInARowStillSettles() throws SQLException {
+        keyHolderAppearsAndVanishes("race", 20);
+        long id = newId();
+        try {
+            assertThat(store.enqueue(task(id).uniqueKey("race").build())).isEqualTo(EnqueueOutcome.STORED);
+            assertThat(chaosRoundsLeft()).isZero();
+        } finally {
+            removeKeyHolderChaos();
+        }
+        assertThat(get(id).uniqueKey()).isEqualTo("race");
+    }
+
+    @Test
+    void enqueueGivesUpWhenAKeyHolderDisappearsInEveryRoundItTries() throws SQLException {
+        keyHolderAppearsAndVanishes("race", PostgresTaskStore.SETTLE_ROUNDS);
         long id = newId();
         try {
             assertThatThrownBy(() -> store.enqueue(task(id).uniqueKey("race").build()))

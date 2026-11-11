@@ -204,7 +204,7 @@ final class RedisScripts {
             -- held, {1} when stored. A k: string without TTL whose task is gone is stale and is overwritten.
             -- A k: string with a TTL that names this id is the kept key of this task, removed since: {0}.
             -- The hash and the key are written at once, so a later store in the same call sees them; the zset
-            -- writes wait for the caller's flush.
+            -- writes wait for the caller's flush. A task that comes without a created time gets this one.
             local function store(id, dueArg, uk, qid, sb, data, from, to, forceScheduled, token, at)
               local tkey = P .. 't:' .. id
               if redis.call('EXISTS', tkey) == 1 then
@@ -225,11 +225,15 @@ final class RedisScripts {
               at = at or now()
               local due = dueArg and tonumber(dueArg) or at
               local state = (forceScheduled or due > at) and 1 or 0
-              local fields, tid = {}, nil
+              local fields, tid, created = {}, nil, false
               for i = from, to, 2 do
                 fields[#fields + 1] = ARGV[i]
                 fields[#fields + 1] = ARGV[i + 1]
-                if ARGV[i] == 'ty' then tid = ARGV[i + 1] end
+                if ARGV[i] == 'ty' then tid = ARGV[i + 1] elseif ARGV[i] == 'created' then created = true end
+              end
+              if not created then
+                fields[#fields + 1] = 'created'
+                fields[#fields + 1] = at
               end
               fields[#fields + 1] = 'state'
               fields[#fields + 1] = state
@@ -495,7 +499,7 @@ final class RedisScripts {
     /**
      * ARGV: lease ms, then id/revision pairs. Returns per pair 0 (not owned), 1 (owned) or 2 (owned, cancel
      * requested). A lease at or before now is not owned: the sweeper may take it over and a late extension
-     * must not undo that.
+     * must not undo that. A lease that cannot be read is not owned either.
      */
     static final String RENEW = PRELUDE + """
             local at = now()
@@ -505,7 +509,8 @@ final class RedisScripts {
               local id = ARGV[i]
               local tkey = P .. 't:' .. id
               local v = fence(tkey, ARGV[i + 1], 'cra', 'lease')
-              if v and tonumber(v[5]) > at then
+              local held = v and tonumber(v[5])
+              if held and held > at then
                 zadd(P .. 'leased', lease, id)
                 redis.call('HSET', tkey, 'lease', lease)
                 out[#out + 1] = v[4] and 2 or 1
@@ -567,7 +572,9 @@ final class RedisScripts {
     /**
      * ARGV: id, revision, retry at ms or '', keep dead (1/0), expired only (1/0), the new failure as JSON, then
      * the schedule effect as for ACK, applied only when the task dies. Returns RETRY, DEAD or LOST; DEAD+ when the
-     * effect changed the definition. With expired only the stored lease must be at or before now. The failure
+     * effect changed the definition. With expired only the stored lease must be at or before now; one that cannot be
+     * read counts as passed. A task whose attempts cannot be read dies, and one whose queue cannot be read is
+     * removed whatever keep dead says. The failure
      * is appended to {@code f:<id>} (trimmed to the last MAX_FAILURES, only when the push exceeded it) when the task stays, and the hash
      * field fc marks that the list exists. With keep dead 0 the task is removed; a key window lives on in its
      * {@code k:} string.
@@ -578,23 +585,26 @@ final class RedisScripts {
             local v = fence(tkey, ARGV[3], 'lease', 'att', 'max', 'uk', 'kk', 'sb')
             if not v then return 'LOST' end
             local at = now()
-            if ARGV[6] == '1' and tonumber(v[4]) > at then return 'LOST' end
-            local qid, rev, uk, kk = tonumber(v[3]), tonumber(v[1]), v[7], v[8]
+            local held, att, max = tonumber(v[4]), tonumber(v[5]), tonumber(v[6])
+            if ARGV[6] == '1' and held and held > at then return 'LOST' end
+            local qid, rev, uk, kk = v[3] or '', tonumber(v[1]), v[7], v[8]
+            -- no zset of a state can take a task whose queue cannot be read, so it neither waits for a retry nor stays
+            local placed = tonumber(v[3]) ~= nil
             local fkey = P .. 'f:' .. id
             local function record()
               if redis.call('RPUSH', fkey, ARGV[7]) > @MAX@ then redis.call('LTRIM', fkey, -@MAX@, -1) end
             end
-            if ARGV[4] ~= '' and tonumber(v[5]) < tonumber(v[6]) then
+            if ARGV[4] ~= '' and placed and att and max and att < max then
               local retryAt = tonumber(ARGV[4])
               record()
               move(id, qid, 2, 1, at, retryAt)
               redis.call('HSET', tkey, 'state', 1, 'sc', at, 'rev', rev + 1, 'due', retryAt, 'fc', 1)
               redis.call('HDEL', tkey, 'wid')
-              track(id, v[9])
+              track(id, tonumber(v[9]) and v[9])
               flush()
               return 'RETRY'
             end
-            if ARGV[5] == '1' then
+            if ARGV[5] == '1' and placed then
               record()
               finish(tkey, id, qid, 2, 4, at, rev, uk, kk, {'fc', 1}, true)
             else
@@ -824,7 +834,7 @@ final class RedisScripts {
      * SCHEDULED for the fire time and advances the definition, unless the revision or the stored fire time
      * changed or the definition is paused, or a task with the occurrence's id exists. An occurrence whose unique key
      * is held is not stored; the definition still advances. A stored occurrence of a fixed-delay definition becomes its
-     * occ field; when the unique key is held, occ is empty and the holder belongs to the schedule, the holder becomes it. Returns 1 when committed.
+     * occ field; when the unique key is held, occ is empty and the holder is an open task of the schedule, the holder becomes it. Returns 1 when committed.
      */
     static final String CRON_COMMIT = PRELUDE + """
             local ckey = P .. 'cron:' .. ARGV[2]
@@ -841,9 +851,10 @@ final class RedisScripts {
             if redis.call('HEXISTS', ckey, 'fd') == 1 then
               if stored[1] == 1 then
                 redis.call('HSET', ckey, 'occ', ARGV[6])
-              elseif stored[1] == 2 and redis.call('HEXISTS', ckey, 'occ') == 0
-                  and redis.call('HGET', P .. 't:' .. stored[2], 'sid') == ARGV[2] then
-                redis.call('HSET', ckey, 'occ', stored[2])
+              elseif stored[1] == 2 and redis.call('HEXISTS', ckey, 'occ') == 0 then
+                local holder = redis.call('HMGET', P .. 't:' .. stored[2], 'sid', 'state')
+                local open = holder[2] == '0' or holder[2] == '1' or holder[2] == '2'
+                if holder[1] == ARGV[2] and open then redis.call('HSET', ckey, 'occ', stored[2]) end
               end
             end
             redis.call('ZADD', P .. 'cron', ARGV[5], ARGV[2])
@@ -867,6 +878,39 @@ final class RedisScripts {
               end
             end
             return n
+            """;
+
+    /**
+     * ARGV: zset key, cursor score or '', cursor member, limit. Returns up to limit members, each followed by its
+     * score, that come after the cursor in the order of the zset: score, then member bytes. The cursor's place is
+     * its own rank while it is in the zset at that score, else a binary search inside the group of its score finds
+     * it, so that a large group is never read whole.
+     */
+    static final String LIST = PRELUDE + """
+            local function follows(a, b)
+              for i = 1, math.min(#a, #b) do
+                local x, y = string.byte(a, i), string.byte(b, i)
+                if x ~= y then return x > y end
+              end
+              return #a > #b
+            end
+            local key, from = ARGV[2], 0
+            if ARGV[3] ~= '' then
+              local score, member = ARGV[3], ARGV[4]
+              local own = redis.call('ZSCORE', key, member)
+              if own and tonumber(own) == tonumber(score) then
+                from = redis.call('ZRANK', key, member) + 1
+              else
+                local lo = redis.call('ZCOUNT', key, '-inf', '(' .. score)
+                local hi = redis.call('ZCOUNT', key, '-inf', score)
+                while lo < hi do
+                  local mid = math.floor((lo + hi) / 2)
+                  if follows(redis.call('ZRANGE', key, mid, mid)[1], member) then hi = mid else lo = mid + 1 end
+                end
+                from = lo
+              end
+            end
+            return redis.call('ZRANGE', key, from, from + tonumber(ARGV[5]) - 1, 'WITHSCORES')
             """;
 
     /** ARGV: limit. Expires QUEUED and SCHEDULED tasks whose start-by time passed, oldest first; returns their ids. */
