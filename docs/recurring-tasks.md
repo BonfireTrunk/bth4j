@@ -152,7 +152,7 @@ Pausing, resuming and triggering a definition are `AdminOps` operations (see [Ad
 |---|---|
 | Pause | A paused cron definition keeps its stored next fire time. |
 | Resume | Resuming a definition that is not paused changes nothing. Resuming a fixed-delay definition sets its next fire one delay from now. If its task is still running, the next fire comes one delay after that task succeeds instead, so a second task never runs beside it. |
-| Trigger | Moves the next fire time to now. The next recurring check creates the task. A paused definition creates nothing until it is resumed. |
+| Trigger | Moves the next fire time to now. The next recurring check creates the task, however late it comes: a triggered fire is never handled as a missed one. A paused definition creates nothing until it is resumed; a paused cron definition then fires the trigger it was given. |
 
 A trigger also forgets the occurrence in flight. When that task ends, it neither re-arms nor pauses the definition.
 

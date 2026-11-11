@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Breaking, stored data: the stores write a new layout and `init` refuses everything written by 4.x or older: PostgreSQL schema 4, Redis layout 6, SQLite schema 2. There is no migration. Let the old runners finish their work, then start on a new table prefix, Redis namespace or SQLite file, or drop the old ones.
+  - PostgreSQL keeps every time in a `timestamptz(3)` column, so the database itself holds whole milliseconds. The code that read rows written with microseconds before 4.2.0 is gone, and the cursor of a task listing counts milliseconds.
+  - The schedule row has a `triggered` column (PostgreSQL, SQLite) or a `trg` field (Redis).
+- Breaking, store SPI: `ScheduleStore.setNextFire(scheduleId, nextFire)`, the operator's write, is `triggerRecurring(scheduleId, fireAt)`, and `DueSchedule` has `triggered`. The store marks a triggered fire time until another write replaces it; see the fix for late triggers below. The runner's `setNextFire(scheduleId, revision, expectedFire, nextFire)` is unchanged. `StoreContract.writeOtherSchemaVersion(namespace)` lets the contract tests see `init` refuse another schema version.
 - Breaking: `ScheduleView.zone` is the zone id as text, not a `ZoneId`. `AdminOps.schedules()` threw for every schedule when one stored zone was unknown to the JVM (other time zone data, for example); it now lists them all.
 - Breaking, admin HTTP: the by-key routes take the key as a query value, `GET tasks/by-key?key=` and `POST tasks/by-key/cancel?key=`. A path could not carry the keys `.` and `..`, which a client resolves away. The dashboard no longer trims the key it looks up.
 - Breaking: `RedisTaskStore`, `PostgresTaskStore` and `SqliteTaskStore` are final, as `InMemoryStore` is. `new RedisTaskStore(...)` throws `TaskConfigurationException` for a missing client or a namespace that is not allowed, as the other stores do; it threw `IllegalArgumentException`.
@@ -57,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A schedule that an operator triggered fires however late the runner takes it up. A trigger that waited longer than the misfire threshold (the larger of one minute and twice the recurring check interval), because no runner was up or the schedule was paused, was handled as a missed fire: with `Misfire.SKIP` no task was created and the trigger was lost behind a `schedule-misfire` issue. Contract tests cover the mark on every store.
 - A runner no longer shares its settings with its builder: using the builder again (for a second runner, say) changed the queue policies, the worker label and every other setting of a runner that was built before and not yet started.
 - A request with a caller id that is sent again is accepted when its `startBy` has passed since, or when its `delay` now ends after `startBy`. The check added for a `startBy` in the past refused such a resend, against the rule that a resend with the same id answers `Accepted`.
 - `BackgroundRunner.drain` compares its deadline in a way that survives the wrap of the nanosecond clock.

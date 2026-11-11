@@ -782,19 +782,19 @@ class RedisWave2IT {
     }
 
     @Test
-    void setNextFireReArmsAndRefusesUnknownDefinitions() {
+    void triggerRecurringReArmsAndRefusesUnknownDefinitions() {
         var fire = Instant.now().plusSeconds(3600).truncatedTo(ChronoUnit.MILLIS);
         store.putRecurring(cron("s"), fire, fire);
         var now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
 
-        assertThat(store.setNextFire("s", now)).isTrue();
+        assertThat(store.triggerRecurring("s", now)).isTrue();
 
         assertThat(store.recurringSchedules()).containsEntry("s", now);
         assertThat(store.dueRecurring(now.plusSeconds(1), 10)).hasSize(1);
-        assertThat(store.setNextFire("missing", now)).isFalse();
+        assertThat(store.triggerRecurring("missing", now)).isFalse();
 
         store.pauseRecurring("s");
-        assertThat(store.setNextFire("s", fire)).isTrue();
+        assertThat(store.triggerRecurring("s", fire)).isTrue();
         assertThat(store.dueRecurring(fire.plusSeconds(1), 10)).isEmpty();
         store.resumeRecurring("s", null);
         assertThat(store.recurringSchedules()).containsEntry("s", fire);
@@ -824,7 +824,7 @@ class RedisWave2IT {
         assertThat(store.commitRecurring(
                         first, next1, task(70).uniqueKey("sched:s").build()))
                 .isTrue();
-        var second = new DueSchedule("s", next1, first.definition());
+        var second = new DueSchedule("s", next1, first.definition(), false);
         assertThat(store.commitRecurring(
                         second, next2, task(71).uniqueKey("sched:s").build()))
                 .isTrue();

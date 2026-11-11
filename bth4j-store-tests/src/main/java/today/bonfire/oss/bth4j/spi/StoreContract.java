@@ -88,6 +88,16 @@ public abstract class StoreContract {
         return false;
     }
 
+    /**
+     * Replaces the schema version that the store made with {@code namespace} keeps by one this library does not
+     * write.
+     *
+     * @return false when the store keeps no schema version; the test that needs one is skipped then
+     */
+    protected boolean writeOtherSchemaVersion(String namespace) {
+        return false;
+    }
+
     /** Lets store time pass. Real stores sleep; an in-memory store moves its clock. */
     protected void advance(Duration duration) {
         try {
@@ -5936,20 +5946,20 @@ public abstract class StoreContract {
         assertThat(store.pauseRecurring("missing")).isFalse();
         assertThat(store.resumeRecurring("missing", null)).isFalse();
         assertThat(store.resumeRecurring("missing", millis(now()))).isFalse();
-        assertThat(store.setNextFire("missing", millis(now()))).isFalse();
+        assertThat(store.triggerRecurring("missing", millis(now()))).isFalse();
         assertThat(store.recurringSchedules()).isEmpty();
     }
 
     @Test
-    void setNextFireReplacesTheNextFireAndInvalidatesAStaleCommit() {
+    void triggerRecurringReplacesTheNextFireAndInvalidatesAStaleCommit() {
         Instant fire = millis(now().plusSeconds(3600));
         store.putRecurring(definition("nightly", "* * * * *"), fire, fire);
         Instant sooner = millis(now().plusSeconds(1));
-        assertThat(store.setNextFire("nightly", sooner)).isTrue();
+        assertThat(store.triggerRecurring("nightly", sooner)).isTrue();
         assertThat(store.recurringSchedules()).containsOnly(Map.entry("nightly", sooner));
         DueSchedule due = store.dueRecurring(sooner, 10).get(0);
         assertThat(due.fireAt()).isEqualTo(sooner);
-        assertThat(store.setNextFire("nightly", fire)).isTrue();
+        assertThat(store.triggerRecurring("nightly", fire)).isTrue();
         TaskRecord occurrence = occurrence(sooner);
         assertThat(store.commitRecurring(due, fire.plusSeconds(60), occurrence)).isFalse();
         assertThat(store.getTask(occurrence.id())).isEmpty();
@@ -5957,15 +5967,79 @@ public abstract class StoreContract {
     }
 
     @Test
-    void setNextFireAssignsANewRevisionAndPausingKeepsIt() {
+    void triggerRecurringAssignsANewRevisionAndPausingKeepsIt() {
         Instant fire = millis(now().plusSeconds(60));
         store.putRecurring(definition("a", "* * * * *"), fire, fire);
         long revision = revisionOf("a");
-        store.setNextFire("a", fire.plusSeconds(5));
+        store.triggerRecurring("a", fire.plusSeconds(5));
         long triggered = revisionOf("a");
         assertThat(triggered).isNotEqualTo(revision);
         store.pauseRecurring("a");
         assertThat(revisionOf("a")).isEqualTo(triggered);
+    }
+
+    @Test
+    void aTriggeredFireIsReportedAsTriggeredAndAWriteThatKeepsTheFireTimeKeepsTheMark() {
+        Instant fire = millis(now().plusSeconds(3600));
+        store.putRecurring(definition("a", "* * * * *"), fire, fire);
+        assertThat(dueOf("a", fire).triggered()).isFalse();
+
+        Instant asked = millis(now().plusSeconds(1));
+        assertThat(store.triggerRecurring("a", asked)).isTrue();
+        assertThat(dueOf("a", asked).triggered()).isTrue();
+
+        store.pauseRecurring("a");
+        store.resumeRecurring("a", null);
+        assertThat(dueOf("a", asked).triggered())
+                .as("after a pause and a resume")
+                .isTrue();
+        assertThat(store.putRecurring(definition("a", "* * * * *"), fire, asked))
+                .isEqualTo(new PutRecurringResult(PutRecurringOutcome.UNCHANGED, asked));
+        assertThat(dueOf("a", asked).triggered()).as("after an unchanged put").isTrue();
+        assertThat(store.putRecurring(changedData("a", "* * * * *"), fire, asked))
+                .isEqualTo(new PutRecurringResult(PutRecurringOutcome.CHANGED, asked));
+        assertThat(dueOf("a", asked).triggered())
+                .as("after a put that keeps the fire time")
+                .isTrue();
+    }
+
+    @Test
+    void everyWriteThatReplacesATriggeredFireTimeRemovesTheMark() {
+        Instant fire = millis(now().plusSeconds(3600));
+        Instant asked = millis(now().plusSeconds(1));
+        List<String> ids = List.of("commit", "runner-write", "other-timing", "stale-put", "resume");
+        for (String id : ids) {
+            store.putRecurring(definition(id, "* * * * *"), fire, fire);
+            assertThat(store.triggerRecurring(id, asked)).isTrue();
+            assertThat(dueOf(id, asked).triggered()).as(id).isTrue();
+        }
+        Instant next = asked.plusSeconds(60);
+
+        DueSchedule due = dueOf("commit", asked);
+        assertThat(store.commitRecurring(due, next, runnerOccurrence(due))).isTrue();
+        assertThat(store.setNextFire("runner-write", revisionOf("runner-write"), asked, next))
+                .isTrue();
+        store.putRecurring(definition("other-timing", "0 * * * *"), next, next);
+        // the same definition, but its stored fire time is later than the put keeps
+        store.putRecurring(definition("stale-put", "* * * * *"), next, asked.minusMillis(1));
+        store.pauseRecurring("resume");
+        store.resumeRecurring("resume", next);
+
+        for (String id : ids) {
+            assertThat(nextFireOf(id)).as("next fire of %s", id).isEqualTo(next);
+            assertThat(dueOf(id, next).triggered()).as(id).isFalse();
+        }
+        assertThat(store.triggerRecurring("commit", asked)).isTrue();
+        assertThat(dueOf("commit", asked).triggered()).as("triggered again").isTrue();
+    }
+
+    @Test
+    void initRefusesAStoreThatKeepsAnotherSchemaVersion() {
+        assumeTrue(writeOtherSchemaVersion(namespace), "the store keeps no schema version");
+        assertThatThrownBy(store::init).isInstanceOf(TaskStoreException.class);
+        assertThatThrownBy(store::init)
+                .as("a refused init leaves the stored version as it is")
+                .isInstanceOf(TaskStoreException.class);
     }
 
     @Test
@@ -6042,7 +6116,7 @@ public abstract class StoreContract {
     void anOperatorTriggerForgetsTheRunningOccurrenceSoItsEffectDoesNotUndoTheTrigger() {
         TaskRecord running = runningFixedDelayOccurrence("a");
         Instant trigger = millis(now().plusSeconds(30));
-        assertThat(store.setNextFire("a", trigger)).isTrue();
+        assertThat(store.triggerRecurring("a", trigger)).isTrue();
 
         ScheduleEffect rearm = ScheduleEffect.rearm("a", running.id(), millis(now().plusSeconds(90)));
         assertThat(store.ack(running.id(), running.revision(), true, true, rearm))
@@ -6057,7 +6131,7 @@ public abstract class StoreContract {
     void anOperatorTriggerForgetsTheRunningOccurrenceSoItsDeathDoesNotPause() {
         TaskRecord running = runningFixedDelayOccurrence("a");
         Instant trigger = millis(now().plusSeconds(30));
-        assertThat(store.setNextFire("a", trigger)).isTrue();
+        assertThat(store.triggerRecurring("a", trigger)).isTrue();
 
         ScheduleEffect pause = ScheduleEffect.pause("a", running.id());
         assertThat(store.fail(running.id(), running.revision(), failure(1), null, true, pause))
@@ -6116,7 +6190,7 @@ public abstract class StoreContract {
         assertThat(nextFireOf("a")).isEqualTo(fire);
 
         long current = revisionOf("a");
-        assertThat(store.setNextFire("a", fire.plusSeconds(10))).isTrue();
+        assertThat(store.triggerRecurring("a", fire.plusSeconds(10))).isTrue();
         assertThat(store.setNextFire("a", current, fire.plusSeconds(10), fire.plusSeconds(500)))
                 .isFalse();
         assertThat(nextFireOf("a")).isEqualTo(fire.plusSeconds(10));
@@ -6317,7 +6391,7 @@ public abstract class StoreContract {
     void aSkippedOccurrenceParksTheDefinitionAndTheRunningOccurrenceStillRearmsIt() {
         TaskRecord running = runningFixedDelayOccurrence("a");
         Instant trigger = millis(now());
-        assertThat(store.setNextFire("a", trigger)).isTrue();
+        assertThat(store.triggerRecurring("a", trigger)).isTrue();
         DueSchedule due = dueOf("a", trigger);
         TaskRecord second = fixedDelayOccurrence("a", trigger);
         Instant parked = parkedFire();
@@ -6336,7 +6410,7 @@ public abstract class StoreContract {
     void aNewerOccurrenceTakesOverTheEffect() {
         TaskRecord first = runningFixedDelayOccurrence("a");
         Instant trigger = millis(now());
-        assertThat(store.setNextFire("a", trigger)).isTrue();
+        assertThat(store.triggerRecurring("a", trigger)).isTrue();
         TaskRecord second =
                 task().scheduleId("a").due(trigger).state(TaskState.SCHEDULED).build();
         assertThat(store.commitRecurring(dueOf("a", trigger), parkedFire(), second))
@@ -7622,13 +7696,13 @@ public abstract class StoreContract {
         assertThat(store.dueRecurring(fire, 1000)).as("due after resume").hasSize(n);
         Instant later = fire.plusSeconds(5);
         for (String text : AWKWARD_TEXTS) {
-            assertThat(store.setNextFire(text, later))
-                    .as("setNextFire %s", text)
+            assertThat(store.triggerRecurring(text, later))
+                    .as("triggerRecurring %s", text)
                     .isTrue();
         }
         Map<String, Instant> moved = store.recurringSchedules();
         for (String text : AWKWARD_TEXTS) {
-            assertThat(moved).as("next fire of %s after setNextFire", text).containsEntry(text, later);
+            assertThat(moved).as("next fire of %s after triggerRecurring", text).containsEntry(text, later);
         }
         for (String text : AWKWARD_TEXTS) {
             assertThat(store.deleteRecurring(text)).as("delete %s", text).isTrue();
@@ -7664,7 +7738,9 @@ public abstract class StoreContract {
             assertThat(store.taskByKey(key)).as("taskByKey %s", key).contains(stored);
             assertThat(store.recurringSchedules()).as("next fire %s", text).containsEntry(text, next);
 
-            assertThat(store.setNextFire(text, fire)).as("trigger %s", text).isTrue();
+            assertThat(store.triggerRecurring(text, fire))
+                    .as("trigger %s", text)
+                    .isTrue();
             TaskRecord overlapping = awkwardTask(text, true)
                     .due(fire)
                     .uniqueKey(key)

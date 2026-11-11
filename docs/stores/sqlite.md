@@ -45,7 +45,7 @@ The tables are created when the runner or client is built. Or run `store.schemaS
 | `busy_timeout` | At least 1000 on the connection `init` receives |
 | `synchronous` | Your choice. It is not checked. |
 | Table prefix | Lower case letters, digits and underscores, starting with a letter, at most 41 characters, and neither `sqlite` nor starting with `sqlite_`, because SQLite reserves table names that start with `sqlite_` |
-| Schema version | 1, stored in `<prefix>_meta`. `init` refuses tables with another version and tables that have no `<prefix>_meta`. When the version matches, it only reads. |
+| Schema version | 2, stored in `<prefix>_meta`. `init` refuses tables with another version, which includes every database written by bth4j 4.2, and tables that have no `<prefix>_meta`; there is no migration. When the version matches, it only reads. |
 | Clock | The store's `java.time.Clock`: the third constructor argument, `Clock.systemUTC()` by default |
 | JDK 25 | The JVM prints a warning when sqlite-jdbc loads its native library, unless the application starts with `--enable-native-access=ALL-UNNAMED` |
 
@@ -126,7 +126,7 @@ The queued partial index ends with `type_id`, and a claim walks the queued tasks
 | Table mode | all tables are `STRICT` |
 | Foreign keys | none |
 | Times | epoch milliseconds, taken from the store's `java.time.Clock` |
-| Schema version | 1, stored in `<prefix>_meta` |
+| Schema version | 2, stored in `<prefix>_meta` |
 | Claim lease | one `UPDATE` that takes the id list through `json_each` |
 | Key-only row | state code 7, content columns empty |
 | Queued partial index | ends with `type_id` |

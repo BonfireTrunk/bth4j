@@ -164,25 +164,10 @@ class RedisTaskStoreIT {
 
         jedis.hset(keys.meta, "schema", "99");
 
-        assertThatThrownBy(store::init).isInstanceOf(TaskStoreException.class);
-    }
-
-    @Test
-    void initRefusesTheLayout3NamespaceOf40() {
-        jedis.hset(keys.meta, "schema", "3");
-
         assertThatThrownBy(store::init)
                 .isInstanceOf(TaskStoreException.class)
-                .hasMessageContaining("layout version 3, expected 5");
-    }
-
-    @Test
-    void initRefusesTheLayout4NamespaceOfAnEarlier41Snapshot() {
-        jedis.hset(keys.meta, "schema", "4");
-
-        assertThatThrownBy(store::init)
-                .isInstanceOf(TaskStoreException.class)
-                .hasMessageContaining("layout version 4, expected 5");
+                .hasMessageContaining("layout version 99, expected " + RedisTaskStore.LAYOUT_VERSION);
+        assertThat(jedis.hget(keys.meta, "schema")).isEqualTo("99");
     }
 
     @Test

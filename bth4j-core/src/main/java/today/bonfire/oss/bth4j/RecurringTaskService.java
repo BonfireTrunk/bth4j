@@ -174,7 +174,8 @@ class RecurringTaskService extends CustomThread {
             }
             var zone = Cron.zone(def.zone());
             var late = Duration.between(d.fireAt(), now);
-            if (late.compareTo(misfireThreshold) > 0) {
+            // a fire an operator asked for is wanted however late this check comes
+            if (!d.triggered() && late.compareTo(misfireThreshold) > 0) {
                 return misfired(d, now, zone, late);
             }
             // catch-up gives every missed fire its own occurrence, also the ones that are late by less than the

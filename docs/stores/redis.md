@@ -28,7 +28,7 @@ The namespace prefixes every key and carries the Redis Cluster hash tag, so all 
 | Server | Redis 7.4 or newer, or Valkey 9 or newer. The store expires the key fields of finished tasks with hash field expiry, and `init` refuses a server that does not have it. |
 | Tested on | standalone Redis 8.10 and Valkey 9.1.3 |
 | `maxmemory-policy` | `noeviction`. `init` refuses to start under any other policy (see [Memory eviction](#memory-eviction)). |
-| Namespace layout | Layout 5. `init` refuses a namespace written by bth4j 3.0 (another layout), by 4.0.0, by a 4.0.0 snapshot or by an earlier 4.1.0 snapshot (any layout but 5). Start with a new namespace. |
+| Namespace layout | Layout 6. `init` refuses a namespace with another layout, which includes every namespace written by bth4j 4.x or older; there is no migration. Start with a new namespace. |
 | Redis Cluster | Not tested. The namespace's slot must not be resharded while runners use it (see [Redis Cluster](#redis-cluster)). |
 
 ## What the store does
@@ -92,7 +92,7 @@ PostgreSQL, SQLite and the in-memory store skip those tasks in the claim.
 
 ## Inside the Redis store
 
-Layout 5 uses these keys:
+Layout 6 uses these keys:
 
 | Key | Type | What it holds |
 |---|---|---|
@@ -109,6 +109,7 @@ Other details:
 |---|---|
 | Task hash field `wt` | the random per-record write token that enqueue stores with the other fields |
 | Task and recurring-definition hashes, field `ty` | the type id |
+| Recurring-definition hash, field `trg` | set to 1 while the next fire time is one an operator triggered |
 | Worker hash, field `accepting` | set to 1 on registration; the heartbeat script updates it |
 | `ts:<digest>` lifetime | expires a day after the last claim that named it; a claim writes it again when it is missing |
 | Claim | takes the intersection of the `active:<queue-id>` set and the `ts:<digest>` set, so its cost grows with the types that have queued tasks, not with the types registered |

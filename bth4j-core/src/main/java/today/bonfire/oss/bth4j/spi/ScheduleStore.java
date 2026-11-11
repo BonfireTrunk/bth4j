@@ -81,7 +81,7 @@ public interface ScheduleStore extends TaskStore {
 
     /**
      * Resumes a paused definition in one step. A {@code nextFire} that is not null replaces its next fire time and
-     * assigns a new revision, as {@link #setNextFire(String, Instant)} does; a fixed-delay definition needs one,
+     * assigns a new revision, as {@link #triggerRecurring} does; a fixed-delay definition needs one,
      * because it parks its next fire while paused. While the recorded occurrence is not finished, {@code nextFire}
      * is ignored and the stored time and revision stay: the end of that occurrence sets the next fire, and a time
      * given here would start a second occurrence beside it. The recorded occurrence is kept. A definition that is
@@ -92,14 +92,22 @@ public interface ScheduleStore extends TaskStore {
     boolean resumeRecurring(String scheduleId, Instant nextFire);
 
     /**
-     * Operator write: replaces the next fire time (trigger now) and assigns a new revision, so that a runner
-     * write based on the old revision does nothing. It also forgets the recorded occurrence, so that the effect
-     * of an occurrence that is still running (a re-arm or a pause) does nothing either; when the triggered
-     * occurrence is skipped because that occurrence still holds the key, the skipped commit records it again.
+     * Operator write: makes the definition fire at {@code fireAt} (trigger now). It replaces the next fire time
+     * and assigns a new revision, so that a runner write based on the old revision does nothing. It also forgets
+     * the recorded occurrence, so that the effect of an occurrence that is still running (a re-arm or a pause)
+     * does nothing either; when the triggered occurrence is skipped because that occurrence still holds the key,
+     * the skipped commit records it again.
+     * <p>
+     * The fire time is marked as triggered: {@link #dueRecurring} reports it with
+     * {@link DueSchedule#triggered()}, so that the runner does not treat it as a missed fire. The mark lasts as
+     * long as this fire time: every other write that replaces the next fire time removes it
+     * ({@link #commitRecurring}, {@link #setNextFire}, a {@link ScheduleEffect} that re-arms, a
+     * {@link #putRecurring} or {@link #resumeRecurring} that stores another time), and a write that keeps the
+     * time keeps the mark.
      *
      * @return false when no definition with that id exists
      */
-    boolean setNextFire(String scheduleId, Instant nextFire);
+    boolean triggerRecurring(String scheduleId, Instant fireAt);
 
     /**
      * Runner write for a misfire: replaces the next fire time and keeps the revision, but only while the

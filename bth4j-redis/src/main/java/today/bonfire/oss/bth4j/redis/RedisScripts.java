@@ -176,7 +176,8 @@ final class RedisScripts {
             -- them. It does nothing unless the definition's occ field names this task (the definition was
             -- replaced, or a newer occurrence took over, or it was deleted); the field is cleared when it applies.
             -- A paused definition keeps the next fire time out of the cron zset until it is resumed. An empty
-            -- next pauses. Returns 1 when it changed the definition, else 0.
+            -- next pauses; a next fire time written here is not a triggered one. Returns 1 when it changed the
+            -- definition, else 0.
             local function effect(sid, occ, nextMs)
               if sid == '' then return 0 end
               local ckey = P .. 'cron:' .. sid
@@ -187,6 +188,7 @@ final class RedisScripts {
                 redis.call('ZREM', P .. 'cron', sid)
               else
                 redis.call('HSET', ckey, 'next', nextMs)
+                redis.call('HDEL', ckey, 'trg')
                 if redis.call('HGET', ckey, 'paused') ~= '1' then
                   redis.call('ZADD', P .. 'cron', nextMs, sid)
                 end
@@ -770,7 +772,8 @@ final class RedisScripts {
      * UNCHANGED. Otherwise the revision comes from the counter, so no two definitions under the same id share one,
      * and it returns CREATED or CHANGED. The reply is {outcome, next fire ms stored after the put}. The fire time is also stored in the hash as {@code next}; a paused
      * definition is left out of the {@code cron} zset and keeps it there. Replacing an existing definition keeps
-     * its paused flag and ignores the given one; a new definition stores the flag as given.
+     * its paused flag and ignores the given one; a new definition stores the flag as given. The {@code trg} mark
+     * of a triggered fire stays only when the fire time is kept.
      */
     static final String CRON_PUT = PRELUDE + """
             local ckey = P .. 'cron:' .. ARGV[2]
@@ -783,7 +786,7 @@ final class RedisScripts {
               fields[#fields + 1] = ARGV[i]
               fields[#fields + 1] = ARGV[i + 1]
             end
-            local own = {rev = true, next = true, occ = true, paused = true}
+            local own = {rev = true, next = true, occ = true, paused = true, trg = true}
             local same = existed
             for k, v in pairs(new) do
               if same and not own[k] and old[k] ~= v then same = false end
@@ -809,6 +812,7 @@ final class RedisScripts {
             local nextFire = keep and kept or ARGV[3]
             if running then redis.call('HSET', ckey, 'occ', occ) end
             redis.call('HSET', ckey, 'rev', rev, 'next', nextFire)
+            if keep and old.trg then redis.call('HSET', ckey, 'trg', old.trg) end
             if existed then
               if old.paused then redis.call('HSET', ckey, 'paused', old.paused) else redis.call('HDEL', ckey, 'paused') end
             end
@@ -859,6 +863,7 @@ final class RedisScripts {
             end
             redis.call('ZADD', P .. 'cron', ARGV[5], ARGV[2])
             redis.call('HSET', ckey, 'next', ARGV[5])
+            redis.call('HDEL', ckey, 'trg')
             return 1
             """;
 
@@ -1105,8 +1110,8 @@ final class RedisScripts {
 
     /**
      * ARGV: schedule id, next fire ms or ''. Resumes a paused definition; a next fire time replaces the stored one
-     * under a new revision, unless the task named by the occ field is not finished. A definition that is not
-     * paused is left alone. Returns 1, or 0 when there is no such definition.
+     * under a new revision and is not a triggered one, unless the task named by the occ field is not finished. A
+     * definition that is not paused is left alone. Returns 1, or 0 when there is no such definition.
      */
     static final String CRON_RESUME = PRELUDE + """
             local ckey = P .. 'cron:' .. ARGV[2]
@@ -1119,6 +1124,7 @@ final class RedisScripts {
               if not (st and tonumber(st) < 3) then
                 redis.call('INCR', P .. 'cronrev')
                 redis.call('HSET', ckey, 'next', ARGV[3], 'rev', redis.call('GET', P .. 'cronrev'))
+                redis.call('HDEL', ckey, 'trg')
               end
             end
             redis.call('ZADD', P .. 'cron', redis.call('HGET', ckey, 'next'), ARGV[2])
@@ -1126,15 +1132,16 @@ final class RedisScripts {
             """;
 
     /**
-     * ARGV: schedule id, next fire ms. Operator write: assigns a new revision, so that a runner write based on
+     * ARGV: schedule id, fire ms. Operator write: assigns a new revision, so that a runner write based on
      * the old one does nothing, and drops occ, so that the effect of an occurrence still running does nothing
-     * either. Returns 1, or 0 when there is no such definition.
+     * either. The {@code trg} field marks the fire time as triggered until another write replaces it. Returns 1,
+     * or 0 when there is no such definition.
      */
-    static final String CRON_SET_NEXT = PRELUDE + """
+    static final String CRON_TRIGGER = PRELUDE + """
             local ckey = P .. 'cron:' .. ARGV[2]
             if redis.call('EXISTS', ckey) == 0 then return 0 end
             redis.call('INCR', P .. 'cronrev')
-            redis.call('HSET', ckey, 'next', ARGV[3], 'rev', redis.call('GET', P .. 'cronrev'))
+            redis.call('HSET', ckey, 'next', ARGV[3], 'rev', redis.call('GET', P .. 'cronrev'), 'trg', 1)
             redis.call('HDEL', ckey, 'occ')
             if redis.call('HGET', ckey, 'paused') ~= '1' then
               redis.call('ZADD', P .. 'cron', ARGV[3], ARGV[2])
@@ -1145,7 +1152,7 @@ final class RedisScripts {
     /**
      * ARGV: schedule id, definition revision, expected next fire ms, next fire ms. Runner write: keeps the
      * revision and does nothing unless the definition still has the given one and the expected next fire time
-     * and is not paused. Returns 1 when written.
+     * and is not paused. The time it writes is not a triggered one. Returns 1 when written.
      */
     static final String CRON_ADVANCE = PRELUDE + """
             local ckey = P .. 'cron:' .. ARGV[2]
@@ -1153,6 +1160,7 @@ final class RedisScripts {
             if redis.call('HGET', ckey, 'paused') == '1' then return 0 end
             if tonumber(redis.call('HGET', ckey, 'next')) ~= tonumber(ARGV[4]) then return 0 end
             redis.call('HSET', ckey, 'next', ARGV[5])
+            redis.call('HDEL', ckey, 'trg')
             redis.call('ZADD', P .. 'cron', ARGV[5], ARGV[2])
             return 1
             """;

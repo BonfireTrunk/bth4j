@@ -1237,7 +1237,7 @@ public abstract class RunnerContract {
         startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));
         var tick = ScheduleDefinition.every("tick", VOID_TYPE, Duration.ofHours(1));
         client.putSchedule(tick);
-        store.setNextFire("tick", Instant.now());
+        store.triggerRecurring("tick", Instant.now());
         await("the triggered run", () -> runs.get() >= 1);
         await("the re-arm one delay ahead", () -> {
             var next = client.schedules().get("tick");
@@ -1245,7 +1245,7 @@ public abstract class RunnerContract {
                     && next.isBefore(Instant.now().plus(Duration.ofHours(2)));
         });
 
-        store.setNextFire("tick", Instant.now().plus(Duration.ofDays(36_500)));
+        store.triggerRecurring("tick", Instant.now().plus(Duration.ofDays(36_500)));
         client.putSchedule(tick);
 
         assertThat(client.schedules().get("tick")).isBefore(Instant.now().plus(Duration.ofHours(2)));

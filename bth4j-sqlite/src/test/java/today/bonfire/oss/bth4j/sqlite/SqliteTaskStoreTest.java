@@ -70,7 +70,7 @@ class SqliteTaskStoreTest {
         assertThat(info.engine()).isEqualTo("sqlite");
         assertThat(info.schemaVersion())
                 .isEqualTo(SqliteTaskStore.SCHEMA_VERSION)
-                .isEqualTo(1);
+                .isEqualTo(2);
     }
 
     @Test
@@ -103,7 +103,7 @@ class SqliteTaskStoreTest {
                 .singleElement()
                 .asString()
                 .contains("created INTEGER NOT NULL", "due INTEGER NOT NULL", "headers TEXT", "failures TEXT");
-        assertThat(statements.getLast()).startsWith("INSERT INTO app_meta").contains("'schema_version', 1");
+        assertThat(statements.getLast()).startsWith("INSERT INTO app_meta").contains("'schema_version', 2");
     }
 
     @Test

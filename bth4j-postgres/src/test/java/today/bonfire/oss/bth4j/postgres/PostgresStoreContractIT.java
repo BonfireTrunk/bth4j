@@ -30,6 +30,18 @@ class PostgresStoreContractIT extends StoreContract {
     }
 
     @Override
+    protected boolean writeOtherSchemaVersion(String namespace) {
+        try (var c = PostgresTestSupport.dataSource().getConnection();
+                var ps = c.prepareStatement("UPDATE " + PostgresTestSupport.prefix(namespace)
+                        + "_meta SET value = ? WHERE key = 'schema_version'")) {
+            ps.setString(1, String.valueOf(PostgresTaskStore.SCHEMA_VERSION + 1));
+            return ps.executeUpdate() == 1;
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Override
     protected void fillRegistry(TaskStore fresh, String namespace, Registry registry, int lastId) {
         var sequence =
                 PostgresTestSupport.prefix(namespace) + (registry == Registry.QUEUE ? "_queue" : "_type") + "_id_seq";

@@ -59,6 +59,18 @@ class SqliteStoreContractTest extends StoreContract {
     }
 
     @Override
+    protected boolean writeOtherSchemaVersion(String namespace) {
+        try (var c = database.dataSource().getConnection();
+                var ps = c.prepareStatement("UPDATE " + SqliteTestSupport.prefix(namespace)
+                        + "_meta SET value = ? WHERE key = 'schema_version'")) {
+            ps.setInt(1, SqliteTaskStore.SCHEMA_VERSION + 1);
+            return ps.executeUpdate() == 1;
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Override
     protected void fillRegistry(TaskStore fresh, String namespace, Registry registry, int lastId) {
         var counter = registry == Registry.QUEUE ? "next_queue_id" : "next_type_id";
         try (var c = database.dataSource().getConnection();

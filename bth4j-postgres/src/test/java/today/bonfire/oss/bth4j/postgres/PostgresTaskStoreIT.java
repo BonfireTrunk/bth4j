@@ -130,40 +130,27 @@ class PostgresTaskStoreIT {
     }
 
     @Test
-    void initRefusesAnotherSchemaVersion() throws SQLException {
-        sql("UPDATE " + prefix + "_meta SET value = '4' WHERE key = 'schema_version'");
+    void initRefusesAnotherSchemaVersionBeforeChangingAnything() throws SQLException {
+        sql("UPDATE " + prefix + "_meta SET value = '99' WHERE key = 'schema_version'");
         assertThatThrownBy(store::init)
                 .isInstanceOf(TaskStoreException.class)
-                .hasMessage("schema version 4, this library needs 3");
-    }
+                .hasMessage("schema version 99, this library needs " + PostgresTaskStore.SCHEMA_VERSION);
 
-    @Test
-    void initRefusesThe30SchemaBeforeChangingIt() throws SQLException {
-        var old = new PostgresTaskStore(PostgresTestSupport.dataSource(), prefix + "_v1");
-        sql("CREATE TABLE " + prefix + "_v1_meta (key text PRIMARY KEY, value text NOT NULL)");
-        sql("INSERT INTO " + prefix + "_v1_meta (key, value) VALUES ('schema_version', '1')");
-        assertThatThrownBy(old::init)
-                .isInstanceOf(TaskStoreException.class)
-                .hasMessage("schema version 1, this library needs 3");
-        assertThat(tableExists(prefix + "_v1_task")).isFalse();
-    }
-
-    @Test
-    void initRefusesThe40SchemaBeforeChangingIt() throws SQLException {
-        var old = new PostgresTaskStore(PostgresTestSupport.dataSource(), prefix + "_v2");
-        sql("CREATE TABLE " + prefix + "_v2_meta (key text PRIMARY KEY, value text NOT NULL)");
-        sql("INSERT INTO " + prefix + "_v2_meta (key, value) VALUES ('schema_version', '2')");
-        assertThatThrownBy(old::init)
-                .isInstanceOf(TaskStoreException.class)
-                .hasMessage("schema version 2, this library needs 3");
-        assertThat(tableExists(prefix + "_v2_task")).isFalse();
+        var other = new PostgresTaskStore(PostgresTestSupport.dataSource(), prefix + "_other");
+        sql("CREATE TABLE " + prefix + "_other_meta (key text PRIMARY KEY, value text NOT NULL)");
+        sql("INSERT INTO " + prefix + "_other_meta (key, value) VALUES ('schema_version', '99')");
+        assertThatThrownBy(other::init).isInstanceOf(TaskStoreException.class);
+        assertThat(tableExists(prefix + "_other_task")).isFalse();
     }
 
     @Test
     void initRefusesATaskTableWithoutMeta() throws SQLException {
         var old = new PostgresTaskStore(PostgresTestSupport.dataSource(), prefix + "_old");
         sql("CREATE TABLE " + prefix + "_old_task (id text PRIMARY KEY)");
-        assertThatThrownBy(old::init).isInstanceOf(TaskStoreException.class).hasMessageContaining("older bth4j layout");
+        assertThatThrownBy(old::init)
+                .isInstanceOf(TaskStoreException.class)
+                .hasMessageContaining("_old_task exists without ");
+        assertThat(tableExists(prefix + "_old_meta")).isFalse();
     }
 
     @Test
@@ -929,29 +916,6 @@ class PostgresTaskStoreIT {
     }
 
     @Test
-    void tasksWrittenWithMicrosecondsBefore42AreListedOnceAcrossPages() throws SQLException {
-        var base = Instant.now().minusSeconds(600).truncatedTo(ChronoUnit.MILLIS);
-        long first = store.allocateIds(5);
-        var expected = new ArrayList<Long>();
-        for (int i = 0; i < 5; i++) {
-            store.enqueue(task(first + i).due(base).build());
-            expected.add(first + i);
-        }
-        // 4.1.0 kept microseconds: the five due times now differ only below the millisecond
-        sql("UPDATE " + prefix + "_task SET due = due + (id - " + first + " + 1) * interval '1 microsecond'");
-
-        var seen = new ArrayList<Long>();
-        String cursor = null;
-        int pages = 0;
-        do {
-            var page = store.tasks(TaskState.QUEUED, null, cursor, 2);
-            page.items().forEach(t -> seen.add(t.id()));
-            cursor = page.next();
-        } while (cursor != null && ++pages < 10);
-        assertThat(seen).containsExactlyElementsOf(expected);
-    }
-
-    @Test
     void tasksAreListedByStateChangeWithKeysetPaging() throws Exception {
         int other = store.queueId("other");
         var ids = new ArrayList<Long>();
@@ -1018,32 +982,6 @@ class PostgresTaskStoreIT {
         assertThat(r.revision()).isZero();
         assertThat(store.recurringSchedules()).containsExactly(Map.entry("hourly", nextFire));
         assertThat(store.dueRecurring(Instant.now(), 10)).isEmpty();
-    }
-
-    @Test
-    void aScheduleWrittenWithMicrosecondsBefore42StillFiresAndMoves() throws SQLException {
-        var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MILLIS);
-        store.putRecurring(definition("old", "0 * * * *"), fireAt, fireAt);
-        sql("UPDATE " + prefix + "_schedule SET next_fire = next_fire + interval '456 microseconds'");
-
-        DueSchedule d = store.dueRecurring(Instant.now(), 10).getFirst();
-        assertThat(d.fireAt()).isEqualTo(fireAt.plusNanos(456_000));
-        long id = newId();
-        var occurrence = task(id).scheduleId("old")
-                .encodedPayload(d.definition().encodedPayload())
-                .maxAttempts(4)
-                .build();
-        assertThat(store.commitRecurring(d, fireAt.plusSeconds(3600), occurrence))
-                .isTrue();
-        assertThat(get(id).scheduleId()).isEqualTo("old");
-        assertThat(store.recurringSchedules()).containsEntry("old", fireAt.plusSeconds(3600));
-
-        sql("UPDATE " + prefix + "_schedule SET next_fire = next_fire + interval '789 microseconds'");
-        var stored = store.recurringDefinitions().getFirst();
-        assertThat(store.setNextFire(
-                        "old", stored.definition().revision(), stored.nextFire(), fireAt.plusSeconds(7200)))
-                .isTrue();
-        assertThat(store.recurringSchedules()).containsEntry("old", fireAt.plusSeconds(7200));
     }
 
     @Test
@@ -1464,18 +1402,18 @@ class PostgresTaskStoreIT {
     }
 
     @Test
-    void setNextFireReplacesTheFireTimeAndFencesAnOlderCommit() {
+    void triggerRecurringReplacesTheFireTimeAndFencesAnOlderCommit() {
         var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MILLIS);
         store.putRecurring(definition("n", "0 * * * *"), fireAt, fireAt);
         var due = store.dueRecurring(Instant.now(), 10).getFirst();
         var later = fireAt.plusSeconds(120);
 
-        assertThat(store.setNextFire("n", later)).isTrue();
+        assertThat(store.triggerRecurring("n", later)).isTrue();
         assertThat(store.recurringSchedules()).containsEntry("n", later);
         assertThat(store.commitRecurring(
                         due, fireAt.plusSeconds(3600), task(newId()).build()))
                 .isFalse();
-        assertThat(store.setNextFire("missing", later)).isFalse();
+        assertThat(store.triggerRecurring("missing", later)).isFalse();
     }
 
     @Test

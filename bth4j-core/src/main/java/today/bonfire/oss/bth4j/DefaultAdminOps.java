@@ -226,7 +226,7 @@ final class DefaultAdminOps implements AdminOps {
     @Override
     public boolean triggerSchedule(String id) {
         StoredText.require("schedule id", id);
-        return store.setNextFire(id, clock.instant());
+        return store.triggerRecurring(id, clock.instant());
     }
 
     @Override

@@ -665,16 +665,16 @@ class DefaultAdminOpsTest {
 
     @Test
     void triggeringAScheduleSetsItsNextFireToNow() {
-        handlers.put("setNextFire", a -> true);
+        handlers.put("triggerRecurring", a -> true);
 
         assertThat(ops.triggerSchedule("nightly")).isTrue();
 
-        assertThat(calls).containsExactly("setNextFire[nightly, " + NOW + "]");
+        assertThat(calls).containsExactly("triggerRecurring[nightly, " + NOW + "]");
     }
 
     @Test
     void triggeringAnUnknownScheduleReturnsTheStoreAnswer() {
-        handlers.put("setNextFire", a -> false);
+        handlers.put("triggerRecurring", a -> false);
 
         assertThat(ops.triggerSchedule("missing")).isFalse();
     }

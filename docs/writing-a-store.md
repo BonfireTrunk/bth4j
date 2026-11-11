@@ -44,7 +44,7 @@ An arrow means "extends".
 | `TaskStore` | `info`, `init`, `allocateIds`, `allocateWorkerId`, `queueId`, `typeId`, `queueNames`, `typeNames` |
 | `ExecutionStore` | `enqueue`, `enqueueAll`, `claim`, `renew`, `ack`, `fail`, `failExpired`, `finishCancelled`, `reschedule`, `unclaim`, `saveSteps`, `progress` |
 | `MaintenanceStore` | `promote`, `reclaim`, `expire`, `purge`, `purgeWorkers`, `releaseKeys`, `nextDue` |
-| `ScheduleStore` | `putRecurring`, `deleteRecurring`, `recurringSchedules`, `recurringDefinitions`, `dueRecurring`, `commitRecurring`, `pauseRecurring`, `setNextFire` |
+| `ScheduleStore` | `putRecurring`, `deleteRecurring`, `recurringSchedules`, `recurringDefinitions`, `dueRecurring`, `commitRecurring`, `pauseRecurring`, `resumeRecurring`, `triggerRecurring`, `setNextFire` |
 | `InspectionStore` | `getTask`, `counts`, `tasks` (by state, paged by an opaque cursor on `(due, id)` for QUEUED and SCHEDULED and on `(stateChangedAt, id)` for the other states) |
 | `AdminStore` | `cancel`, `retry`, `delete`, `pauseQueue`, `queues`, `heartbeat`, `workers` |
 
@@ -124,6 +124,7 @@ flowchart TD
 | `AdminStore.heartbeat(workerId, label, queueIds, typeIds, running, accepting)` | Persists the worker's accepting state, exposed by `WorkerInfo.accepting()`. It creates the row again under the same id when maintenance purged it. |
 | `allocateWorkerId` | Creates accepting workers. |
 | `StoreArguments` | Holds the argument checks every store applies. Every time the library hands a store lies within `TaskRequest.MAX_TIME_FROM_NOW` of now. |
+| `ScheduleStore.triggerRecurring(scheduleId, fireAt)` | The operator's trigger. It marks the fire time it stores, and `dueRecurring` reports the mark as `DueSchedule.triggered()`, so that the runner creates the task however late it takes the fire up. The mark goes with the next write that replaces the fire time. |
 | `StoreContract` | Covers these behaviors for every store implementation. |
 
 ## Testing your store
@@ -138,6 +139,7 @@ The tests every store must pass are `StoreContract` and `RunnerContract` in `bth
 | `releasesKeysOnItsOwn()` | When the store ends key windows itself | `true`, so that the tests expect `releaseKeys` to count nothing |
 | `orderOfIdsThatShareATime()` | When a listing does not order tasks of one time by id | The order the store documents. It must be total and stable. |
 | `corruptStoredValue(namespace, taskId)` | When the store can hold a value it cannot read | Overwrites a stored value of the task with an unreadable one and returns `true`. The default returns `false`, which skips the tests that need one. |
+| `writeOtherSchemaVersion(namespace)` | When the store keeps a schema version | Replaces the stored version with one the store does not write and returns `true`, so that the test can see `init()` refuse it. The default returns `false`, which skips that test. |
 | `registryBound()` | When the largest queue or type id is not 32767 | The largest id the store accepts |
 | `fillRegistry(...)` | When the bound is large | Moves the id counter directly instead of registering filler names |
 

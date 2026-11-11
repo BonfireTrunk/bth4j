@@ -96,6 +96,32 @@ class RecurringTaskServiceTest {
         assertThat(store.recurringSchedules()).containsEntry(ID, T0.plus(Duration.ofHours(1)));
     }
 
+    @Test
+    void aTriggeredFireIsNotAMisfireHoweverLateItIsTakenUpAndTheFireAfterItIsJudgedAsUsual() throws Exception {
+        var nextHour = T0.plus(Duration.ofHours(1));
+        register(definition("0 * * * *", RecurringDefinition.MISFIRE_SKIP, 0), nextHour);
+        var asked = T0.plus(Duration.ofMinutes(5));
+        store.triggerRecurring(ID, asked);
+        clock.set(T0.plus(Duration.ofMinutes(30)));
+
+        round();
+
+        var occurrence = occurrences().getFirst();
+        assertThat(occurrence.due()).isEqualTo(asked);
+        assertThat(events).containsExactly(new TaskEvent.ScheduleFired(ID, occurrence.id(), asked));
+        assertThat(status.issues()).isEmpty();
+        assertThat(store.recurringSchedules()).containsEntry(ID, nextHour);
+
+        clock.set(T0.plus(Duration.ofHours(3)).plusSeconds(1));
+        round();
+
+        assertThat(occurrences()).hasSize(1);
+        assertThat(status.issues())
+                .singleElement()
+                .satisfies(i -> assertThat(i.kind()).isEqualTo("schedule-misfire"));
+        assertThat(store.recurringSchedules()).containsEntry(ID, T0.plus(Duration.ofHours(4)));
+    }
+
     // ---- catch-up -------------------------------------------------------------------------------------
 
     @Test

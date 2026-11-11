@@ -97,7 +97,13 @@ public interface AdminOps {
 
     boolean pauseSchedule(String id, boolean paused);
 
-    /** fires the definition at the next check, whatever its next fire time was */
+    /**
+     * Fires the definition at the next recurring check, whatever its next fire time was and however late that
+     * check comes: the misfire policy does not apply to a triggered fire. A paused definition fires nothing
+     * until it is resumed.
+     *
+     * @return false when no definition with that id exists
+     */
     boolean triggerSchedule(String id);
 
     boolean deleteSchedule(String id);

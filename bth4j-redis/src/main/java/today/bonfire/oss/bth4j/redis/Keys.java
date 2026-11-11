@@ -86,6 +86,7 @@ public final class Keys {
     public static final String F_FIXED_DELAY = "fd";
     public static final String F_OVERLAP_SKIP = "os";
     public static final String F_PAUSED = "paused";
+    public static final String F_TRIGGERED = "trg";
 
     public static final String F_LABEL = "label";
     public static final String F_STARTED = "started";

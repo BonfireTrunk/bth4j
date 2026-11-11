@@ -77,9 +77,9 @@ import today.bonfire.oss.bth4j.spi.WorkerInfo;
 public final class PostgresTaskStore implements FullStore {
     /**
      * The schema this class writes, stored in the {@code meta} table. {@link #init} refuses tables written with
-     * another one; there is no migration between schemas. Version 1 is the 3.0 schema.
+     * another one; there is no migration between schemas.
      */
-    public static final int SCHEMA_VERSION = 3;
+    public static final int SCHEMA_VERSION = 4;
 
     private static final Pattern PREFIX = Pattern.compile("[a-z][a-z0-9_]{0,40}");
     private static final int MAX_FAILURES = 20;
@@ -111,12 +111,6 @@ public final class PostgresTaskStore implements FullStore {
     /** Starts the keep window of a task that ends here as a key-only row. */
     private static final String KEY_WINDOW =
             " key_until = statement_timestamp()::timestamptz(3) + key_keep_ms * interval '1 millisecond'";
-
-    /**
-     * The fire time a schedule commit expects, compared to the millisecond as the other stores compare it; a row
-     * written before times were kept in milliseconds still holds microseconds.
-     */
-    private static final String FIRE_IS = "date_trunc('milliseconds', next_fire) = ?";
 
     private static final String FENCE = " WHERE id = ? AND revision = ? AND state = 2";
 
@@ -311,15 +305,16 @@ public final class PostgresTaskStore implements FullStore {
                 + " rev = nextval('" + scheduleSeq + "'),"
                 + " occurrence_id = CASE WHEN " + sameTiming + " AND " + occurrenceRunning + " THEN " + schedule
                 + ".occurrence_id ELSE NULL END,"
-                + " next_fire = CASE WHEN " + keepFire + " THEN " + schedule + ".next_fire ELSE EXCLUDED.next_fire END"
+                + " next_fire = CASE WHEN " + keepFire + " THEN " + schedule + ".next_fire ELSE EXCLUDED.next_fire END,"
+                + " triggered = " + schedule + ".triggered AND " + keepFire
                 + " WHERE NOT (" + sameDefinition + " AND " + keepFire + " AND (" + schedule
                 + ".occurrence_id IS NULL OR " + occurrenceRunning + "))"
                 + " RETURNING xmax = 0, next_fire";
         dueScheduleSql =
                 "SELECT * FROM " + schedule + " WHERE NOT paused AND next_fire <= ? ORDER BY next_fire LIMIT ?";
         // a definition paused between dueRecurring and the commit does not fire
-        commitScheduleSql = "WITH adv AS (UPDATE " + schedule + " SET next_fire = ?"
-                + "   WHERE id = ? AND rev = ? AND " + FIRE_IS + " AND NOT paused RETURNING id),"
+        commitScheduleSql = "WITH adv AS (UPDATE " + schedule + " SET next_fire = ?, triggered = false"
+                + "   WHERE id = ? AND rev = ? AND next_fire = ? AND NOT paused RETURNING id),"
                 + " ins AS (INSERT INTO " + task
                 + "   (id, revision, queue_id, type_id, payload_version, state, attempts, max_attempts, created,"
                 + "   due, state_changed, data, account, headers, retry_policy, schedule_id, unique_key, key_keep_ms,"
@@ -401,8 +396,8 @@ public final class PostgresTaskStore implements FullStore {
                 "CREATE TABLE IF NOT EXISTS " + worker + " ("
                         + " id serial PRIMARY KEY,"
                         + " label text NOT NULL,"
-                        + " started_at timestamptz NOT NULL,"
-                        + " last_seen timestamptz NOT NULL,"
+                        + " started_at timestamptz(3) NOT NULL,"
+                        + " last_seen timestamptz(3) NOT NULL,"
                         + " running integer NOT NULL DEFAULT 0,"
                         + " accepting boolean NOT NULL,"
                         + " queue_ids smallint[] NOT NULL,"
@@ -416,24 +411,24 @@ public final class PostgresTaskStore implements FullStore {
                         + " state smallint NOT NULL,"
                         + " attempts smallint NOT NULL,"
                         + " max_attempts smallint NOT NULL,"
-                        + " created timestamptz NOT NULL,"
-                        + " due timestamptz NOT NULL,"
-                        + " state_changed timestamptz NOT NULL,"
+                        + " created timestamptz(3) NOT NULL,"
+                        + " due timestamptz(3) NOT NULL,"
+                        + " state_changed timestamptz(3) NOT NULL,"
                         + " data text,"
                         + " worker_id integer,"
-                        + " lease_until timestamptz,"
-                        + " claimed_at timestamptz,"
+                        + " lease_until timestamptz(3),"
+                        + " claimed_at timestamptz(3),"
                         + " account text,"
                         + " headers jsonb,"
                         + " unique_key text,"
                         + " key_keep_ms bigint,"
-                        + " key_until timestamptz,"
+                        + " key_until timestamptz(3),"
                         + " retry_policy text,"
                         + " schedule_id text,"
                         + " retry_of bigint,"
-                        + " start_by timestamptz,"
+                        + " start_by timestamptz(3),"
                         + " max_run_ms integer,"
-                        + " cancel_requested_at timestamptz,"
+                        + " cancel_requested_at timestamptz(3),"
                         + " cancel_reason text,"
                         + " progress text,"
                         + " steps jsonb,"
@@ -473,7 +468,8 @@ public final class PostgresTaskStore implements FullStore {
                         + " paused boolean NOT NULL DEFAULT false,"
                         + " rev bigint NOT NULL,"
                         + " occurrence_id bigint,"
-                        + " next_fire timestamptz NOT NULL)",
+                        + " next_fire timestamptz(3) NOT NULL,"
+                        + " triggered boolean NOT NULL DEFAULT false)",
                 "CREATE SEQUENCE IF NOT EXISTS " + scheduleSeq,
                 "CREATE INDEX IF NOT EXISTS " + schedule + "_due ON " + schedule + " (next_fire) WHERE NOT paused",
                 "INSERT INTO " + meta + " (key, value) VALUES ('schema_version', '" + SCHEMA_VERSION + "')"
@@ -487,7 +483,7 @@ public final class PostgresTaskStore implements FullStore {
      * prefix.
      *
      * @throws TaskStoreException when the tables carry another schema version, or a task table exists
-     *                            without a version (an older layout)
+     *                            without a version
      */
     @Override
     public void init() {
@@ -505,7 +501,7 @@ public final class PostgresTaskStore implements FullStore {
                     hasMeta = rs.getBoolean(1);
                     if (!hasMeta && rs.getBoolean(2)) {
                         throw new TaskStoreException("table " + task + " exists without " + meta
-                                + ": an older bth4j layout, this library needs schema version " + SCHEMA_VERSION);
+                                + ", this library needs schema version " + SCHEMA_VERSION);
                     }
                 }
             }
@@ -1072,7 +1068,8 @@ public final class PostgresTaskStore implements FullStore {
     private void applyEffect(Connection c, ScheduleEffect effect) throws SQLException {
         var sql = effect.pauses()
                 ? "UPDATE " + schedule + " SET paused = true, occurrence_id = NULL WHERE id = ? AND occurrence_id = ?"
-                : "UPDATE " + schedule + " SET next_fire = ?, occurrence_id = NULL WHERE id = ? AND occurrence_id = ?";
+                : "UPDATE " + schedule + " SET next_fire = ?, triggered = false, occurrence_id = NULL"
+                        + " WHERE id = ? AND occurrence_id = ?";
         try (var ps = c.prepareStatement(sql)) {
             var i = 1;
             if (!effect.pauses()) setInstant(ps, i++, effect.nextFire());
@@ -1347,6 +1344,7 @@ public final class PostgresTaskStore implements FullStore {
                 setInstant(ps, 16, nextFire);
                 setInstant(ps, 17, keepUntil);
                 setInstant(ps, 18, keepUntil);
+                setInstant(ps, 19, keepUntil);
                 try (var rs = ps.executeQuery()) {
                     if (rs.next()) {
                         return new PutRecurringResult(
@@ -1396,7 +1394,11 @@ public final class PostgresTaskStore implements FullStore {
                 try (var rs = ps.executeQuery()) {
                     while (rs.next()) {
                         var definition = readDefinition(rs);
-                        result.add(new DueSchedule(definition.scheduleId(), getInstant(rs, "next_fire"), definition));
+                        result.add(new DueSchedule(
+                                definition.scheduleId(),
+                                getInstant(rs, "next_fire"),
+                                definition,
+                                rs.getBoolean("triggered")));
                     }
                 }
                 return result;
@@ -1547,7 +1549,7 @@ public final class PostgresTaskStore implements FullStore {
     }
 
     /**
-     * The cursor is {@code <sort time in epoch microseconds>:<id>} of the last task of the page; the sort time is
+     * The cursor is {@code <sort time in epoch milliseconds>:<id>} of the last task of the page; the sort time is
      * due for QUEUED and SCHEDULED, state_changed otherwise. The state is written into the statement, so that the
      * plan can use the partial indexes. QUEUED across every queue is one bounded scan of {@code _queued} per queue,
      * merged; that index leads with the queue, so a single scan would sort every queued row.
@@ -1577,7 +1579,7 @@ public final class PostgresTaskStore implements FullStore {
                 int i = 1;
                 if (queueId != null) ps.setInt(i++, queueId);
                 if (position != null) {
-                    setStoredInstant(ps, i++, position.at());
+                    setInstant(ps, i++, position.at());
                     ps.setLong(i++, position.id());
                 }
                 ps.setLong(i++, (long) limit + 1);
@@ -1616,22 +1618,19 @@ public final class PostgresTaskStore implements FullStore {
     private record Position(Instant at, long id) {}
 
     private static String encodeCursor(Instant sortTime, long id) {
-        var at = sortTime;
-        return (at.getEpochSecond() * 1_000_000L + at.getNano() / 1000) + ":" + id;
+        return sortTime.toEpochMilli() + ":" + id;
     }
 
     private static Position decodeCursor(String cursor) {
         var colon = cursor.indexOf(':');
         try {
             if (colon > 0) {
-                var micros = Long.parseLong(cursor.substring(0, colon));
-                var id = Long.parseLong(cursor.substring(colon + 1));
-                return new Position(
-                        Instant.ofEpochSecond(
-                                Math.floorDiv(micros, 1_000_000L), Math.floorMod(micros, 1_000_000L) * 1000),
-                        id);
+                long millis = Long.parseLong(cursor.substring(0, colon));
+                // PostgreSQL counts a timestamp in microseconds in 64 bits; a time beyond that is no position
+                Math.multiplyExact(millis, 1000L);
+                return new Position(Instant.ofEpochMilli(millis), Long.parseLong(cursor.substring(colon + 1)));
             }
-        } catch (NumberFormatException | java.time.DateTimeException e) {
+        } catch (NumberFormatException | ArithmeticException e) {
             throw new IllegalArgumentException("malformed cursor");
         }
         throw new IllegalArgumentException("malformed cursor");
@@ -1793,11 +1792,6 @@ public final class PostgresTaskStore implements FullStore {
         } else {
             ps.setObject(index, OffsetDateTime.ofInstant(millis(instant), ZoneOffset.UTC));
         }
-    }
-
-    /** A time read from a row, bound as read: a row written before 4.2.0 holds microseconds. */
-    private static void setStoredInstant(PreparedStatement ps, int index, Instant instant) throws SQLException {
-        ps.setObject(index, OffsetDateTime.ofInstant(instant, ZoneOffset.UTC));
     }
 
     private static Instant getInstant(ResultSet rs, int index) throws SQLException {
@@ -2083,14 +2077,16 @@ public final class PostgresTaskStore implements FullStore {
             try (var ps = c.prepareStatement("WITH u AS (UPDATE " + schedule + " SET paused = false,"
                     + "   next_fire = CASE WHEN " + occurrenceRunning() + " THEN next_fire"
                     + "     ELSE COALESCE(?::timestamptz, next_fire) END,"
+                    + "   triggered = triggered AND (?::timestamptz IS NULL OR " + occurrenceRunning() + "),"
                     + "   rev = CASE WHEN ?::timestamptz IS NULL OR " + occurrenceRunning() + " THEN rev"
                     + "     ELSE nextval('" + scheduleSeq + "') END"
                     + "   WHERE id = ? AND paused RETURNING 1)"
                     + " SELECT EXISTS (SELECT 1 FROM u) OR EXISTS (SELECT 1 FROM " + schedule + " WHERE id = ?)")) {
                 setInstant(ps, 1, nextFire);
                 setInstant(ps, 2, nextFire);
-                ps.setString(3, scheduleId);
+                setInstant(ps, 3, nextFire);
                 ps.setString(4, scheduleId);
+                ps.setString(5, scheduleId);
                 try (var rs = ps.executeQuery()) {
                     rs.next();
                     return rs.getBoolean(1);
@@ -2106,12 +2102,12 @@ public final class PostgresTaskStore implements FullStore {
 
     /** A commit already in flight for the old definition fails, because it checks the revision and fire time it read. */
     @Override
-    public boolean setNextFire(String scheduleId, Instant nextFire) {
+    public boolean triggerRecurring(String scheduleId, Instant fireAt) {
         return update(
-                "UPDATE " + schedule + " SET next_fire = ?, rev = nextval('" + scheduleSeq + "'), occurrence_id = NULL"
-                        + " WHERE id = ?",
+                "UPDATE " + schedule + " SET next_fire = ?, triggered = true, rev = nextval('" + scheduleSeq
+                        + "'), occurrence_id = NULL WHERE id = ?",
                 ps -> {
-                    setInstant(ps, 1, nextFire);
+                    setInstant(ps, 1, fireAt);
                     ps.setString(2, scheduleId);
                 });
     }
@@ -2119,7 +2115,8 @@ public final class PostgresTaskStore implements FullStore {
     @Override
     public boolean setNextFire(String scheduleId, long revision, Instant expectedFire, Instant nextFire) {
         return update(
-                "UPDATE " + schedule + " SET next_fire = ? WHERE id = ? AND rev = ? AND " + FIRE_IS + " AND NOT paused",
+                "UPDATE " + schedule + " SET next_fire = ?, triggered = false"
+                        + " WHERE id = ? AND rev = ? AND next_fire = ? AND NOT paused",
                 ps -> {
                     setInstant(ps, 1, nextFire);
                     ps.setString(2, scheduleId);

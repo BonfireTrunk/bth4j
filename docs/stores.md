@@ -52,8 +52,6 @@ On every store the runner computes `createdAt`, delays and retry times on its ow
 
 Every store keeps times and durations in whole milliseconds and drops anything finer, so the timestamps you read back are alike on all of them.
 
-Rows PostgreSQL wrote before 4.2.0 keep their microseconds until they are written again.
-
 ## What a crash can lose
 
 A write the store confirmed and then lost does the same on every store.

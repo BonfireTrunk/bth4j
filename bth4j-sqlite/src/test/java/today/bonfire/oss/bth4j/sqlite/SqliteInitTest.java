@@ -150,7 +150,7 @@ class SqliteInitTest {
 
         assertThatThrownBy(() -> store(pool).init())
                 .isInstanceOf(TaskStoreException.class)
-                .hasMessage("schema version 99, this library needs 1");
+                .hasMessage("schema version 99, this library needs " + SqliteTaskStore.SCHEMA_VERSION);
         assertThat(scalar(pool, "SELECT value FROM app_meta WHERE key = 'schema_version'"))
                 .isEqualTo(99);
     }
@@ -163,7 +163,7 @@ class SqliteInitTest {
 
         assertThatThrownBy(() -> store(pool).init())
                 .isInstanceOf(TaskStoreException.class)
-                .hasMessage("schema version null, this library needs 1");
+                .hasMessage("schema version null, this library needs " + SqliteTaskStore.SCHEMA_VERSION);
     }
 
     @Test

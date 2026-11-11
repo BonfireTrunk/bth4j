@@ -77,11 +77,9 @@ public final class RedisTaskStore implements FullStore {
 
     /**
      * The key layout this class writes, stored in the namespace's {@code meta} hash. {@link #init} refuses a
-     * namespace with any other layout. 3.0 wrote layout 1; layout 2 was only in 4.0.0 snapshots; 4.0.0 wrote
-     * layout 3, which lacks the worker coverage this layout relies on; layout 4 and earlier forms of layout 5
-     * were only in 4.1.0 snapshots.
+     * namespace with any other layout.
      */
-    public static final int LAYOUT_VERSION = 5;
+    public static final int LAYOUT_VERSION = 6;
 
     private static final int PAGE_CHUNK = 500;
 
@@ -820,7 +818,10 @@ public final class RedisTaskStore implements FullStore {
                 if (h.isEmpty()) continue;
                 var id = due.get(i).getElement();
                 out.add(new DueSchedule(
-                        id, Instant.ofEpochMilli((long) due.get(i).getScore()), definition(id, h)));
+                        id,
+                        Instant.ofEpochMilli((long) due.get(i).getScore()),
+                        definition(id, h),
+                        "1".equals(h.get(F_TRIGGERED))));
             }
             return out;
         });
@@ -1263,9 +1264,9 @@ public final class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public boolean setNextFire(String scheduleId, Instant nextFire) {
-        var args = List.of(scheduleId, ms(nextFire));
-        return num(guard(() -> scripts.run(RedisScripts.CRON_SET_NEXT, args))) == 1;
+    public boolean triggerRecurring(String scheduleId, Instant fireAt) {
+        var args = List.of(scheduleId, ms(fireAt));
+        return num(guard(() -> scripts.run(RedisScripts.CRON_TRIGGER, args))) == 1;
     }
 
     @Override
