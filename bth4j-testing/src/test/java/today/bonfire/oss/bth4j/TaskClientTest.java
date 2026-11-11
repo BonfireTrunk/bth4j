@@ -1289,11 +1289,12 @@ class TaskClientTest {
     }
 
     @Test
-    void aKeyLookupWithoutAKeyAndAScheduleIdWithAU0000AreRejected() {
+    void aKeyLookupWithoutAKeyAndAScheduleIdThatIsMissingOrHasAU0000AreRejected() {
         var client = builder().build();
 
         assertThatThrownBy(() -> client.taskByKey(null)).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> client.deleteSchedule("s\u0000")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> client.deleteSchedule(null)).isInstanceOf(TaskValidationException.class);
     }
 
     @Test

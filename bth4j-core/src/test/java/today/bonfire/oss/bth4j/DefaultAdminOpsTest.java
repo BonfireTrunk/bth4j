@@ -316,6 +316,24 @@ class DefaultAdminOpsTest {
     }
 
     @Test
+    void aMissingScheduleIdIsRejectedBeforeTheStore() {
+        assertThatThrownBy(() -> ops.pauseSchedule(null, true)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.pauseSchedule(null, false)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.triggerSchedule(null)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.deleteSchedule(null)).isInstanceOf(TaskValidationException.class);
+        assertThat(calls).isEmpty();
+    }
+
+    @Test
+    void anUnservedWorkWindowThatIsMissingNegativeOrTooLongIsRejectedBeforeTheStore() {
+        assertThatThrownBy(() -> ops.unservedWork(null)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> ops.unservedWork(Duration.ofMillis(-1))).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> ops.unservedWork(TaskRequest.MAX_TIME_FROM_NOW.plusMillis(1)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(calls).isEmpty();
+    }
+
+    @Test
     void aScheduleIdWithAU0000IsRejectedBeforeTheStore() {
         assertThatThrownBy(() -> ops.pauseSchedule("s\u0000", true)).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> ops.pauseSchedule("s\u0000", false)).isInstanceOf(TaskValidationException.class);

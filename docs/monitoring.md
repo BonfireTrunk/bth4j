@@ -179,6 +179,8 @@ Each runner writes a heartbeat to the worker registry every `maintenanceCheckInt
 
 `admin.unservedWork()` finds queued work that no worker seen within the last minute can process. `admin.unservedWork(Duration)` chooses another heartbeat window, using the admin clock.
 
+A runner writes its heartbeat every `maintenanceCheckInterval` (5 seconds by default). Where runners use an interval above about 20 seconds, pass a window of at least three intervals, or live workers count as absent between two heartbeats.
+
 | Queue situation | Result |
 |---|---|
 | The queue is paused. | It is skipped. |

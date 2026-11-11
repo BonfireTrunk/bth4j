@@ -415,7 +415,7 @@ public final class TaskClient {
 
     /** @return true when a definition with that id existed */
     public boolean deleteSchedule(String id) {
-        StoredText.require("schedule id", id);
+        StoredText.requirePresent("schedule id", id);
         return store.deleteRecurring(id);
     }
 

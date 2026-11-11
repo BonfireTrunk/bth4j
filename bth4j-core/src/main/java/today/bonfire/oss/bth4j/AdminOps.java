@@ -38,7 +38,8 @@ public interface AdminOps {
     /**
      * @param queue null for all queues
      * @param cursor {@link TaskViewPage#next()} of the previous page; null starts at the beginning
-     * @param limit the most tasks one page holds, at least 1
+     * @param limit the most tasks one page holds, at least 1. There is no upper bound, and a page is read into
+     *     memory as a whole; the HTTP API caps it at 200.
      * @throws IllegalArgumentException if the cursor is malformed or the limit is below 1
      */
     TaskViewPage tasks(TaskState state, String queue, String cursor, int limit);
@@ -73,7 +74,12 @@ public interface AdminOps {
 
     List<WorkerInfo> workers();
 
-    /** Uses a one-minute heartbeat window to find unserved waiting work. */
+    /**
+     * Uses a one-minute heartbeat window to find unserved waiting work. A runner writes its heartbeat every
+     * {@code maintenanceCheckInterval} (5 seconds unless set); where runners use an interval above about 20
+     * seconds, pass a window of at least three intervals to {@link #unservedWork(Duration)}, or live workers
+     * count as absent between two heartbeats.
+     */
     default List<UnservedWork> unservedWork() {
         return unservedWork(Duration.ofMinutes(1));
     }
@@ -81,7 +87,9 @@ public interface AdminOps {
     /**
      * Finds queued work on unpaused queues without a live accepting worker. Queue and type counts are exact.
      *
-     * @param liveWithin non-negative maximum heartbeat age, measured against the admin clock
+     * @param liveWithin maximum heartbeat age, measured against the admin clock; not negative and at most
+     *     {@link TaskRequest#MAX_TIME_FROM_NOW}
+     * @throws IllegalArgumentException for another {@code liveWithin}
      */
     List<UnservedWork> unservedWork(Duration liveWithin);
 

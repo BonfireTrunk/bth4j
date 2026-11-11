@@ -10,12 +10,20 @@ import today.bonfire.oss.bth4j.spi.MaintenanceStore;
 /** Moves scheduled tasks whose time has come into their queues. Any number of instances may run it. */
 class ScheduledTaskService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(Loggers.PROMOTION);
+    private static final Duration SHORTEST_WAIT = Duration.ofMillis(1);
 
     private final MaintenanceStore store;
     private final Clock clock;
     private final RunnerStatus status;
     private final Duration pollInterval;
     private final int batchSize;
+
+    /**
+     * The wait before the store is asked again about a task that is due by this clock and was not moved, which
+     * happens while the store's clock is behind this one. It doubles with every such round, up to the poll
+     * interval, so that a skew of seconds costs a few calls and not one per millisecond.
+     */
+    private Duration overdueWait = SHORTEST_WAIT;
 
     ScheduledTaskService(Builder builder) {
         super(builder.group, builder.threadName);
@@ -34,6 +42,7 @@ class ScheduledTaskService extends CustomThread {
                     var r = store.promote(batchSize);
                     if (r.moved() > 0) {
                         log.trace("Moved {} scheduled tasks to their queues", r.moved());
+                        overdueWait = SHORTEST_WAIT;
                     }
                     if (r.moved() == batchSize) {
                         continue;
@@ -58,12 +67,22 @@ class ScheduledTaskService extends CustomThread {
 
     Duration sleepTime(Instant nextDue) {
         if (nextDue == null) {
+            overdueWait = SHORTEST_WAIT;
             return pollInterval;
         }
         // by the runner's clock, which is the one the store's due times follow
         var untilDue = Duration.between(clock.instant(), nextDue);
-        var wait = untilDue.compareTo(Duration.ofMillis(1)) < 0 ? Duration.ofMillis(1) : untilDue;
-        return wait.compareTo(pollInterval) < 0 ? wait : pollInterval;
+        if (untilDue.compareTo(SHORTEST_WAIT) >= 0) {
+            overdueWait = SHORTEST_WAIT;
+            return shorter(untilDue, pollInterval);
+        }
+        var wait = shorter(overdueWait, pollInterval);
+        overdueWait = shorter(overdueWait.multipliedBy(2), pollInterval);
+        return wait;
+    }
+
+    private static Duration shorter(Duration a, Duration b) {
+        return a.compareTo(b) < 0 ? a : b;
     }
 
     private void sleepAfterError() {

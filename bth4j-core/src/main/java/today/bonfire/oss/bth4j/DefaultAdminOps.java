@@ -142,7 +142,9 @@ final class DefaultAdminOps implements AdminOps {
 
     @Override
     public List<UnservedWork> unservedWork(Duration liveWithin) {
-        if (liveWithin.isNegative()) throw new IllegalArgumentException("liveWithin must be non-negative");
+        if (liveWithin == null || liveWithin.isNegative() || !StoredTime.fits(liveWithin)) {
+            throw new IllegalArgumentException("liveWithin must be non-negative and at most " + StoredTime.MAX);
+        }
         var cutoff = clock.instant().minus(liveWithin);
         var live = store.workers().stream()
                 .filter(w -> w.accepting() && !w.lastSeen().isBefore(cutoff))
@@ -210,7 +212,7 @@ final class DefaultAdminOps implements AdminOps {
 
     @Override
     public boolean pauseSchedule(String id, boolean paused) {
-        StoredText.require("schedule id", id);
+        StoredText.requirePresent("schedule id", id);
         if (paused) return store.pauseRecurring(id);
         // a fixed-delay definition parks its next fire while paused, so it resumes one delay from now; the store
         // applies that only to a paused definition whose occurrence is not still running
@@ -225,13 +227,13 @@ final class DefaultAdminOps implements AdminOps {
 
     @Override
     public boolean triggerSchedule(String id) {
-        StoredText.require("schedule id", id);
+        StoredText.requirePresent("schedule id", id);
         return store.triggerRecurring(id, clock.instant());
     }
 
     @Override
     public boolean deleteSchedule(String id) {
-        StoredText.require("schedule id", id);
+        StoredText.requirePresent("schedule id", id);
         return store.deleteRecurring(id);
     }
 

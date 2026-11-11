@@ -24,6 +24,12 @@ final class StoredText {
         if (!storable(text)) throw new TaskValidationException(field + " contains U+0000");
     }
 
+    /** @throws TaskValidationException when the text is null or has a U+0000 */
+    static void requirePresent(String field, String text) {
+        if (text == null) throw new TaskValidationException(field + " is required");
+        require(field, text);
+    }
+
     /** @return the text with every U+0000 replaced by U+FFFD; null stays null */
     static String clean(String text) {
         return storable(text) ? text : StringUtils.replaceChars(text, NUL, REPLACEMENT);
