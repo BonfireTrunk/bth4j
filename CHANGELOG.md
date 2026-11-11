@@ -61,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Contract tests: a check that only holds inside a short time window (a 200 ms lease, for example) ends the test as skipped when the machine took longer than the window. On PostgreSQL and Redis, which read a real clock, such a test failed now and then under load.
 - A schedule that an operator triggered fires however late the runner takes it up. A trigger that waited longer than the misfire threshold (the larger of one minute and twice the recurring check interval), because no runner was up or the schedule was paused, was handled as a missed fire: with `Misfire.SKIP` no task was created and the trigger was lost behind a `schedule-misfire` issue. Contract tests cover the mark on every store.
 - A runner no longer shares its settings with its builder: using the builder again (for a second runner, say) changed the queue policies, the worker label and every other setting of a runner that was built before and not yet started.
 - A request with a caller id that is sent again is accepted when its `startBy` has passed since, or when its `delay` now ends after `startBy`. The check added for a `startBy` in the past refused such a resend, against the rule that a resend with the same id answers `Accepted`.

@@ -143,6 +143,8 @@ The tests every store must pass are `StoreContract` and `RunnerContract` in `bth
 | `registryBound()` | When the largest queue or type id is not 32767 | The largest id the store accepts |
 | `fillRegistry(...)` | When the bound is large | Moves the id counter directly instead of registering filler names |
 
+Some tests check what a store does inside a short time window, a lease of 200 ms for example. On a store with a real clock a busy machine can take longer than the window. Such a test then ends as skipped, with the reason "the machine took longer than the test's time window", instead of failing. A store whose `advance` moves a test clock never skips them.
+
 Where the existing stores run it:
 
 | Store | How it runs the contract |
