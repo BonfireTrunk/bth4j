@@ -212,6 +212,124 @@ class AdminHttpServerTest {
         assertThat(rawLogin("alice", "s3cret").statusCode()).isEqualTo(200);
     }
 
+    private int loginFrom(String forwardedFor, String user, String password) throws Exception {
+        return send(
+                        "POST",
+                        "/api/v1/session",
+                        null,
+                        Json.write(Map.of("user", user, "password", password)),
+                        "X-Forwarded-For",
+                        forwardedFor)
+                .statusCode();
+    }
+
+    @Test
+    void failedLoginsForOneUserFromManyAddressesBlockThatUserAndNoOther() throws Exception {
+        start(builder().trustedProxies("127.0.0.1"));
+        for (var i = 1; i <= 5; i++) {
+            assertThat(loginFrom("203.0.113." + i, "alice", "bad")).isEqualTo(401);
+        }
+
+        assertThat(loginFrom("203.0.113.50", "alice", "s3cret")).isEqualTo(429);
+        assertThat(loginFrom("203.0.113.50", "victor", "view")).isEqualTo(200);
+
+        clock.advance(Duration.ofSeconds(11));
+        assertThat(loginFrom("203.0.113.50", "alice", "s3cret")).isEqualTo(200);
+    }
+
+    @Test
+    void aBlockForAUserThatDoesNotExistLooksLikeOneForAUserThatDoes() throws Exception {
+        start(builder().trustedProxies("127.0.0.1"));
+        for (var i = 1; i <= 5; i++) {
+            assertThat(loginFrom("203.0.113." + i, "nobody", "bad")).isEqualTo(401);
+            assertThat(loginFrom("198.51.100." + i, "alice", "bad")).isEqualTo(401);
+        }
+
+        var unknown = send(
+                "POST",
+                "/api/v1/session",
+                null,
+                Json.write(Map.of("user", "nobody", "password", "bad")),
+                "X-Forwarded-For",
+                "203.0.113.50");
+        var known = send(
+                "POST",
+                "/api/v1/session",
+                null,
+                Json.write(Map.of("user", "alice", "password", "bad")),
+                "X-Forwarded-For",
+                "198.51.100.50");
+
+        assertThat(unknown.statusCode()).isEqualTo(429);
+        assertThat(known.statusCode()).isEqualTo(429);
+        assertThat(unknown.body()).isEqualTo(known.body());
+        assertThat(unknown.headers().firstValue("Retry-After"))
+                .isEqualTo(known.headers().firstValue("Retry-After"));
+    }
+
+    @Test
+    void anAttemptRefusedForItsUserIsNotCountedAgainstItsAddress() throws Exception {
+        start(builder().trustedProxies("127.0.0.1"));
+        for (var i = 1; i <= 5; i++) {
+            assertThat(loginFrom("203.0.113." + i, "alice", "bad")).isEqualTo(401);
+        }
+
+        for (var i = 0; i < 5; i++) {
+            assertThat(loginFrom("203.0.113.50", "alice", "s3cret")).isEqualTo(429);
+        }
+
+        assertThat(loginFrom("203.0.113.50", "victor", "view")).isEqualTo(200);
+    }
+
+    @Test
+    void failedLoginsFromOneIpv6NetworkBlockTheWholeNetwork() throws Exception {
+        start(builder().trustedProxies("127.0.0.1"));
+        for (var i = 1; i <= 5; i++) {
+            assertThat(loginFrom("2001:db8:1:2::" + i, "guess" + i, "bad")).isEqualTo(401);
+        }
+
+        assertThat(loginFrom("2001:db8:1:2:ffff::9", "victor", "view")).isEqualTo(429);
+        assertThat(loginFrom("2001:db8:1:3::1", "victor", "view")).isEqualTo(200);
+    }
+
+    @Test
+    void forwardedForIsIgnoredWhenThePeerIsNotATrustedProxy() throws Exception {
+        start();
+        for (var i = 1; i <= 5; i++) {
+            assertThat(loginFrom("203.0.113." + i, "guess" + i, "bad")).isEqualTo(401);
+        }
+
+        assertThat(loginFrom("203.0.113.50", "victor", "view")).isEqualTo(429);
+    }
+
+    @Test
+    void aTrustedProxyThatIsNotAnAddressOrRangeIsRefusedWithoutEchoingIt() {
+        for (String bad : new String[] {"proxy.internal", "10.0.0.0/33", "10.0.0", "", "::1/129", "10.0.0.1/x", null}) {
+            assertThatThrownBy(() -> builder().trustedProxies("10.0.0.1", bad))
+                    .as("%s", bad)
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("trustedProxies entry 2 is not an IP address or a range such as 10.0.0.0/8");
+        }
+    }
+
+    @Test
+    void failuresAreForgottenWhenNoAttemptFollowedForTenMinutes() {
+        var throttle = new LoginThrottle(clock);
+        for (var i = 0; i < 4; i++) assertThat(throttle.attempt("a")).isZero();
+        clock.advance(Duration.ofMinutes(10).plusMillis(1));
+
+        for (var i = 0; i < 4; i++) {
+            assertThat(throttle.attempt("a"))
+                    .as("attempt %d after the pause", i + 1)
+                    .isZero();
+        }
+        clock.advance(Duration.ofMinutes(10));
+        assertThat(throttle.attempt("a"))
+                .as("the fifth within ten minutes of the fourth")
+                .isZero();
+        assertThat(throttle.attempt("a")).isPositive();
+    }
+
     @Test
     void apiWithoutOrWithUnknownSessionIs401() throws Exception {
         start();
@@ -1097,10 +1215,10 @@ class AdminHttpServerTest {
         var throttle = new LoginThrottle(clock);
         for (var i = 0; i < 3; i++) assertThat(throttle.attempt("a")).isZero();
         assertThat(throttle.attempt("a")).isZero();
-        throttle.success("a");
+        throttle.takeBack("a");
         assertThat(throttle.attempt("a")).as("fourth failure").isZero();
         assertThat(throttle.attempt("a")).as("fifth attempt, it sets the block").isZero();
-        throttle.success("a");
+        throttle.takeBack("a");
         assertThat(throttle.attempt("a"))
                 .as("the fifth succeeded, so its block is lifted")
                 .isZero();

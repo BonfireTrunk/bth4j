@@ -6,8 +6,10 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Blocks a remote address for a while after repeated failed logins. A successful login takes back only its own
- * attempt, so logging in with one account does not clear the failures counted against another.
+ * Blocks a key for a while after repeated failed logins. The server keeps one throttle keyed by where a login
+ * comes from and one keyed by the user it names. A successful login takes back only its own attempt, so logging
+ * in with one account does not clear the failures counted against another. Failures are forgotten when no
+ * attempt followed them for ten minutes.
  */
 final class LoginThrottle {
 
@@ -27,37 +29,41 @@ final class LoginThrottle {
     }
 
     /**
-     * Checks and counts one login attempt in a single step per address, before the password is verified, so
-     * concurrent attempts cannot all pass a block. {@link #success} takes this attempt back.
+     * Checks and counts one login attempt in a single step per key, before the password is verified, so
+     * concurrent attempts cannot all pass a block. {@link #takeBack} takes this attempt back.
      *
-     * @return milliseconds the address must wait, 0 when this attempt may go ahead
+     * @return milliseconds the key must wait, 0 when this attempt may go ahead
      */
-    long attempt(String address) {
+    long attempt(String key) {
         var now = clock.millis();
-        if (!entries.containsKey(address) && entries.size() >= MAX_ENTRIES) {
+        if (!entries.containsKey(key) && entries.size() >= MAX_ENTRIES) {
             makeRoom(now);
         }
         var wait = new long[1];
-        entries.compute(address, (key, old) -> {
+        entries.compute(key, (k, old) -> {
             if (old != null && old.blockedUntil > now) {
                 wait[0] = old.blockedUntil - now;
                 return old;
             }
-            var attempts = old == null ? 1 : old.attempts + 1;
+            var remembered = old != null && now - old.lastAttempt <= FORGET_MILLIS;
+            var attempts = remembered ? old.attempts + 1 : 1;
             return attempts >= MAX_FAILURES ? new Entry(0, now + BLOCK_MILLIS, now) : new Entry(attempts, 0, now);
         });
         return wait[0];
     }
 
-    /** Takes back the attempt that just succeeded, and the block it set when it was the fifth. */
-    void success(String address) {
-        entries.computeIfPresent(address, (key, e) -> {
+    /**
+     * Takes back the attempt just counted for the key, and the block it set when it was the fifth: for a login
+     * that succeeded, and for one that the other throttle refused before the password was looked at.
+     */
+    void takeBack(String key) {
+        entries.computeIfPresent(key, (k, e) -> {
             var attempts = (e.blockedUntil > 0 ? MAX_FAILURES : e.attempts) - 1;
             return attempts <= 0 ? null : new Entry(attempts, 0, e.lastAttempt);
         });
     }
 
-    /** Active blocks are kept, so flooding the map from many addresses cannot lift one. */
+    /** Active blocks are kept, so flooding the map with many keys cannot lift one. */
     private void makeRoom(long now) {
         entries.values().removeIf(e -> now - e.lastAttempt > FORGET_MILLIS && e.blockedUntil < now);
         if (entries.size() >= MAX_ENTRIES) {

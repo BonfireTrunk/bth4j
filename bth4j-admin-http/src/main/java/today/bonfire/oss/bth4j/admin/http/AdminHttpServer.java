@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
@@ -16,6 +17,7 @@ import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -25,6 +27,7 @@ import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 import javax.net.ssl.SSLContext;
 import org.slf4j.Logger;
@@ -47,8 +50,9 @@ import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
  * token that every later POST and DELETE must send as {@code X-CSRF-Token}. Sessions live in memory, so they end
  * when the server stops. Sessions are sliding: every request pushes the expiry out by the session TTL.
  * <p>
- * Failed logins block the remote address for 10 seconds after 5 failures in a row (HTTP 429 with
- * {@code Retry-After}). Behind a reverse proxy every client shares the proxy's address, so rate-limit there too.
+ * Failed logins are counted by where they come from and by the user they name: the fifth failure blocks that
+ * address, or that user name, for 10 seconds (HTTP 429 with {@code Retry-After}). Behind a reverse proxy every
+ * client shares the proxy's address unless {@link Builder#trustedProxies(String...)} names the proxy.
  * <p>
  * The server speaks plain HTTP unless an {@link SSLContext} is given; without one, put it behind TLS or keep it on
  * the loopback interface. The session cookie is marked Secure when an {@link SSLContext} is given; behind a
@@ -89,7 +93,13 @@ public final class AdminHttpServer {
     private final Executor executor;
     private final boolean ownExecutor;
     private final Sessions sessions;
-    private final LoginThrottle throttle;
+    private final LoginThrottle addressThrottle;
+    private final LoginThrottle userThrottle;
+    private final ClientAddress clientAddress;
+    /** Keys the hash the user throttle counts by, so that it holds no user names, also none that were only guessed. */
+    private final byte[] userKeySalt = randomBytes();
+
+    private final AtomicBoolean forwardedHeaderIgnored = new AtomicBoolean();
     // an unknown user is checked like a known one, so the reply time does not tell which names exist
     private final User dummyUser = User.of(HexFormat.of().formatHex(randomBytes()), Role.VIEWER);
     private final boolean secureCookie;
@@ -110,7 +120,9 @@ public final class AdminHttpServer {
         this.ownExecutor = b.executor == null;
         this.executor = ownExecutor ? Executors.newVirtualThreadPerTaskExecutor() : b.executor;
         this.sessions = new Sessions(b.clock, b.sessionTtl, MAX_SESSIONS);
-        this.throttle = new LoginThrottle(b.clock);
+        this.addressThrottle = new LoginThrottle(b.clock);
+        this.userThrottle = new LoginThrottle(b.clock);
+        this.clientAddress = ClientAddress.trusting(b.trustedProxies);
     }
 
     /** @return a builder with the defaults: 127.0.0.1:8787, session TTL of 12 hours, no static files, no CORS */
@@ -377,15 +389,21 @@ public final class AdminHttpServer {
     }
 
     private void login(HttpExchange ex) throws IOException {
-        var address = ex.getRemoteAddress().getAddress().getHostAddress();
-        var wait = throttle.attempt(address);
+        var address = ClientAddress.throttleKey(clientAddress(ex));
+        var wait = addressThrottle.attempt(address);
         if (wait > 0) {
-            ex.getResponseHeaders().set("Retry-After", String.valueOf((wait + 999) / 1000));
-            throw new HttpError(429, "too many failed logins, try again later");
+            throw tooManyLogins(ex, wait);
         }
         var body = readObject(ex);
         if (!(body.get("user") instanceof String name) || !(body.get("password") instanceof String password)) {
             throw new HttpError(400, "user and password are required");
+        }
+        // counted for every name, known or not, so that a block does not tell which users exist
+        var userKey = HexFormat.of().formatHex(digest(userKeySalt, name));
+        wait = userThrottle.attempt(userKey);
+        if (wait > 0) {
+            addressThrottle.takeBack(address);
+            throw tooManyLogins(ex, wait);
         }
         var user = users.get(name);
         var checked = user == null ? dummyUser : user;
@@ -393,7 +411,8 @@ public final class AdminHttpServer {
         if (user == null || !matches) {
             throw new HttpError(401, "invalid credentials");
         }
-        throttle.success(address);
+        addressThrottle.takeBack(address);
+        userThrottle.takeBack(userKey);
         var session = sessions.create(name, user.role());
         ex.getResponseHeaders().add("Set-Cookie", sessionCookie(session.token(), sessionTtl.toSeconds()));
         sendJson(
@@ -406,6 +425,24 @@ public final class AdminHttpServer {
                         name,
                         "role",
                         user.role().name()));
+    }
+
+    private static HttpError tooManyLogins(HttpExchange ex, long waitMillis) {
+        ex.getResponseHeaders().set("Retry-After", String.valueOf((waitMillis + 999) / 1000));
+        return new HttpError(429, "too many failed logins, try again later");
+    }
+
+    private InetAddress clientAddress(HttpExchange ex) {
+        var peer = ex.getRemoteAddress().getAddress();
+        var forwardedFor = ex.getRequestHeaders().get("X-Forwarded-For");
+        if (forwardedFor != null && !clientAddress.trusts(peer) && forwardedHeaderIgnored.compareAndSet(false, true)) {
+            log.warn(
+                    "A login from {} carried X-Forwarded-For and the header was ignored, because that address is"
+                            + " not a trusted proxy. When the server is behind a proxy, name it with trustedProxies,"
+                            + " or all clients are counted as one. This is logged once.",
+                    peer.getHostAddress());
+        }
+        return clientAddress.resolve(peer, forwardedFor);
     }
 
     private void logout(HttpExchange ex, Sessions.Session session) throws IOException {
@@ -721,6 +758,7 @@ public final class AdminHttpServer {
         private final List<String> corsOrigins = new ArrayList<>();
         private SSLContext ssl;
         private Boolean secureCookie;
+        private final List<String> trustedProxies = new ArrayList<>();
         private Executor executor;
         private Clock clock = Clock.systemUTC();
 
@@ -778,6 +816,23 @@ public final class AdminHttpServer {
          */
         public Builder secureCookie(boolean secure) {
             this.secureCookie = secure;
+            return this;
+        }
+
+        /**
+         * Names the reverse proxies in front of the server, as addresses ({@code 10.0.0.5}, {@code ::1}) or
+         * ranges ({@code 10.0.0.0/8}). For a request that arrives from one of them the login throttle counts by
+         * the last address in {@code X-Forwarded-For} that is not a trusted proxy, so the proxy must set or
+         * append that header itself. Without this setting the header is ignored and every client behind a proxy
+         * counts as the proxy's address. Name only proxies: a request from any address named here can state the
+         * address it is counted by.
+         *
+         * @throws IllegalArgumentException when an entry is not an IP address or range
+         */
+        public Builder trustedProxies(String... proxies) {
+            var all = Arrays.asList(proxies);
+            ClientAddress.trusting(all);
+            trustedProxies.addAll(all);
             return this;
         }
 

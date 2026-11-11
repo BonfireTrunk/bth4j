@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Admin HTTP: `AdminHttpServer.Builder.trustedProxies(...)` names the reverse proxies in front of the server, as addresses or ranges such as `10.0.0.0/8`. For a request from one of them the login throttle counts by the last address in `X-Forwarded-For` that is not a trusted proxy. Without the setting the header is ignored, as before, and the server logs one warning when a login carries it.
+
 ### Changed
+
+- Admin HTTP: failed logins are also counted by the user name they give, known or not: the fifth failure blocks logins with that name from any address for 10 seconds. Before, a client with many addresses could guess without limit. IPv6 addresses are counted by their /64 network. Failures are forgotten when no attempt followed them for 10 minutes; they were kept until the server stopped, so a fifth mistyped password weeks later still blocked.
 
 - `bth4j-micrometer` needs `micrometer-core` 1.17 or newer on the classpath (tested on 1.17.2). The meters are the same.
 - Redis: `init` refuses a server without hash field expiry (`HPEXPIREAT`: Redis 7.4 or newer, Valkey 9 or newer) with a `TaskConfigurationException` that names the versions, before it writes anything. Such a server passed `init` before, and the first task that finished with a keep window failed inside its script after part of the writes.

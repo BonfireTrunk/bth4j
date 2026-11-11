@@ -11,6 +11,7 @@
 - [Server settings](#server-settings)
 - [Roles](#roles)
 - [Signing in and sessions](#signing-in-and-sessions)
+- [Failed logins](#failed-logins)
 - [Endpoints](#endpoints)
 - [Errors](#errors)
 - [Transport and cross-origin calls](#transport-and-cross-origin-calls)
@@ -129,6 +130,7 @@ At least one user is required. A server runs once: `start()` after `stop()` thro
 | `sessionTtl` | How long a session lasts after the last request. The default is 12 hours. |
 | `https(SSLContext)` | Makes the server speak HTTPS and marks the cookie `Secure`. |
 | `secureCookie(true)` | Marks the cookie `Secure` when the server itself speaks plain HTTP. |
+| `trustedProxies(addresses)` | Names the reverse proxies in front of the server, so that failed logins are counted per client and not per proxy. See [Failed logins](#failed-logins). |
 | `corsOrigin(origin)` | Lets a browser app on another origin call the API with credentials. |
 
 ### Roles
@@ -160,7 +162,53 @@ sequenceDiagram
 | Lifetime | A session lasts 12 hours after the last request (`sessionTtl`). |
 | Cookie expiry | Every authenticated response renews the cookie's `Max-Age`, so the browser's expiry follows the sliding session expiry. |
 | Sessions per user | At most 20. A login past that ends that user's oldest session. |
-| Failed logins | Every fifth failed login from a remote address blocks it for 10 seconds (HTTP 429). A successful login does not clear the failures counted before it. |
+| Failed logins | Counted by address and by user name. The fifth failure blocks for 10 seconds (HTTP 429). See [Failed logins](#failed-logins). |
+
+### Failed logins
+
+The server counts a failed login twice, and either count can block the next login:
+
+| Counted by | What the fifth failure blocks | Notes |
+|---|---|---|
+| Where the login comes from | Logins from there, for 10 seconds | An IPv4 address counts by itself. An IPv6 address counts by its /64 network, because one client usually owns the whole network. |
+| The user name it gives | Logins with that name from anywhere, for 10 seconds | Every name is counted, also one that does not exist, so a block does not show which users exist. |
+
+These rules apply to both counts:
+
+- A blocked login is answered 429 with `Retry-After`. It is not counted and its password is not looked at.
+- A successful login takes back only its own attempt. It does not clear the failures counted before it.
+- Failures are forgotten when no attempt followed them for 10 minutes.
+- Someone who knows a user name can keep that user out by sending five wrong passwords every 10 seconds. Keep the server off networks where that is a concern.
+
+#### Behind a reverse proxy
+
+The server sees the proxy's address on every request. Name the proxy with `trustedProxies`, and the server counts by the client address the proxy reports in `X-Forwarded-For`:
+
+```java
+AdminHttpServer.builder()
+        .trustedProxies("10.0.0.5")            // one address, or a range such as "10.0.0.0/8"
+        .secureCookie(true)
+        // ...
+```
+
+```mermaid
+flowchart TD
+    R["Login request"] --> P{"Does it come from a trusted proxy?"}
+    P -->|No| A["Count by the address it comes from. X-Forwarded-For is ignored."]
+    P -->|Yes| F["Read X-Forwarded-For from the right"]
+    F --> L{"Is this entry a trusted proxy?"}
+    L -->|Yes| N["Go one entry to the left"]
+    N --> L
+    L -->|No| C["Count by this address"]
+```
+
+| Point | What to know |
+|---|---|
+| Without `trustedProxies` | The header is ignored and all clients behind the proxy count as one address: five failures from anyone block every login for 10 seconds. The server logs one warning when a login carries the header from an address that is not trusted. |
+| What the proxy must do | Set `X-Forwarded-For` itself, or append the address it saw to the header it received. A proxy that passes a client's header on unchanged lets the client choose the address it is counted by. |
+| What to name | Only proxies. A request from a trusted address can state any client address, so a range must not include clients. |
+| An entry that is not an IP address | It ends the search, and the login counts by the proxy that reported it. An entry may carry a port. |
+| Other headers | Only `X-Forwarded-For` is read, not `Forwarded`. |
 
 ### Endpoints
 
@@ -213,7 +261,7 @@ Viewers may read, and admins may also change (see [Roles](#roles)).
 | 404 | An unknown id. An unknown queue name on pause and resume. No task holds the key on a by-key read or cancel. |
 | 409 | A stale revision. A by-key cancel when the holder is already finished or changed meanwhile. A retry blocked by a held key, with `{"code":"KEY_HELD", ...}`. |
 | 422 | A task whose stored value cannot be read, with `code: "UNREADABLE_TASK"`. |
-| 429 | Too many failed logins from one remote address. |
+| 429 | Too many failed logins from one address or for one user name. |
 
 ### Transport and cross-origin calls
 
@@ -221,7 +269,7 @@ Viewers may read, and admins may also change (see [Roles](#roles)).
 |---|---|
 | Default | The server speaks plain HTTP unless `https(SSLContext)` is set. Keep it on the loopback interface or behind TLS. |
 | TLS in the server | Set `https(SSLContext)`. It also marks the cookie `Secure`. |
-| A TLS-terminating proxy in front | The server itself speaks plain HTTP, so set `secureCookie(true)` to mark the cookie `Secure`. |
+| A TLS-terminating proxy in front | The server itself speaks plain HTTP, so set `secureCookie(true)` to mark the cookie `Secure`. Also set `trustedProxies`, so that [failed logins](#failed-logins) are counted per client. |
 | A browser app on another origin calls the API | Set `corsOrigin("https://dashboard.example.com")`. It lets that app call the API with credentials. |
 
 ## The dashboard
