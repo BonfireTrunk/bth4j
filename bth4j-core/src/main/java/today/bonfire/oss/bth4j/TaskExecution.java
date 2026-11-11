@@ -589,11 +589,12 @@ final class TaskExecution implements Runnable, TaskContext {
         if (name == null || name.isBlank() || name.length() > MAX_STEP_NAME) {
             throw new TaskValidationException("step name must be 1 to " + MAX_STEP_NAME + " characters");
         }
-        var key = StoredText.clean(name);
+        // the name is the identity of the checkpoint, so it is refused and not altered: two names must stay two
+        StoredText.require("step name", name);
         StepResult done;
         stepsLock.lock();
         try {
-            done = steps.get(key);
+            done = steps.get(name);
         } finally {
             stepsLock.unlock();
         }
@@ -602,6 +603,8 @@ final class TaskExecution implements Runnable, TaskContext {
             return s.codecs().decodeStep(done.result(), type);
         }
         checkCancelled();
+        // without a mapper the result cannot be recorded, and the body would run again in every attempt
+        if (type != Void.class) s.codecs().requireMapper();
         R result = body.call();
         var encoded = StoredText.clean(s.codecs().encodeStep(result));
         if (encoded != null && encoded.length() > MAX_STEP_RESULT) {
@@ -611,7 +614,7 @@ final class TaskExecution implements Runnable, TaskContext {
         stepsLock.lock();
         try {
             var updated = new LinkedHashMap<>(steps);
-            updated.put(key, new StepResult(s.clock().instant(), encoded));
+            updated.put(name, new StepResult(s.clock().instant(), encoded));
             long bytes = 0;
             for (var e : updated.entrySet()) {
                 bytes += e.getKey().length()
@@ -628,7 +631,7 @@ final class TaskExecution implements Runnable, TaskContext {
                 throw new TaskLeaseLostException(
                         "lease of task " + record.id() + " was lost before step " + name + " could be recorded");
             }
-            steps.put(key, updated.get(key));
+            steps.put(name, updated.get(name));
         } finally {
             stepsLock.unlock();
         }

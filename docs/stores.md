@@ -22,7 +22,7 @@ On this page:
 | Needs | Redis 7.4 or newer, or Valkey 9 or newer | PostgreSQL 16 or newer (17 or newer recommended) | SQLite 3.45 or newer in WAL mode | nothing to run, the data lives in the process |
 | Runners on several machines | Yes | Yes | No: one or more runners in one process, or several processes on one machine, with the database file on a local disk | No: it is for tests |
 | Enqueue inside your own transaction | No: commit first, then enqueue, with an outbox | Yes, when the task tables are in the same database as your data | Yes, when the task tables are in the same database as your data | No |
-| Which clock decides | the Redis server (`TIME`) | the database server (`now()`) | the application's `java.time.Clock` | the application's `java.time.Clock` |
+| Which clock decides | the Redis server (`TIME`) | the database server (`statement_timestamp()`) | the application's `java.time.Clock` | the application's `java.time.Clock` |
 | What a crash of the server or machine loses | depends on your Redis settings: everything with no RDB and no AOF, nothing confirmed with `appendfsync always` | nothing confirmed, with the defaults (`synchronous_commit = on`, `fsync = on`) | depends on your `synchronous` setting: nothing confirmed with `FULL` | everything, whenever the process ends |
 | Removes data on its own | only under a `maxmemory-policy` other than `noeviction`; `init` refuses to start under one, when it can read the policy | never | never | never |
 | Best for | runners on several machines, when your task writes do not need to join a database transaction | runners on several machines, and tasks that must commit or roll back with your own data | runners on one machine, with the database file on a local disk | tests of your application |
@@ -42,7 +42,7 @@ What differs, and what your own settings decide, is listed in the sections below
 | Store | Current time comes from |
 |---|---|
 | Redis | the database server (`TIME`) |
-| PostgreSQL | the database server (`now()`) |
+| PostgreSQL | the database server (`statement_timestamp()`, the time the statement started) |
 | SQLite | the `java.time.Clock` the store was given, in the application |
 | In-memory | the `java.time.Clock` the store was given, in the application |
 

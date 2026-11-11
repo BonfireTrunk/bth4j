@@ -296,10 +296,14 @@ public final class TaskClient {
 
     /**
      * A request with a caller id may be the resend of one that was accepted: its {@code startBy} can have passed
-     * since, and a {@code delay} counts from now again. The store then answers that the id exists.
+     * since, and a {@code delay} counts from now again. The store then answers that the id exists, also for a
+     * task that was removed while its unique key is kept.
      */
-    private boolean alreadyStored(Long callerId) {
-        return callerId != null && store.getTask(callerId).isPresent();
+    private boolean alreadyStored(TaskRequest<?> request) {
+        var id = request.id();
+        if (id == null) return false;
+        if (store.getTask(id).isPresent()) return true;
+        return request.uniqueKey() != null && store.holdsKey(id, request.uniqueKey());
     }
 
     <T> TaskRecord toRecord(TaskRequest<T> request) {
@@ -315,7 +319,7 @@ public final class TaskClient {
         if (due == null && request.delay() != null) due = now.plus(request.delay());
         if (request.startBy() != null
                 && request.startBy().isBefore(due != null ? due : now)
-                && !alreadyStored(request.id())) {
+                && !alreadyStored(request)) {
             throw new TaskValidationException("startBy is before the run time");
         }
         var b = TaskRecord.builder()

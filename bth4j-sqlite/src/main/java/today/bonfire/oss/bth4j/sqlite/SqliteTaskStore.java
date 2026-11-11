@@ -1310,6 +1310,20 @@ public final class SqliteTaskStore implements FullStore {
                 clock.millis())));
     }
 
+    /** A key-only row counts: it is the removed task, still holding its key. */
+    @Override
+    public boolean holdsKey(long id, String key) {
+        return withConnection(c -> queryOne(
+                        c,
+                        "SELECT 1 FROM " + task + " WHERE id = ? AND unique_key = ?"
+                                + " AND (key_until IS NULL OR key_until > ?)",
+                        rs -> true,
+                        id,
+                        key,
+                        clock.millis())
+                != null);
+    }
+
     /** Every registered queue appears, with zeros when it has no tasks. Counts by a scan of the {@code _counts} index. */
     @Override
     public Map<Integer, StateCounts> counts() {

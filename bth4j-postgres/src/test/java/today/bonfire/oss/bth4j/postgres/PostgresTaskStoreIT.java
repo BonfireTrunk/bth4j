@@ -3,6 +3,10 @@ package today.bonfire.oss.bth4j.postgres;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -14,8 +18,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.postgresql.ds.PGSimpleDataSource;
@@ -1506,6 +1513,37 @@ class PostgresTaskStoreIT {
         assertThat(get(late).due()).isEqualTo(get(late).stateChangedAt());
     }
 
+    /**
+     * A row trigger notes the server's own {@code statement_timestamp()} of each insert, in microseconds, next to
+     * the time the store wrote. Rounding to milliseconds would put about half of the store's times ahead of it.
+     */
+    @Test
+    void theStoreClockCutsTheServerTimeToMillisecondsAndIsNeverAheadOfIt() throws SQLException {
+        sql("CREATE TABLE " + prefix + "_seen (id bigint NOT NULL, at timestamptz NOT NULL)");
+        sql("CREATE FUNCTION " + prefix + "_see() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN" + " INSERT INTO "
+                + prefix + "_seen VALUES (NEW.id, statement_timestamp()); RETURN NEW; END $$");
+        sql("CREATE TRIGGER " + prefix + "_see BEFORE INSERT ON " + prefix + "_task FOR EACH ROW EXECUTE FUNCTION "
+                + prefix + "_see()");
+        try {
+            for (int i = 0; i < 40; i++) {
+                store.enqueue(task(newId()).build());
+            }
+            try (var c = PostgresTestSupport.dataSource().getConnection();
+                    var st = c.createStatement();
+                    var rs = st.executeQuery("SELECT count(*), count(*) FILTER (WHERE"
+                            + " t.state_changed = date_trunc('milliseconds', s.at) AND t.due = t.state_changed)"
+                            + " FROM " + prefix + "_task t JOIN " + prefix + "_seen s ON s.id = t.id")) {
+                rs.next();
+                assertThat(rs.getInt(1)).isEqualTo(40);
+                assertThat(rs.getInt(2)).as("times cut to the millisecond").isEqualTo(40);
+            }
+        } finally {
+            sql("DROP TRIGGER " + prefix + "_see ON " + prefix + "_task");
+            sql("DROP FUNCTION " + prefix + "_see()");
+            sql("DROP TABLE " + prefix + "_seen");
+        }
+    }
+
     // ---- fault injection: statement-level failures and contention ------------------------------------
 
     private long occurrenceOf(String scheduleId) throws SQLException {
@@ -1768,6 +1806,80 @@ class PostgresTaskStoreIT {
         }
         assertThat(occurrenceOf("race")).isEqualTo(occurrence);
         assertThat(store.recurringSchedules()).containsEntry("race", parked);
+    }
+
+    @Test
+    void aFirstPutThatFindsTheDefinitionCreatedMeanwhileSeesTheOccurrenceOfACommitInFlight() throws Exception {
+        var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MILLIS);
+        var parked = fireAt.plus(Duration.ofDays(36_500));
+        long occurrence = newId();
+
+        var pool = Executors.newSingleThreadExecutor();
+        try (var holder = PostgresTestSupport.dataSource().getConnection()) {
+            holder.setAutoCommit(false);
+            var commits = new ArrayList<Future<Void>>();
+            var late = new PostgresTaskStore(
+                    runningBeforeFirst("INSERT INTO " + prefix + "_schedule", () -> {
+                        store.putRecurring(fixedDelay("race", 60_000), fireAt, fireAt);
+                        try (var ps = holder.prepareStatement("UPDATE " + prefix
+                                + "_schedule SET next_fire = ?, occurrence_id = ? WHERE id = 'race'")) {
+                            ps.setObject(1, java.time.OffsetDateTime.ofInstant(parked, java.time.ZoneOffset.UTC));
+                            ps.setLong(2, occurrence);
+                            assertThat(ps.executeUpdate()).isEqualTo(1);
+                        }
+                        assertThat(store.enqueue(
+                                        holder,
+                                        task(occurrence).scheduleId("race").build()))
+                                .isEqualTo(EnqueueOutcome.STORED);
+                        commits.add(pool.submit(() -> {
+                            awaitLockWaiters(1);
+                            holder.commit();
+                            return null;
+                        }));
+                        return null;
+                    }),
+                    prefix);
+
+            assertThat(late.putRecurring(fixedDelay("race", 60_000), fireAt, fireAt))
+                    .isEqualTo(new PutRecurringResult(PutRecurringOutcome.UNCHANGED, parked));
+            assertThat(commits).hasSize(1);
+            commits.getFirst().get(10, TimeUnit.SECONDS);
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(occurrenceOf("race")).isEqualTo(occurrence);
+        assertThat(store.recurringSchedules()).containsEntry("race", parked);
+    }
+
+    /**
+     * The test pool, with {@code before} run once: just before the first statement that starts with
+     * {@code sqlStart} is prepared, on the thread that prepares it.
+     */
+    private static DataSource runningBeforeFirst(String sqlStart, Callable<Void> before) {
+        var pending = new AtomicBoolean(true);
+        var target = PostgresTestSupport.dataSource();
+        return (DataSource) Proxy.newProxyInstance(
+                DataSource.class.getClassLoader(), new Class<?>[] {DataSource.class}, (p, method, args) -> {
+                    var result = invoke(target, method, args);
+                    if (!(result instanceof Connection connection)) return result;
+                    return Proxy.newProxyInstance(
+                            Connection.class.getClassLoader(), new Class<?>[] {Connection.class}, (q, m, a) -> {
+                                if (m.getName().equals("prepareStatement")
+                                        && ((String) a[0]).startsWith(sqlStart)
+                                        && pending.compareAndSet(true, false)) {
+                                    before.call();
+                                }
+                                return invoke(connection, m, a);
+                            });
+                });
+    }
+
+    private static Object invoke(Object target, Method method, Object[] args) throws Throwable {
+        try {
+            return method.invoke(target, args);
+        } catch (InvocationTargetException e) {
+            throw e.getCause();
+        }
     }
 
     // ---- fault injection: a key holder that disappears during enqueue --------------------------------

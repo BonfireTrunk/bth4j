@@ -90,11 +90,11 @@ flowchart TD
     D -.->|"worker dies after the body, before the result is stored"| G["The next attempt finds no result and runs the body again"]
 ```
 
-Step results are encoded with the runner's JSON mapper. These limits apply:
+Step results are encoded with the runner's JSON mapper. On a runner without one, a step with a result type fails with a `TaskConfigurationException` before its body runs; a step without a result needs no mapper. These limits apply:
 
 | What | Limit |
 |---|---|
-| A step name | nonblank, at most 64 UTF-16 code units |
+| A step name | nonblank, at most 64 UTF-16 code units, without U+0000 |
 | An encoded result | at most 8192 |
 | All step names and encoded results of one task together | at most 65536 |
 

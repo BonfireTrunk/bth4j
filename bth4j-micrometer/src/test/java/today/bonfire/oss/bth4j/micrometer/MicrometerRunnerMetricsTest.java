@@ -2,12 +2,15 @@ package today.bonfire.oss.bth4j.micrometer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
+import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -310,6 +313,32 @@ class MicrometerRunnerMetricsTest {
 
         try (var again = MicrometerRunnerMetrics.bind(admin, () -> 5, registry, tags, Duration.ofHours(1))) {
             assertThat(gauge("bth4j.runner.running", "runner", "a")).isEqualTo(5);
+        }
+    }
+
+    @Test
+    void theTagsStayTakenUntilCloseHasRemovedTheMeters() {
+        var tags = Tags.of("runner", "a");
+        var duringRemoval = new ArrayList<Throwable>();
+        var watched = new SimpleMeterRegistry() {
+            @Override
+            public Meter remove(Meter meter) {
+                if (duringRemoval.isEmpty()) {
+                    duringRemoval.add(catchThrowable(
+                            () -> MicrometerRunnerMetrics.bind(admin, () -> 2, this, tags, Duration.ofHours(1))
+                                    .close()));
+                }
+                return super.remove(meter);
+            }
+        };
+
+        MicrometerRunnerMetrics.bind(admin, () -> 1, watched, tags, Duration.ofHours(1))
+                .close();
+
+        assertThat(duringRemoval).singleElement().isInstanceOf(IllegalArgumentException.class);
+        try (var again = MicrometerRunnerMetrics.bind(admin, () -> 3, watched, tags, Duration.ofHours(1))) {
+            assertThat(watched.get("bth4j.runner.running").tags(tags).gauge().value())
+                    .isEqualTo(3);
         }
     }
 

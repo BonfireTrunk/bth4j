@@ -77,6 +77,18 @@ class ScheduledTaskServiceTest {
     }
 
     @Test
+    void aDueTimeLessThanAMillisecondAheadIsWaitedForAndStartsTheWaitShortAgain() {
+        var service = service(store, Duration.ofMillis(10));
+        var overdue = clock.instant().minusSeconds(2);
+        for (int i = 0; i < 5; i++) {
+            service.sleepTime(overdue);
+        }
+
+        assertThat(service.sleepTime(clock.instant().plusNanos(500_000))).isEqualTo(Duration.ofMillis(1));
+        assertThat(service.sleepTime(overdue)).as("starts short again").isEqualTo(Duration.ofMillis(1));
+    }
+
+    @Test
     void aPromotionThatMovesTasksStartsTheWaitForAnOverdueTaskShortAgain() {
         var running = new AtomicReference<ScheduledTaskService>();
         var waits = new ArrayList<Duration>();

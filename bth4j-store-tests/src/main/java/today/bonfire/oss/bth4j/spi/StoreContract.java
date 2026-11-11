@@ -98,6 +98,15 @@ public abstract class StoreContract {
         return false;
     }
 
+    /**
+     * Removes the schema version that the store made with {@code namespace} keeps and leaves its tasks in place.
+     *
+     * @return false when the store keeps no schema version; the test that needs one is skipped then
+     */
+    protected boolean removeSchemaVersion(String namespace) {
+        return false;
+    }
+
     /** Lets store time pass. Real stores sleep; an in-memory store moves its clock. */
     protected void advance(Duration duration) {
         try {
@@ -187,6 +196,8 @@ public abstract class StoreContract {
     /**
      * Ends the test as inconclusive when {@code deadline} has passed. A check that only holds before a deadline
      * proves nothing after it, and on a store with a real clock a busy machine can take longer than the window.
+     * The deadline is a time on the test's clock, or a stored time that the test checked against that clock first:
+     * a store that wrote a wrong time then fails the test instead of ending it as inconclusive.
      */
     private void assumeBefore(Instant deadline) {
         assumeTrue(now().isBefore(deadline), "the machine took longer than the test's time window");
@@ -1639,9 +1650,13 @@ public abstract class StoreContract {
             assertThat(retried.attempts()).as("attempts of %s", how).isZero();
         });
 
+        Instant claimedFrom = now();
         List<TaskRecord> claimed = claim(ids.size(), SHORT, null);
         assertThat(claimed).extracting(TaskRecord::id).containsExactlyInAnyOrderElementsOf(ids.values());
         for (TaskRecord t : claimed) {
+            assertThat(t.leaseUntil())
+                    .as("lease of %s", t.id())
+                    .isAfterOrEqualTo(millis(claimedFrom).plus(SHORT));
             assertThat(t.cancelRequestedAt())
                     .as("cancel request of the claimed %s", t.id())
                     .isNull();
@@ -1962,8 +1977,10 @@ public abstract class StoreContract {
     @Test
     void keyStaysHeldAfterTerminalUntilKeyUntil() {
         TaskRecord t = leased(task().uniqueKey("k").keyKeep(SHORT));
+        Instant endedFrom = now();
         assertThat(store.ack(t.id(), t.revision(), true, true, null)).isTrue();
         TaskRecord done = get(t.id());
+        assertThat(done.stateChangedAt()).isAfterOrEqualTo(millis(endedFrom));
         assertThat(done.keyUntil())
                 .isBetween(
                         done.stateChangedAt().plus(SHORT).minusMillis(5),
@@ -2467,7 +2484,9 @@ public abstract class StoreContract {
     @Test
     void renewBeforeTheLeaseExpiresKeepsTheTaskAwayFromTheSweeper() {
         put(task());
+        Instant claimedFrom = now();
         TaskRecord t = claim(1, MID, null).get(0);
+        assertThat(t.leaseUntil()).isAfterOrEqualTo(millis(claimedFrom).plus(MID));
         advance(Duration.ofMillis(100));
         List<LeaseStatus> status = store.renew(List.of(new LeaseRef(t.id(), t.revision())), LEASE);
         assumeBefore(t.leaseUntil());
@@ -2537,6 +2556,60 @@ public abstract class StoreContract {
         assertThat(store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10)).isZero();
         advance(PAST_SHORT);
         put(task().uniqueKey("k"));
+    }
+
+    @Test
+    void holdsKeyNamesTheHolderOfAKeyAlsoAfterTheHolderWasRemovedInsideItsWindow() {
+        TaskRecord removed = leased(task().uniqueKey("removed").keyKeep(Duration.ofHours(1)));
+        assertThat(store.holdsKey(removed.id(), "removed")).as("leased").isTrue();
+        assertThat(store.ack(removed.id(), removed.revision(), false, false, null))
+                .isTrue();
+        TaskRecord kept = leased(task().uniqueKey("kept").keyKeep(Duration.ofHours(1)));
+        assertThat(store.ack(kept.id(), kept.revision(), true, true, null)).isTrue();
+        TaskRecord freed = leased(task().uniqueKey("freed"));
+        assertThat(store.ack(freed.id(), freed.revision(), true, true, null)).isTrue();
+        long open = put(task().uniqueKey("open"));
+
+        assertThat(store.getTask(removed.id())).isEmpty();
+        assertThat(store.holdsKey(removed.id(), "removed"))
+                .as("removed inside its window")
+                .isTrue();
+        assertThat(store.holdsKey(kept.id(), "kept"))
+                .as("finished inside its window")
+                .isTrue();
+        assertThat(store.holdsKey(freed.id(), "freed"))
+                .as("finished without a window")
+                .isFalse();
+        assertThat(store.holdsKey(open, "open")).as("open").isTrue();
+        assertThat(store.holdsKey(kept.id(), "open"))
+                .as("the key of an open task")
+                .isFalse();
+        assertThat(store.holdsKey(open, "kept"))
+                .as("the key of a finished task")
+                .isFalse();
+        assertThat(store.holdsKey(open, "removed"))
+                .as("the key of another task")
+                .isFalse();
+        assertThat(store.holdsKey(kept.id(), "removed"))
+                .as("the key of a removed task")
+                .isFalse();
+        assertThat(store.holdsKey(kept.id(), "missing"))
+                .as("a key no task holds")
+                .isFalse();
+    }
+
+    @Test
+    void holdsKeyIsFalseOnceTheKeepWindowHasPassed() {
+        TaskRecord removed = leased(task().uniqueKey("removed").keyKeep(SHORT));
+        assertThat(store.ack(removed.id(), removed.revision(), false, false, null))
+                .isTrue();
+        TaskRecord kept = leased(task().uniqueKey("kept").keyKeep(SHORT));
+        assertThat(store.ack(kept.id(), kept.revision(), true, true, null)).isTrue();
+
+        advance(PAST_SHORT);
+
+        assertThat(store.holdsKey(removed.id(), "removed")).as("removed").isFalse();
+        assertThat(store.holdsKey(kept.id(), "kept")).as("finished").isFalse();
     }
 
     @Test
@@ -2673,9 +2746,11 @@ public abstract class StoreContract {
 
         TaskRecord running = claimOne();
         assertThat(running.id()).isEqualTo(t.id());
+        Instant endedFrom = now();
         assertThat(store.ack(running.id(), running.revision(), true, true, null))
                 .isTrue();
         TaskRecord finished = get(t.id());
+        assertThat(finished.stateChangedAt()).isAfterOrEqualTo(millis(endedFrom));
         assertThat(finished.keyKeep()).isEqualTo(MID);
         assertThat(finished.keyUntil())
                 .isAfter(oldUntil)
@@ -2941,7 +3016,9 @@ public abstract class StoreContract {
     @Test
     void failExpiredIsLostWhenTheLeaseWasRenewed() {
         put(task());
+        Instant claimedFrom = now();
         TaskRecord t = claim(1, MID, null).get(0);
+        assertThat(t.leaseUntil()).isAfterOrEqualTo(millis(claimedFrom).plus(MID));
         advance(Duration.ofMillis(100));
         store.renew(List.of(new LeaseRef(t.id(), t.revision())), LEASE);
         assumeBefore(t.leaseUntil());
@@ -3406,8 +3483,11 @@ public abstract class StoreContract {
         for (TaskState state : PURGED_TERMINALS) {
             long old = terminalTasks(state, 1).get(0);
             advance(PAST_MID);
+            Instant youngFrom = now();
             long young = terminalTasks(state, 1).get(0);
-            Instant youngUntil = get(young).stateChangedAt().plus(MID);
+            Instant youngSince = get(young).stateChangedAt();
+            assertThat(youngSince).as("%s young", state).isAfterOrEqualTo(millis(youngFrom));
+            Instant youngUntil = youngSince.plus(MID);
 
             long purged = store.purge(state, MID, 10);
             assumeBefore(youngUntil);
@@ -3425,8 +3505,12 @@ public abstract class StoreContract {
     void purgeRemovesCancelledAndExpiredTasksWhoseKeyIsStillHeldAndTheKeyStaysTaken() {
         for (TaskState state : PURGED_TERMINALS) {
             String key = "held-" + state;
+            Instant heldFrom = now();
             long id = inState(state, task().uniqueKey(key).keyKeep(MID));
             Instant heldUntil = get(id).keyUntil();
+            assertThat(heldUntil)
+                    .as("%s key window", state)
+                    .isAfterOrEqualTo(millis(heldFrom).plus(MID));
             advance(Duration.ofMillis(50));
 
             assertThat(store.purge(state, Duration.ofMillis(10), 10))
@@ -4667,13 +4751,15 @@ public abstract class StoreContract {
     void purgeWorkersDeletesOnlyWorkersNotSeenRecently() {
         int stale = store.allocateWorkerId("stale", Set.of(), Set.of());
         advance(PAST_SHORT);
+        Instant seenFrom = now();
         beat(worker, 0, true);
-        Instant seenUntil = store.workers().stream()
+        Instant seen = store.workers().stream()
                 .filter(w -> w.id() == worker)
                 .findFirst()
                 .orElseThrow()
-                .lastSeen()
-                .plus(SHORT);
+                .lastSeen();
+        assertThat(seen).as("the heartbeat is the time last seen").isAfterOrEqualTo(millis(seenFrom));
+        Instant seenUntil = seen.plus(SHORT);
         long purged = store.purgeWorkers(SHORT);
         assumeBefore(seenUntil);
         assertThat(purged).isEqualTo(1);
@@ -5650,9 +5736,11 @@ public abstract class StoreContract {
             TaskRecord third = claimOne();
             assertThat(third.attempts()).isEqualTo(3);
             assertCarried(given, third, path + " third claim");
+            Instant endedFrom = now();
             assertThat(store.ack(third.id(), third.revision(), true, true, null))
                     .isTrue();
             TaskRecord done = get(given.id());
+            assertThat(done.stateChangedAt()).isAfterOrEqualTo(millis(endedFrom));
             assertCarried(given, done, path + " ack");
             assertThat(sameText(done.encodedPayload(), given.encodedPayload()))
                     .as("payload after ack")
@@ -6121,6 +6209,16 @@ public abstract class StoreContract {
         assertThatThrownBy(store::init).isInstanceOf(TaskStoreException.class);
         assertThatThrownBy(store::init)
                 .as("a refused init leaves the stored version as it is")
+                .isInstanceOf(TaskStoreException.class);
+    }
+
+    @Test
+    void initRefusesAStoreThatHoldsTasksWithoutASchemaVersion() {
+        putNew();
+        assumeTrue(removeSchemaVersion(namespace), "the store keeps no schema version");
+        assertThatThrownBy(store::init).isInstanceOf(TaskStoreException.class);
+        assertThatThrownBy(store::init)
+                .as("a refused init writes no schema version")
                 .isInstanceOf(TaskStoreException.class);
     }
 
@@ -7235,7 +7333,14 @@ public abstract class StoreContract {
     @Test
     void aCursorNamingATimeFarFromAnyClockIsRefusedOrReadAsAPositionAndNeverFailsTheStore() {
         putNew();
-        for (String far : new String[] {Long.MIN_VALUE + ":1", "-300000000000000000:1", Long.MAX_VALUE + ":1"}) {
+        for (String far : new String[] {
+            Long.MIN_VALUE + ":1",
+            "-300000000000000000:1",
+            "-1000000000000000:1",
+            "9223372036854775:1",
+            "9224318016000000:1",
+            Long.MAX_VALUE + ":1"
+        }) {
             Throwable refused = catchThrowable(() -> store.tasks(TaskState.QUEUED, null, far, 10));
             if (refused != null) {
                 assertThat(refused).as("cursor '%s'", far).isInstanceOf(IllegalArgumentException.class);
@@ -8267,9 +8372,13 @@ public abstract class StoreContract {
     void aLeaseWithTimeLeftIsNotReclaimedAndOneThatRanOutIs() {
         TaskRecord longLease = leased(task());
         put(task());
+        Instant midFrom = now();
         TaskRecord midLease = claim(1, MID, null).get(0);
+        assertThat(midLease.leaseUntil()).isAfterOrEqualTo(millis(midFrom).plus(MID));
         put(task());
+        Instant shortFrom = now();
         TaskRecord shortLease = claim(1, SHORT, null).get(0);
+        assertThat(shortLease.leaseUntil()).isAfterOrEqualTo(millis(shortFrom).plus(SHORT));
         List<ExpiredLease> early = store.reclaim(10);
         assumeBefore(shortLease.leaseUntil());
         assertThat(early).as("right after the claims").isEmpty();
@@ -8366,8 +8475,10 @@ public abstract class StoreContract {
             assertThat(whileOpen).as("%s while its window is open", key).isEqualTo(new EnqueueOutcome.DuplicateKey(id));
         });
         advance(PAST_MID);
+        Instant expiredFrom = now();
         assertThat(store.expire(10)).containsExactly(expiring);
         Instant expiredUntil = get(expiring).keyUntil();
+        assertThat(expiredUntil).isAfterOrEqualTo(millis(expiredFrom).plus(window));
         EnqueueOutcome whileExpiredOpen =
                 store.enqueue(task().uniqueKey("expired").build());
         assumeBefore(expiredUntil);

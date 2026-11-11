@@ -81,6 +81,11 @@ class RedisStoreContractIT extends StoreContract {
     }
 
     @Override
+    protected boolean removeSchemaVersion(String namespace) {
+        return jedis.hdel(new Keys(namespace).meta, Keys.SCHEMA) == 1;
+    }
+
+    @Override
     protected void fillRegistry(TaskStore fresh, String namespace, Registry registry, int lastId) {
         var counter = new Keys(namespace).prefix + "seq:" + (registry == Registry.QUEUE ? "queue" : "type");
         jedis.set(counter, Integer.toString(lastId));

@@ -28,7 +28,7 @@ The namespace prefixes every key and carries the Redis Cluster hash tag, so all 
 | Server | Redis 7.4 or newer, or Valkey 9 or newer. The store expires the key fields of finished tasks with hash field expiry, and `init` refuses a server that does not have it. |
 | Tested on | standalone Redis 8.10 and Valkey 9.1.3 |
 | `maxmemory-policy` | `noeviction`. `init` refuses to start under any other policy (see [Memory eviction](#memory-eviction)). |
-| Namespace layout | Layout 6. `init` refuses a namespace with another layout, which includes every namespace written by bth4j 4.x or older; there is no migration. Start with a new namespace. |
+| Namespace layout | Layout 6. `init` refuses a namespace that holds keys of the store without a layout version, and a namespace with another layout, which includes every namespace written by bth4j 4.x or older; there is no migration. Start with a new namespace. |
 | Redis Cluster | Not tested. The namespace's slot must not be resharded while runners use it (see [Redis Cluster](#redis-cluster)). |
 
 ## What the store does

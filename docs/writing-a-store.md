@@ -45,7 +45,7 @@ An arrow means "extends".
 | `ExecutionStore` | `enqueue`, `enqueueAll`, `claim`, `renew`, `ack`, `fail`, `failExpired`, `finishCancelled`, `reschedule`, `unclaim`, `saveSteps`, `progress` |
 | `MaintenanceStore` | `promote`, `reclaim`, `expire`, `purge`, `purgeWorkers`, `releaseKeys`, `nextDue` |
 | `ScheduleStore` | `putRecurring`, `deleteRecurring`, `recurringSchedules`, `recurringDefinitions`, `dueRecurring`, `commitRecurring`, `pauseRecurring`, `resumeRecurring`, `triggerRecurring`, `setNextFire` |
-| `InspectionStore` | `getTask`, `counts`, `tasks` (by state, paged by an opaque cursor on `(due, id)` for QUEUED and SCHEDULED and on `(stateChangedAt, id)` for the other states) |
+| `InspectionStore` | `getTask`, `taskByKey`, `holdsKey`, `counts`, `tasks` (by state, paged by an opaque cursor on `(due, id)` for QUEUED and SCHEDULED and on `(stateChangedAt, id)` for the other states) |
 | `AdminStore` | `cancel`, `retry`, `delete`, `pauseQueue`, `queues`, `heartbeat`, `workers` |
 
 ## What a store needs from its engine
@@ -120,6 +120,7 @@ flowchart TD
 
 | Method or type | What it does |
 |---|---|
+| `InspectionStore.holdsKey(id, key)` | Tells whether the task with that id holds the unique key now: open, finished inside its keep window, or removed inside it. `taskByKey` shows the first two only. |
 | `InspectionStore.queuedByType()` | Returns exact QUEUED counts as queue id to type id to count, with only non-zero entries. |
 | `AdminStore.heartbeat(workerId, label, queueIds, typeIds, running, accepting)` | Persists the worker's accepting state, exposed by `WorkerInfo.accepting()`. It creates the row again under the same id when maintenance purged it. |
 | `allocateWorkerId` | Creates accepting workers. |
@@ -139,6 +140,7 @@ The tests every store must pass are `StoreContract` and `RunnerContract` in `bth
 | `releasesKeysOnItsOwn()` | When the store ends key windows itself | `true`, so that the tests expect `releaseKeys` to count nothing |
 | `orderOfIdsThatShareATime()` | When a listing does not order tasks of one time by id | The order the store documents. It must be total and stable. |
 | `corruptStoredValue(namespace, taskId)` | When the store can hold a value it cannot read | Overwrites a stored value of the task with an unreadable one and returns `true`. The default returns `false`, which skips the tests that need one. |
+| `removeSchemaVersion(namespace)` | When the store keeps a schema version | Removes the stored version and leaves the tasks, and returns `true`, so that the test can see `init()` refuse a store that holds tasks without a version. The default returns `false`, which skips that test. |
 | `writeOtherSchemaVersion(namespace)` | When the store keeps a schema version | Replaces the stored version with one the store does not write and returns `true`, so that the test can see `init()` refuse it. The default returns `false`, which skips that test. |
 | `registryBound()` | When the largest queue or type id is not 32767 | The largest id the store accepts |
 | `fillRegistry(...)` | When the bound is large | Moves the id counter directly instead of registering filler names |

@@ -52,8 +52,9 @@ public interface TaskContext {
      * this method returns, so a later attempt resumes after the last completed step. A step is repeated when
      * the worker dies between finishing the body and storing the result, so the body should be safe to repeat.
      *
-     * @param name   unique within the task, at most 64 characters; a U+0000 in it is stored as U+FFFD
-     * @param type   result class, written and read with the runner's JSON mapper
+     * @param name   unique within the task, at most 64 characters, without U+0000
+     * @param type   result class, written and read with the runner's JSON mapper; on a runner without one the
+     *               step fails before its body runs
      * @param body   the work
      * @return the result of this or an earlier run
      */

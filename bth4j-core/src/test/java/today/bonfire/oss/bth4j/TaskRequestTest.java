@@ -93,6 +93,17 @@ class TaskRequestTest {
     }
 
     @Test
+    void aUniqueKeyMayNotStartLikeTheKeyOfAScheduleOccurrence() {
+        assertThatThrownBy(() -> TaskRequest.of(VOID).uniqueKey("sched:nightly"))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessageContaining("sched:");
+        assertThatThrownBy(() -> TaskRequest.of(VOID).uniqueKey("sched:", Uniqueness.keepFor(Duration.ofMinutes(1))))
+                .isInstanceOf(TaskValidationException.class);
+        assertThat(TaskRequest.of(VOID).uniqueKey("schedule-7").build().uniqueKey())
+                .isEqualTo("schedule-7");
+    }
+
+    @Test
     void aUniqueKeySetAgainWithoutAUniquenessDropsTheEarlierKeepWindow() {
         var request = TaskRequest.of(VOID)
                 .uniqueKey("k", Uniqueness.keepFor(Duration.ofMinutes(1)))

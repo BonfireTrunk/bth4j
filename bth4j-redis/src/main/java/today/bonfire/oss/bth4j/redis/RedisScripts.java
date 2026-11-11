@@ -592,6 +592,10 @@ final class RedisScripts {
             local qid, rev, uk, kk = v[3] or '', tonumber(v[1]), v[7], v[8]
             -- no zset of a state can take a task whose queue cannot be read, so it neither waits for a retry nor stays
             local placed = tonumber(v[3]) ~= nil
+            if not placed then
+              -- the queue whose index holds it as leased is unknown, so it leaves that index of every queue
+              for _, q in ipairs(redis.call('HVALS', P .. 'reg:queue')) do zrem(P .. 'idx:2:' .. q, id) end
+            end
             local fkey = P .. 'f:' .. id
             local function record()
               if redis.call('RPUSH', fkey, ARGV[7]) > @MAX@ then redis.call('LTRIM', fkey, -@MAX@, -1) end
@@ -748,6 +752,23 @@ final class RedisScripts {
               if remaining <= 0 then break end
             end
             return removed
+            """;
+
+    /**
+     * ARGV: layout version. Returns the layout version of the namespace and writes the given one when the
+     * namespace is new. Returns '' for a namespace that has no version but one of the keys that every used
+     * namespace has.
+     */
+    static final String INIT = """
+            local P = ARGV[1]
+            local found = redis.call('HGET', P .. 'meta', 'schema')
+            if found then return found end
+            if redis.call('EXISTS', P .. 'seq:id', P .. 'seq:worker', P .. 'seq:queue', P .. 'seq:type',
+                P .. 'reg:queue', P .. 'reg:type', P .. 'workers', P .. 'crondefs', P .. 'cronrev') > 0 then
+              return ''
+            end
+            redis.call('HSET', P .. 'meta', 'schema', ARGV[2])
+            return ARGV[2]
             """;
 
     /** ARGV: kind (queue or type), name. Returns the id; fails when the 32767 ids are used up. */

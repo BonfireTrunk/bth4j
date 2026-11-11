@@ -92,6 +92,11 @@ public final class Codecs {
         }
     }
 
+    /** @throws TaskConfigurationException if no mapper is configured */
+    void requireMapper() {
+        mapper();
+    }
+
     /** A missing mapper is a mistake in the set-up, not in the data: a task must not end as dead for it. */
     private JsonMapper mapper() {
         if (mapper == null) {

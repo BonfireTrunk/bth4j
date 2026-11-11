@@ -42,6 +42,17 @@ class PostgresStoreContractIT extends StoreContract {
     }
 
     @Override
+    protected boolean removeSchemaVersion(String namespace) {
+        try (var c = PostgresTestSupport.dataSource().getConnection();
+                var st = c.createStatement()) {
+            st.execute("DROP TABLE " + PostgresTestSupport.prefix(namespace) + "_meta");
+            return true;
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Override
     protected void fillRegistry(TaskStore fresh, String namespace, Registry registry, int lastId) {
         var sequence =
                 PostgresTestSupport.prefix(namespace) + (registry == Registry.QUEUE ? "_queue" : "_type") + "_id_seq";

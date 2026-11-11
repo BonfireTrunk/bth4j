@@ -251,10 +251,17 @@ public final class TaskRequest<T> {
          * Makes the task record unique: while the key is taken, another request with the same key is answered with
          * {@link EnqueueResult.Duplicate} instead of being stored. The key is taken until the task is done, also
          * when an earlier call on this builder asked for a keep window. See {@link Uniqueness} for lease-loss
-         * limits.
+         * limits. A key must not start with {@code sched:}: an occurrence of a schedule that skips overlaps holds
+         * the key {@code sched:<schedule id>}, and a task with that key would make the schedule skip its fires.
          */
         public Builder<T> uniqueKey(String key) {
-            if (key != null) requireUniqueKey(key);
+            if (key != null) {
+                requireUniqueKey(key);
+                if (key.startsWith(RecurringTaskService.OVERLAP_KEY_PREFIX)) {
+                    throw new TaskValidationException("uniqueKey must not start with \""
+                            + RecurringTaskService.OVERLAP_KEY_PREFIX + "\", the keys of schedule occurrences do");
+                }
+            }
             this.uniqueKey = key;
             this.uniqueness = Uniqueness.UNTIL_DONE;
             return this;

@@ -72,9 +72,9 @@ class ScheduledTaskService extends CustomThread {
         }
         // by the runner's clock, which is the one the store's due times follow
         var untilDue = Duration.between(clock.instant(), nextDue);
-        if (untilDue.compareTo(SHORTEST_WAIT) >= 0) {
+        if (untilDue.isPositive()) {
             overdueWait = SHORTEST_WAIT;
-            return shorter(untilDue, pollInterval);
+            return shorter(untilDue.compareTo(SHORTEST_WAIT) < 0 ? SHORTEST_WAIT : untilDue, pollInterval);
         }
         var wait = shorter(overdueWait, pollInterval);
         overdueWait = shorter(overdueWait.multipliedBy(2), pollInterval);

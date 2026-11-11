@@ -56,7 +56,7 @@ unique keys, enqueueing inside your own database transaction, and how to resend 
 | Payload | at most 256 KiB |
 | Headers | 8 KiB |
 | An account | at most 128 characters (`TaskRequest.MAX_ACCOUNT_LENGTH`) |
-| A unique key | 1 to 256 characters, not blank, without U+0000 |
+| A unique key | 1 to 256 characters, not blank, without U+0000, not starting with `sched:` (the keys of schedule occurrences start so) |
 | The key you pass to `taskByKey` and `cancelByKey` | without U+0000; a blank or longer key finds no task |
 
 ### Text with U+0000
@@ -66,7 +66,8 @@ No text the library stores may contain U+0000, which PostgreSQL cannot keep. The
 | Text | What happens to U+0000 |
 |---|---|
 | A request, a schedule, a name or a cancel reason | The client refuses it. |
-| Text from processor code (failure message and stack, progress, step names and results) | It is recorded with U+FFFD in its place. |
+| Text from processor code (failure message and stack, progress, step results) | It is recorded with U+FFFD in its place. |
+| A step name | The step fails with a `TaskValidationException` before its body runs. |
 
 ### Time limits
 

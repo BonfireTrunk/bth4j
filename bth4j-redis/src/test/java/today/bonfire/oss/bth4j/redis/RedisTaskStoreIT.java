@@ -696,6 +696,7 @@ class RedisTaskStoreIT {
         assertThat(jedis.zcard(keys.leased)).isZero();
         assertThat(jedis.zcard(keys.scheduled(queue))).isZero();
         assertThat(counts().dead()).isEqualTo(2);
+        assertThat(counts().leased()).as("the removed task is counted nowhere").isZero();
     }
 
     @Test

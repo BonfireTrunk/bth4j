@@ -71,6 +71,17 @@ class SqliteStoreContractTest extends StoreContract {
     }
 
     @Override
+    protected boolean removeSchemaVersion(String namespace) {
+        try (var c = database.dataSource().getConnection();
+                var st = c.createStatement()) {
+            st.execute("DROP TABLE " + SqliteTestSupport.prefix(namespace) + "_meta");
+            return true;
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Override
     protected void fillRegistry(TaskStore fresh, String namespace, Registry registry, int lastId) {
         var counter = registry == Registry.QUEUE ? "next_queue_id" : "next_type_id";
         try (var c = database.dataSource().getConnection();

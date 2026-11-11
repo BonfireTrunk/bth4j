@@ -26,6 +26,13 @@ public interface InspectionStore extends TaskStore {
     Optional<TaskRecord> taskByKey(String key);
 
     /**
+     * @return true when the task with this id holds the unique key now: as an open task, as a finished one whose
+     *         keep window has not passed, or as one that was removed inside its keep window, which
+     *         {@link #taskByKey} does not show
+     */
+    boolean holdsKey(long id, String key);
+
+    /**
      * @return counts per state by queue id, for every registered queue; a queue without tasks has every count
      *         zero
      */

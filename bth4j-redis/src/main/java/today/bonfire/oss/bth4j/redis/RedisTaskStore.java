@@ -171,20 +171,23 @@ public final class RedisTaskStore implements FullStore {
      *
      * @throws TaskConfigurationException when the server's {@code maxmemory-policy} is not {@code noeviction}, or
      *                                    the server does not know {@code HPEXPIREAT}
-     * @throws TaskStoreException         when the namespace has a layout other than {@value #LAYOUT_VERSION}
+     * @throws TaskStoreException         when the namespace has a layout other than {@value #LAYOUT_VERSION}, or
+     *                                    holds keys of the store without a layout version
      */
     @Override
     public void init() {
         checkEvictionPolicy();
         checkHashFieldExpiry();
-        guard(() -> {
-            jedis.hsetnx(keys.meta, SCHEMA, String.valueOf(LAYOUT_VERSION));
-            var found = jedis.hget(keys.meta, SCHEMA);
-            if (!String.valueOf(LAYOUT_VERSION).equals(found)) {
-                throw new TaskStoreException("Redis namespace " + keys.namespace + " has layout version " + found
-                        + ", expected " + LAYOUT_VERSION);
-            }
-        });
+        var version = String.valueOf(LAYOUT_VERSION);
+        var found = (String) guard(() -> scripts.run(RedisScripts.INIT, List.of(version)));
+        if (found.isEmpty()) {
+            throw new TaskStoreException("Redis namespace " + keys.namespace
+                    + " holds keys without a layout version, this library needs layout version " + LAYOUT_VERSION);
+        }
+        if (!version.equals(found)) {
+            throw new TaskStoreException("Redis namespace " + keys.namespace + " has layout version " + found
+                    + ", expected " + LAYOUT_VERSION);
+        }
     }
 
     private void checkEvictionPolicy() {
@@ -884,6 +887,12 @@ public final class RedisTaskStore implements FullStore {
             if (record.isPresent() && holdsKey(record.get(), key)) return record;
         }
         return Optional.empty();
+    }
+
+    /** The {@code k:} string names the holder for as long as the key is taken, also after the task was removed. */
+    @Override
+    public boolean holdsKey(long id, String key) {
+        return String.valueOf(id).equals(guard(() -> jedis.get(keys.uniqueKey(key))));
     }
 
     /** The two reads of {@link #taskByKey} are not atomic: the record may have lost the key to a newer task since. */

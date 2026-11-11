@@ -479,6 +479,10 @@ public final class AdminHttpServer {
         if (!byKey && parts.size() >= 2) {
             parts.set(1, "{}");
         }
+        // the routes of 4.x carried the unique key as the segment after by-key
+        if (byKey && parts.size() >= 3 && !(parts.size() == 3 && parts.get(2).equals("cancel"))) {
+            parts.set(2, "{}");
+        }
         return API + '/' + String.join("/", parts.subList(0, Math.min(parts.size(), 4)));
     }
 

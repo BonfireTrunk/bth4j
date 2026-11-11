@@ -394,7 +394,7 @@ public abstract class RunnerContract {
                 r -> r.register(VOID_TYPE, (ctx, payload) -> {
                     ctx.progress("half\u0000way");
                     if (ctx.headers().containsKey("cancel")) throw new TaskCancelledException("stop \u0000 now");
-                    ctx.step("o\u0000ne", String.class, () -> "a\u0000b");
+                    ctx.step("one", String.class, () -> "a\u0000b");
                     throw new IllegalStateException("bad \u0000 byte");
                 }));
 
@@ -404,8 +404,8 @@ public abstract class RunnerContract {
 
         var dead = awaitState(failing, TaskState.DEAD);
         assertThat(dead.progress()).isEqualTo("half" + REPLACEMENT + "way");
-        assertThat(dead.steps()).containsOnlyKeys("o" + REPLACEMENT + "ne");
-        assertThat(dead.steps().get("o" + REPLACEMENT + "ne").result()).isEqualTo("a" + REPLACEMENT + "b");
+        assertThat(dead.steps()).containsOnlyKeys("one");
+        assertThat(dead.steps().get("one").result()).isEqualTo("a" + REPLACEMENT + "b");
         assertThat(dead.lastFailure().message()).isEqualTo("bad " + REPLACEMENT + " byte");
         assertThat(dead.lastFailure().stack())
                 .contains("bad " + REPLACEMENT + " byte")
@@ -413,6 +413,38 @@ public abstract class RunnerContract {
         var cancelled = awaitState(cancelling, TaskState.CANCELLED);
         assertThat(cancelled.cancelReason()).isEqualTo("stop " + REPLACEMENT + " now");
         assertThat(cancelled.progress()).isEqualTo("half" + REPLACEMENT + "way");
+    }
+
+    @Test
+    void aStepNameWithANulCharacterIsRefusedAndItsBodyDoesNotRun() {
+        var bodies = new AtomicInteger();
+        startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> ctx.step("o\u0000ne", bodies::incrementAndGet)));
+
+        long id = enqueue(TaskRequest.of(VOID_TYPE).maxAttempts(1).build());
+
+        var dead = awaitState(id, TaskState.DEAD);
+        assertThat(dead.lastFailure().type()).isEqualTo(TaskValidationException.class.getName());
+        assertThat(dead.lastFailure().message()).contains("step name");
+        assertThat(dead.steps()).isEmpty();
+        assertThat(bodies).hasValue(0);
+    }
+
+    @Test
+    void aStepWithAResultOnARunnerWithoutAMapperFailsBeforeItsBodyRuns() {
+        var bodies = new AtomicInteger();
+        startRunner(
+                b -> b.jsonMapper(null),
+                r -> r.register(VOID_TYPE, (ctx, payload) -> {
+                    ctx.step("no result", bodies::incrementAndGet);
+                    ctx.step("result", String.class, () -> "stored " + bodies.addAndGet(10));
+                }));
+
+        long id = enqueue(TaskRequest.of(VOID_TYPE).maxAttempts(1).build());
+
+        var dead = awaitState(id, TaskState.DEAD);
+        assertThat(dead.lastFailure().type()).isEqualTo(TaskConfigurationException.class.getName());
+        assertThat(dead.steps()).containsOnlyKeys("no result");
+        assertThat(bodies).as("only the step without a result ran").hasValue(1);
     }
 
     @Test

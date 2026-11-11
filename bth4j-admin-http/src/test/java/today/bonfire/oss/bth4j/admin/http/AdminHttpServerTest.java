@@ -1202,6 +1202,10 @@ class AdminHttpServerTest {
         assertThat(AdminHttpServer.routeTemplate("/api/v1/tasks/by-key/cancel"))
                 .isEqualTo("/api/v1/tasks/by-key/cancel");
         assertThat(AdminHttpServer.routeTemplate("/api/v1/tasks/by-key")).isEqualTo("/api/v1/tasks/by-key");
+        assertThat(AdminHttpServer.routeTemplate("/api/v1/tasks/by-key/customer-7"))
+                .isEqualTo("/api/v1/tasks/by-key/{}");
+        assertThat(AdminHttpServer.routeTemplate("/api/v1/tasks/by-key/customer-7/cancel"))
+                .isEqualTo("/api/v1/tasks/by-key/{}/cancel");
         assertThat(AdminHttpServer.routeTemplate("/api/v1/tasks/7/payload")).isEqualTo("/api/v1/tasks/{}/payload");
         assertThat(AdminHttpServer.routeTemplate("/api/v1/health")).isEqualTo("/api/v1/health");
         assertThat(AdminHttpServer.routeTemplate("/secret/file")).doesNotContain("secret");

@@ -1279,6 +1279,42 @@ class TaskClientTest {
     }
 
     @Test
+    void aResendIsAcceptedAfterItsStartByPassedAlsoWhenTheTaskWasRemovedAndOnlyItsKeyIsKept() {
+        var client = builder().build();
+        var request = TaskRequest.of(VOID)
+                .id(client.nextId())
+                .uniqueKey("order-7", Uniqueness.keepFor(Duration.ofHours(1)))
+                .startBy(clock.instant().plusSeconds(5))
+                .build();
+        var otherKey = TaskRequest.of(VOID)
+                .id(request.id())
+                .uniqueKey("order-8", Uniqueness.keepFor(Duration.ofHours(1)))
+                .startBy(clock.instant().plusSeconds(5))
+                .build();
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(request.id()));
+        var leased = store.claim(new ClaimRequest(
+                        List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)),
+                        1,
+                        Duration.ofSeconds(30),
+                        store.allocateWorkerId("test", Set.of(), Set.of()),
+                        null))
+                .getFirst();
+        assertThat(store.ack(request.id(), leased.revision(), false, false, null))
+                .isTrue();
+        assertThat(store.getTask(request.id())).isEmpty();
+
+        clock.advance(Duration.ofSeconds(45));
+
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(request.id()));
+        assertThat(client.enqueueAll(List.of(request))).containsExactly(new EnqueueResult.Accepted(request.id()));
+        assertThat(store.getTask(request.id())).as("not stored again").isEmpty();
+        assertThatThrownBy(() -> client.enqueue(otherKey))
+                .as("the same id with a key it does not hold")
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("startBy is before the run time");
+    }
+
+    @Test
     void aJsonPayloadWithoutAMapperIsAConfigurationError() {
         var client = TaskClient.builder().store(store).clock(clock).build();
 

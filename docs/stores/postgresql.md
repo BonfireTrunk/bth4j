@@ -38,7 +38,7 @@ Runners with the same prefix on the same database share the work.
 
 | Operation | What the store does |
 |---|---|
-| Clock | Takes the current time from the database server (`now()`). See [which clock decides](../stores.md#which-clock-decides). |
+| Clock | Takes the current time from the database server: the time the statement started (`statement_timestamp()`), cut to whole milliseconds. Inside your own transaction that is the time of each statement, not the start of the transaction. See [which clock decides](../stores.md#which-clock-decides). |
 | `init` | Takes a transaction-level advisory lock for the prefix. Then it only reads the stored schema version when the tables exist. It runs DDL only when there is no schema yet. |
 | Starting a runner | Takes no table lock. |
 | Claim | One statement that runs both grant passes, each with a bounded per-queue `FOR UPDATE SKIP LOCKED` scan, so a claim is atomic without a transaction. |

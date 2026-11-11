@@ -238,13 +238,13 @@ class Handler(BaseHTTPRequestHandler):
                     and (not q.get("state") or t["state"] == q["state"]) and (not q.get("queue") or t["queue"] == q["queue"])]
             page = rows[:limit]
             return self.send_json(200, {"items": page, "next": page[-1]["id"] if len(page) == limit else None})
-        if segs[1] == "by-key" and len(segs) in (3, 4):
-            holder = next((x for x in tasks.values() if x["uniqueKey"] == segs[2]), None)
+        if segs[1] == "by-key":
+            holder = next((x for x in tasks.values() if x["uniqueKey"] == q.get("key")), None)
             if holder is None:
                 return self.send_json(404, {"error": "no task holds this key"})
-            if len(segs) == 3 and method == "GET":
+            if len(segs) == 2 and method == "GET":
                 return self.send_json(200, holder)
-            if len(segs) == 4 and segs[3] == "cancel" and method == "POST":
+            if len(segs) == 3 and segs[2] == "cancel" and method == "POST":
                 if holder["state"] in ("SUCCEEDED", "DEAD", "CANCELLED", "EXPIRED"):
                     return self.send_json(409, {"error": "the task holding this key is already finished"})
                 holder.update(state="CANCELLED", cancelReason=self.body().get("reason"), cancelRequestedAt=iso(0),

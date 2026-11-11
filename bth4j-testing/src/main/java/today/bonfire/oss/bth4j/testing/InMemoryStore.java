@@ -854,6 +854,21 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
+    public boolean holdsKey(long id, String key) {
+        lock.lock();
+        try {
+            Instant now = clock.instant();
+            Long holderId = keyHolders.get(key);
+            TaskRecord holder = holderId == null ? null : tasks.get(holderId);
+            if (holder != null && keyHeld(holder, now)) return holderId == id;
+            Long keptBy = keptKeyHolder(key, now);
+            return keptBy != null && keptBy == id;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
     public Map<Integer, StateCounts> counts() {
         lock.lock();
         try {

@@ -246,11 +246,17 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
         poller.shutdownNow();
         metersLock.lock();
         try {
-            if (!closed) unbind(registry, commonTags);
+            var wasOpen = !closed;
             closed = true;
-            meters.forEach(registry::remove);
-            meters.clear();
-            stateValues.clear();
+            try {
+                meters.forEach(registry::remove);
+                meters.clear();
+                stateValues.clear();
+            } finally {
+                // only now may another binding take these tags: one made sooner would get this one's meters,
+                // which are removed here
+                if (wasOpen) unbind(registry, commonTags);
+            }
         } finally {
             metersLock.unlock();
         }
