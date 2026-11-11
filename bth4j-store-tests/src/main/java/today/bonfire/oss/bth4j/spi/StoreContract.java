@@ -2384,6 +2384,21 @@ public abstract class StoreContract {
     }
 
     @Test
+    void aRemovedTaskSentAgainWithItsKeptKeyAnswersExistsAndIsNotStoredAgain() {
+        TaskRecord t = leased(task().uniqueKey("k").keyKeep(Duration.ofHours(1)));
+        assertThat(store.ack(t.id(), t.revision(), false, false, null)).isTrue();
+        TaskRecord again =
+                task().id(t.id()).uniqueKey("k").keyKeep(Duration.ofHours(1)).build();
+
+        assertThat(store.enqueue(again)).isEqualTo(EnqueueOutcome.EXISTS);
+        assertThat(store.enqueueAll(List.of(again))).containsExactly(EnqueueOutcome.EXISTS);
+
+        assertThat(store.getTask(t.id())).isEmpty();
+        assertThat(store.counts().getOrDefault(queue, StateCounts.ZERO)).isEqualTo(StateCounts.ZERO);
+        assertThat(store.enqueue(task().uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(t.id()));
+    }
+
+    @Test
     void failWithoutKeepDeadRemovesTheTaskAndItsKeyStaysTakenUntilTheWindowEnds() {
         TaskRecord t = leased(task().uniqueKey("k").keyKeep(SHORT));
         assertThat(store.fail(t.id(), t.revision(), failure(1), null, false, null))

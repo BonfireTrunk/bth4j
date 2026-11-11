@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `AdminHttpServer.Builder.user` refuses an empty password, for example from an environment variable that is set but empty.
 - `TaskRequest.Builder.uniqueKey(key)` sets the key to be taken until the task is done; after `uniqueKey(key, keepFor)` on the same builder it kept the earlier keep window.
 - `RetryPolicy.exponential` counts a base or cap longer than `TaskRequest.MAX_TIME_FROM_NOW` as that long.
+- Store SPI: a task that was removed while its unique key is still kept, sent again with its id and that key, answers `EnqueueOutcome.EXISTS` on every store, so the client returns `Accepted`. Redis and the in-memory store answered `DuplicateKey` with the request's own id (`Duplicate` from the client); PostgreSQL and SQLite already answered `EXISTS`. The task is not stored again on any store, before or now. A new contract test covers it.
 - Store SPI: `ScheduleStore.resumeRecurring` ignores the given next fire time while the recorded occurrence of the definition is not finished, and keeps the stored time and revision. A new contract test covers it on every store.
 - Admin HTTP: `GET /me` also returns the session's CSRF token.
 - fastjson2 2.0.66.

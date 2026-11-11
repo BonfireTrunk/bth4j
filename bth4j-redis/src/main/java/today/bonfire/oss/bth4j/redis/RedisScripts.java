@@ -202,6 +202,7 @@ final class RedisScripts {
 
             -- fields come from ARGV[from..to]. Returns {0} when the id exists, {2, id} when the unique key is
             -- held, {1} when stored. A k: string without TTL whose task is gone is stale and is overwritten.
+            -- A k: string with a TTL that names this id is the kept key of this task, removed since: {0}.
             -- The hash and the key are written at once, so a later store in the same call sees them; the zset
             -- writes wait for the caller's flush.
             local function store(id, dueArg, uk, qid, sb, data, from, to, forceScheduled, token, at)
@@ -215,6 +216,7 @@ final class RedisScripts {
                 local holder = redis.call('SET', kkey, id, 'NX', 'GET')
                 if holder then
                   if redis.call('PTTL', kkey) ~= -1 or redis.call('EXISTS', P .. 't:' .. holder) == 1 then
+                    if holder == id then return {0, ''} end
                     return {2, holder}
                   end
                   redis.call('SET', kkey, id)

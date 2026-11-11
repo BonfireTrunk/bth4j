@@ -240,7 +240,8 @@ public final class InMemoryStore implements FullStore {
             }
             Long keptBy = keptKeyHolder(key, now);
             if (keptBy != null) {
-                return new EnqueueOutcome.DuplicateKey(keptBy);
+                // the removed task itself, sent again: it was stored once, which is what EXISTS says
+                return keptBy == task.id() ? EnqueueOutcome.EXISTS : new EnqueueOutcome.DuplicateKey(keptBy);
             }
         }
         Instant due = millis(forcedDue != null ? forcedDue : task.due() != null ? task.due() : now);
