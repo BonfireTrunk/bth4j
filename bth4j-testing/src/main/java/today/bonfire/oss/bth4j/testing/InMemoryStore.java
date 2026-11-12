@@ -18,6 +18,8 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
@@ -45,7 +47,6 @@ import today.bonfire.oss.bth4j.spi.StoreInfo;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /**
@@ -947,9 +948,9 @@ public final class InMemoryStore implements FullStore {
                 }
             }
         } catch (NumberFormatException | DateTimeException e) {
-            throw new IllegalArgumentException("malformed cursor");
+            throw new TaskValidationException("malformed cursor");
         }
-        throw new IllegalArgumentException("malformed cursor");
+        throw new TaskValidationException("malformed cursor");
     }
 
     @Override

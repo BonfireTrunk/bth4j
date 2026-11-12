@@ -74,9 +74,9 @@ See [Redis](stores/redis.md), [PostgreSQL](stores/postgresql.md) and [SQLite](st
 | Never write a null field | Steps and failures are encoded to JSON by the core (`RecordJson`). The store only fences and writes the whole field, so step logic is not duplicated per engine. |
 | Use the store's clock | Time for `due` defaults, leases, promote, reclaim and retention is the store's clock. |
 | Be safe under concurrency | Calls are made concurrently from many threads and processes. Each must be atomic and safe to repeat. |
-| Throw `TaskStoreException` | A failure to reach the engine throws `TaskStoreException`. Callers retry on their next cycle. |
+| Throw `TaskStoreException` | A failure to reach the engine throws `TaskStoreException`. Callers retry on their next cycle. A stored task that cannot be read throws `UnreadableTaskException`, which is not a store failure: a retry would fail the same way. |
 | Check the schema in `init()` | `init()` creates the schema or verifies the store's schema version (`StoreInfo.schemaVersion`) and refuses another one. |
-| Check arguments with `StoreArguments` | Arguments are checked alike on every store: queue and type names, worker label, the `reschedule` due, every count and limit (at least 1) and the purge state. A pause of a queue id that was never registered is ignored. |
+| Check arguments with `StoreArguments` | Arguments are checked alike on every store: queue and type names, worker label, the `reschedule` due, every count and limit (at least 1) and the purge state. A refused argument throws `TaskValidationException`, as a malformed listing cursor does. A pause of a queue id that was never registered is ignored. |
 | Stay within the time limit | Every time the library hands a store lies within `TaskRequest.MAX_TIME_FROM_NOW` (100 years) of now, and every duration is at most that long, so epoch milliseconds or SQL timestamps hold them. |
 
 ## How a claim works

@@ -5,7 +5,7 @@ package today.bonfire.oss.bth4j.exceptions;
  * a task with other content (another type, queue, payload or unique key). Reusing an id for different content
  * is a bug in the caller, so nothing was stored under it; only the same request may be enqueued again with its id.
  */
-public class TaskIdReusedException extends RuntimeException {
+public class TaskIdReusedException extends Bth4jException {
     private final long id;
 
     public TaskIdReusedException(long id, String reason) {

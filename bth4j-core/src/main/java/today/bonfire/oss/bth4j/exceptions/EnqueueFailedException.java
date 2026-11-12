@@ -16,7 +16,7 @@ import today.bonfire.oss.bth4j.TaskRequest;
  * Retrying the same requests, encoded identically, is idempotent while the tasks are retained. A task that
  * ran and was removed can be stored again. Caller-id reuse still requires caller correction.
  */
-public class EnqueueFailedException extends RuntimeException {
+public class EnqueueFailedException extends Bth4jException {
     private final List<Long> ids;
     private final List<EnqueueResult> settled;
     private final Set<Integer> notStored;
@@ -34,7 +34,7 @@ public class EnqueueFailedException extends RuntimeException {
      * @param ids       the last assigned id of every request, in order; empty when the call wrote nothing
      * @param settled   the results of the requests in completed chunks before the failure, in order
      * @param notStored zero-based positions of generated-id requests known not to have been written
-     * @throws IllegalArgumentException when there are more settled results than ids
+     * @throws TaskValidationException when there are more settled results than ids
      */
     public EnqueueFailedException(
             List<Long> ids, List<EnqueueResult> settled, Set<Integer> notStored, Throwable cause) {
@@ -42,7 +42,7 @@ public class EnqueueFailedException extends RuntimeException {
                 "Enqueue of " + ids.size() + " task(s)" + (ids.isEmpty() ? "" : " starting at " + ids.getFirst())
                         + " failed: " + cause.getMessage(),
                 cause);
-        if (settled.size() > ids.size()) throw new IllegalArgumentException("more settled results than ids");
+        if (settled.size() > ids.size()) throw new TaskValidationException("more settled results than ids");
         this.ids = List.copyOf(ids);
         this.settled = List.copyOf(settled);
         this.notStored = Set.copyOf(notStored);
@@ -85,12 +85,12 @@ public class EnqueueFailedException extends RuntimeException {
      *
      * @param requests the requests of the failed call, in the same order
      * @return an immutable list ready for {@code TaskClient.enqueueAll}
-     * @throws IllegalArgumentException when nonempty {@link #ids()} and the requests have different sizes
+     * @throws TaskValidationException when nonempty {@link #ids()} and the requests have different sizes
      */
     public List<TaskRequest<?>> retryRequests(List<? extends TaskRequest<?>> requests) {
         if (ids.isEmpty()) return List.copyOf(requests);
         if (requests.size() != ids.size()) {
-            throw new IllegalArgumentException("requests must have the same size and order as the failed batch");
+            throw new TaskValidationException("requests must have the same size and order as the failed batch");
         }
         var retry = new ArrayList<TaskRequest<?>>(requests.size() - settled.size());
         for (int i = settled.size(); i < requests.size(); i++) {

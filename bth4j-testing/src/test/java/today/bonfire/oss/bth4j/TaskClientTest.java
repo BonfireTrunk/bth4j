@@ -18,13 +18,14 @@ import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.exceptions.EnqueueFailedException;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
 import today.bonfire.oss.bth4j.testing.MutableClock;
 
@@ -1058,6 +1059,59 @@ class TaskClientTest {
                     assertThat(e.getCause()).isInstanceOf(TaskIdReusedException.class);
                     assertThat(store.getTask(e.ids().getFirst())).isPresent();
                 });
+    }
+
+    @Test
+    void aCallerIdWhoseStoredTaskCannotBeReadIsThrownAsItIsAndNothingIsWritten() {
+        var unreadable = new AtomicBoolean();
+        var client = clientOn(interceptStore((method, args) -> {
+            if (unreadable.get() && method.equals("getTask")) throw unreadable((long) args[0]);
+        }));
+        long id = client.nextId();
+        var request = TaskRequest.of(VOID).id(id).build();
+        client.enqueue(request);
+        unreadable.set(true);
+
+        assertThatThrownBy(() -> client.enqueue(request))
+                .isInstanceOfSatisfying(
+                        UnreadableTaskException.class,
+                        e -> assertThat(e.taskId()).isEqualTo(id));
+        assertThatThrownBy(() -> client.enqueueAll(List.of(TaskRequest.of(VOID).build(), request)))
+                .isInstanceOfSatisfying(
+                        UnreadableTaskException.class,
+                        e -> assertThat(e.taskId()).isEqualTo(id));
+        assertThat(store.tasks(TaskState.QUEUED, null, null, 10).items())
+                .extracting(TaskRecord::id)
+                .containsExactly(id);
+    }
+
+    @Test
+    void whateverFailsInALaterChunkTheRecoveryDataIsKept() {
+        List<RuntimeException> failures = List.of(unreadable(7), new IllegalStateException("not a bth4j failure"));
+        for (var failure : failures) {
+            var writes = new AtomicInteger();
+            var client = clientOn(interceptStore((method, args) -> {
+                if (method.equals("enqueueAll") && writes.incrementAndGet() == 2) throw failure;
+            }));
+            var requests = new ArrayList<TaskRequest<Void>>();
+            for (int i = 0; i < 501; i++) requests.add(TaskRequest.of(VOID).build());
+
+            assertThatThrownBy(() -> client.enqueueAll(requests))
+                    .as("%s", failure)
+                    .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                        assertThat(e.getCause()).isSameAs(failure);
+                        assertThat(e.ids()).hasSize(501).doesNotHaveDuplicates();
+                        assertThat(e.settled()).hasSize(500);
+                        assertThat(e.retryRequests(requests))
+                                .singleElement()
+                                .satisfies(r ->
+                                        assertThat(r.id()).isEqualTo(e.ids().getLast()));
+                    });
+        }
+    }
+
+    private static UnreadableTaskException unreadable(long id) {
+        return new UnreadableTaskException(id, "task " + id + " has a stored value that cannot be read", null);
     }
 
     @Test

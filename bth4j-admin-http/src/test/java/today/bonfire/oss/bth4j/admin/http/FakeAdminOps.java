@@ -16,6 +16,7 @@ import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.TaskView;
 import today.bonfire.oss.bth4j.TaskViewPage;
 import today.bonfire.oss.bth4j.UnservedWork;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
@@ -110,7 +111,7 @@ final class FakeAdminOps implements AdminOps {
         try {
             afterId = cursor == null ? 0 : Long.parseLong(cursor);
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("malformed cursor");
+            throw new TaskValidationException("malformed cursor");
         }
         var out = new ArrayList<TaskView>();
         for (var t : tasks.tailMap(afterId, false).values()) {

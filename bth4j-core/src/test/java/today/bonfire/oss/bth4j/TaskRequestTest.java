@@ -211,8 +211,8 @@ class TaskRequestTest {
         assertThat(Uniqueness.keepFor(Uniqueness.MAX_KEEP_FOR))
                 .isEqualTo(new Uniqueness.KeepFor(Duration.ofDays(36_525)));
         assertThatThrownBy(() -> Uniqueness.keepFor(Uniqueness.MAX_KEEP_FOR.plusMillis(1)))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ZERO)).isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
     }
 
     @Test
@@ -287,9 +287,9 @@ class TaskRequestTest {
 
     @Test
     void uniquenessKeepForMustBePositive() {
-        assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ZERO)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ofSeconds(-1)))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> Uniqueness.keepFor(null)).isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> Uniqueness.keepFor(null)).isInstanceOf(TaskValidationException.class);
     }
 }

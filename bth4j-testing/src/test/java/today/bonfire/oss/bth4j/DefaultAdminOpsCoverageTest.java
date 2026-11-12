@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
@@ -162,6 +163,6 @@ class DefaultAdminOpsCoverageTest {
     @Test
     void negativeWindowIsRejected() {
         assertThatThrownBy(() -> admin.unservedWork(Duration.ofSeconds(-1)))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskValidationException.class);
     }
 }

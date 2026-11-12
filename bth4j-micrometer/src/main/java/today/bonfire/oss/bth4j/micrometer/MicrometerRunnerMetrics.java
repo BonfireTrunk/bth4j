@@ -26,6 +26,7 @@ import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.AdminOps;
 import today.bonfire.oss.bth4j.BackgroundRunner;
 import today.bonfire.oss.bth4j.RunnerHealth;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.spi.TaskState;
 
 /**
@@ -107,7 +108,7 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
      * @param runner supplies the admin view, running tasks and concurrency limit
      * @param registry where the gauges are registered
      * @param refresh how often health and counts are read; must be positive
-     * @throws IllegalArgumentException when the refresh is not positive, or the registry already has runner
+     * @throws TaskConfigurationException when the refresh is not positive, or the registry already has runner
      *     metrics with the same tags that are not closed
      */
     public static MicrometerRunnerMetrics bind(BackgroundRunner runner, MeterRegistry registry, Duration refresh) {
@@ -139,12 +140,12 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
             Tags commonTags,
             Duration refresh) {
         if (refresh.isZero() || refresh.isNegative()) {
-            throw new IllegalArgumentException("refresh must be positive");
+            throw new TaskConfigurationException("refresh must be positive");
         }
         var tags = commonTags == null ? Tags.empty() : commonTags;
         synchronized (BOUND) {
             if (!BOUND.computeIfAbsent(registry, r -> new HashSet<>()).add(tags)) {
-                throw new IllegalArgumentException(
+                throw new TaskConfigurationException(
                         "This registry already has runner metrics with these tags; give each runner its own tags");
             }
         }

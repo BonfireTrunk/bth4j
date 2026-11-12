@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /**
  * The transitions workers and producers make. Each method is atomic together with its checks: a
@@ -24,7 +25,7 @@ public interface ExecutionStore extends TaskStore {
      * payload, account, headers, unique key, key keep, retry policy, schedule, retry-of, start-by and max run
      * time) are stored as given, with two exceptions: a record without a created time is created at the store's
      * time of the call, and a key keep without a unique key is dropped. An empty unique key throws
-     * {@link IllegalArgumentException}. A new task starts without run fields: the store ignores the record's
+     * {@link TaskValidationException}. A new task starts without run fields: the store ignores the record's
      * attempts, worker, lease, claim time, key-until, cancel request and reason, progress, steps and failures,
      * and stores the task with none of them and zero attempts. This holds for every way a task gets in,
      * including {@link #enqueueAll} and {@link ScheduleStore#commitRecurring}.

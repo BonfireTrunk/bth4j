@@ -25,6 +25,9 @@ import java.util.TreeMap;
 import java.util.regex.Pattern;
 import javax.sql.DataSource;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
@@ -52,8 +55,6 @@ import today.bonfire.oss.bth4j.spi.StoreInfo;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
-import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /**
@@ -695,7 +696,7 @@ public final class PostgresTaskStore implements FullStore {
      * @throws TaskStoreException when a statement fails; the caller's transaction is then aborted
      */
     public EnqueueOutcome enqueue(Connection connection, TaskRecord task) {
-        if (connection == null) throw new IllegalArgumentException("connection is required");
+        if (connection == null) throw new TaskValidationException("connection is required");
         try {
             return enqueueAll(connection, List.of(task)).getFirst();
         } catch (SQLException e) {
@@ -1674,9 +1675,9 @@ public final class PostgresTaskStore implements FullStore {
                 return new Position(Instant.ofEpochMilli(millis), Long.parseLong(cursor.substring(colon + 1)));
             }
         } catch (NumberFormatException | ArithmeticException e) {
-            throw new IllegalArgumentException("malformed cursor");
+            throw new TaskValidationException("malformed cursor");
         }
-        throw new IllegalArgumentException("malformed cursor");
+        throw new TaskValidationException("malformed cursor");
     }
 
     // ---- JDBC helpers --------------------------------------------------------------------------------

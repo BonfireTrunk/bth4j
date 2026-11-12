@@ -21,6 +21,8 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
@@ -36,7 +38,6 @@ import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
 import today.bonfire.oss.bth4j.testing.MutableClock;
 
 /**
@@ -464,7 +465,7 @@ class SqliteTransactionTest {
         assertThat(store.getTask(rolledBack.id())).isEmpty();
         assertThat(get(committed.id()).state()).isEqualTo(TaskState.QUEUED);
         var unused = task().build();
-        assertThatThrownBy(() -> store.enqueue(null, unused)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.enqueue(null, unused)).isInstanceOf(TaskValidationException.class);
     }
 
     @Test
@@ -658,8 +659,8 @@ class SqliteTransactionTest {
         int report = store.typeId("report");
         assertThat(store.queueNames()).containsExactly(Map.entry(queue, "default"), Map.entry(other, "other"));
         assertThat(store.typeNames()).containsExactly(Map.entry(type, "send-mail"), Map.entry(report, "report"));
-        assertThatThrownBy(() -> store.queueId(" ")).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> store.typeId(null)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.queueId(" ")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> store.typeId(null)).isInstanceOf(TaskValidationException.class);
     }
 
     @Test

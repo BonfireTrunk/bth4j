@@ -102,7 +102,7 @@ client.tasks(TaskState.DEAD, "mail", page.next(), 100);   // next is null after 
 A listing returns a `TaskViewPage`. Its `next` is an opaque position in the listing, so the walk does not depend on the last task of the previous page.
 
 - A task whose own position moves while the walk runs (for example a deferral) can still be seen twice (moved later) or missed (moved earlier).
-- A malformed cursor throws `IllegalArgumentException`.
+- A malformed cursor throws `TaskValidationException`.
 - A task whose stored value cannot be read is left out. A page can then hold fewer tasks than asked for while `next` is not null. `counts()` still counts that task.
 
 A `TaskView` carries state, attempts, due time, the last failures, completed steps and progress.
@@ -156,6 +156,8 @@ A `corrupt-task` is a task with a stored value the store cannot read, such as a 
 | Purge | It removes the task after `deadRetention`, like any dead task (see [Retention](how-it-works.md#retention)). |
 | Listings | They leave it out. |
 | Reading it | The call answers `UnreadableTaskException` (422 over the [admin HTTP API](admin.md#errors)). |
+| `enqueue` with its id | The call throws `UnreadableTaskException` and writes nothing. It is not a store failure, see [Exceptions](errors.md#a-stored-task-that-cannot-be-read). |
+| A schedule with `Overlap.SKIP` whose open occurrence it is | The schedule's next fire is moved ahead with a `schedule-broken` issue, and the other schedules go on. |
 | `AdminOps.cancel` and `delete` | They still work on it, given its id and revision. A corrupt fixed-delay occurrence is then not treated as one, so the cancel or delete neither pauses nor re-arms its definition. |
 
 ## Workers and heartbeats

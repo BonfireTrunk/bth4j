@@ -2,6 +2,8 @@ package today.bonfire.oss.bth4j.spi;
 
 import java.util.Map;
 import java.util.Set;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /**
  * What every store provides: identity, the name registries and schema management. The task operations are
@@ -18,7 +20,7 @@ import java.util.Set;
  * long, so a store may keep times as epoch milliseconds or SQL timestamps. A store keeps times and durations in
  * whole milliseconds: it drops what is finer from those it is given, takes its own clock to the millisecond, and
  * compares a time it is given with a stored one to the millisecond. Arguments that break a rule of this
- * SPI throw {@link IllegalArgumentException}; {@link StoreArguments} holds the shared checks.
+ * SPI throw {@link TaskValidationException}; {@link StoreArguments} holds the shared checks.
  */
 public interface TaskStore {
 

@@ -21,7 +21,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.sqlite.SQLiteConfig;
 import org.sqlite.SQLiteDataSource;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 
 /** What {@link SqliteTaskStore#init()} requires of the connection and of the file, on real database files. */
 @Timeout(60)

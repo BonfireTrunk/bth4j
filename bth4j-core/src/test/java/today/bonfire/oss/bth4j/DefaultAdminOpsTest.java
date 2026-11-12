@@ -20,6 +20,7 @@ import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
@@ -30,7 +31,6 @@ import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 class DefaultAdminOpsTest {
@@ -326,10 +326,10 @@ class DefaultAdminOpsTest {
 
     @Test
     void anUnservedWorkWindowThatIsMissingNegativeOrTooLongIsRejectedBeforeTheStore() {
-        assertThatThrownBy(() -> ops.unservedWork(null)).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> ops.unservedWork(Duration.ofMillis(-1))).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> ops.unservedWork(null)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.unservedWork(Duration.ofMillis(-1))).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> ops.unservedWork(TaskRequest.MAX_TIME_FROM_NOW.plusMillis(1)))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskValidationException.class);
         assertThat(calls).isEmpty();
     }
 
@@ -545,7 +545,7 @@ class DefaultAdminOpsTest {
                 }) {
             assertThatThrownBy(() -> ops.purgeStaleWorkers(bad))
                     .as("%s", bad)
-                    .isInstanceOf(IllegalArgumentException.class);
+                    .isInstanceOf(TaskValidationException.class);
         }
         assertThat(calls).noneMatch(c -> c.startsWith("purgeWorkers"));
 

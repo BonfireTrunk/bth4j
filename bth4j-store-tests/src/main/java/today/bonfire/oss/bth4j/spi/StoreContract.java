@@ -36,6 +36,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.TaskRequest;
 import today.bonfire.oss.bth4j.Uniqueness;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 
 /**
  * Contract of every {@link FullStore}, checked through SPI reads only. A store module subclasses it and
@@ -432,25 +435,25 @@ public abstract class StoreContract {
         for (String bad : new String[] {null, "", " "}) {
             assertThatThrownBy(() -> store.queueId(bad))
                     .as("queue name '%s'", bad)
-                    .isInstanceOf(IllegalArgumentException.class);
+                    .isInstanceOf(TaskValidationException.class);
             assertThatThrownBy(() -> store.typeId(bad))
                     .as("type name '%s'", bad)
-                    .isInstanceOf(IllegalArgumentException.class);
+                    .isInstanceOf(TaskValidationException.class);
         }
         assertThat(store.queueNames()).isEqualTo(queues);
         assertThat(store.typeNames()).isEqualTo(types);
 
-        assertThatThrownBy(() -> store.allocateIds(0)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.allocateIds(0)).isInstanceOf(TaskValidationException.class);
         int workers = store.workers().size();
         assertThatThrownBy(() -> store.allocateWorkerId(null, Set.of(queue), Set.of(type)))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> store.heartbeat(worker, null, Set.of(queue), Set.of(type), 0, true))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskValidationException.class);
         assertThat(store.workers()).hasSize(workers);
 
         TaskRecord t = leased(task());
         assertThatThrownBy(() -> store.reschedule(t.id(), t.revision(), null))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskValidationException.class);
         assertThat(get(t.id())).isEqualTo(t);
     }
 
@@ -474,7 +477,7 @@ public abstract class StoreContract {
             calls.put("dueRecurring", () -> store.dueRecurring(fire, limit));
             calls.put("tasks", () -> store.tasks(TaskState.QUEUED, null, (String) null, limit));
             calls.forEach((name, call) ->
-                    assertThatThrownBy(call).as("%s(%d)", name, limit).isInstanceOf(IllegalArgumentException.class));
+                    assertThatThrownBy(call).as("%s(%d)", name, limit).isInstanceOf(TaskValidationException.class));
         }
 
         assertThat(counts()).isEqualTo(before);
@@ -694,11 +697,10 @@ public abstract class StoreContract {
                 occurrenceOfNewSchedule("nightly", fire).uniqueKey("").build();
         DueSchedule due = dueOf("nightly", fire);
 
-        assertThatThrownBy(() -> store.enqueue(single)).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> store.enqueueAll(List.of(sound, batched)))
-                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.enqueue(single)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> store.enqueueAll(List.of(sound, batched))).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> store.commitRecurring(due, fire.plusSeconds(60), occurrence))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskValidationException.class);
 
         for (TaskRecord given : List.of(single, sound, batched, occurrence)) {
             assertThat(store.getTask(given.id())).as("task %s", given.id()).isEmpty();
@@ -926,7 +928,7 @@ public abstract class StoreContract {
             long id = inState(state, task());
             assertThatThrownBy(() -> store.purge(state, Duration.ZERO, 10))
                     .as("purge of %s", state)
-                    .isInstanceOf(IllegalArgumentException.class);
+                    .isInstanceOf(TaskValidationException.class);
             assertThat(store.getTask(id)).as("task in %s", state).isPresent();
         }
     }
@@ -7323,10 +7325,10 @@ public abstract class StoreContract {
                 .isNull();
         assertThat(store.tasks(TaskState.DEAD, null, (String) null, 10).items()).isEmpty();
 
-        for (String bad : new String[] {"garbage", "1", ":5", "5:", "a:b", "1:2:3", ""}) {
+        for (String bad : new String[] {"garbage", "1", ":5", "5:", "a:b", "a.b:c", "1:2:3", ""}) {
             assertThatThrownBy(() -> store.tasks(TaskState.QUEUED, null, bad, 10))
                     .as("cursor '%s'", bad)
-                    .isInstanceOf(IllegalArgumentException.class);
+                    .isInstanceOf(TaskValidationException.class);
         }
     }
 
@@ -7343,7 +7345,7 @@ public abstract class StoreContract {
         }) {
             Throwable refused = catchThrowable(() -> store.tasks(TaskState.QUEUED, null, far, 10));
             if (refused != null) {
-                assertThat(refused).as("cursor '%s'", far).isInstanceOf(IllegalArgumentException.class);
+                assertThat(refused).as("cursor '%s'", far).isInstanceOf(TaskValidationException.class);
             }
         }
     }

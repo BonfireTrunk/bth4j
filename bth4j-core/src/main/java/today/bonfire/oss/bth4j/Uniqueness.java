@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j;
 
 import java.time.Duration;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /**
  * How long a {@link TaskRequest#uniqueKey()} stays taken. At most one task record holds the key; an old
@@ -21,10 +22,10 @@ public sealed interface Uniqueness {
     record KeepFor(Duration duration) implements Uniqueness {
         public KeepFor {
             if (duration == null || duration.isNegative() || duration.isZero()) {
-                throw new IllegalArgumentException("duration must be positive");
+                throw new TaskValidationException("duration must be positive");
             }
             if (duration.compareTo(MAX_KEEP_FOR) > 0) {
-                throw new IllegalArgumentException("duration must be at most " + MAX_KEEP_FOR);
+                throw new TaskValidationException("duration must be at most " + MAX_KEEP_FOR);
             }
         }
     }

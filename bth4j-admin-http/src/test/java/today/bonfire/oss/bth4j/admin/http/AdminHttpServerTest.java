@@ -35,6 +35,7 @@ import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.UnservedWork;
 import today.bonfire.oss.bth4j.common.Json;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskState;
@@ -307,7 +308,7 @@ class AdminHttpServerTest {
         for (String bad : new String[] {"proxy.internal", "10.0.0.0/33", "10.0.0", "", "::1/129", "10.0.0.1/x", null}) {
             assertThatThrownBy(() -> builder().trustedProxies("10.0.0.1", bad))
                     .as("%s", bad)
-                    .isInstanceOf(IllegalArgumentException.class)
+                    .isInstanceOf(TaskConfigurationException.class)
                     .hasMessage("trustedProxies entry 2 is not an IP address or a range such as 10.0.0.0/8");
         }
     }
@@ -780,7 +781,7 @@ class AdminHttpServerTest {
     void anUnreadableTaskIs422WithItsCodeAndNoStoredDetail() throws Exception {
         start();
         var login = admin();
-        ops.failure = new today.bonfire.oss.bth4j.spi.UnreadableTaskException(
+        ops.failure = new today.bonfire.oss.bth4j.exceptions.UnreadableTaskException(
                 1, "task 1 has a stored value that cannot be read", new IllegalArgumentException("secret value"));
 
         var res = get("/api/v1/tasks/1", login);
@@ -1134,9 +1135,15 @@ class AdminHttpServerTest {
     void builderRequiresAdminAndAUser() {
         assertThatThrownBy(() ->
                         AdminHttpServer.builder().user("a", "b", Role.ADMIN).build())
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOf(TaskConfigurationException.class);
         assertThatThrownBy(() -> AdminHttpServer.builder().admin(ops).build())
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOf(TaskConfigurationException.class);
+    }
+
+    @Test
+    void aSessionTtlThatIsNotPositiveIsRefused() {
+        assertThatThrownBy(() -> builder().sessionTtl(Duration.ZERO).build())
+                .isInstanceOf(TaskConfigurationException.class);
     }
 
     @Test
@@ -1144,13 +1151,13 @@ class AdminHttpServerTest {
         var builder = AdminHttpServer.builder().user("alice", "first", Role.ADMIN);
 
         assertThatThrownBy(() -> builder.user("alice", "second", Role.VIEWER))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskConfigurationException.class);
     }
 
     @Test
     void aUserWithAnEmptyPasswordIsRefused() {
         assertThatThrownBy(() -> AdminHttpServer.builder().user("a", "", Role.ADMIN))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskConfigurationException.class);
     }
 
     @Test

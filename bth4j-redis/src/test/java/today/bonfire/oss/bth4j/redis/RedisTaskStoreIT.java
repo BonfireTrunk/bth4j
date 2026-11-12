@@ -43,6 +43,9 @@ import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.jedis.providers.PooledConnectionProvider;
 import today.bonfire.oss.bth4j.Loggers;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
@@ -59,8 +62,6 @@ import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
-import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 
 /** {@link RedisTaskStore} against a real Redis, including the checks that read Redis keys directly. Needs Docker. */
 @Testcontainers
@@ -299,7 +300,7 @@ class RedisTaskStoreIT {
         assertThat(store.allocateIds(10)).isEqualTo(1);
         assertThat(store.allocateIds(5)).isEqualTo(11);
         assertThat(store.allocateIds(1)).isEqualTo(16);
-        assertThatThrownBy(() -> store.allocateIds(0)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.allocateIds(0)).isInstanceOf(TaskValidationException.class);
     }
 
     @Test
@@ -1417,7 +1418,7 @@ class RedisTaskStoreIT {
         assertThat(counts().dead()).isEqualTo(1);
         assertThat(store.purge(TaskState.DEAD, Duration.ofMillis(100), 10)).isEqualTo(1);
         assertThatThrownBy(() -> store.purge(TaskState.QUEUED, Duration.ZERO, 1))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskValidationException.class);
     }
 
     @Test

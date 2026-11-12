@@ -16,12 +16,13 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.InspectionStore;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
 import today.bonfire.oss.bth4j.testing.MutableClock;
 
@@ -451,6 +452,29 @@ class RecurringTaskServiceTest {
     }
 
     @Test
+    void anOccurrenceThatCannotBeReadMovesItsScheduleAheadAndTheRoundGoesOn() throws Exception {
+        var fire = T0.plusSeconds(5);
+        register(definition("0 * * * *", null, 0, true), fire);
+        register(definition("second", "0 * * * *", null, 0, false), fire.plusSeconds(1));
+        inspection = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("taskByKey")) {
+                throw new UnreadableTaskException(7, "task 7 has a stored value that cannot be read", null);
+            }
+            return real.proceed();
+        });
+
+        round();
+
+        assertThat(store.recurringSchedules().get(ID)).isAfter(fire);
+        assertThat(occurrences())
+                .singleElement()
+                .satisfies(t -> assertThat(t.due()).isEqualTo(fire.plusSeconds(1)));
+        assertThat(status.issues())
+                .singleElement()
+                .satisfies(i -> assertThat(i.kind()).isEqualTo("schedule-broken"));
+    }
+
+    @Test
     void aStoreFailureWhileCommittingIsRecordedAsAStoreErrorAndEndsTheRound() throws Exception {
         register(definition("0 * * * *", null, 0), T0);
         register(definition("second", "0 * * * *", null, 0, false), T0.plusSeconds(1));
@@ -589,7 +613,7 @@ class RecurringTaskServiceTest {
 
         assertThat(status.issues()).singleElement().satisfies(i -> {
             assertThat(i.kind()).isEqualTo("store-error");
-            assertThat(i.detail()).startsWith("today.bonfire.oss.bth4j.spi.TaskStoreException: store down");
+            assertThat(i.detail()).startsWith("today.bonfire.oss.bth4j.exceptions.TaskStoreException: store down");
         });
     }
 

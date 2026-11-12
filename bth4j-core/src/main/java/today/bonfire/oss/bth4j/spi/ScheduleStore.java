@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /** Recurring definitions. Each occurrence is a task of its own, created exactly once across all runners. */
 public interface ScheduleStore extends TaskStore {
@@ -32,7 +33,7 @@ public interface ScheduleStore extends TaskStore {
     /**
      * @param limit at least 1
      * @return definitions whose next fire time is at or before {@code upTo}, up to the limit
-     * @throws IllegalArgumentException if the limit is below 1
+     * @throws TaskValidationException if the limit is below 1
      */
     List<DueSchedule> dueRecurring(Instant upTo, int limit);
 

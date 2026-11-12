@@ -2,6 +2,8 @@ package today.bonfire.oss.bth4j.spi;
 
 import java.util.Map;
 import java.util.Optional;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 
 /** Read-only views for clients, the runner and the admin API. */
 public interface InspectionStore extends TaskStore {
@@ -55,7 +57,7 @@ public interface InspectionStore extends TaskStore {
      * @param queueId null for every queue
      * @param cursor {@link TaskPage#next()} of the previous page; null starts at the beginning
      * @param limit the most tasks one page holds, at least 1
-     * @throws IllegalArgumentException if the cursor was not produced by this store or the limit is below 1
+     * @throws TaskValidationException if the cursor was not produced by this store or the limit is below 1
      */
     TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit);
 }

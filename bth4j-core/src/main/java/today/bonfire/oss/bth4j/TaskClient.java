@@ -18,7 +18,9 @@ import today.bonfire.oss.bth4j.exceptions.EnqueueFailedException;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskDataException;
 import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
@@ -26,7 +28,6 @@ import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
 
 /**
  * The producer side: enqueues tasks, manages recurring definitions and reads tasks. Thread-safe; one instance
@@ -82,6 +83,8 @@ public final class TaskClient {
      * @throws TaskDataException       when the payload cannot be encoded
      * @throws TaskConfigurationException when the task type has no codec and this client has no JSON mapper
      * @throws TaskIdReusedException   when the request sets an id that belongs to a task with other content
+     * @throws UnreadableTaskException when the stored task of the request's id cannot be read; nothing was written,
+     *                                 and a retry fails the same way until that task is repaired or deleted
      * @throws EnqueueFailedException  when the store could not be reached or all three generated ids were taken;
      *                                 with an id the task may already be stored (retry with that id); with no
      *                                 ids nothing was written by this call (resend the same request)
@@ -127,8 +130,12 @@ public final class TaskClient {
      *                                 the same id, or a caller id overlaps this batch's fresh id range
      * @throws TaskIdReusedException   when a request sets an id that belongs to a task with other content;
      *                                 checked before the first write, so nothing is stored
-     * @throws EnqueueFailedException when the store fails, generated ids cannot be replaced, or caller-id
-     *                                 reuse is discovered after preflight; carries the ids as described above
+     * @throws UnreadableTaskException when the stored task of a caller id cannot be read; checked before the
+     *                                 first write, so nothing is stored
+     * @throws EnqueueFailedException when the store fails before the first write, or anything fails from the
+     *                                 first write on: the store, generated ids that cannot be replaced, caller-id
+     *                                 reuse discovered after preflight, a stored task that cannot be read;
+     *                                 carries the ids as described above and what failed as its cause
      */
     public List<EnqueueResult> enqueueAll(List<? extends TaskRequest<?>> requests) {
         var notStored = new HashSet<Integer>();
@@ -173,7 +180,7 @@ public final class TaskClient {
             var to = Math.min(records.size(), from + ENQUEUE_CHUNK);
             try {
                 results.addAll(writeChunk(requests, records, ids, callerIds, verified, notStored, from, to));
-            } catch (TaskStoreException | TaskIdReusedException e) {
+            } catch (RuntimeException e) {
                 throw new EnqueueFailedException(ids, results, notStored, e);
             }
         }
@@ -463,7 +470,7 @@ public final class TaskClient {
      * @param queue  a queue name, or null for every queue
      * @param cursor {@link TaskViewPage#next()} of the previous page; null starts at the beginning
      * @param limit  the most tasks one page holds, at least 1
-     * @throws IllegalArgumentException if the cursor is malformed or the limit is below 1
+     * @throws TaskValidationException if the cursor is malformed or the limit is below 1
      */
     public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
         var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.validQueue(queue)));

@@ -34,14 +34,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.AdminOps;
 import today.bonfire.oss.bth4j.TaskRequest;
-import today.bonfire.oss.bth4j.TaskViewPage;
 import today.bonfire.oss.bth4j.common.Json;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 
 /**
  * JSON admin API over {@link AdminOps} on the JDK HTTP server, optionally with a static dashboard.
@@ -568,12 +568,7 @@ public final class AdminHttpServer implements AutoCloseable {
         var queue = query.get("queue");
         var queueName = queue == null || queue.isEmpty() ? null : queue;
         var cursor = query.get("cursor");
-        TaskViewPage page;
-        try {
-            page = admin.tasks(state, queueName, cursor == null || cursor.isEmpty() ? null : cursor, limit);
-        } catch (IllegalArgumentException e) {
-            throw new HttpError(400, "malformed cursor");
-        }
+        var page = admin.tasks(state, queueName, cursor == null || cursor.isEmpty() ? null : cursor, limit);
         return Views.obj("items", Views.list(page.items(), Views::task), "next", page.next());
     }
 
@@ -800,14 +795,14 @@ public final class AdminHttpServer implements AutoCloseable {
          * Adds a user; at least one is required. Only a random salt and the SHA3-384 digest of the salt and password
          * are kept.
          *
-         * @throws IllegalArgumentException when a part is missing or a user with that name was added before
+         * @throws TaskConfigurationException when a part is missing or a user with that name was added before
          */
         public Builder user(String name, String password, Role role) {
             if (name == null || name.isEmpty() || password == null || password.isEmpty() || role == null) {
-                throw new IllegalArgumentException("name, password and role are required");
+                throw new TaskConfigurationException("name, password and role are required");
             }
             if (users.putIfAbsent(name, User.of(password, role)) != null) {
-                throw new IllegalArgumentException("a user with this name was added before");
+                throw new TaskConfigurationException("a user with this name was added before");
             }
             return this;
         }
@@ -856,7 +851,7 @@ public final class AdminHttpServer implements AutoCloseable {
          * counts as the proxy's address. Name only proxies: a request from any address named here can state the
          * address it is counted by.
          *
-         * @throws IllegalArgumentException when an entry is not an IP address or range
+         * @throws TaskConfigurationException when an entry is not an IP address or range
          */
         public Builder trustedProxies(String... proxies) {
             var all = Arrays.asList(proxies);
@@ -876,16 +871,16 @@ public final class AdminHttpServer implements AutoCloseable {
             return this;
         }
 
-        /** @throws IllegalStateException when the admin operations or all users are missing */
+        /** @throws TaskConfigurationException when the admin operations or all users are missing */
         public AdminHttpServer build() {
             if (admin == null) {
-                throw new IllegalStateException("admin(AdminOps) is required");
+                throw new TaskConfigurationException("admin(AdminOps) is required");
             }
             if (users.isEmpty()) {
-                throw new IllegalStateException("at least one user is required");
+                throw new TaskConfigurationException("at least one user is required");
             }
             if (sessionTtl == null || sessionTtl.isZero() || sessionTtl.isNegative()) {
-                throw new IllegalStateException("sessionTtl must be positive");
+                throw new TaskConfigurationException("sessionTtl must be positive");
             }
             return new AdminHttpServer(this);
         }

@@ -24,6 +24,7 @@ import today.bonfire.oss.bth4j.AdminOps;
 import today.bonfire.oss.bth4j.BackgroundRunner;
 import today.bonfire.oss.bth4j.Concurrency;
 import today.bonfire.oss.bth4j.RunnerHealth;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
 
@@ -296,7 +297,7 @@ class MicrometerRunnerMetricsTest {
         try {
             assertThatThrownBy(() -> MicrometerRunnerMetrics.bind(
                             admin, () -> 2, registry, Tags.of("runner", "a"), Duration.ofHours(1)))
-                    .isInstanceOf(IllegalArgumentException.class)
+                    .isInstanceOf(TaskConfigurationException.class)
                     .hasMessageContaining("tags");
             assertThat(gauge("bth4j.runner.running", "runner", "a")).isEqualTo(1);
 
@@ -335,7 +336,7 @@ class MicrometerRunnerMetricsTest {
         MicrometerRunnerMetrics.bind(admin, () -> 1, watched, tags, Duration.ofHours(1))
                 .close();
 
-        assertThat(duringRemoval).singleElement().isInstanceOf(IllegalArgumentException.class);
+        assertThat(duringRemoval).singleElement().isInstanceOf(TaskConfigurationException.class);
         try (var again = MicrometerRunnerMetrics.bind(admin, () -> 3, watched, tags, Duration.ofHours(1))) {
             assertThat(watched.get("bth4j.runner.running").tags(tags).gauge().value())
                     .isEqualTo(3);
@@ -345,6 +346,6 @@ class MicrometerRunnerMetricsTest {
     @Test
     void refreshMustBePositive() {
         assertThatThrownBy(() -> MicrometerRunnerMetrics.bind(admin, () -> 0, registry, Duration.ZERO))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskConfigurationException.class);
     }
 }

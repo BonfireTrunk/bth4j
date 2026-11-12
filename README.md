@@ -194,6 +194,7 @@ jedis.close();
 | [Retries and cancelling](docs/retries-and-cancelling.md) | retry policies, clock skew, cancel requests, lease loss, maximum run time, `startBy` |
 | [Recurring tasks](docs/recurring-tasks.md) | cron and fixed-delay definitions, time zones, misfires, overlap, pausing and triggering |
 | [Queues and concurrency](docs/queues-and-concurrency.md) | queues, queue policies, pausing, fixed and adaptive concurrency |
+| [Exceptions](docs/errors.md) | what bth4j throws, when, and what to do about it |
 | [Configuration](docs/configuration.md) | every runner setting with its default, starting and stopping, how outcomes are written |
 | [Monitoring](docs/monitoring.md) | events, logging, inspection, health, issues, workers, metrics |
 | [Admin API and dashboard](docs/admin.md) | `AdminOps`, the admin HTTP server, roles, sessions, endpoints, the dashboard |

@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
@@ -40,7 +41,7 @@ public interface AdminOps {
      * @param cursor {@link TaskViewPage#next()} of the previous page; null starts at the beginning
      * @param limit the most tasks one page holds, at least 1. There is no upper bound, and a page is read into
      *     memory as a whole; the HTTP API caps it at 200.
-     * @throws IllegalArgumentException if the cursor is malformed or the limit is below 1
+     * @throws TaskValidationException if the cursor is malformed or the limit is below 1
      */
     TaskViewPage tasks(TaskState state, String queue, String cursor, int limit);
 
@@ -89,7 +90,7 @@ public interface AdminOps {
      *
      * @param liveWithin maximum heartbeat age, measured against the admin clock; not negative and at most
      *     {@link TaskRequest#MAX_TIME_FROM_NOW}
-     * @throws IllegalArgumentException for another {@code liveWithin}
+     * @throws TaskValidationException for another {@code liveWithin}
      */
     List<UnservedWork> unservedWork(Duration liveWithin);
 

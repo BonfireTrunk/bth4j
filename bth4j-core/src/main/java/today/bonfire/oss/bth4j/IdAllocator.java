@@ -2,6 +2,7 @@ package today.bonfire.oss.bth4j;
 
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.ReentrantLock;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.TaskStore;
 
 /**
@@ -51,7 +52,7 @@ final class IdAllocator {
         lock.lock();
         try {
             if (count < 1) {
-                throw new IllegalArgumentException("count must be positive");
+                throw new TaskValidationException("count must be positive");
             }
             if (end - next < count) {
                 reserve(Math.max(count, blockSize));

@@ -48,6 +48,9 @@ unique keys, enqueueing inside your own database transaction, and how to resend 
 | `EnqueueFailedException` (thrown) | The store cannot be reached, and the caller does not know whether the task was stored. See [When the store cannot be reached](#when-the-store-cannot-be-reached). |
 | `TaskValidationException` (thrown) | The request carries an id that was never allocated. |
 | `TaskIdReusedException` (thrown) | The request carries an id that already belongs to a task, and the request is not the same request. |
+| `UnreadableTaskException` (thrown) | The request carries an id that belongs to a task whose stored value cannot be read. Nothing was written, and a resend fails the same way until that task is repaired or deleted. |
+
+[Exceptions](errors.md) lists everything bth4j throws.
 
 ## Limits
 
@@ -208,6 +211,7 @@ positions.
 | An id that already belongs to a task, with the same request encoded identically | Accepted again. `Accepted` only confirms that the record exists; it never starts another run, even when the task is DEAD. Use `AdminOps.retry` to run a dead task again. |
 | An id that already belongs to a task, with any other difference | `TaskIdReusedException`. |
 | A caller id taken by another writer after the preflight | `EnqueueFailedException` carrying a `TaskIdReusedException` cause. Such caller-id reuse still requires caller correction. |
+| An id that belongs to a task whose stored value cannot be read | `UnreadableTaskException`. Nothing is written. |
 
 A Redis failover that rolls the id counter back can make an allocated id look unallocated.
 
@@ -245,6 +249,16 @@ keeping any ids you set yourself.
 | A batch, failure after the reservation | Every request's last assigned id, in request order. |
 | A single `enqueue`, the high-water read fails | The caller id is retained. |
 | A single `enqueue` with a generated id | The generated id, only once the call tried to write it. |
+
+What failed and how much was written are two separate facts. `getCause()` tells what failed, and the other fields tell
+how much of the batch was written:
+
+| Cause | What failed |
+|---|---|
+| `TaskStoreException` | The store could not be reached, or no free id was found in three writes. |
+| `TaskIdReusedException` | A caller id was taken by another writer after the check before the first write. |
+| `UnreadableTaskException` | A stored task that a write had to compare with cannot be read. |
+| Anything else | Whatever the store threw. From the first write of a batch on, every failure is reported this way, so the results of the chunks that were written are never lost. |
 
 ### Retrying a failed batch
 

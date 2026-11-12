@@ -6,6 +6,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 
 /** Runs every task on its own virtual thread, at most {@code limit} at once. */
 public final class FixedExecutor implements BackgroundExecutor {
@@ -16,7 +17,7 @@ public final class FixedExecutor implements BackgroundExecutor {
     private final int limit;
 
     public FixedExecutor(int limit) {
-        if (limit < 1) throw new IllegalArgumentException("limit must be at least 1");
+        if (limit < 1) throw new TaskConfigurationException("limit must be at least 1");
         this.limit = limit;
         this.gate = new SlotGate(limit);
     }

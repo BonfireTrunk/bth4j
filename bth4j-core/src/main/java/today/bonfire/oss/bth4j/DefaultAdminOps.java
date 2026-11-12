@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
@@ -19,7 +20,6 @@ import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /** {@link AdminOps} over a store; health and issues come from the runner when there is one. */
@@ -143,7 +143,7 @@ final class DefaultAdminOps implements AdminOps {
     @Override
     public List<UnservedWork> unservedWork(Duration liveWithin) {
         if (liveWithin == null || liveWithin.isNegative() || !StoredTime.fits(liveWithin)) {
-            throw new IllegalArgumentException("liveWithin must be non-negative and at most " + StoredTime.MAX);
+            throw new TaskValidationException("liveWithin must be non-negative and at most " + StoredTime.MAX);
         }
         var cutoff = clock.instant().minus(liveWithin);
         var live = store.workers().stream()
@@ -180,7 +180,7 @@ final class DefaultAdminOps implements AdminOps {
     @Override
     public int purgeStaleWorkers(Duration staleAfter) {
         if (staleAfter == null || staleAfter.isNegative() || staleAfter.isZero() || !StoredTime.fits(staleAfter)) {
-            throw new IllegalArgumentException("staleAfter must be positive and at most " + StoredTime.MAX);
+            throw new TaskValidationException("staleAfter must be positive and at most " + StoredTime.MAX);
         }
         return store.purgeWorkers(staleAfter);
     }

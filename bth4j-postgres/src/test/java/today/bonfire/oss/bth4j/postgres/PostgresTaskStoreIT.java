@@ -26,6 +26,9 @@ import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.postgresql.ds.PGSimpleDataSource;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
@@ -45,8 +48,6 @@ import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
-import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 
 /** Every {@link PostgresTaskStore} operation against a real PostgreSQL, each test on its own tables. Needs Docker. */
 class PostgresTaskStoreIT {
@@ -203,7 +204,7 @@ class PostgresTaskStoreIT {
             }
         }
         assertThat(ids).hasSize(40 * 64);
-        assertThatThrownBy(() -> store.allocateIds(0)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.allocateIds(0)).isInstanceOf(TaskValidationException.class);
     }
 
     @Test
@@ -256,7 +257,7 @@ class PostgresTaskStoreIT {
         int report = store.typeId("report");
         assertThat(store.queueNames()).containsExactly(Map.entry(queue, "default"), Map.entry(other, "other"));
         assertThat(store.typeNames()).containsExactly(Map.entry(type, "send-mail"), Map.entry(report, "report"));
-        assertThatThrownBy(() -> store.queueId(" ")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.queueId(" ")).isInstanceOf(TaskValidationException.class);
     }
 
     @Test
@@ -833,7 +834,7 @@ class PostgresTaskStoreIT {
         assertThat(store.purge(TaskState.DEAD, Duration.ZERO, 100)).isEqualTo(1);
         assertThat(store.getTask(queued)).isPresent();
         assertThatThrownBy(() -> store.purge(TaskState.QUEUED, Duration.ZERO, 1))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskValidationException.class);
     }
 
     @Test
@@ -1487,7 +1488,7 @@ class PostgresTaskStoreIT {
         assertThat(store.getTask(rolledBack)).isEmpty();
         assertThat(get(committed).state()).isEqualTo(TaskState.QUEUED);
         assertThatThrownBy(() -> store.enqueue(null, task(newId()).build()))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskValidationException.class);
     }
 
     @Test

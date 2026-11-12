@@ -9,7 +9,8 @@ import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.exceptions.EnqueueFailedException;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 class EnqueueFailedExceptionTest {
     private static final TaskType<Void> VOID = TaskType.of("retry");
@@ -37,7 +38,7 @@ class EnqueueFailedExceptionTest {
         assertThatThrownBy(() -> failure.notStored().add(0)).isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> retry.add(requests.get(0))).isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> failure.retryRequests(requests.subList(0, 2)))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskValidationException.class);
     }
 
     @Test
@@ -81,6 +82,6 @@ class EnqueueFailedExceptionTest {
         assertThat(retry.getFirst().id()).isEqualTo(30L);
         assertThatThrownBy(() ->
                         new EnqueueFailedException(List.of(10L), settled, Set.of(), new TaskStoreException("failed")))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskValidationException.class);
     }
 }

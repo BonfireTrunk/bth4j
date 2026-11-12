@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HexFormat;
 import java.util.List;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 
 /**
  * Finds the address a request came from, for the login throttle. The address is the peer of the connection,
@@ -41,7 +42,7 @@ final class ClientAddress {
 
     /**
      * @param proxies addresses such as {@code 10.0.0.5} or {@code ::1} and ranges such as {@code 10.0.0.0/8}
-     * @throws IllegalArgumentException when an entry is neither; the message gives its position, not its text
+     * @throws TaskConfigurationException when an entry is neither; the message gives its position, not its text
      */
     static ClientAddress trusting(Collection<String> proxies) {
         var ranges = new ArrayList<Range>();
@@ -50,7 +51,7 @@ final class ClientAddress {
             position++;
             var range = proxy == null ? null : range(proxy.strip());
             if (range == null) {
-                throw new IllegalArgumentException(
+                throw new TaskConfigurationException(
                         "trustedProxies entry " + position + " is not an IP address or a range such as 10.0.0.0/8");
             }
             ranges.add(range);
