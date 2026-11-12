@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.RecordJson;
 import today.bonfire.oss.bth4j.spi.StepResult;
@@ -194,7 +195,7 @@ class TaskHashesTest {
     }
 
     @Test
-    void aStoredValueThatCannotBeReadIsAStoreErrorNamingTheTaskOnBothPaths() {
+    void aStoredValueThatCannotBeReadIsAnUnreadableTaskNamingTheTaskOnBothPaths() {
         var t = everyField();
         for (var bad : List.of(
                 Map.entry(F_REVISION, "five"),
@@ -208,15 +209,15 @@ class TaskHashesTest {
             assertThatThrownBy(
                             () -> TaskHashes.fromClaim(entry(t, h, RedisScripts.CLAIM_FIELDS), AT, LEASE_UNTIL, WORKER))
                     .as(bad.getKey())
-                    .isInstanceOf(TaskStoreException.class)
+                    .isInstanceOf(UnreadableTaskException.class)
                     .hasMessageContaining("task 42");
             assertThatThrownBy(() -> TaskHashes.fromHash(t.id(), h, null, null, List.of()))
                     .as(bad.getKey())
-                    .isInstanceOf(TaskStoreException.class)
+                    .isInstanceOf(UnreadableTaskException.class)
                     .hasMessageContaining("task 42");
         }
         assertThatThrownBy(() -> TaskHashes.fromHash(t.id(), hash(t), null, null, List.of("[1]")))
-                .isInstanceOf(TaskStoreException.class)
+                .isInstanceOf(UnreadableTaskException.class)
                 .hasMessageContaining("task 42");
     }
 
