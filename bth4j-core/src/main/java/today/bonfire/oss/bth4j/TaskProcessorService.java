@@ -400,7 +400,7 @@ class TaskProcessorService extends CustomThread {
     private void renewLeases() {
         long renewAt = System.nanoTime() + renewInterval.toNanos();
         while (renewalRunning) {
-            sleepQuietly(maxRunTimeCheckInterval);
+            sleepQuietly(untilNextCheck(maxRunTimeCheckInterval, renewAt - System.nanoTime()));
             try {
                 if (System.nanoTime() - renewAt >= 0) {
                     renewAt = System.nanoTime() + renewInterval.toNanos();
@@ -413,6 +413,11 @@ class TaskProcessorService extends CustomThread {
                 log.error("Lease renewal round failed, retrying in {}", renewInterval, e);
             }
         }
+    }
+
+    /** The check interval, cut short when the next renewal is due before it, so that no renewal waits for a check. */
+    static Duration untilNextCheck(Duration checkInterval, long nanosUntilRenewal) {
+        return Duration.ofNanos(Math.clamp(nanosUntilRenewal, 0, checkInterval.toNanos()));
     }
 
     /**

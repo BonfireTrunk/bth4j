@@ -121,6 +121,19 @@ class TaskProcessorOverrunTest {
     }
 
     @Test
+    void theWaitForTheNextCheckNeverPassesTheNextRenewal() {
+        var check = Duration.ofSeconds(1);
+
+        assertThat(TaskProcessorService.untilNextCheck(
+                        check, Duration.ofSeconds(20).toNanos()))
+                .isEqualTo(check);
+        assertThat(TaskProcessorService.untilNextCheck(
+                        check, Duration.ofMillis(33).toNanos()))
+                .isEqualTo(Duration.ofMillis(33));
+        assertThat(TaskProcessorService.untilNextCheck(check, -5)).isEqualTo(Duration.ZERO);
+    }
+
+    @Test
     void anAttemptPastTheDefaultMaxRunTimeIsCancelledThenAbandonedOnce() throws Exception {
         var processor = processor(DEFAULT_MAX_RUN_TIME);
         long id = startStuckAttempt(processor, TaskRequest.of(TYPE).build());
