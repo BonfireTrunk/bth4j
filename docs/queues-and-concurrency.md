@@ -14,22 +14,30 @@ A runner serves its queues in turn. A queue policy shares a runner's free execut
 
 A runner processes its queues round robin, one claim covering all of them. A queue listed twice gets two turns, unless a queue has a [queue policy](#queue-policies): then every queue counts once and its weight sets its share.
 
-The default queues are `Q:DEF`, `Q:LOW`, `Q:MED` and `Q:HIGH`. The default queue is `Q:DEF`.
+An application that configures nothing has one queue, named `common` (`Queues.COMMON`).
 
-Configure your own queues with `configureQueues`:
+Name your own queues with one `Queues` value, and give that same value to every runner and every separate `TaskClient` of the application:
 
 ```java
+static final Queues QUEUES = Queues.of("common", "mail", "reports");    // the first one is the default queue
+
 BackgroundRunner.builder()
-        .configureQueues(List.of("default", "mail", "reports"),     // queues tasks can be enqueued to
-                         List.of("default", "mail"),                // queues this instance processes
-                         "default")                                 // queue of requests that name none
+        .queues(QUEUES)                            // processes all three
+        // .processQueues(List.of("mail"))         // or only some of them
+
+TaskClient.builder()                               // a process that only produces tasks
+        .queues(QUEUES)
 ```
 
-| Argument | Meaning |
+| Call | Meaning |
 |---|---|
-| first list | the queues tasks can be enqueued to |
-| second list | the queues this instance processes |
-| last value | the queue of requests that name none |
+| `Queues.of(first, more...)` or `Queues.of(list)` | the queues tasks can be enqueued to; a request that names another queue is refused |
+| `.withDefault(name)` | the queue of requests that name none; without it, the first queue |
+| `BackgroundRunner.Builder.processQueues(list)` | the queues this runner processes; without it, all of them. A queue listed twice gets two turns |
+
+A queue name is free text of 1 to 128 characters. A name does not give a queue priority: the runner serves its queues in turn unless a [queue policy](#queue-policies) says otherwise.
+
+The default queue belongs to the `Queues` value, not to the runner, so a producer and a runner that were given the same value always agree on it. Nothing checks that some runner processes every queue: a runner with `processQueues(List.of("mail"))` leaves tasks in `common` waiting until another runner takes them. [`unservedWork()`](monitoring.md) lists queued work that no live runner processes.
 
 ## Queue policies and pausing
 
@@ -68,7 +76,7 @@ The code shows three ways to build a policy:
 
 ```java
 BackgroundRunner.builder()
-        .configureQueues(List.of("default", "mail", "reports"), List.of("default", "mail", "reports"), "default")
+        .queues(Queues.of("default", "mail", "reports"))
         .queue("mail", QueuePolicy.weight(3))                   // three times the share of the others
         .queue("reports", QueuePolicy.maxConcurrent(2))         // never more than two reports at once here
         .queue("default", new QueuePolicy(2, 0))
@@ -191,5 +199,5 @@ Limit changes are logged at DEBUG and holds at TRACE under `Loggers.EXECUTOR`.
 
 ## Related pages
 
-- [Configuration](configuration.md) lists the settings with their defaults: `concurrency` and `taskExecutor` under [Executor and concurrency](configuration.md#executor-and-concurrency), `configureQueues` and `queue(name, QueuePolicy)` under [Queues](configuration.md#queues), and `idlePollInterval` under [Leases and timing](configuration.md#leases-and-timing).
+- [Configuration](configuration.md) lists the settings with their defaults: `concurrency` and `taskExecutor` under [Executor and concurrency](configuration.md#executor-and-concurrency), `queues`, `processQueues` and `queue(name, QueuePolicy)` under [Queues](configuration.md#queues), and `idlePollInterval` under [Leases and timing](configuration.md#leases-and-timing).
 - [Monitoring](monitoring.md#issues) shows how to read issues such as `resource-signal-unavailable`.

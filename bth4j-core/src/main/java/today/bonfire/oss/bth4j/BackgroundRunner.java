@@ -6,7 +6,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
@@ -642,9 +641,8 @@ public final class BackgroundRunner implements AutoCloseable {
         private Duration recurringTasksCheckInterval = Duration.ofSeconds(10);
         private int idBlockSize = 64;
         private int defaultMaxAttempts = 10;
-        private Set<String> availableQueues = new LinkedHashSet<>(TaskClient.Builder.DEFAULT_QUEUES);
-        private List<String> queuesToProcess = TaskClient.Builder.DEFAULT_QUEUES;
-        private String defaultQueue = "Q:DEF";
+        private Queues queues = Queues.of(Queues.COMMON);
+        private List<String> queuesToProcess;
 
         private Builder() {}
 
@@ -920,49 +918,46 @@ public final class BackgroundRunner implements AutoCloseable {
         }
 
         /**
-         * Configures the queues.
-         * <p>
-         * A queue may appear more than once in {@code queuesToProcess} to give it more turns in the round robin.
-         * Once a queue has a {@link QueuePolicy} every queue counts once and the weights set the shares.
-         *
-         * @param availableQueues all queues tasks can be enqueued to, each name 1 to 128 characters. Duplicates
-         *                        are removed.
-         * @param queuesToProcess the queues this instance processes, in round robin order. Must be a subset of
-         *                        availableQueues. If null or empty, all available queues are processed in order.
-         * @param defaultQueue    the queue of tasks that do not name one. Must be in availableQueues. If null or
-         *                        blank, the first queue to process is used.
+         * The queues of the application: the ones tasks may be enqueued to, and the one used when a request
+         * names none. Give every runner and every separate {@link TaskClient} of the application the same value.
+         * This runner processes all of them, in their order, unless {@link #processQueues} says otherwise.
+         * Default: the one queue {@link Queues#COMMON}.
          */
-        public Builder configureQueues(
-                List<String> availableQueues, List<String> queuesToProcess, String defaultQueue) {
-            if (ObjectUtils.isEmpty(availableQueues))
-                throw new TaskConfigurationException("Available queues cannot be empty");
-            availableQueues.forEach(QueuesHolder::requireName);
-            // LinkedHashSet keeps the order given by the caller, a HashSet would make it random
-            this.availableQueues = new LinkedHashSet<>(availableQueues);
-            this.queuesToProcess = ObjectUtils.isEmpty(queuesToProcess)
-                    ? new ArrayList<>(this.availableQueues)
-                    : new ArrayList<>(queuesToProcess);
-            this.defaultQueue = StringUtils.isBlank(defaultQueue) ? this.queuesToProcess.getFirst() : defaultQueue;
+        public Builder queues(Queues queues) {
+            if (queues == null) throw new TaskConfigurationException("queues cannot be null");
+            this.queues = queues;
+            return this;
+        }
+
+        /**
+         * The queues this runner processes, in round robin order; each must be one of {@link #queues(Queues)}.
+         * Tasks in the other queues, the default queue included, wait for a runner that processes them.
+         * <p>
+         * A queue may appear more than once to give it more turns in the round robin. Once a queue has a
+         * {@link QueuePolicy} every queue counts once and the weights set the shares.
+         */
+        public Builder processQueues(List<String> queuesToProcess) {
+            if (ObjectUtils.isEmpty(queuesToProcess)) {
+                throw new TaskConfigurationException("queues to process cannot be empty");
+            }
+            this.queuesToProcess = List.copyOf(queuesToProcess);
             return this;
         }
 
         QueuesHolder queues() {
-            if (queuesToProcess.isEmpty()) throw new TaskConfigurationException("Queues to process cannot be empty");
-            for (var q : queuesToProcess) {
-                if (!availableQueues.contains(q)) {
-                    throw new TaskConfigurationException("Queue to process " + q + " is not an available queue");
+            var toProcess = queuesToProcess == null ? queues.names() : queuesToProcess;
+            for (var q : toProcess) {
+                if (!queues.names().contains(q)) {
+                    throw new TaskConfigurationException("Queue to process " + q + " is not one of the queues");
                 }
             }
-            if (!availableQueues.contains(defaultQueue)) {
-                throw new TaskConfigurationException("Default queue " + defaultQueue + " is not an available queue");
-            }
             for (var q : queuePolicies.keySet()) {
-                if (!queuesToProcess.contains(q)) {
+                if (!toProcess.contains(q)) {
                     throw new TaskConfigurationException(
                             "Queue policy for " + q + ", which this runner does not process");
                 }
             }
-            return new QueuesHolder(availableQueues, queuesToProcess, defaultQueue);
+            return QueuesHolder.of(queues, toProcess);
         }
 
         /**

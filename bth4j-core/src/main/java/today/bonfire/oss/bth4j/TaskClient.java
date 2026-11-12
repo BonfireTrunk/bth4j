@@ -6,12 +6,10 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.common.Cron;
@@ -504,15 +502,13 @@ public final class TaskClient {
     }
 
     public static final class Builder {
-        static final List<String> DEFAULT_QUEUES = List.of("Q:DEF", "Q:LOW", "Q:MED", "Q:HIGH");
-
         private FullStore store;
         private Names names;
         private JsonMapper jsonMapper;
         private Clock clock = Clock.systemUTC();
         private int idBlockSize = 64;
         private int defaultMaxAttempts = 10;
-        private QueuesHolder queues = new QueuesHolder(new LinkedHashSet<>(DEFAULT_QUEUES), DEFAULT_QUEUES, "Q:DEF");
+        private QueuesHolder queues = QueuesHolder.of(Queues.of(Queues.COMMON), null);
 
         private Builder() {}
 
@@ -551,20 +547,12 @@ public final class TaskClient {
         }
 
         /**
-         * The queues tasks may be enqueued to, each name 1 to 128 characters, and the one used when a request
-         * names none. Default
-         * {@code Q:DEF, Q:LOW, Q:MED, Q:HIGH} with {@code Q:DEF} as default.
+         * The queues tasks may be enqueued to and the one used when a request names none; give the runners of
+         * the application the same value. Default: the one queue {@link Queues#COMMON}.
          */
-        public Builder queues(List<String> availableQueues, String defaultQueue) {
-            if (availableQueues == null || availableQueues.isEmpty()) {
-                throw new TaskConfigurationException("availableQueues cannot be empty");
-            }
-            availableQueues.forEach(QueuesHolder::requireName);
-            Set<String> available = new LinkedHashSet<>(availableQueues);
-            var def = StringUtils.isBlank(defaultQueue) ? availableQueues.getFirst() : defaultQueue;
-            if (!available.contains(def))
-                throw new TaskConfigurationException("default queue is not an available queue");
-            this.queues = new QueuesHolder(available, List.copyOf(available), def);
+        public Builder queues(Queues queues) {
+            if (queues == null) throw new TaskConfigurationException("queues cannot be null");
+            this.queues = QueuesHolder.of(queues, null);
             return this;
         }
 

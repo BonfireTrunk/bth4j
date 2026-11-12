@@ -87,9 +87,6 @@ class BackgroundRunnerBuilderTest {
         var builder = BackgroundRunner.builder();
 
         assertThatThrownBy(() -> builder.workerLabel("host\u00001")).isInstanceOf(TaskConfigurationException.class);
-        assertThatThrownBy(() -> builder.configureQueues(List.of("Q\u00001"), null, null))
-                .isInstanceOf(TaskConfigurationException.class);
-        assertThatThrownBy(() -> TaskClient.builder().queues(List.of("Q\u00001"), null))
-                .isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> Queues.of("Q\u00001")).isInstanceOf(TaskConfigurationException.class);
     }
 }

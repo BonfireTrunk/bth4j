@@ -150,6 +150,7 @@ var jedis = RedisClient.builder()
 var runner = BackgroundRunner.builder()
         .store(new RedisTaskStore(jedis, "my-app"))   // runners with the same namespace share the work
         .jsonMapper(new JacksonMapper())
+        .queues(Queues.of("common", "mail", "reports"))   // optional: without it there is the one queue "common"
         .build();
 
 runner.registry()
@@ -165,7 +166,7 @@ runner.start();                                        // returns at once, the s
 var client = runner.client();
 
 EnqueueResult result = client.enqueue(TaskRequest.of(SEND_MAIL, new MailRequest("a@example.com", "Welcome"))
-        .queue("Q:HIGH")
+        .queue("mail")                                 // without it the task goes to the first queue, "common"
         .delay(Duration.ofMinutes(5))
         .uniqueKey("welcome-42")                       // a second request with this key is answered Duplicate
         .build());
@@ -173,7 +174,7 @@ if (result instanceof EnqueueResult.Duplicate d) {
     log.info("already queued as task {}", d.existingId());
 }
 
-client.putSchedule(ScheduleDefinition.of("nightly-report", NIGHTLY_REPORT, "30 2 * * *", Overlap.ALLOW).queue("Q:LOW"));
+client.putSchedule(ScheduleDefinition.of("nightly-report", NIGHTLY_REPORT, "30 2 * * *", Overlap.ALLOW).queue("reports"));
 
 // on shutdown
 runner.stop();                                         // waits for running tasks, up to the shutdown timeout

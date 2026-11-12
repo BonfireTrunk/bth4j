@@ -74,10 +74,14 @@ public abstract class RunnerContract {
     /** @return a store with no state, isolated from every other namespace */
     protected abstract FullStore newStore(String namespace);
 
+    /** One value for the client and every runner of a test, as an application gives it to all of its parts. */
+    protected static final Queues QUEUES = Queues.of("Q:DEF", "Q:LOW", "Q:MED", "Q:HIGH");
+
     @BeforeEach
     void openStore() {
         store = newStore("rc" + Long.toString(System.currentTimeMillis(), 36) + NAMESPACES.incrementAndGet());
         client = TaskClient.builder()
+                .queues(QUEUES)
                 .store(store)
                 .jsonMapper(new JsonMapperTest())
                 .build();
@@ -92,6 +96,7 @@ public abstract class RunnerContract {
     /** A runner builder with short intervals; the lease cannot go below one second. */
     protected BackgroundRunner.Builder runnerBuilder() {
         return BackgroundRunner.builder()
+                .queues(QUEUES)
                 .store(store)
                 .jsonMapper(new JsonMapperTest())
                 .concurrency(Concurrency.fixed(8))
@@ -271,7 +276,11 @@ public abstract class RunnerContract {
     @Test
     void generatedIdCollisionsAbandonTheClientsCurrentBlock() {
         for (boolean batch : List.of(false, true)) {
-            var producer = TaskClient.builder().store(store).idBlockSize(4).build();
+            var producer = TaskClient.builder()
+                    .queues(QUEUES)
+                    .store(store)
+                    .idBlockSize(4)
+                    .build();
             long first = producer.nextId();
             long occupied = first + 1;
             client.enqueue(TaskRequest.of(VOID_TYPE).id(occupied).build());

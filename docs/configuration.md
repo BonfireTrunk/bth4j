@@ -46,7 +46,8 @@ Which queues exist, which ones this instance processes and how it shares its slo
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `configureQueues` | `Q:DEF`, `Q:LOW`, `Q:MED`, `Q:HIGH`; default queue `Q:DEF` | available queues, queues this instance processes (round robin), default queue |
+| `queues(Queues)` | the one queue `common` | the queues tasks can be enqueued to and the default queue; the same value goes to every runner and `TaskClient` |
+| `processQueues(list)` | all queues of `queues` | the queues this instance processes (round robin) |
 | `queue(name, QueuePolicy)` | `QueuePolicy.DEFAULT` (weight 1, no limit) | share of free slots and concurrency limit of a queue on this runner |
 
 ## Retries and attempts
@@ -190,4 +191,4 @@ What this means in practice:
 
 ## A process that only produces tasks
 
-A process that only produces tasks can use `TaskClient.builder().store(store).jsonMapper(mapper).build()`. See [Enqueueing](enqueueing.md).
+A process that only produces tasks can use `TaskClient.builder().store(store).jsonMapper(mapper).queues(queues).build()`, with the `Queues` value the runners have. See [Enqueueing](enqueueing.md).

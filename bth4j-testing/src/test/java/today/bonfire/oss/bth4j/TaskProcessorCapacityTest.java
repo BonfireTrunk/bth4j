@@ -48,19 +48,17 @@ class TaskProcessorCapacityTest {
     private final TaskClient client = TaskClient.builder()
             .store(store)
             .clock(clock)
-            .queues(
-                    List.of(
-                            "Q:DEF",
-                            "Q:HEAVY",
-                            "Q:LIGHT",
-                            "Q:CAPPED",
-                            "Q:OPEN",
-                            "Q:EMPTY",
-                            "Q:BUSY",
-                            "Q:PAUSED",
-                            "Q:FIRST",
-                            "Q:SECOND"),
-                    "Q:DEF")
+            .queues(Queues.of(List.of(
+                    "Q:DEF",
+                    "Q:HEAVY",
+                    "Q:LIGHT",
+                    "Q:CAPPED",
+                    "Q:OPEN",
+                    "Q:EMPTY",
+                    "Q:BUSY",
+                    "Q:PAUSED",
+                    "Q:FIRST",
+                    "Q:SECOND")))
             .build();
     private final int queueId = names.queueId("Q:DEF");
     private final int typeId = names.typeId(TYPE.name());

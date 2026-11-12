@@ -44,8 +44,11 @@ class TaskClientTest {
         store = new InMemoryStore(clock);
     }
 
+    private static final Queues QUEUES = Queues.of("Q:DEF", "Q:LOW", "Q:MED", "Q:HIGH");
+
     private TaskClient.Builder builder() {
         return TaskClient.builder()
+                .queues(QUEUES)
                 .store(store)
                 .jsonMapper(new JsonMapperTest())
                 .clock(clock);
@@ -205,6 +208,7 @@ class TaskClientTest {
 
     private TaskClient clientOn(FullStore s) {
         return TaskClient.builder()
+                .queues(QUEUES)
                 .store(s)
                 .jsonMapper(new JsonMapperTest())
                 .clock(clock)
@@ -390,6 +394,7 @@ class TaskClientTest {
     void storeDownOnAColdClientThrowsEnqueueFailedWithoutIds() {
         var down = new AtomicBoolean();
         var client = TaskClient.builder()
+                .queues(QUEUES)
                 .store(failingStore(down))
                 .jsonMapper(new JsonMapperTest())
                 .clock(clock)
@@ -409,6 +414,7 @@ class TaskClientTest {
     void storeDownWhileCheckingACallerIdCarriesThatId() {
         var down = new AtomicBoolean();
         var client = TaskClient.builder()
+                .queues(QUEUES)
                 .store(failingStore(down))
                 .jsonMapper(new JsonMapperTest())
                 .clock(clock)
@@ -1212,8 +1218,21 @@ class TaskClientTest {
     }
 
     @Test
-    void customQueuesReplaceTheDefaults() {
-        var client = builder().queues(List.of("A", "B"), "B").build();
+    void aClientWithoutQueuesHasTheOneQueueCommon() {
+        var client = TaskClient.builder().store(store).clock(clock).build();
+
+        var view =
+                client.task(client.enqueue(TaskRequest.of(VOID).build()).id()).orElseThrow();
+
+        assertThat(view.queue()).isEqualTo("common");
+        assertThatThrownBy(
+                        () -> client.enqueue(TaskRequest.of(VOID).queue("Q:DEF").build()))
+                .isInstanceOf(TaskValidationException.class);
+    }
+
+    @Test
+    void theQueuesAClientIsGivenReplaceTheBuiltInOneAndNameTheDefault() {
+        var client = builder().queues(Queues.of("A", "B").withDefault("B")).build();
 
         var defaulted =
                 client.task(client.enqueue(TaskRequest.of(VOID).build()).id()).orElseThrow();
@@ -1316,7 +1335,8 @@ class TaskClientTest {
 
     @Test
     void aJsonPayloadWithoutAMapperIsAConfigurationError() {
-        var client = TaskClient.builder().store(store).clock(clock).build();
+        var client =
+                TaskClient.builder().queues(QUEUES).store(store).clock(clock).build();
 
         assertThatThrownBy(() ->
                         client.enqueue(TaskRequest.of(TYPED, new Payload("a")).build()))
@@ -1489,9 +1509,7 @@ class TaskClientTest {
         assertThatThrownBy(() -> TaskClient.builder().defaultMaxAttempts(0))
                 .isInstanceOf(TaskConfigurationException.class);
         assertThatThrownBy(() -> TaskClient.builder().clock(null)).isInstanceOf(TaskConfigurationException.class);
-        assertThatThrownBy(() -> TaskClient.builder().queues(List.of(), null))
-                .isInstanceOf(TaskConfigurationException.class);
-        assertThatThrownBy(() -> TaskClient.builder().queues(List.of("A"), "B"))
+        assertThatThrownBy(() -> TaskClient.builder().queues((Queues) null))
                 .isInstanceOf(TaskConfigurationException.class);
     }
 }

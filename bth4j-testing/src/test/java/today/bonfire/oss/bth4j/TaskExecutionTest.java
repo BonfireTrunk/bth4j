@@ -46,8 +46,11 @@ class TaskExecutionTest {
 
     private final MutableClock clock = new MutableClock();
     private final InMemoryStore store = new InMemoryStore(clock);
-    private final TaskClient client =
-            TaskClient.builder().store(store).clock(clock).build();
+    private final TaskClient client = TaskClient.builder()
+            .queues(Queues.of("Q:DEF"))
+            .store(store)
+            .clock(clock)
+            .build();
     private final TaskProcessorRegistry registry = new TaskProcessorRegistry();
     private final List<TaskEvent> events = new ArrayList<>();
     private final AtomicBoolean interruptedAtFinish = new AtomicBoolean();

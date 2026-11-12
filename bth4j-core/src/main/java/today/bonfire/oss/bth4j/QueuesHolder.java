@@ -22,6 +22,14 @@ final class QueuesHolder {
         this.defaultQueue = defaultQueue;
     }
 
+    /** @param queuesToProcess the queues a runner takes, null for all of them in their order */
+    static QueuesHolder of(Queues queues, List<String> queuesToProcess) {
+        return new QueuesHolder(
+                Set.copyOf(queues.names()),
+                queuesToProcess == null ? queues.names() : queuesToProcess,
+                queues.defaultQueue());
+    }
+
     /** @throws TaskConfigurationException when the name is blank, longer than 128 characters or holds U+0000 */
     static void requireName(String name) {
         if (StringUtils.isBlank(name) || name.length() > MAX_NAME_LENGTH) {

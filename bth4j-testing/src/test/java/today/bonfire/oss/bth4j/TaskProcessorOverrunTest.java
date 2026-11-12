@@ -35,8 +35,11 @@ class TaskProcessorOverrunTest {
     private final MutableClock clock = new MutableClock();
     private final InMemoryStore store = new InMemoryStore(clock);
     private final Names names = new Names(store);
-    private final TaskClient client =
-            TaskClient.builder().store(store).clock(clock).build();
+    private final TaskClient client = TaskClient.builder()
+            .queues(Queues.of("Q:DEF"))
+            .store(store)
+            .clock(clock)
+            .build();
     private final int queueId = names.queueId("Q:DEF");
     private final int typeId = names.typeId(TYPE.name());
     private final Admission admission = new Admission();

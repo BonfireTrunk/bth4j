@@ -29,7 +29,8 @@ class BackgroundRunnerCoverageTest {
         var runner = BackgroundRunner.builder()
                 .store(store)
                 .clock(clock)
-                .configureQueues(List.of("main", "mail", "unused"), List.of("mail", "main", "mail"), "main")
+                .queues(Queues.of("main", "mail", "unused"))
+                .processQueues(List.of("mail", "main", "mail"))
                 .workerLabel("coverage-test")
                 .build();
         runner.registry().register(TaskType.of("send"), (context, payload) -> {});
@@ -61,7 +62,7 @@ class BackgroundRunnerCoverageTest {
         var runner = BackgroundRunner.builder()
                 .store(observed)
                 .clock(clock)
-                .configureQueues(List.of("main"), List.of("main"), "main")
+                .queues(Queues.of("main"))
                 .workerLabel("restored")
                 .maintenanceCheckInterval(Duration.ofHours(1))
                 .workerStaleAfter(Duration.ofHours(3))
@@ -244,13 +245,11 @@ class BackgroundRunnerCoverageTest {
         var store = new InMemoryStore(new MutableClock());
         var builder = BackgroundRunner.builder()
                 .store(store)
-                .configureQueues(List.of("main", "mail"), List.of("main", "mail"), "main")
+                .queues(Queues.of("main", "mail"))
                 .queue("main", QueuePolicy.weight(1))
                 .workerLabel("first");
         var first = builder.build();
-        builder.workerLabel("second")
-                .queue("mail", QueuePolicy.weight(5))
-                .configureQueues(List.of("other"), null, null);
+        builder.workerLabel("second").queue("mail", QueuePolicy.weight(5)).queues(Queues.of("other"));
         first.registry().register(TaskType.of("work"), (context, payload) -> {});
         try {
             first.start();
@@ -487,6 +486,76 @@ class BackgroundRunnerCoverageTest {
             release.countDown();
         }
         awaitStatus(runner, RunnerHealth.Status.STOPPED);
+    }
+
+    @Test
+    void aRunnerWithoutQueuesProcessesTheOneQueueCommon() {
+        var store = new InMemoryStore(new MutableClock());
+        var runner = BackgroundRunner.builder().store(store).build();
+        var type = TaskType.of("work");
+        runner.registry().register(type, (context, payload) -> {});
+        try {
+            runner.start();
+            var view = runner.client()
+                    .task(runner.client().enqueue(TaskRequest.of(type).build()).id())
+                    .orElseThrow();
+
+            assertThat(view.queue()).isEqualTo(Queues.COMMON);
+            assertThat(store.workers().getFirst().queueIds()).containsExactly(store.queueId("common"));
+        } finally {
+            runner.stop();
+        }
+    }
+
+    @Test
+    void theDefaultQueueIsTheOneOfTheQueuesValueAlsoWhenTheRunnerDoesNotProcessIt() {
+        var store = new InMemoryStore(new MutableClock());
+        var queues = Queues.of("main", "mail");
+        var runner = BackgroundRunner.builder()
+                .store(store)
+                .queues(queues)
+                .processQueues(List.of("mail"))
+                .build();
+        var producer = TaskClient.builder().store(store).queues(queues).build();
+        var type = TaskType.of("work");
+
+        var fromRunner = runner.client()
+                .task(runner.client().enqueue(TaskRequest.of(type).build()).id())
+                .orElseThrow();
+        var fromProducer = producer.task(
+                        producer.enqueue(TaskRequest.of(type).build()).id())
+                .orElseThrow();
+
+        assertThat(fromRunner.queue()).isEqualTo("main");
+        assertThat(fromProducer.queue()).isEqualTo("main");
+    }
+
+    @Test
+    void aRunnerProcessesOnlyQueuesOfItsQueuesValueAndHasPoliciesOnlyForQueuesItProcesses() {
+        var store = new InMemoryStore(new MutableClock());
+        var queues = Queues.of("main", "mail");
+
+        assertThatThrownBy(() -> BackgroundRunner.builder()
+                        .store(store)
+                        .queues(queues)
+                        .processQueues(List.of("mail", "reports"))
+                        .build())
+                .isInstanceOf(TaskConfigurationException.class)
+                .hasMessageContaining("reports");
+        assertThatThrownBy(() -> BackgroundRunner.builder()
+                        .store(store)
+                        .queues(queues)
+                        .processQueues(List.of("mail"))
+                        .queue("main", QueuePolicy.weight(2))
+                        .build())
+                .isInstanceOf(TaskConfigurationException.class)
+                .hasMessageContaining("does not process");
+        assertThatThrownBy(() -> BackgroundRunner.builder().processQueues(List.of()))
+                .isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> BackgroundRunner.builder().processQueues(null))
+                .isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> BackgroundRunner.builder().queues(null))
+                .isInstanceOf(TaskConfigurationException.class);
     }
 
     @Test

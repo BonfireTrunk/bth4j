@@ -29,6 +29,7 @@ import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.jedis.exceptions.JedisNoScriptException;
 import today.bonfire.oss.bth4j.EnqueueResult;
 import today.bonfire.oss.bth4j.JsonMapperTest;
+import today.bonfire.oss.bth4j.Queues;
 import today.bonfire.oss.bth4j.TaskClient;
 import today.bonfire.oss.bth4j.TaskRequest;
 import today.bonfire.oss.bth4j.TaskType;
@@ -543,7 +544,7 @@ class RedisScriptsIT {
         assertThat(jedis.exists(keys.task(id))).isTrue();
 
         assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
-        assertThat(store.counts().get(store.queueId("Q:DEF")).queued()).isEqualTo(2);
+        assertThat(store.counts().get(store.queueId(Queues.COMMON)).queued()).isEqualTo(2);
         assertThat(jedis.get(keys.uniqueKey("lost"))).isEqualTo(String.valueOf(id));
     }
 
@@ -574,7 +575,7 @@ class RedisScriptsIT {
         var results = client.enqueueAll(failed.retryRequests(requests));
 
         assertThat(results).hasSize(3).allSatisfy(r -> assertThat(r).isInstanceOf(EnqueueResult.Accepted.class));
-        assertThat(store.counts().get(store.queueId("Q:DEF")).queued()).isEqualTo(4);
+        assertThat(store.counts().get(store.queueId(Queues.COMMON)).queued()).isEqualTo(4);
     }
 
     // ---- promote -------------------------------------------------------------------------------------
