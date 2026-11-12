@@ -107,7 +107,11 @@ What the call returns depends on the task:
 |---|---|---|
 | QUEUED or SCHEDULED | `CANCELLED` | The task becomes CANCELLED at once. |
 | LEASED | `REQUESTED` | The task only gets the request. The running runner sees it on the next lease renewal, within a third of `leaseDuration`, and the task ends CANCELLED when the processor stops. |
-| The revision or state had changed | `STALE` | Nothing was done. |
+| No task has this id | `NOT_FOUND` | Nothing was done. |
+| The revision is not the task's current one | `STALE` | Nothing was done. The task changed since it was loaded. |
+| The task is in a final state (SUCCEEDED, DEAD, CANCELLED or EXPIRED) | `FINISHED` | Nothing was done. |
+
+The store answers the first row that applies, from the top: a missing task is `NOT_FOUND` whatever the revision, and a finished task with a wrong revision is `STALE`.
 
 The reason (default "cancelled by operator", at most 512 characters) stays on the task.
 

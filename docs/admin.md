@@ -26,13 +26,14 @@ AdminOps admin = runner.admin();
 
 admin.counts();                                    // Map<queue name, StateCounts>
 admin.queues();                                    // id, name, paused
-admin.tasks(TaskState.DEAD, "mail", cursor, 100);  // oldest state change first, QUEUED and SCHEDULED earliest due; TaskViewPage(items, next); cursor null starts, next null ends; queue null for all
+admin.tasks(TaskState.DEAD, "mail", cursor, 100);  // oldest state change first, QUEUED and SCHEDULED earliest due; TaskViewPage(items, next); cursor null starts, next null ends
+admin.tasks(TaskState.DEAD, cursor, 100);          // the same over every queue
 admin.task(id);                                    // Optional<TaskView>
 admin.taskByKey("welcome-42");                     // the task holding that unique key, Optional<TaskView>
 admin.retry(id, revision);                         // DEAD, CANCELLED or EXPIRED back to QUEUED, attempts reset
-admin.cancel(id, revision, "reason");              // CANCELLED, REQUESTED or STALE
-admin.cancelByKey("welcome-42", "reason");         // the holder of the key: CANCELLED, REQUESTED, STALE (changed meanwhile), NOT_FOUND (also a removed holder) or FINISHED
-admin.delete(id, revision);                        // any state but LEASED
+admin.cancel(id, revision, "reason");              // CANCELLED, REQUESTED, NOT_FOUND, STALE or FINISHED
+admin.cancelByKey("welcome-42", "reason");         // the holder of the key: the outcomes of cancel, with NOT_FOUND also for a removed holder
+admin.delete(id, revision);                        // any state but LEASED: DELETED, NOT_FOUND, STALE or LEASED
 admin.pauseQueue("mail", true);
 admin.schedules();                                 // ScheduleView: cron, zone id, misfire, fixed delay, paused, next fire
 admin.pauseSchedule("poll-feed", false);           // resume a paused one; a fixed-delay definition is re-armed one delay from now
@@ -43,13 +44,22 @@ admin.unservedWork();
 admin.purgeStaleWorkers(Duration.ofMinutes(10));
 ```
 
-Every change to a task takes the revision the operator saw. If the task changed meanwhile, nothing is done and the call returns `false` or `STALE`.
+The queue of `tasks(state, queue, cursor, limit)` and `pauseQueue(queue, paused)` must be a known queue name. A null or blank queue is a `TaskValidationException`; to list every queue, call `tasks(state, cursor, limit)`.
+
+Every change to a task takes the revision the operator saw. A refusal changes nothing and says why. The store decides in the same atomic step as the change, and answers the first reason that applies, in this order:
+
+| Order | Outcome | Meaning |
+|---|---|---|
+| 1 | `NOT_FOUND` | No task has this id, whatever the revision. |
+| 2 | `STALE` | The revision is not the task's current one. The task changed since the operator loaded it. |
+| 3 | `FINISHED`, `NOT_RETRYABLE` or `LEASED` | The task's state does not allow the change. |
 
 | Call | Possible results |
 |---|---|
-| `retry(id, revision)` | `RetryOutcome.RETRIED` on success. `RetryOutcome.STALE` for a missing task or a revision or state mismatch. `RetryOutcome.DUPLICATE` when another task holds the retained key. |
-| `cancel(id, revision, reason)` | `CANCELLED`, `REQUESTED` or `STALE`. See [Cancelling tasks](retries-and-cancelling.md#cancelling-tasks). |
-| `cancelByKey(key, reason)` | `CANCELLED`, `REQUESTED`, `STALE` (the task changed meanwhile), `NOT_FOUND` (also when the holder was removed) or `FINISHED`. |
+| `retry(id, revision)` | `RetryOutcome.RETRIED`, or `NOT_FOUND`, `STALE` or `NOT_RETRYABLE` (the task is not DEAD, CANCELLED or EXPIRED). |
+| `cancel(id, revision, reason)` | `CancelOutcome.CANCELLED` or `REQUESTED`, or `NOT_FOUND`, `STALE` or `FINISHED` (the task is already in a final state). See [Cancelling tasks](retries-and-cancelling.md#cancelling-tasks). |
+| `cancelByKey(key, reason)` | `NOT_FOUND` when no task holds the key (also when the holder was removed), `FINISHED` when the holder has finished, else the outcome of `cancel` for the holder. `STALE` only when the holder changed between the read and the cancel. |
+| `delete(id, revision)` | `DeleteOutcome.DELETED`, or `NOT_FOUND`, `STALE` or `LEASED` (a running task cannot be deleted). |
 
 ## Retrying a task
 
@@ -57,11 +67,13 @@ Every change to a task takes the revision the operator saw. If the task changed 
 
 ```mermaid
 flowchart TD
-    A["admin.retry(id, revision)"] --> B{"Task exists, revision matches, state is DEAD, CANCELLED or EXPIRED?"}
-    B -->|"no"| C["STALE"]
-    B -->|"yes"| D{"Does another task hold the key this task retains?"}
-    D -->|"yes"| E["DUPLICATE, nothing changes"]
-    D -->|"no"| F["RETRIED: back to QUEUED, attempts reset"]
+    A["admin.retry(id, revision)"] --> B{"Task exists?"}
+    B -->|"no"| C["NOT_FOUND"]
+    B -->|"yes"| D{"Revision matches?"}
+    D -->|"no"| E["STALE"]
+    D -->|"yes"| F{"State is DEAD, CANCELLED or EXPIRED?"}
+    F -->|"no"| G["NOT_RETRYABLE"]
+    F -->|"yes"| H["RETRIED: back to QUEUED, attempts reset"]
 ```
 
 A retried task:
@@ -75,7 +87,7 @@ Inside a `keepFor` window the task retains its unique key without expiry while i
 - `taskByKey` and `cancelByKey` still reach it.
 - A same-key enqueue answers `Duplicate` with its id.
 - The `keepFor` setting is kept, so a fresh keep window starts when the retried task finishes.
-- If another task holds the retained key, retry returns `RetryOutcome.DUPLICATE` and changes nothing. The admin HTTP route answers 409 with `{"code":"KEY_HELD","error":"the unique key is held by another task"}`. The dashboard matches the code.
+- If another task holds the retained key, which only damaged stored data can cause, retry throws `TaskStoreException` and changes nothing. It never takes the key from the other task. The admin HTTP route answers it as a store error.
 
 ## Unique keys after a retry
 
@@ -244,7 +256,7 @@ Viewers may read, and admins may also change (see [Roles](#roles)).
 - Viewers may read a task by key. Admins may cancel it.
 - A blank key or one over 256 characters is answered 400.
 - A read answers 404 when no task holds the key.
-- A cancel answers 404 when no task holds the key, and 409 when the holder is already finished or changed meanwhile.
+- A cancel answers 404 when no task holds the key, and 409 when the holder is already finished or changed between the read and the cancel.
 
 #### Workers and unserved work
 
@@ -258,10 +270,20 @@ Viewers may read, and admins may also change (see [Roles](#roles)).
 |---|---|
 | 400 | A malformed `cursor`. An unknown queue name in the tasks filter. A missing or blank by-key key, or one over 256 characters. |
 | 403 | A viewer sent a mutation. |
-| 404 | An unknown id. An unknown queue name on pause and resume. No task holds the key on a by-key read or cancel. |
-| 409 | A stale revision. A by-key cancel when the holder is already finished or changed meanwhile. A retry blocked by a held key, with `{"code":"KEY_HELD", ...}`. |
+| 404 | An unknown id. An unknown queue name on pause and resume. No task holds the key on a by-key read or cancel. A retry, cancel or delete of a task that does not exist answers `{"code":"NOT_FOUND", ...}`. |
+| 409 | A retry, cancel or delete the task's revision or state refuses, with a `code` that says which, as listed below. |
 | 422 | A task whose stored value cannot be read, with `code: "UNREADABLE_TASK"`. |
 | 429 | Too many failed logins from one address or for one user name. |
+
+A retry, cancel or delete that is refused answers the code the store decided on, without a second lookup:
+
+| Outcome | Status | `code` | The message says |
+|---|---|---|---|
+| `NOT_FOUND` | 404 | `NOT_FOUND` | There is no such task. |
+| `STALE` | 409 | `STALE` | The task changed since it was loaded. |
+| `FINISHED`, `NOT_RETRYABLE`, `LEASED` | 409 | `WRONG_STATE` | Which state rule refused it. |
+
+On the wire an empty or missing `queue` on `GET /api/v1/tasks` still lists every queue.
 
 ### Transport and cross-origin calls
 
