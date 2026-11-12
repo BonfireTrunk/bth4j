@@ -500,8 +500,8 @@ class BackgroundRunnerCoverageTest {
                     .task(runner.client().enqueue(TaskRequest.of(type).build()).id())
                     .orElseThrow();
 
-            assertThat(view.queue()).isEqualTo(Queues.COMMON);
-            assertThat(store.workers().getFirst().queueIds()).containsExactly(store.queueId("common"));
+            assertThat(view.queue()).isEqualTo(Queues.GENERAL);
+            assertThat(store.workers().getFirst().queueIds()).containsExactly(store.queueId("general"));
         } finally {
             runner.stop();
         }

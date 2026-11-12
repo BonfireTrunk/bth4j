@@ -150,7 +150,7 @@ var jedis = RedisClient.builder()
 var runner = BackgroundRunner.builder()
         .store(new RedisTaskStore(jedis, "my-app"))   // runners with the same namespace share the work
         .jsonMapper(new JacksonMapper())
-        .queues(Queues.of("common", "mail", "reports"))   // optional: without it there is the one queue "common"
+        .queues(Queues.of("general", "mail", "reports"))  // optional: without it there is the one queue "general"
         .build();
 
 runner.registry()
@@ -166,7 +166,7 @@ runner.start();                                        // returns at once, the s
 var client = runner.client();
 
 EnqueueResult result = client.enqueue(TaskRequest.of(SEND_MAIL, new MailRequest("a@example.com", "Welcome"))
-        .queue("mail")                                 // without it the task goes to the first queue, "common"
+        .queue("mail")                                 // without it the task goes to the first queue, "general"
         .delay(Duration.ofMinutes(5))
         .uniqueKey("welcome-42")                       // a second request with this key is answered Duplicate
         .build());

@@ -12,12 +12,12 @@ import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
  * application, so that a producer and a runner cannot disagree about the default queue. A runner processes all
  * of them unless {@link BackgroundRunner.Builder#processQueues} names the ones it takes.
  * <p>
- * An application that configures nothing has the one queue {@link #COMMON}.
+ * An application that configures nothing has the one queue {@link #GENERAL}.
  */
 public final class Queues {
 
     /** The name of the queue an application has when it configures none. */
-    public static final String COMMON = "common";
+    public static final String GENERAL = "general";
 
     private final List<String> names;
     private final String defaultQueue;

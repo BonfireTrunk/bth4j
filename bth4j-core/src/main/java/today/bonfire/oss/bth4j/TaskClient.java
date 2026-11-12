@@ -515,7 +515,7 @@ public final class TaskClient {
         private Clock clock = Clock.systemUTC();
         private int idBlockSize = 64;
         private int defaultMaxAttempts = 10;
-        private QueuesHolder queues = QueuesHolder.of(Queues.of(Queues.COMMON), null);
+        private QueuesHolder queues = QueuesHolder.of(Queues.of(Queues.GENERAL), null);
 
         private Builder() {}
 
@@ -555,7 +555,7 @@ public final class TaskClient {
 
         /**
          * The queues tasks may be enqueued to and the one used when a request names none; give the runners of
-         * the application the same value. Default: the one queue {@link Queues#COMMON}.
+         * the application the same value. Default: the one queue {@link Queues#GENERAL}.
          */
         public Builder queues(Queues queues) {
             if (queues == null) throw new TaskConfigurationException("queues cannot be null");

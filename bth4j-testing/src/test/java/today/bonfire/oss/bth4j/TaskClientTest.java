@@ -1278,7 +1278,7 @@ class TaskClientTest {
         var view =
                 client.task(client.enqueue(TaskRequest.of(VOID).build()).id()).orElseThrow();
 
-        assertThat(view.queue()).isEqualTo("common");
+        assertThat(view.queue()).isEqualTo("general");
         assertThatThrownBy(
                         () -> client.enqueue(TaskRequest.of(VOID).queue("Q:DEF").build()))
                 .isInstanceOf(TaskValidationException.class);

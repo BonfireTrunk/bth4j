@@ -14,12 +14,12 @@ A runner serves its queues in turn. A queue policy shares a runner's free execut
 
 A runner processes its queues round robin, one claim covering all of them. A queue listed twice gets two turns, unless a queue has a [queue policy](#queue-policies): then every queue counts once and its weight sets its share.
 
-An application that configures nothing has one queue, named `common` (`Queues.COMMON`).
+An application that configures nothing has one queue, named `general` (`Queues.GENERAL`).
 
 Name your own queues with one `Queues` value, and give that same value to every runner and every separate `TaskClient` of the application:
 
 ```java
-static final Queues QUEUES = Queues.of("common", "mail", "reports");    // the first one is the default queue
+static final Queues QUEUES = Queues.of("general", "mail", "reports");    // the first one is the default queue
 
 BackgroundRunner.builder()
         .queues(QUEUES)                            // processes all three
@@ -37,7 +37,7 @@ TaskClient.builder()                               // a process that only produc
 
 A queue name is free text of 1 to 128 characters. A name does not give a queue priority: the runner serves its queues in turn unless a [queue policy](#queue-policies) says otherwise.
 
-The default queue belongs to the `Queues` value, not to the runner, so a producer and a runner that were given the same value always agree on it. Nothing checks that some runner processes every queue: a runner with `processQueues(List.of("mail"))` leaves tasks in `common` waiting until another runner takes them. [`unservedWork()`](monitoring.md) lists queued work that no live runner processes.
+The default queue belongs to the `Queues` value, not to the runner, so a producer and a runner that were given the same value always agree on it. Nothing checks that some runner processes every queue: a runner with `processQueues(List.of("mail"))` leaves tasks in `general` waiting until another runner takes them. [`unservedWork()`](monitoring.md) lists queued work that no live runner processes.
 
 ## Queue policies and pausing
 

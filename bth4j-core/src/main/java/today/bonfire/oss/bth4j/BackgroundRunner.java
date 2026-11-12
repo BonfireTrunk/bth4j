@@ -641,7 +641,7 @@ public final class BackgroundRunner implements AutoCloseable {
         private Duration recurringTasksCheckInterval = Duration.ofSeconds(10);
         private int idBlockSize = 64;
         private int defaultMaxAttempts = 10;
-        private Queues queues = Queues.of(Queues.COMMON);
+        private Queues queues = Queues.of(Queues.GENERAL);
         private List<String> queuesToProcess;
 
         private Builder() {}
@@ -921,7 +921,7 @@ public final class BackgroundRunner implements AutoCloseable {
          * The queues of the application: the ones tasks may be enqueued to, and the one used when a request
          * names none. Give every runner and every separate {@link TaskClient} of the application the same value.
          * This runner processes all of them, in their order, unless {@link #processQueues} says otherwise.
-         * Default: the one queue {@link Queues#COMMON}.
+         * Default: the one queue {@link Queues#GENERAL}.
          */
         public Builder queues(Queues queues) {
             if (queues == null) throw new TaskConfigurationException("queues cannot be null");

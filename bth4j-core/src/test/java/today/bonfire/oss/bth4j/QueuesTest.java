@@ -66,7 +66,7 @@ class QueuesTest {
     }
 
     @Test
-    void theBuiltInQueueIsNamedCommon() {
-        assertThat(Queues.COMMON).isEqualTo("common");
+    void theBuiltInQueueIsNamedGeneral() {
+        assertThat(Queues.GENERAL).isEqualTo("general");
     }
 }

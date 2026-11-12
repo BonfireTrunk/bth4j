@@ -544,7 +544,7 @@ class RedisScriptsIT {
         assertThat(jedis.exists(keys.task(id))).isTrue();
 
         assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
-        assertThat(store.counts().get(store.queueId(Queues.COMMON)).queued()).isEqualTo(2);
+        assertThat(store.counts().get(store.queueId(Queues.GENERAL)).queued()).isEqualTo(2);
         assertThat(jedis.get(keys.uniqueKey("lost"))).isEqualTo(String.valueOf(id));
     }
 
@@ -575,7 +575,7 @@ class RedisScriptsIT {
         var results = client.enqueueAll(failed.retryRequests(requests));
 
         assertThat(results).hasSize(3).allSatisfy(r -> assertThat(r).isInstanceOf(EnqueueResult.Accepted.class));
-        assertThat(store.counts().get(store.queueId(Queues.COMMON)).queued()).isEqualTo(4);
+        assertThat(store.counts().get(store.queueId(Queues.GENERAL)).queued()).isEqualTo(4);
     }
 
     // ---- promote -------------------------------------------------------------------------------------
