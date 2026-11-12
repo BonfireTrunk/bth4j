@@ -131,10 +131,36 @@ Application text is not covered, so hosts must keep personal data out of it.
 
 | Call | What happens |
 |---|---|
-| `start()` | Fails with `TaskConfigurationException` when no processor is registered. A `start()` that fails later, for example because the store cannot be reached, stops what it started and can be called again. |
+| `start()` | Fails with `TaskConfigurationException` when no processor is registered. A `start()` that fails later, for example because the store cannot be reached, stops what it started and can be called again. On a runner that is started it does nothing. After `stop()` it throws `IllegalStateException`: a stopped runner stays stopped, build a new one. |
 | `quiet()` | Stops claiming while running tasks finish. |
 | `resume()` | Claims again. |
-| `stop()` | Stops the services and waits up to `shutdownTimeout` in total, also when a service is stuck in a store call. It keeps renewing leases of running tasks meanwhile. Tasks still running afterwards are retried when their lease expires. |
+| `stop()` | Stops the services and waits up to `shutdownTimeout` in total, also when a service is stuck in a store call. It keeps renewing leases of running tasks meanwhile. Tasks still running afterwards are retried when their lease expires. It answers whether everything had ended when it returned. It can come before `start()` and can be repeated; a repeated call does not wait again. |
+| `close()` | The same as `stop()`, so a runner works in try-with-resources. |
+
+`runner.health().status()` follows these calls:
+
+```mermaid
+stateDiagram-v2
+    [*] --> NEW: build()
+    NEW --> RUNNING: start()
+    RUNNING --> QUIET: quiet()
+    QUIET --> RUNNING: resume()
+    NEW --> STOPPING: stop()
+    RUNNING --> STOPPING: stop()
+    QUIET --> STOPPING: stop()
+    STOPPING --> STOPPED: the last task, claim and service has ended
+    STOPPED --> [*]
+```
+
+| Status | Meaning |
+|---|---|
+| `NEW` | built, not started |
+| `RUNNING` | claims and runs tasks |
+| `QUIET` | started, claims nothing new |
+| `STOPPING` | `stop()` was called and something of this runner still runs: a task, a claim or a service |
+| `STOPPED` | `stop()` was called and nothing of this runner runs any more |
+
+`STOPPED` is never reported because the shutdown timeout ran out. A script that ends the process should wait for `STOPPED`, or use the answer of `stop()`: `false` means tasks were still running. A task whose processor ignores interrupts keeps the runner in `STOPPING` for as long as it runs.
 
 A lease that has lapsed is not revived by a later renewal, so `leaseDuration` must sit well above the worst pause of a worker (GC, container freeze, slow store round trip).
 

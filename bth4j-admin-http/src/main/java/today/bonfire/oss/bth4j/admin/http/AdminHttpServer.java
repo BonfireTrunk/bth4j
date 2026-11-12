@@ -60,7 +60,7 @@ import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
  * <p>
  * An instance is one-shot: after {@link #stop()} it cannot be started again, build a new one.
  */
-public final class AdminHttpServer {
+public final class AdminHttpServer implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(AdminHttpServer.class);
 
@@ -131,18 +131,21 @@ public final class AdminHttpServer {
     }
 
     /**
-     * Binds the port and starts serving.
+     * Binds the port and starts serving. Calling it on a server that is started does nothing.
      *
-     * @throws IllegalStateException when already started, or when this instance was stopped before
+     * @throws IllegalStateException when {@link #stop()} or {@link #close()} was called before, also on a server
+     *     that was never started: a stopped server stays stopped, build a new one
      */
     public void start() {
         lifecycle.lock();
         try {
             if (stopped) {
-                throw new IllegalStateException("Admin HTTP server was stopped and cannot be started again");
+                throw new IllegalStateException(
+                        "Admin HTTP server was stopped and cannot be started again; build a new server");
             }
             if (server != null) {
-                throw new IllegalStateException("Admin HTTP server is already started");
+                log.debug("Admin HTTP server is already started");
+                return;
             }
             try {
                 var address = new InetSocketAddress(host, requestedPort);
@@ -169,16 +172,21 @@ public final class AdminHttpServer {
         }
     }
 
-    /** Stops accepting requests, waiting briefly for running ones. Safe to call when not started. */
+    /**
+     * Stops accepting requests, waiting up to one second for running ones. A stopped server cannot be started
+     * again. The call can come before {@link #start()} and can be repeated.
+     */
     public void stop() {
         lifecycle.lock();
         try {
-            if (server == null) {
+            if (stopped) {
                 return;
             }
-            server.stop(1);
-            server = null;
             stopped = true;
+            if (server != null) {
+                server.stop(1);
+                server = null;
+            }
             if (ownExecutor) {
                 ((ExecutorService) executor).shutdown();
             }
@@ -186,6 +194,12 @@ public final class AdminHttpServer {
         } finally {
             lifecycle.unlock();
         }
+    }
+
+    /** Same as {@link #stop()}, for try-with-resources. */
+    @Override
+    public void close() {
+        stop();
     }
 
     /** @return the port actually bound, which differs from the requested one when that was 0 */

@@ -1190,8 +1190,43 @@ class AdminHttpServerTest {
     void aStoppedServerCannotBeStartedAgain() {
         start();
         server.stop();
+        server.stop();
+
+        assertThatThrownBy(server::start)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("build a new server");
+    }
+
+    @Test
+    void aServerStoppedBeforeItStartedCannotBeStarted() {
+        server = builder().build();
+
+        server.stop();
 
         assertThatThrownBy(server::start).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void startOnAStartedServerDoesNothing() throws Exception {
+        start();
+        var port = server.port();
+
+        server.start();
+
+        assertThat(server.port()).isEqualTo(port);
+        assertThat(get("/api/v1/me", admin()).statusCode()).isEqualTo(200);
+    }
+
+    @Test
+    void aServerInTryWithResourcesIsStoppedAtTheEndOfTheBlock() {
+        AdminHttpServer seen;
+        try (var s = builder().build()) {
+            s.start();
+            seen = s;
+        }
+
+        assertThatThrownBy(seen::port).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(seen::start).isInstanceOf(IllegalStateException.class);
     }
 
     @Test

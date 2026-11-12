@@ -415,14 +415,147 @@ class BackgroundRunnerCoverageTest {
             assertThat(blocked.await(5, TimeUnit.SECONDS)).isTrue();
 
             var begin = System.nanoTime();
-            runner.stop();
+            var ended = runner.stop();
             var elapsed = Duration.ofNanos(System.nanoTime() - begin);
 
             // three blocked services would wait three timeouts one after the other
             assertThat(elapsed).isLessThan(timeout.multipliedBy(2));
+            assertThat(ended).isFalse();
+            assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.STOPPING);
         } finally {
             release.countDown();
         }
+        awaitStatus(runner, RunnerHealth.Status.STOPPED);
+        assertThat(runner.stop()).isTrue();
+    }
+
+    @Test
+    void theRunnerReportsStoppingUntilItsLastTaskHasEndedAlsoAfterTheShutdownTimeoutRanOut() throws Exception {
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var runner = BackgroundRunner.builder()
+                .store(new InMemoryStore(new MutableClock()))
+                .shutdownTimeout(Duration.ofMillis(200))
+                .build();
+        var type = TaskType.of("work");
+        runner.registry().register(type, (context, payload) -> {
+            started.countDown();
+            awaitUninterruptibly(release);
+        });
+        try {
+            runner.start();
+            runner.client().enqueue(TaskRequest.of(type).build());
+            assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+
+            assertThat(runner.stop()).isFalse();
+
+            assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.STOPPING);
+            assertThat(runner.stop()).isFalse();
+        } finally {
+            release.countDown();
+        }
+        awaitStatus(runner, RunnerHealth.Status.STOPPED);
+        assertThat(runner.stop()).isTrue();
+    }
+
+    @Test
+    void theRunnerReportsStoppingWhileOneOfItsServicesIsStillInAStoreCall() throws Exception {
+        var release = new CountDownLatch(1);
+        var blocked = new CountDownLatch(1);
+        var observed = StoreInterceptor.around(new InMemoryStore(new MutableClock()), (method, args, real) -> {
+            if (method.equals("dueRecurring")) {
+                blocked.countDown();
+                awaitUninterruptibly(release);
+            }
+            return real.proceed();
+        });
+        var runner = BackgroundRunner.builder()
+                .store(observed)
+                .shutdownTimeout(Duration.ofMillis(300))
+                .recurringTasksCheckInterval(Duration.ofMillis(10))
+                .build();
+        runner.registry().register(TaskType.of("work"), (context, payload) -> {});
+        try {
+            runner.start();
+            assertThat(blocked.await(5, TimeUnit.SECONDS)).isTrue();
+
+            assertThat(runner.stop()).isFalse();
+
+            assertThat(runner.runningTasks()).isZero();
+            assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.STOPPING);
+        } finally {
+            release.countDown();
+        }
+        awaitStatus(runner, RunnerHealth.Status.STOPPED);
+    }
+
+    @Test
+    void startOnAStartedRunnerDoesNothing() {
+        var runner = BackgroundRunner.builder()
+                .store(new InMemoryStore(new MutableClock()))
+                .build();
+        runner.registry().register(TaskType.of("work"), (context, payload) -> {});
+        try {
+            runner.start();
+            var workerId = runner.workerId();
+
+            runner.start();
+
+            assertThat(runner.workerId()).isEqualTo(workerId);
+            assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.RUNNING);
+        } finally {
+            runner.stop();
+        }
+    }
+
+    @Test
+    void aStoppedRunnerIsStoppedAndCannotBeStartedAgain() {
+        var store = new InMemoryStore(new MutableClock());
+        var runner = BackgroundRunner.builder().store(store).build();
+        runner.registry().register(TaskType.of("work"), (context, payload) -> {});
+        runner.start();
+
+        assertThat(runner.stop()).isTrue();
+
+        assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.STOPPED);
+        assertThatThrownBy(runner::start)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("build a new runner");
+        assertThat(store.workers()).hasSize(1);
+    }
+
+    @Test
+    void aRunnerStoppedBeforeItStartedIsStoppedAndCannotBeStarted() {
+        var store = new InMemoryStore(new MutableClock());
+        var runner = BackgroundRunner.builder().store(store).build();
+        assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.NEW);
+
+        assertThat(runner.stop()).isTrue();
+        assertThat(runner.stop()).isTrue();
+
+        assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.STOPPED);
+        assertThatThrownBy(runner::start).isInstanceOf(IllegalStateException.class);
+        assertThat(store.workers()).isEmpty();
+    }
+
+    @Test
+    void aRunnerInTryWithResourcesIsStoppedAtTheEndOfTheBlock() {
+        BackgroundRunner seen;
+        try (var runner = BackgroundRunner.builder()
+                .store(new InMemoryStore(new MutableClock()))
+                .build()) {
+            runner.registry().register(TaskType.of("work"), (context, payload) -> {});
+            runner.start();
+            seen = runner;
+        }
+
+        assertThat(seen.health().status()).isEqualTo(RunnerHealth.Status.STOPPED);
+    }
+
+    private static void awaitStatus(BackgroundRunner runner, RunnerHealth.Status status) throws InterruptedException {
+        var deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (runner.health().status() != status && System.nanoTime() < deadline) Thread.sleep(5);
+        assertThat(runner.health().status()).isEqualTo(status);
     }
 
     @Test

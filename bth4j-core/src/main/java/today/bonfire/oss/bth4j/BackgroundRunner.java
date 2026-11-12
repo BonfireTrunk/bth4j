@@ -37,7 +37,7 @@ import today.bonfire.oss.bth4j.spi.TaskState;
  * {@link #stop()} drains running tasks within the shutdown timeout. Several runners sharing a store share
  * the work. Delivery is at least once.
  */
-public final class BackgroundRunner {
+public final class BackgroundRunner implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(Loggers.RUNNER);
 
     private final Builder config;
@@ -61,6 +61,7 @@ public final class BackgroundRunner {
     private final QueueReservations queueReservations = new QueueReservations();
 
     private volatile boolean stopRequested;
+    private volatile boolean stopSequenceDone;
     private volatile int workerId;
     private volatile Set<Integer> workerQueueIds;
     private volatile Set<Integer> workerTypeIds;
@@ -152,7 +153,7 @@ public final class BackgroundRunner {
 
     public RunnerHealth health() {
         var s = stopped.get()
-                ? RunnerHealth.Status.STOPPED
+                ? ended() ? RunnerHealth.Status.STOPPED : RunnerHealth.Status.STOPPING
                 : !started.get()
                         ? RunnerHealth.Status.NEW
                         : admission.quiet() ? RunnerHealth.Status.QUIET : RunnerHealth.Status.RUNNING;
@@ -175,27 +176,30 @@ public final class BackgroundRunner {
 
     /**
      * Starts all services and the monitor that restarts a service if its thread dies. Returns after
-     * starting. Calling it a second time, or after {@link #stop()}, logs a warning and does nothing. When the
-     * start fails, for example because the store cannot be reached, what was started is stopped again and the
-     * exception is rethrown; {@code start()} can then be called again.
+     * starting. Calling it on a runner that is started does nothing. When the start fails, for example because
+     * the store cannot be reached, what was started is stopped again and the exception is rethrown;
+     * {@code start()} can then be called again.
      *
+     * @throws IllegalStateException when {@link #stop()} or {@link #close()} was called before, also on a runner
+     *     that was never started: a stopped runner stays stopped, build a new one
      * @throws TaskConfigurationException when no processor is registered, or a registered task type has a JSON
      *     payload and the runner has no {@code jsonMapper}
      */
     public void start() {
+        requireNotStopped();
         if (registry.isEmpty()) {
             throw new TaskConfigurationException("No task processor registered; register processors before start()");
         }
         requireMapperForJsonTypes();
         if (!started.compareAndSet(false, true)) {
-            log.warn("Background runner {} is already started, ignoring start()", threadGroup.getName());
+            log.debug("Background runner {} is already started", threadGroup.getName());
             return;
         }
         lifecycleLock.lock();
         try {
             if (stopRequested) {
-                log.warn("Background runner {} was stopped before it started", threadGroup.getName());
-                return;
+                started.set(false);
+                requireNotStopped();
             }
             try {
                 startServices();
@@ -262,6 +266,24 @@ public final class BackgroundRunner {
                 config.serviceCheckInterval.toMillis(),
                 config.serviceCheckInterval.toMillis(),
                 TimeUnit.MILLISECONDS);
+    }
+
+    private void requireNotStopped() {
+        if (stopped.get()) {
+            throw new IllegalStateException("Background runner " + threadGroup.getName()
+                    + " was stopped and cannot be started again; build a new runner");
+        }
+    }
+
+    /** Nothing of a stopped runner runs any more: no attempt, no claim in progress and no service thread. */
+    private boolean ended() {
+        if (!stopSequenceDone || !admission.idle()) return false;
+        var threads =
+                new Thread[] {taskProcessorService, scheduledTaskService, recurringTaskService, maintenanceService};
+        for (var service : threads) {
+            if (service != null && service.isAlive()) return false;
+        }
+        return true;
     }
 
     /** Without this check the runner would claim the tasks of such a type and end each one as dead. */
@@ -383,13 +405,36 @@ public final class BackgroundRunner {
     /**
      * Stops the runner: stops claiming, stops all services, shuts down the task executor and waits up to the
      * shutdown timeout for running tasks, renewing their leases meanwhile. Tasks still running afterwards
-     * keep their lease until it expires and are then retried. Calling it again is a no-op.
+     * keep their lease until it expires and are then retried.
+     * <p>
+     * {@link #health()} reports {@code STOPPING} from this call until the last task, claim and service of this
+     * runner has ended, and {@code STOPPED} only then, however long that takes: the shutdown timeout limits how
+     * long this call waits, not how long a task runs. A stopped runner cannot be started again. The call can
+     * come before {@link #start()} and can be repeated; a repeated call does not wait again.
+     *
+     * @return true when everything had ended when the call returned, false when the shutdown timeout ran out
+     *     first
      */
-    public void stop() {
+    public boolean stop() {
         if (!stopped.compareAndSet(false, true)) {
             log.debug("Background runner {} is already stopped or stopping", threadGroup.getName());
-            return;
+            return ended();
         }
+        try {
+            shutDown();
+        } finally {
+            stopSequenceDone = true;
+        }
+        return ended();
+    }
+
+    /** Same as {@link #stop()}, for try-with-resources. */
+    @Override
+    public void close() {
+        stop();
+    }
+
+    private void shutDown() {
         log.info("Stopping background runner {}", threadGroup.getName());
         // one monotonic deadline for every wait below: the shutdown timeout bounds the whole of stop()
         var deadline = System.nanoTime() + waitNanos(config.shutdownTimeout);
@@ -451,7 +496,8 @@ public final class BackgroundRunner {
                 log.info("Background runner {} stopped", threadGroup.getName());
             } else {
                 log.warn(
-                        "Tasks still running after {}. They keep their lease until it expires and are then retried",
+                        "Tasks still running after {}. They keep their lease until it expires and are then retried;"
+                                + " the runner reports STOPPING until they have ended",
                         config.shutdownTimeout);
             }
         } catch (InterruptedException e) {

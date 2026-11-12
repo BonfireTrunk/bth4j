@@ -47,7 +47,7 @@ function parseHash() {
   return { name: segs[0] || 'overview', param: segs[1] || null, query, key: raw };
 }
 
-const HEALTH_CLASS = { RUNNING: 'running', QUIET: 'quiet', NEW: 'quiet', STOPPED: 'stopped' };
+const HEALTH_CLASS = { RUNNING: 'running', QUIET: 'quiet', NEW: 'quiet', STOPPING: 'quiet', STOPPED: 'stopped' };
 
 const App = {
   components: { Login },

@@ -693,7 +693,7 @@ public abstract class RunnerContract {
         });
         stopper.start();
         try {
-            await("the runner to be stopping", () -> runner.health().status() == RunnerHealth.Status.STOPPED);
+            await("the runner to be stopping", () -> runner.health().status() == RunnerHealth.Status.STOPPING);
             stopper.join(HELD_FOR_MS);
             assertThat(stopper.isAlive())
                     .as("stop returned while the task was still running")
@@ -710,6 +710,7 @@ public abstract class RunnerContract {
         assertThat(releasedWhenStopReturned).isTrue();
         assertThat(client.task(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
         assertThat(runner.runningTasks()).isZero();
+        assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.STOPPED);
     }
 
     @Test

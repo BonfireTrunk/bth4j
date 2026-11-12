@@ -112,7 +112,7 @@ A `TaskView` carries state, attempts, due time, the last failures, completed ste
 These calls report on one runner, and the last one drains it:
 
 ```java
-RunnerHealth health = runner.health();     // status NEW, RUNNING, QUIET or STOPPED; workerId, runningTasks,
+RunnerHealth health = runner.health();     // status NEW, RUNNING, QUIET, STOPPING or STOPPED; workerId, runningTasks,
                                            // abandonedAttempts, lastClaimAt, lastMaintenanceAt, lastStoreErrorAt,
                                            // lastStoreError, issueCount
 List<Issue> issues = runner.issues();      // the last 100 things an operator should look at, oldest first

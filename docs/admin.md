@@ -117,6 +117,8 @@ server.start();
 // on shutdown: server.stop();
 ```
 
+`start()` and `stop()` follow the rules of the runner: `start()` on a started server does nothing, `stop()` can come before `start()` and can be repeated, and a stopped server cannot be started again (`IllegalStateException`). `close()` is `stop()`, so the server works in try-with-resources.
+
 At least one user is required. A server runs once: `start()` after `stop()` throws, so build a new one.
 
 ### Server settings
