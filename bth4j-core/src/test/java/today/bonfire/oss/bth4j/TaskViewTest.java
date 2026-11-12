@@ -21,13 +21,13 @@ class TaskViewTest {
                 .id(41)
                 .revision(3)
                 .queue("mail")
-                .type("send")
+                .typeName("send")
                 .payloadVersion(2)
                 .state(TaskState.DEAD)
                 .attempts(4)
                 .maxAttempts(5)
                 .createdAt(T)
-                .due(T.plusSeconds(1))
+                .dueAt(T.plusSeconds(1))
                 .stateChangedAt(T.plusSeconds(2))
                 .encodedPayload("{}")
                 .runnerId(7)
@@ -53,13 +53,13 @@ class TaskViewTest {
         assertThat(view.id()).isEqualTo(41);
         assertThat(view.revision()).isEqualTo(3);
         assertThat(view.queue()).isEqualTo("mail");
-        assertThat(view.type()).isEqualTo("send");
+        assertThat(view.typeName()).isEqualTo("send");
         assertThat(view.payloadVersion()).isEqualTo(2);
         assertThat(view.state()).isEqualTo(TaskState.DEAD);
         assertThat(view.attempts()).isEqualTo(4);
         assertThat(view.maxAttempts()).isEqualTo(5);
         assertThat(view.createdAt()).isEqualTo(T);
-        assertThat(view.due()).isEqualTo(T.plusSeconds(1));
+        assertThat(view.dueAt()).isEqualTo(T.plusSeconds(1));
         assertThat(view.stateChangedAt()).isEqualTo(T.plusSeconds(2));
         assertThat(view.encodedPayload()).isEqualTo("{}");
         assertThat(view.runnerId()).isEqualTo(7);
@@ -86,7 +86,7 @@ class TaskViewTest {
 
     @Test
     void aViewBuiltWithOnlyItsNamesIsAQueuedTaskWithEmptyFields() {
-        var view = TaskView.builder().queue("mail").type("send").build();
+        var view = TaskView.builder().queue("mail").typeName("send").build();
 
         assertThat(view.id()).isZero();
         assertThat(view.state()).isEqualTo(TaskState.QUEUED);

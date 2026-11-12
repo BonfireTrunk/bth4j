@@ -789,7 +789,7 @@ public final class PostgresTaskStore implements FullStore {
             payloadVersions[i] = t.payloadVersion();
             maxAttempts[i] = t.maxAttempts();
             created[i] = text(t.createdAt());
-            due[i] = text(t.due());
+            due[i] = text(t.dueAt());
             data[i] = t.encodedPayload();
             account[i] = t.account();
             headers[i] = RecordJson.encodeHeaders(t.headers());
@@ -1070,13 +1070,13 @@ public final class PostgresTaskStore implements FullStore {
      * new next fire time too and stays out of the due scan until it is resumed.
      */
     private void applyEffect(Connection c, ScheduleEffect effect) throws SQLException {
-        var sql = effect.pauses()
+        var sql = effect.isPause()
                 ? "UPDATE " + schedule + " SET paused = true, occurrence_id = NULL WHERE id = ? AND occurrence_id = ?"
                 : "UPDATE " + schedule + " SET next_fire = ?, triggered = false, occurrence_id = NULL"
                         + " WHERE id = ? AND occurrence_id = ?";
         try (var ps = c.prepareStatement(sql)) {
             var i = 1;
-            if (!effect.pauses()) setInstant(ps, i++, effect.nextFireAt());
+            if (!effect.isPause()) setInstant(ps, i++, effect.nextFireAt());
             ps.setString(i++, effect.scheduleId());
             ps.setLong(i, effect.occurrenceId());
             if (ps.executeUpdate() == 1) effect.markApplied();
@@ -1531,7 +1531,7 @@ public final class PostgresTaskStore implements FullStore {
     // ---- inspection ----------------------------------------------------------------------------------
 
     @Override
-    public Optional<TaskRecord> getTask(long id) {
+    public Optional<TaskRecord> task(long id) {
         return withConnection(c -> {
             try (var ps = c.prepareStatement("SELECT * FROM " + task + " WHERE id = ? AND state < " + KEY_ONLY)) {
                 ps.setLong(1, id);
@@ -1800,7 +1800,7 @@ public final class PostgresTaskStore implements FullStore {
                 .attempts(rs.getInt("attempts"))
                 .maxAttempts(rs.getInt("max_attempts"))
                 .createdAt(getInstant(rs, "created"))
-                .due(getInstant(rs, "due"))
+                .dueAt(getInstant(rs, "due"))
                 .stateChangedAt(getInstant(rs, "state_changed"))
                 .encodedPayload(rs.getString("data"))
                 .runnerId(getInteger(rs, "worker_id"))

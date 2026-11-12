@@ -29,10 +29,10 @@ export default {
       // from the server's largest page; beyond 200 waiting tasks the board is approximate.
       const [waiting, schedules] = await Promise.all([api.tasks({ state: 'SCHEDULED', limit: 200 }), api.schedules()]);
       const rows = [];
-      for (const t of waiting.items) rows.push({ key: 't' + t.id, at: t.due, what: t.type, queue: t.queue, kind: 'task', href: '#/task/' + t.id, who: '#' + t.id });
+      for (const t of waiting.items) rows.push({ key: 't' + t.id, at: t.dueAt, what: t.type, queue: t.queue, kind: 'task', href: '#/task/' + t.id, who: '#' + t.id });
       for (const s of schedules) {
-        if (s.paused || !s.nextFire || Date.parse(s.nextFire) - Date.now() > PARKED_AFTER_MS) continue;
-        rows.push({ key: 's' + s.id, at: s.nextFire, what: s.type, queue: s.queue, kind: 'fire', href: '#/schedules', who: s.id });
+        if (s.paused || !s.nextFireAt || Date.parse(s.nextFireAt) - Date.now() > PARKED_AFTER_MS) continue;
+        rows.push({ key: 's' + s.id, at: s.nextFireAt, what: s.type, queue: s.queue, kind: 'fire', href: '#/schedules', who: s.id });
       }
       rows.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
       return rows.slice(0, 8);

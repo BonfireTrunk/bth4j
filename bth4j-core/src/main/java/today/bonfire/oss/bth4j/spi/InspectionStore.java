@@ -14,7 +14,7 @@ public interface InspectionStore extends TaskStore {
      * @return the task with that id, in whatever state it is
      * @throws UnreadableTaskException when a stored value of the task cannot be read
      */
-    Optional<TaskRecord> getTask(long id);
+    Optional<TaskRecord> task(long id);
 
     /**
      * @return the first task id that {@link #allocateIds} has not handed out yet; every id below it was
@@ -46,7 +46,7 @@ public interface InspectionStore extends TaskStore {
     Map<Integer, Map<Integer, Long>> queuedByType();
 
     /**
-     * Lists tasks in one state, QUEUED and SCHEDULED by {@code (due, id)} ascending and the other states by
+     * Lists tasks in one state, QUEUED and SCHEDULED by {@code (dueAt, id)} ascending and the other states by
      * {@code (stateChanged, id)} ascending, paging by an opaque position that the store encodes itself. Among
      * tasks that share the time, a store may order the ids its own way, as long as the order is total and stable
      * (the Redis store compares them as text). The

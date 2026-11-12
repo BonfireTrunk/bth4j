@@ -17,7 +17,7 @@ public interface ScheduleStore extends TaskStore {
      * Creates or replaces a definition. The store assigns the revision. When a definition with that id exists,
      * its timing (cron expression, zone and fixed delay) is unchanged and either the occurrence it has in
      * flight (see {@link #commitSchedule}) is not finished or its stored next fire time is not later than
-     * {@code keepUntil}, the stored next fire time is kept; otherwise it becomes {@code nextFire}. A stored
+     * {@code keepUntil}, the stored next fire time is kept; otherwise it becomes {@code nextFireAt}. A stored
      * time later than {@code keepUntil} with no occurrence in flight has skipped fires: a fixed-delay
      * definition whose re-arm was lost, or a time pushed far out by a stale write. Changed timing forgets the
      * occurrence in flight. A put that would write nothing (every field of the definition is stored already, the
@@ -26,7 +26,7 @@ public interface ScheduleStore extends TaskStore {
      *
      * @return whether the definition was created, changed or found unchanged, with the next fire time it has
      */
-    PutScheduleResult putSchedule(StoredSchedule definition, Instant nextFire, Instant keepUntil);
+    PutScheduleResult putSchedule(StoredSchedule definition, Instant nextFireAt, Instant keepUntil);
 
     /** @return true when a definition with that id existed */
     boolean deleteSchedule(String scheduleId);
@@ -43,7 +43,7 @@ public interface ScheduleStore extends TaskStore {
 
     /**
      * Stores the occurrence (SCHEDULED for {@link DueSchedule#fireAt()}) and advances the definition to
-     * {@code nextFire}, unless the definition's revision or next fire time changed meanwhile. An occurrence
+     * {@code nextFireAt}, unless the definition's revision or next fire time changed meanwhile. An occurrence
      * that names no schedule is stored with the id of this one. When the
      * occurrence names a unique key that another task holds, the definition is still advanced and the
      * method still reports true, but the occurrence is not stored; this is how an overlapping occurrence is
@@ -55,7 +55,7 @@ public interface ScheduleStore extends TaskStore {
      *
      * @return true when committed
      */
-    boolean commitSchedule(DueSchedule due, Instant nextFire, TaskRecord occurrence);
+    boolean commitSchedule(DueSchedule due, Instant nextFireAt, TaskRecord occurrence);
 
     /**
      * The order of {@link #schedules()}: by the code points of the ids, which is also the byte order
@@ -85,16 +85,16 @@ public interface ScheduleStore extends TaskStore {
     boolean pauseSchedule(String scheduleId);
 
     /**
-     * Resumes a paused definition in one step. A {@code nextFire} that is not null replaces its next fire time and
+     * Resumes a paused definition in one step. A {@code nextFireAt} that is not null replaces its next fire time and
      * assigns a new revision, as {@link #triggerSchedule} does; a fixed-delay definition needs one,
-     * because it parks its next fire while paused. While the recorded occurrence is not finished, {@code nextFire}
+     * because it parks its next fire while paused. While the recorded occurrence is not finished, {@code nextFireAt}
      * is ignored and the stored time and revision stay: the end of that occurrence sets the next fire, and a time
      * given here would start a second occurrence beside it. The recorded occurrence is kept. A definition that is
      * not paused is left unchanged.
      *
      * @return false when no definition with that id exists
      */
-    boolean resumeSchedule(String scheduleId, Instant nextFire);
+    boolean resumeSchedule(String scheduleId, Instant nextFireAt);
 
     /**
      * Operator write: makes the definition fire at {@code fireAt} (trigger now). It replaces the next fire time
@@ -121,5 +121,5 @@ public interface ScheduleStore extends TaskStore {
      *
      * @return true when the next fire time was replaced
      */
-    boolean setNextFire(String scheduleId, long revision, Instant expectedFire, Instant nextFire);
+    boolean setNextFire(String scheduleId, long revision, Instant expectedFire, Instant nextFireAt);
 }

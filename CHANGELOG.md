@@ -27,6 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `BackgroundRunner.Builder.recurringTasksCheckInterval`, `scheduledTasksCheckInterval` | `scheduleCheckInterval`, `scheduledTaskCheckInterval` | the API says "schedule"; one form for every interval |
 
   A runner that set `cancelledRetention` to keep expired tasks for another time sets `expiredRetention` too. A trusted proxy that is not an address or a range is refused with `trusted proxy <position> is not an IP address or a range such as 10.0.0.0/8`, where the position counts the proxies added so far.
+- Breaking: one form for points in time and for yes-or-no questions, and no name that means two things.
+
+  | Before | Now | Why |
+  |---|---|---|
+  | `TaskView.due()`, `TaskEvent.Rescheduled.due()` | `dueAt()` | a point in time ends in `At`, as `createdAt` and `claimedAt` did; deadlines keep their names (`leaseUntil`, `keyUntil`, `startBy`) |
+  | Admin API: `due` of a task, `nextFire` of a schedule, `lastSeen` of a runner | `dueAt`, `nextFireAt`, `lastSeenAt` | the same |
+  | `TaskContext.cancelRequested()` | `isCancelRequested()` | a question on a class or an interface starts with `is`, as `isQuiet()` and `isTerminal()` did; record components keep the plain name |
+  | `EnqueueResult.accepted()` | `isAccepted()` | the same |
+  | `TaskContext.attempt()` | `attemptNumber()` | it is the number of this attempt; `TaskView.attempts()` is how many there were |
+  | `TaskView.type()`, `ScheduleView.type()` | `typeName()` | they are the name; `TaskRequest.type()` is the `TaskType` |
+  | `DefaultVtExecutor.getActiveTaskCount()` | `activeTaskCount()` | no other method started with `get` |
+  | Store SPI: `TaskRecord.due`, `RunnerRecord.lastSeen` | `dueAt`, `lastSeenAt` | as above |
+  | Store SPI: `InspectionStore.getTask(id)` | `task(id)` | as above |
+  | Store SPI: `ScheduleEffect.pauses()`, `applied()` | `isPause()`, `isApplied()` | as above |
+
+  A script that reads a renamed field of the admin API gets no error: the field is missing. Events, `UnservedWork` and the admin API keep `type` for the type's name. Stored column and key names do not change.
 - Breaking: an application no longer needs a store-author type to read or list anything.
   - `TaskView` has no `record()` and no public constructor from a `TaskRecord`. `TaskView.builder()` makes a view by hand, for a test of an observer, a retry policy or an `AdminOps` fake.
   - `AdminOps.runners()` returns `RunnerView`: the runner's id, label, times, running count and accepting state, with the queues and task types it processes by name (`queues()`, `types()`). It returned the store's record with numeric queue and type ids.

@@ -59,7 +59,7 @@ public final class InMemoryStore implements FullStore {
 
     private static final int MAX_FAILURES = 20;
     private static final Comparator<TaskRecord> BY_DUE =
-            Comparator.comparing(TaskRecord::due).thenComparingLong(TaskRecord::id);
+            Comparator.comparing(TaskRecord::dueAt).thenComparingLong(TaskRecord::id);
 
     /**
      * @param occurrence the id of the in-flight fixed-delay occurrence, or null
@@ -262,12 +262,12 @@ public final class InMemoryStore implements FullStore {
                 return keptBy == task.id() ? EnqueueOutcome.EXISTS : new EnqueueOutcome.DuplicateKey(keptBy);
             }
         }
-        Instant due = millis(forcedDue != null ? forcedDue : task.due() != null ? task.due() : now);
+        Instant due = millis(forcedDue != null ? forcedDue : task.dueAt() != null ? task.dueAt() : now);
         TaskState state = forcedDue != null || due.isAfter(now) ? TaskState.SCHEDULED : TaskState.QUEUED;
         save(task.asNew().toBuilder()
                 .createdAt(task.createdAt() != null ? task.createdAt() : now)
                 .state(state)
-                .due(due)
+                .dueAt(due)
                 .stateChangedAt(now)
                 .build());
         if (key != null) {
@@ -280,7 +280,7 @@ public final class InMemoryStore implements FullStore {
     private TaskRecord save(TaskRecord t) {
         TaskRecord stored = t.toBuilder()
                 .createdAt(millis(t.createdAt()))
-                .due(millis(t.due()))
+                .dueAt(millis(t.dueAt()))
                 .stateChangedAt(millis(t.stateChangedAt()))
                 .leaseUntil(millis(t.leaseUntil()))
                 .claimedAt(millis(t.claimedAt()))
@@ -444,7 +444,7 @@ public final class InMemoryStore implements FullStore {
         if (effect == null) return;
         Recurring r = recurring.get(effect.scheduleId());
         if (r == null || r.occurrence() == null || r.occurrence() != effect.occurrenceId()) return;
-        if (effect.pauses()) {
+        if (effect.isPause()) {
             recurring.put(
                     effect.scheduleId(),
                     new Recurring(r.definition().withPaused(true), r.nextFireAt(), null, r.triggered()));
@@ -534,7 +534,7 @@ public final class InMemoryStore implements FullStore {
                 .stateChangedAt(now)
                 .leaseUntil(null);
         if (retryAt != null && t.attempts() < t.maxAttempts()) {
-            save(b.state(TaskState.SCHEDULED).due(retryAt).runnerId(null).build());
+            save(b.state(TaskState.SCHEDULED).dueAt(retryAt).runnerId(null).build());
             return FailOutcome.RETRY;
         }
         applyEffect(effect);
@@ -549,7 +549,7 @@ public final class InMemoryStore implements FullStore {
     @Override
     public boolean reschedule(long id, int revision, Instant due) {
         StoreArguments.requireDue(due);
-        return backToWaiting(id, revision, b -> b.state(TaskState.SCHEDULED).due(due));
+        return backToWaiting(id, revision, b -> b.state(TaskState.SCHEDULED).dueAt(due));
     }
 
     @Override
@@ -611,7 +611,7 @@ public final class InMemoryStore implements FullStore {
         try {
             Instant now = clock.instant();
             List<TaskRecord> due = tasks.values().stream()
-                    .filter(t -> t.state() == TaskState.SCHEDULED && !t.due().isAfter(now))
+                    .filter(t -> t.state() == TaskState.SCHEDULED && !t.dueAt().isAfter(now))
                     .sorted(BY_DUE)
                     .limit(limit)
                     .toList();
@@ -716,7 +716,7 @@ public final class InMemoryStore implements FullStore {
     private Instant nextDueLocked() {
         return tasks.values().stream()
                 .filter(t -> t.state() == TaskState.SCHEDULED)
-                .map(TaskRecord::due)
+                .map(TaskRecord::dueAt)
                 .min(Comparator.naturalOrder())
                 .orElse(null);
     }
@@ -840,7 +840,7 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public Optional<TaskRecord> getTask(long id) {
+    public Optional<TaskRecord> task(long id) {
         lock.lock();
         try {
             return Optional.ofNullable(tasks.get(id));
@@ -905,7 +905,7 @@ public final class InMemoryStore implements FullStore {
         StoreArguments.requireLimit(limit);
         var position = cursor == null ? null : decodeCursor(cursor);
         Function<TaskRecord, Instant> sortTime = state == TaskState.QUEUED || state == TaskState.SCHEDULED
-                ? TaskRecord::due
+                ? TaskRecord::dueAt
                 : TaskRecord::stateChangedAt;
         lock.lock();
         try {
@@ -1036,7 +1036,7 @@ public final class InMemoryStore implements FullStore {
         try {
             Instant cutoff = clock.instant().minus(millis(staleAfter));
             int before = runners.size();
-            runners.values().removeIf(w -> w.lastSeen().isBefore(cutoff));
+            runners.values().removeIf(w -> w.lastSeenAt().isBefore(cutoff));
             return before - runners.size();
         } finally {
             lock.unlock();
@@ -1116,7 +1116,7 @@ public final class InMemoryStore implements FullStore {
             }
             save(t.toBuilder()
                     .state(TaskState.QUEUED)
-                    .due(now)
+                    .dueAt(now)
                     .stateChangedAt(now)
                     .attempts(0)
                     .revision(t.revision() + 1)

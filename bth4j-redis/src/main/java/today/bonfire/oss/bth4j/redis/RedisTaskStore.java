@@ -358,7 +358,7 @@ public final class RedisTaskStore implements FullStore {
         StoreArguments.requireKey(t.uniqueKey());
         var args = new ArrayList<String>();
         args.add(String.valueOf(t.id()));
-        args.add(t.due() == null ? "" : ms(t.due()));
+        args.add(t.dueAt() == null ? "" : ms(t.dueAt()));
         args.add(t.uniqueKey() == null ? "" : t.uniqueKey());
         args.addAll(storeArgs(t));
         args.add(Keys.F_WRITE_TOKEN);
@@ -563,7 +563,7 @@ public final class RedisTaskStore implements FullStore {
         return List.of(
                 effect.scheduleId(),
                 String.valueOf(effect.occurrenceId()),
-                effect.pauses() ? "" : ms(effect.nextFireAt()));
+                effect.isPause() ? "" : ms(effect.nextFireAt()));
     }
 
     @Override
@@ -888,7 +888,7 @@ public final class RedisTaskStore implements FullStore {
     // ---- inspection ----------------------------------------------------------------------------------
 
     @Override
-    public Optional<TaskRecord> getTask(long id) {
+    public Optional<TaskRecord> task(long id) {
         var found = load(List.of(id), false);
         return found.isEmpty() ? Optional.empty() : Optional.of(found.getFirst());
     }
@@ -901,7 +901,7 @@ public final class RedisTaskStore implements FullStore {
             if (holder == null) return Optional.empty();
             if (holder.equals(named)) return Optional.empty();
             named = holder;
-            var record = getTask(Long.parseLong(holder));
+            var record = task(Long.parseLong(holder));
             if (record.isPresent() && holdsKey(record.get(), key)) return record;
         }
         return Optional.empty();

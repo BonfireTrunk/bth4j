@@ -196,7 +196,7 @@ final class TaskHashes {
                 .attempts(integer(h, F_ATTEMPTS))
                 .maxAttempts(integer(h, F_MAX_ATTEMPTS))
                 .createdAt(instant(h, F_CREATED))
-                .due(instant(h, F_DUE))
+                .dueAt(instant(h, F_DUE))
                 .stateChangedAt(instant(h, F_STATE_CHANGED))
                 .encodedPayload(encodedPayload)
                 .runnerId((leased || state.isTerminal()) && h.get(F_RUNNER) != null ? integer(h, F_RUNNER) : null)

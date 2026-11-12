@@ -477,14 +477,14 @@ class FailureDetailTest {
                             if (scheduleError != null) throw scheduleError;
                             acked = true;
                             var effect = (ScheduleEffect) args[4];
-                            if (effect != null && !effect.pauses()) {
+                            if (effect != null && !effect.isPause()) {
                                 nextFire.set(effect.nextFireAt());
                                 effect.markApplied();
                             }
                             yield true;
                         }
                         case "ackAll" -> InvocationHandler.invokeDefault(proxy, method, args);
-                        case "getTask" -> java.util.Optional.empty();
+                        case "task" -> java.util.Optional.empty();
                         case "finishCancelled" -> {
                             cancelledReason.set((String) args[2]);
                             yield true;
@@ -494,7 +494,7 @@ class FailureDetailTest {
                             stored.set((FailureInfo) args[2]);
                             var dead = args[3] == null;
                             var effect = (ScheduleEffect) args[5];
-                            if (dead && effect != null && effect.pauses()) {
+                            if (dead && effect != null && effect.isPause()) {
                                 paused.set(true);
                                 effect.markApplied();
                             }

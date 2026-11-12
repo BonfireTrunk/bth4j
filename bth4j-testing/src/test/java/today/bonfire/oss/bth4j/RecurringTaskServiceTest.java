@@ -79,7 +79,7 @@ class RecurringTaskServiceTest {
         } else {
             assertThat(occurrences())
                     .singleElement()
-                    .satisfies(o -> assertThat(o.due()).isEqualTo(fireAt));
+                    .satisfies(o -> assertThat(o.dueAt()).isEqualTo(fireAt));
             assertThat(events).singleElement().isInstanceOf(TaskEvent.ScheduleFired.class);
             assertThat(status.issues()).isEmpty();
         }
@@ -93,7 +93,7 @@ class RecurringTaskServiceTest {
 
         var occurrence = occurrences().getFirst();
         assertThat(occurrence.scheduleId()).isEqualTo(ID);
-        assertThat(occurrence.due()).isEqualTo(T0);
+        assertThat(occurrence.dueAt()).isEqualTo(T0);
         assertThat(events).containsExactly(new TaskEvent.ScheduleFired(ID, occurrence.id(), T0));
         assertThat(store.nextFireTimes()).containsEntry(ID, T0.plus(Duration.ofHours(1)));
     }
@@ -109,7 +109,7 @@ class RecurringTaskServiceTest {
         round();
 
         var occurrence = occurrences().getFirst();
-        assertThat(occurrence.due()).isEqualTo(asked);
+        assertThat(occurrence.dueAt()).isEqualTo(asked);
         assertThat(events).containsExactly(new TaskEvent.ScheduleFired(ID, occurrence.id(), asked));
         assertThat(status.issues()).isEmpty();
         assertThat(store.nextFireTimes()).containsEntry(ID, nextHour);
@@ -136,7 +136,7 @@ class RecurringTaskServiceTest {
 
         var resume = T0.plus(Duration.ofMinutes(10));
         var missed = List.of(resume, T0.plus(Duration.ofMinutes(20)), T0.plus(Duration.ofMinutes(30)));
-        assertThat(occurrences()).extracting(TaskRecord::due).containsExactlyElementsOf(missed);
+        assertThat(occurrences()).extracting(TaskRecord::dueAt).containsExactlyElementsOf(missed);
         assertThat(events)
                 .extracting(e -> ((TaskEvent.ScheduleFired) e).fireAt())
                 .containsExactlyElementsOf(missed);
@@ -157,7 +157,7 @@ class RecurringTaskServiceTest {
         round();
 
         var missed = List.of(last.minusSeconds(120), last.minusSeconds(60), last);
-        assertThat(occurrences()).extracting(TaskRecord::due).containsExactlyElementsOf(missed);
+        assertThat(occurrences()).extracting(TaskRecord::dueAt).containsExactlyElementsOf(missed);
         assertThat(store.nextFireTimes()).containsEntry(ID, last.plusSeconds(60));
         assertThat(status.issues())
                 .singleElement()
@@ -171,7 +171,7 @@ class RecurringTaskServiceTest {
 
         round();
 
-        assertThat(occurrences()).extracting(TaskRecord::due).containsExactly(T0, T0.plusSeconds(60));
+        assertThat(occurrences()).extracting(TaskRecord::dueAt).containsExactly(T0, T0.plusSeconds(60));
         assertThat(store.nextFireTimes()).containsEntry(ID, T0.plusSeconds(120));
     }
 
@@ -194,7 +194,7 @@ class RecurringTaskServiceTest {
 
         assertThat(occurrences())
                 .singleElement()
-                .satisfies(o -> assertThat(o.due()).isEqualTo(T0));
+                .satisfies(o -> assertThat(o.dueAt()).isEqualTo(T0));
         assertThat(store.nextFireTimes()).containsEntry(ID, clock.instant().plusSeconds(60));
         assertThat(status.issues()).singleElement().satisfies(i -> {
             assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_MISFIRE);
@@ -226,7 +226,7 @@ class RecurringTaskServiceTest {
         round();
 
         assertThat(occurrences())
-                .extracting(TaskRecord::due)
+                .extracting(TaskRecord::dueAt)
                 .containsExactly(T0, T0.plus(Duration.ofMinutes(10)), T0.plus(Duration.ofMinutes(20)));
         assertThat(store.nextFireTimes()).containsEntry(ID, T0.plus(Duration.ofMinutes(30)));
         assertThat(status.issues()).noneMatch(i -> i.detail().contains("catching up"));
@@ -243,7 +243,7 @@ class RecurringTaskServiceTest {
         round();
 
         assertThat(occurrences()).singleElement().satisfies(o -> {
-            assertThat(o.due()).isEqualTo(T0);
+            assertThat(o.dueAt()).isEqualTo(T0);
             assertThat(o.state()).isEqualTo(TaskState.SCHEDULED);
         });
         assertThat(events)
@@ -266,7 +266,7 @@ class RecurringTaskServiceTest {
 
         assertThat(occurrences())
                 .singleElement()
-                .satisfies(o -> assertThat(o.due()).isEqualTo(T0));
+                .satisfies(o -> assertThat(o.dueAt()).isEqualTo(T0));
     }
 
     // ---- rejected and failed commits ------------------------------------------------------------------
@@ -354,7 +354,7 @@ class RecurringTaskServiceTest {
 
         var second = occurrences().getLast();
         assertThat(second.id()).isNotEqualTo(first.id());
-        assertThat(second.due()).isEqualTo(nextFire);
+        assertThat(second.dueAt()).isEqualTo(nextFire);
         assertThat(second.state()).isEqualTo(TaskState.SCHEDULED);
         assertThat(events).containsExactly(new TaskEvent.ScheduleFired(ID, second.id(), nextFire));
         assertThat(status.issues()).isEmpty();
@@ -467,7 +467,7 @@ class RecurringTaskServiceTest {
         assertThat(store.nextFireTimes().get(ID)).isAfter(fire);
         assertThat(occurrences())
                 .singleElement()
-                .satisfies(t -> assertThat(t.due()).isEqualTo(fire.plusSeconds(1)));
+                .satisfies(t -> assertThat(t.dueAt()).isEqualTo(fire.plusSeconds(1)));
         assertThat(status.issues())
                 .singleElement()
                 .satisfies(i -> assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_BROKEN));
@@ -537,7 +537,7 @@ class RecurringTaskServiceTest {
 
         assertThat(occurrences())
                 .singleElement()
-                .satisfies(o -> assertThat(o.due()).isEqualTo(T0));
+                .satisfies(o -> assertThat(o.dueAt()).isEqualTo(T0));
         assertThat(events).hasSize(1);
     }
 
@@ -563,7 +563,7 @@ class RecurringTaskServiceTest {
         clock.set(T0.plus(Duration.ofHours(1)));
         round();
 
-        assertThat(occurrences()).extracting(TaskRecord::due).containsExactly(T0, T0.plus(Duration.ofHours(1)));
+        assertThat(occurrences()).extracting(TaskRecord::dueAt).containsExactly(T0, T0.plus(Duration.ofHours(1)));
         assertThat(events).hasSize(2);
     }
 
@@ -733,7 +733,7 @@ class RecurringTaskServiceTest {
         var all = new ArrayList<TaskRecord>();
         for (var state : TaskState.values())
             all.addAll(store.tasks(state, null, null, 100).items());
-        all.sort(Comparator.comparing(TaskRecord::due).thenComparingLong(TaskRecord::id));
+        all.sort(Comparator.comparing(TaskRecord::dueAt).thenComparingLong(TaskRecord::id));
         return all;
     }
 

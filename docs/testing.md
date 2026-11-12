@@ -56,7 +56,7 @@ A retry policy and a `TaskObserver` receive a `TaskView`. The library builds vie
 TaskView task = TaskView.builder()
         .id(41)
         .queue("mail")
-        .type("send-mail")
+        .typeName("send-mail")
         .state(TaskState.LEASED)
         .attempts(3)
         .maxAttempts(5)

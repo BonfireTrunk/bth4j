@@ -37,7 +37,7 @@ export default {
     // The runner parks a fixed-delay definition a century ahead while its occurrence runs; the real
     // next fire is only known once that occurrence ends.
     const PARKED_AFTER_MS = 50 * 365 * 86400 * 1000;
-    const parked = (s) => !!s.fixedDelay && Date.parse(s.nextFire) - Date.now() > PARKED_AFTER_MS;
+    const parked = (s) => !!s.fixedDelay && Date.parse(s.nextFireAt) - Date.now() > PARKED_AFTER_MS;
 
     return { data, loading, error, reload, busy, admin, pause, resume, trigger, remove, duration, parked };
   },
@@ -50,7 +50,7 @@ export default {
         <thead><tr><th>Next fire</th><th>Id</th><th>Type</th><th>Queue</th><th>Trigger</th><th>Zone</th><th>Misfire</th><th>Overlap</th><th>Status</th><th></th></tr></thead>
         <tbody>
           <tr v-for="s in data" :key="s.id">
-            <td><span v-if="parked(s)" class="muted">held until the running occurrence ends</span><time-ago v-else :at="s.nextFire" :late="!s.paused"></time-ago></td>
+            <td><span v-if="parked(s)" class="muted">held until the running occurrence ends</span><time-ago v-else :at="s.nextFireAt" :late="!s.paused"></time-ago></td>
             <td class="mono">{{ s.id }}</td>
             <td>{{ s.type }}</td>
             <td>{{ s.queue }}</td>

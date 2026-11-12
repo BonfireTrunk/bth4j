@@ -9,7 +9,7 @@ public record RunnerRecord(
         int id,
         String label,
         Instant startedAt,
-        Instant lastSeen,
+        Instant lastSeenAt,
         int running,
         boolean accepting,
         Set<Integer> queueIds,

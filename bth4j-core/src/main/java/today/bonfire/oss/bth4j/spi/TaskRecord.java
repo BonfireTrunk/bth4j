@@ -27,7 +27,7 @@ import today.bonfire.oss.bth4j.TaskState;
  * @param attempts          how often the task was claimed
  * @param maxAttempts       after this many failed attempts the task is dead
  * @param createdAt         when the client built the task (client clock)
- * @param due               when the task may run: the enqueue time for an immediate task, the due time for a
+ * @param dueAt             when the task may run: the enqueue time for an immediate task, the due time for a
  *                          scheduled one, the retry time after a failure (store clock); never null once stored
  * @param stateChangedAt    when the current state was entered (store clock); the finish time of a terminal task
  * @param encodedPayload    encoded payload; null when there is none or it was dropped on success
@@ -62,7 +62,7 @@ public record TaskRecord(
         int attempts,
         int maxAttempts,
         Instant createdAt,
-        Instant due,
+        Instant dueAt,
         Instant stateChangedAt,
         String encodedPayload,
         Integer runnerId,
@@ -126,7 +126,7 @@ public record TaskRecord(
         b.attempts = attempts;
         b.maxAttempts = maxAttempts;
         b.createdAt = createdAt;
-        b.due = due;
+        b.dueAt = dueAt;
         b.stateChangedAt = stateChangedAt;
         b.encodedPayload = encodedPayload;
         b.runnerId = runnerId;
@@ -165,7 +165,7 @@ public record TaskRecord(
         private int attempts;
         private int maxAttempts = 1;
         private Instant createdAt;
-        private Instant due;
+        private Instant dueAt;
         private Instant stateChangedAt;
         private String encodedPayload;
         private Integer runnerId;
@@ -234,8 +234,8 @@ public record TaskRecord(
             return this;
         }
 
-        public Builder due(Instant v) {
-            due = v;
+        public Builder dueAt(Instant v) {
+            dueAt = v;
             return this;
         }
 
@@ -350,7 +350,7 @@ public record TaskRecord(
                     attempts,
                     maxAttempts,
                     createdAt,
-                    due,
+                    dueAt,
                     stateChangedAt,
                     encodedPayload,
                     runnerId,

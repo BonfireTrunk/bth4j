@@ -187,7 +187,7 @@ class NamesTest {
 
         assertThat(view.id()).isEqualTo(5);
         assertThat(view.queue()).isEqualTo("Q:HIGH");
-        assertThat(view.type()).isEqualTo("report");
+        assertThat(view.typeName()).isEqualTo("report");
         assertThat(view.state()).isEqualTo(TaskState.QUEUED);
     }
 }

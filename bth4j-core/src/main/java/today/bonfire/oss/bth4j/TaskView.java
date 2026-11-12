@@ -44,7 +44,7 @@ public final class TaskView {
     }
 
     /** @return the task type name */
-    public String type() {
+    public String typeName() {
         return type;
     }
 
@@ -68,8 +68,8 @@ public final class TaskView {
         return record.createdAt();
     }
 
-    public Instant due() {
-        return record.due();
+    public Instant dueAt() {
+        return record.dueAt();
     }
 
     public Instant stateChangedAt() {
@@ -179,7 +179,7 @@ public final class TaskView {
             return this;
         }
 
-        public Builder type(String v) {
+        public Builder typeName(String v) {
             type = v;
             return this;
         }
@@ -219,8 +219,8 @@ public final class TaskView {
             return this;
         }
 
-        public Builder due(Instant v) {
-            record.due(v);
+        public Builder dueAt(Instant v) {
+            record.dueAt(v);
             return this;
         }
 

@@ -142,7 +142,7 @@ class MaintenanceService extends CustomThread {
     private void handleExpired(ExpiredLease e) {
         TaskRecord record;
         try {
-            record = store.getTask(e.id()).orElse(null);
+            record = store.task(e.id()).orElse(null);
         } catch (UnreadableTaskException unreadable) {
             endUnreadable(e, unreadable);
             return;
@@ -183,7 +183,7 @@ class MaintenanceService extends CustomThread {
      * transition, because nothing would re-arm it; this makes that visible so an operator can resume it.
      */
     private void pauseParkedSchedule(TaskRecord record, TaskState ended, ScheduleEffect pause) {
-        if (pause == null || !pause.applied()) return;
+        if (pause == null || !pause.isApplied()) return;
         var detail = "schedule " + record.scheduleId() + " paused: occurrence ended " + ended;
         status.issue(Issue.Kind.SCHEDULE_PAUSED, detail, record.id());
         log.warn(detail);

@@ -282,7 +282,7 @@ public final class TaskClient {
      * @throws TaskIdReusedException when it differs
      */
     private boolean requireSameContent(TaskRecord sent) {
-        var stored = store.getTask(sent.id()).orElse(null);
+        var stored = store.task(sent.id()).orElse(null);
         if (stored == null) return false;
         if (stored.typeId() != sent.typeId()) throw new TaskIdReusedException(sent.id(), "another task type");
         if (stored.queueId() != sent.queueId()) throw new TaskIdReusedException(sent.id(), "another queue");
@@ -304,7 +304,7 @@ public final class TaskClient {
     private boolean alreadyStored(TaskRequest<?> request) {
         var id = request.id();
         if (id == null) return false;
-        if (store.getTask(id).isPresent()) return true;
+        if (store.task(id).isPresent()) return true;
         return request.uniqueKey() != null && store.holdsKey(id, request.uniqueKey());
     }
 
@@ -333,7 +333,7 @@ public final class TaskClient {
                 .state(due != null && due.isAfter(now) ? TaskState.SCHEDULED : TaskState.QUEUED)
                 .maxAttempts(request.maxAttempts() != null ? request.maxAttempts() : defaultMaxAttempts)
                 .createdAt(now)
-                .due(due)
+                .dueAt(due)
                 .encodedPayload(codecs.encode(type, request.payload()))
                 .account(request.account())
                 .headers(validHeaders(request.headers()))
@@ -432,7 +432,7 @@ public final class TaskClient {
 
     /** @return the task with that id, in whatever state it is */
     public Optional<TaskView> task(long id) {
-        return store.getTask(id).map(names::view);
+        return store.task(id).map(names::view);
     }
 
     /** The rule for a unique key that is looked up: any text a store can keep. */

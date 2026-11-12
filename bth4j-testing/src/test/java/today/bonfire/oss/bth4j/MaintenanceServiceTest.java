@@ -75,9 +75,9 @@ class MaintenanceServiceTest {
 
         cycle();
 
-        var task = store.getTask(id).orElseThrow();
+        var task = store.task(id).orElseThrow();
         assertThat(task.state()).isEqualTo(TaskState.SCHEDULED);
-        assertThat(task.due()).isEqualTo(clock.instant().plus(RETRY_DELAY));
+        assertThat(task.dueAt()).isEqualTo(clock.instant().plus(RETRY_DELAY));
         assertThat(task.failures()).singleElement().satisfies(f -> {
             assertThat(f.type()).isEqualTo("lease-expired");
             assertThat(f.attempt()).isEqualTo(1);
@@ -94,7 +94,7 @@ class MaintenanceServiceTest {
 
         cycle();
 
-        var task = store.getTask(id).orElseThrow();
+        var task = store.task(id).orElseThrow();
         assertThat(task.state()).isEqualTo(TaskState.DEAD);
         assertThat(task.failures()).singleElement().satisfies(f -> {
             assertThat(f.type()).isEqualTo("unreadable-record");
@@ -111,7 +111,7 @@ class MaintenanceServiceTest {
     @Test
     void anUnreadableTaskWithACancelRequestEndsDeadToo() throws Exception {
         long id = leased(request().maxAttempts(3).build());
-        store.cancel(id, store.getTask(id).orElseThrow().revision(), "stop", null);
+        store.cancel(id, store.task(id).orElseThrow().revision(), "stop", null);
         serviceStore = unreadable(id);
         clock.advance(LEASE.plusSeconds(1));
 
@@ -184,7 +184,7 @@ class MaintenanceServiceTest {
 
         cycle();
 
-        var task = store.getTask(id).orElseThrow();
+        var task = store.task(id).orElseThrow();
         assertThat(task.state()).isEqualTo(TaskState.DEAD);
         assertThat(task.failures())
                 .singleElement()
@@ -201,7 +201,7 @@ class MaintenanceServiceTest {
 
         cycle();
 
-        assertThat(store.getTask(id)).isEmpty();
+        assertThat(store.task(id)).isEmpty();
         assertThat(events).containsExactly(leaseExpired(id, 1, 1, true));
     }
 
@@ -219,7 +219,7 @@ class MaintenanceServiceTest {
 
         cycle();
 
-        assertThat(store.getTask(id).orElseThrow().due())
+        assertThat(store.task(id).orElseThrow().dueAt())
                 .isEqualTo(clock.instant().plus(Duration.ofHours(1)));
         assertThat(errors).containsExactly((Throwable) null);
         assertThat(views).singleElement().satisfies(v -> assertThat(v.id()).isEqualTo(id));
@@ -233,9 +233,9 @@ class MaintenanceServiceTest {
 
         cycle();
 
-        var task = store.getTask(id).orElseThrow();
+        var task = store.task(id).orElseThrow();
         assertThat(task.state()).isEqualTo(TaskState.SCHEDULED);
-        assertThat(task.due()).isEqualTo(clock.instant().plus(TaskRequest.MAX_TIME_FROM_NOW));
+        assertThat(task.dueAt()).isEqualTo(clock.instant().plus(TaskRequest.MAX_TIME_FROM_NOW));
     }
 
     @Test
@@ -258,7 +258,7 @@ class MaintenanceServiceTest {
 
         cycle();
 
-        assertThat(store.getTask(id).orElseThrow().due())
+        assertThat(store.task(id).orElseThrow().dueAt())
                 .isEqualTo(clock.instant().plus(RETRY_DELAY));
         assertThat(status.issues()).singleElement().satisfies(i -> {
             assertThat(i.kind()).isEqualTo(Issue.Kind.RETRY_POLICY);
@@ -275,9 +275,9 @@ class MaintenanceServiceTest {
 
         cycle();
 
-        var task = store.getTask(id).orElseThrow();
+        var task = store.task(id).orElseThrow();
         assertThat(task.state()).isEqualTo(TaskState.SCHEDULED);
-        assertThat(task.due()).isEqualTo(clock.instant());
+        assertThat(task.dueAt()).isEqualTo(clock.instant());
         assertThat(events).containsExactly(leaseExpired(id, 1, 3, false));
     }
 
@@ -296,9 +296,9 @@ class MaintenanceServiceTest {
 
         cycle();
 
-        var task = store.getTask(id).orElseThrow();
+        var task = store.task(id).orElseThrow();
         assertThat(task.state()).isEqualTo(TaskState.SCHEDULED);
-        assertThat(task.due()).isEqualTo(clock.instant());
+        assertThat(task.dueAt()).isEqualTo(clock.instant());
         assertThat(status.issues()).singleElement().satisfies(i -> {
             assertThat(i.kind()).isEqualTo(Issue.Kind.RETRY_POLICY);
             assertThat(i.taskId()).isEqualTo(id);
@@ -309,12 +309,12 @@ class MaintenanceServiceTest {
     @Test
     void anExpiredAttemptWithACancelRequestEndsCancelledAndIsNotRetried() throws Exception {
         long id = leased(request().maxAttempts(3).build());
-        store.cancel(id, store.getTask(id).orElseThrow().revision(), "operator stop", null);
+        store.cancel(id, store.task(id).orElseThrow().revision(), "operator stop", null);
         clock.advance(LEASE.plusSeconds(1));
 
         cycle();
 
-        var task = store.getTask(id).orElseThrow();
+        var task = store.task(id).orElseThrow();
         assertThat(task.state()).isEqualTo(TaskState.CANCELLED);
         assertThat(task.cancelReason()).isEqualTo("operator stop");
         assertThat(task.attempts()).isEqualTo(1);
@@ -331,7 +331,7 @@ class MaintenanceServiceTest {
     @Test
     void aCancelRequestWithoutAReasonEndsWithTheDefaultReason() throws Exception {
         long id = leased(request().maxAttempts(3).build());
-        store.cancel(id, store.getTask(id).orElseThrow().revision(), null, null);
+        store.cancel(id, store.task(id).orElseThrow().revision(), null, null);
         clock.advance(LEASE.plusSeconds(1));
 
         cycle();
@@ -374,7 +374,7 @@ class MaintenanceServiceTest {
     @Test
     void aCancelledFixedDelayOccurrencePausesItsScheduleAndRaisesAnIssue() throws Exception {
         long id = leasedOccurrence(3);
-        store.cancel(id, store.getTask(id).orElseThrow().revision(), "stop", null);
+        store.cancel(id, store.task(id).orElseThrow().revision(), "stop", null);
         clock.advance(LEASE.plusSeconds(1));
 
         cycle();
@@ -395,7 +395,7 @@ class MaintenanceServiceTest {
 
         cycle();
 
-        var task = store.getTask(id).orElseThrow();
+        var task = store.task(id).orElseThrow();
         assertThat(task.state()).isEqualTo(TaskState.QUEUED);
         assertThat(task.failures()).isNull();
         assertThat(events).isEmpty();
@@ -404,7 +404,7 @@ class MaintenanceServiceTest {
     @Test
     void aStaleSweeperCancellationIsRejectedAndEmitsNoCancelled() throws Exception {
         long id = leased(request().maxAttempts(3).build());
-        store.cancel(id, store.getTask(id).orElseThrow().revision(), "stop", null);
+        store.cancel(id, store.task(id).orElseThrow().revision(), "stop", null);
         clock.advance(LEASE.plusSeconds(1));
         serviceStore = takenOverAfterReclaim();
 
@@ -517,8 +517,8 @@ class MaintenanceServiceTest {
 
         purge();
 
-        assertThat(store.getTask(boundary)).isEmpty();
-        assertThat(store.getTask(younger)).isPresent();
+        assertThat(store.task(boundary)).isEmpty();
+        assertThat(store.task(younger)).isPresent();
         assertThat(events).containsExactly(new TaskEvent.Purged(TaskState.SUCCEEDED, 1));
     }
 
@@ -536,10 +536,10 @@ class MaintenanceServiceTest {
 
         purge();
 
-        assertThat(store.getTask(succeeded)).isEmpty();
-        assertThat(store.getTask(cancelled)).isEmpty();
-        assertThat(store.getTask(dead)).isPresent();
-        assertThat(store.getTask(expired)).isPresent();
+        assertThat(store.task(succeeded)).isEmpty();
+        assertThat(store.task(cancelled)).isEmpty();
+        assertThat(store.task(dead)).isPresent();
+        assertThat(store.task(expired)).isPresent();
         assertThat(events)
                 .containsExactlyInAnyOrder(
                         new TaskEvent.Purged(TaskState.SUCCEEDED, 1), new TaskEvent.Purged(TaskState.CANCELLED, 1));
@@ -549,8 +549,8 @@ class MaintenanceServiceTest {
 
         purge();
 
-        assertThat(store.getTask(dead)).isEmpty();
-        assertThat(store.getTask(expired)).isPresent();
+        assertThat(store.task(dead)).isEmpty();
+        assertThat(store.task(expired)).isPresent();
         assertThat(events).containsExactly(new TaskEvent.Purged(TaskState.DEAD, 1));
     }
 
@@ -566,8 +566,8 @@ class MaintenanceServiceTest {
 
         purge();
 
-        assertThat(ids).allSatisfy(id -> assertThat(store.getTask(id)).isEmpty());
-        assertThat(store.getTask(young)).isPresent();
+        assertThat(ids).allSatisfy(id -> assertThat(store.task(id)).isEmpty());
+        assertThat(store.task(young)).isPresent();
         assertThat(events).containsExactly(new TaskEvent.Purged(TaskState.SUCCEEDED, count));
     }
 
@@ -581,14 +581,16 @@ class MaintenanceServiceTest {
 
         purge();
 
-        assertThat(store.getTask(id)).isEmpty();
+        assertThat(store.task(id)).isEmpty();
         assertThat(events).containsExactly(new TaskEvent.Purged(TaskState.SUCCEEDED, 1));
-        assertThat(client.enqueue(request().uniqueKey("k").build()).accepted()).isFalse();
+        assertThat(client.enqueue(request().uniqueKey("k").build()).isAccepted())
+                .isFalse();
 
         clock.advance(Duration.ofHours(1));
         purge();
 
-        assertThat(client.enqueue(request().uniqueKey("k").build()).accepted()).isTrue();
+        assertThat(client.enqueue(request().uniqueKey("k").build()).isAccepted())
+                .isTrue();
     }
 
     @Test
@@ -596,17 +598,18 @@ class MaintenanceServiceTest {
         long id = succeeded(request()
                 .uniqueKey("k", Uniqueness.keepFor(Duration.ofHours(1)))
                 .build());
-        assertThat(client.enqueue(request().uniqueKey("k").build()).accepted()).isFalse();
+        assertThat(client.enqueue(request().uniqueKey("k").build()).isAccepted())
+                .isFalse();
         clock.advance(Duration.ofMinutes(30));
 
         purge();
 
-        assertThat(store.getTask(id).orElseThrow().uniqueKey()).isEqualTo("k");
+        assertThat(store.task(id).orElseThrow().uniqueKey()).isEqualTo("k");
 
         clock.advance(Duration.ofMinutes(31));
         purge();
 
-        assertThat(store.getTask(id).orElseThrow().uniqueKey()).isNull();
+        assertThat(store.task(id).orElseThrow().uniqueKey()).isNull();
         assertThat(events).isEmpty();
     }
 
@@ -625,7 +628,7 @@ class MaintenanceServiceTest {
 
         assertThat(ids)
                 .allSatisfy(id ->
-                        assertThat(store.getTask(id).orElseThrow().uniqueKey()).isNull());
+                        assertThat(store.task(id).orElseThrow().uniqueKey()).isNull());
     }
 
     @Test
@@ -641,13 +644,13 @@ class MaintenanceServiceTest {
 
         purge();
 
-        assertThat(store.getTask(id)).isPresent();
+        assertThat(store.task(id)).isPresent();
         assertThat(events).isEmpty();
         assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
 
         purge();
 
-        assertThat(store.getTask(id)).isEmpty();
+        assertThat(store.task(id)).isEmpty();
         assertThat(events).containsExactly(new TaskEvent.Purged(TaskState.SUCCEEDED, 1));
     }
 
@@ -667,12 +670,12 @@ class MaintenanceServiceTest {
 
         purge();
 
-        assertThat(store.getTask(id).orElseThrow().uniqueKey()).isEqualTo("k");
+        assertThat(store.task(id).orElseThrow().uniqueKey()).isEqualTo("k");
         assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
 
         purge();
 
-        assertThat(store.getTask(id).orElseThrow().uniqueKey()).isNull();
+        assertThat(store.task(id).orElseThrow().uniqueKey()).isNull();
     }
 
     // ---- runner heartbeat -----------------------------------------------------------------------------
@@ -714,7 +717,7 @@ class MaintenanceServiceTest {
             assertThat(w.id()).isEqualTo(runnerId);
             assertThat(w.label()).isEqualTo("runner-a");
             assertThat(w.startedAt()).isEqualTo(startedAt);
-            assertThat(w.lastSeen()).isEqualTo(clock.instant());
+            assertThat(w.lastSeenAt()).isEqualTo(clock.instant());
             assertThat(w.running()).isEqualTo(3);
         });
         assertThat(status.lastMaintenanceAt()).isEqualTo(clock.instant());
@@ -732,7 +735,7 @@ class MaintenanceServiceTest {
         cycle();
 
         assertThat(store.runners()).singleElement().satisfies(w -> {
-            assertThat(w.lastSeen()).isEqualTo(clock.instant());
+            assertThat(w.lastSeenAt()).isEqualTo(clock.instant());
             assertThat(w.running()).isEqualTo(1);
         });
     }
@@ -786,7 +789,7 @@ class MaintenanceServiceTest {
         cycle();
 
         assertThat(store.runners().getFirst().running()).isEqualTo(2);
-        assertThat(store.runners().getFirst().lastSeen()).isEqualTo(clock.instant());
+        assertThat(store.runners().getFirst().lastSeenAt()).isEqualTo(clock.instant());
         assertThat(status.lastMaintenanceAt()).isEqualTo(clock.instant());
         assertThat(status.issues()).hasSize(1);
     }
@@ -810,7 +813,7 @@ class MaintenanceServiceTest {
             assertThat(w.queueIds()).containsExactly(queueId);
             assertThat(w.typeIds()).containsExactly(typeId);
             assertThat(w.startedAt()).isEqualTo(clock.instant());
-            assertThat(w.lastSeen()).isEqualTo(clock.instant());
+            assertThat(w.lastSeenAt()).isEqualTo(clock.instant());
             assertThat(w.running()).isEqualTo(2);
             assertThat(w.accepting()).isTrue();
         });
@@ -918,7 +921,7 @@ class MaintenanceServiceTest {
 
     private long succeeded(TaskRequest<Void> request) {
         long id = leased(request);
-        assertThat(store.ack(id, store.getTask(id).orElseThrow().revision(), true, true, null))
+        assertThat(store.ack(id, store.task(id).orElseThrow().revision(), true, true, null))
                 .isTrue();
         return id;
     }
@@ -926,14 +929,14 @@ class MaintenanceServiceTest {
     private long dead(TaskRequest<Void> request) {
         long id = leased(request);
         var failure = new FailureInfo(1, clock.instant(), "test", "failed", null);
-        store.fail(id, store.getTask(id).orElseThrow().revision(), failure, null, true, null);
+        store.fail(id, store.task(id).orElseThrow().revision(), failure, null, true, null);
         assertThat(state(id)).isEqualTo(TaskState.DEAD);
         return id;
     }
 
     private long cancelled(TaskRequest<Void> request) {
         long id = client.enqueue(request).id();
-        store.cancel(id, store.getTask(id).orElseThrow().revision(), "stop", null);
+        store.cancel(id, store.task(id).orElseThrow().revision(), "stop", null);
         assertThat(state(id)).isEqualTo(TaskState.CANCELLED);
         return id;
     }
@@ -948,7 +951,7 @@ class MaintenanceServiceTest {
     }
 
     private TaskState state(long id) {
-        return store.getTask(id).orElseThrow().state();
+        return store.task(id).orElseThrow().state();
     }
 
     /** The store as maintenance sees it when it cannot say which queue and type a task has: id 0 and an id nobody registered. */
@@ -984,7 +987,7 @@ class MaintenanceServiceTest {
     /** The store as maintenance sees it when a stored value of the task cannot be read. */
     private FullStore unreadable(long id) {
         return StoreInterceptor.around(store, (method, args, real) -> {
-            if (method.equals("getTask") && (long) args[0] == id) {
+            if (method.equals("task") && (long) args[0] == id) {
                 throw new UnreadableTaskException(id, "task " + id + " has a stored value that cannot be read", null);
             }
             return real.proceed();

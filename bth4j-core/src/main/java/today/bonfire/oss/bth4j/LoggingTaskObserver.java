@@ -41,7 +41,7 @@ public final class LoggingTaskObserver implements TaskObserver {
                         () -> log.warn(
                                 "died after {} attempts: {} ({})", e.task().attempts(), e.reason(), e.outcome()));
             case TaskEvent.Rescheduled e ->
-                withTask(e.task(), () -> log.info("rescheduled to {} ({})", e.due(), e.outcome()));
+                withTask(e.task(), () -> log.info("rescheduled to {} ({})", e.dueAt(), e.outcome()));
             case TaskEvent.Cancelled e ->
                 withTask(e.task(), () -> log.info("cancelled: {} ({})", e.reason(), e.outcome()));
             case TaskEvent.LeaseExpired e -> {
@@ -67,7 +67,7 @@ public final class LoggingTaskObserver implements TaskObserver {
 
     private void withTask(TaskView task, Runnable body) {
         MDC.put("bth4j.task", Long.toString(task.id()));
-        MDC.put("bth4j.type", task.type());
+        MDC.put("bth4j.type", task.typeName());
         MDC.put("bth4j.queue", task.queue());
         try {
             body.run();

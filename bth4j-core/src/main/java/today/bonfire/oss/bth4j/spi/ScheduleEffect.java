@@ -13,24 +13,24 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * timing changed or a newer occurrence took over. A re-arm of a paused definition stores the next fire time
  * but leaves the definition paused; resuming makes it due.
  * <p>
- * The store reports whether it changed the definition through {@link #applied()}, which is valid once the
+ * The store reports whether it changed the definition through {@link #isApplied()}, which is valid once the
  * store call that took the effect has returned. An instance is for one call.
  */
 public final class ScheduleEffect {
     private final String scheduleId;
     private final long occurrenceId;
-    private final Instant nextFire;
+    private final Instant nextFireAt;
     private final AtomicBoolean applied = new AtomicBoolean();
 
-    private ScheduleEffect(String scheduleId, long occurrenceId, Instant nextFire) {
+    private ScheduleEffect(String scheduleId, long occurrenceId, Instant nextFireAt) {
         this.scheduleId = Objects.requireNonNull(scheduleId);
         this.occurrenceId = occurrenceId;
-        this.nextFire = nextFire;
+        this.nextFireAt = nextFireAt;
     }
 
-    /** Sets the next fire time to {@code nextFire} when the occurrence {@code occurrenceId} ends. */
-    public static ScheduleEffect rearm(String scheduleId, long occurrenceId, Instant nextFire) {
-        return new ScheduleEffect(scheduleId, occurrenceId, Objects.requireNonNull(nextFire));
+    /** Sets the next fire time to {@code nextFireAt} when the occurrence {@code occurrenceId} ends. */
+    public static ScheduleEffect rearm(String scheduleId, long occurrenceId, Instant nextFireAt) {
+        return new ScheduleEffect(scheduleId, occurrenceId, Objects.requireNonNull(nextFireAt));
     }
 
     /** Pauses the definition when the occurrence {@code occurrenceId} ends. */
@@ -48,15 +48,15 @@ public final class ScheduleEffect {
 
     /** @return the new next fire time, or null when the effect pauses the definition */
     public Instant nextFireAt() {
-        return nextFire;
+        return nextFireAt;
     }
 
-    public boolean pauses() {
-        return nextFire == null;
+    public boolean isPause() {
+        return nextFireAt == null;
     }
 
     /** @return true when the store changed the definition */
-    public boolean applied() {
+    public boolean isApplied() {
         return applied.get();
     }
 
@@ -68,6 +68,6 @@ public final class ScheduleEffect {
     @Override
     public String toString() {
         return "ScheduleEffect[" + scheduleId + ", occurrence " + occurrenceId + ", "
-                + (pauses() ? "pause" : "next " + nextFire) + "]";
+                + (isPause() ? "pause" : "next " + nextFireAt) + "]";
     }
 }

@@ -60,7 +60,7 @@ class TaskProcessorOverrunTest {
             names,
             new Codecs(null),
             new TaskProcessorRegistry().register(TYPE, (ctx, payload) -> {
-                boolean replacement = ctx.attempt() > 1;
+                boolean replacement = ctx.attemptNumber() > 1;
                 if (replacement) {
                     replacementStarted.countDown();
                 } else {
@@ -102,8 +102,8 @@ class TaskProcessorOverrunTest {
         clock.advance(DEFAULT_MAX_RUN_TIME.plusMillis(1));
         processor.renewOnce();
 
-        assertThat(context.get().cancelRequested()).isTrue();
-        var renewedUntil = store.getTask(id).orElseThrow().leaseUntil();
+        assertThat(context.get().isCancelRequested()).isTrue();
+        var renewedUntil = store.task(id).orElseThrow().leaseUntil();
         assertThat(renewedUntil).isEqualTo(clock.instant().plus(LEASE));
         assertThat(reservations.abandoned()).isZero();
 
@@ -112,7 +112,7 @@ class TaskProcessorOverrunTest {
         clock.advance(RENEW_INTERVAL);
         processor.renewOnce();
 
-        assertThat(store.getTask(id).orElseThrow().leaseUntil()).isEqualTo(renewedUntil);
+        assertThat(store.task(id).orElseThrow().leaseUntil()).isEqualTo(renewedUntil);
         assertThat(reservations.abandoned()).isEqualTo(1);
         assertThat(status.issues())
                 .filteredOn(i -> i.kind() == Issue.Kind.ATTEMPT_ABANDONED)
@@ -139,13 +139,13 @@ class TaskProcessorOverrunTest {
         clock.advance(Duration.ofMillis(1_001));
         processor.renewOnce();
 
-        assertThat(context.get().cancelRequested()).isTrue();
+        assertThat(context.get().isCancelRequested()).isTrue();
 
         clock.advance(RENEW_INTERVAL);
         processor.renewOnce();
 
         assertThat(reservations.abandoned()).isEqualTo(1);
-        assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.LEASED);
+        assertThat(store.task(id).orElseThrow().state()).isEqualTo(TaskState.LEASED);
     }
 
     @Test
@@ -156,8 +156,8 @@ class TaskProcessorOverrunTest {
         clock.advance(DEFAULT_MAX_RUN_TIME.minusMillis(1));
         processor.renewOnce();
 
-        assertThat(context.get().cancelRequested()).isFalse();
-        assertThat(store.getTask(id).orElseThrow().leaseUntil())
+        assertThat(context.get().isCancelRequested()).isFalse();
+        assertThat(store.task(id).orElseThrow().leaseUntil())
                 .isEqualTo(clock.instant().plus(LEASE));
         assertThat(reservations.abandoned()).isZero();
     }
@@ -178,7 +178,7 @@ class TaskProcessorOverrunTest {
         assertThat(replacement).isNotSameAs(stale);
         assertThat(replacement.revision()).isGreaterThan(stale.revision());
         assertThat(reservations.running(queueId)).isEqualTo(2);
-        var before = store.getTask(id).orElseThrow();
+        var before = store.task(id).orElseThrow();
         assertThat(before.state()).isEqualTo(TaskState.LEASED);
         assertThat(before.revision()).isEqualTo(replacement.revision());
         assertThat(before.attempts()).isEqualTo(2);
@@ -188,7 +188,7 @@ class TaskProcessorOverrunTest {
         worker.join(5_000);
 
         assertThat(worker.isAlive()).isFalse();
-        var after = store.getTask(id).orElseThrow();
+        var after = store.task(id).orElseThrow();
         assertThat(after.state()).isEqualTo(TaskState.LEASED);
         assertThat(after.revision()).isEqualTo(replacement.revision());
         assertThat(after.failures()).hasSize(1);
@@ -211,13 +211,13 @@ class TaskProcessorOverrunTest {
         clock.advance(Duration.ofMillis(100));
         processor.renewOnce();
 
-        assertThat(store.getTask(id).orElseThrow().leaseUntil())
+        assertThat(store.task(id).orElseThrow().leaseUntil())
                 .isEqualTo(clock.instant().plus(LEASE));
 
         replacementRelease.countDown();
         replacementWorker.join(5_000);
 
-        assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(store.task(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
         assertThat(admission.attempts()).isEmpty();
         assertThat(reservations.running(queueId)).isZero();
         assertThat(reservations.abandoned()).isZero();
@@ -232,13 +232,13 @@ class TaskProcessorOverrunTest {
 
         processor.renewOnce();
 
-        assertThat(context.get().cancelRequested()).isTrue();
+        assertThat(context.get().isCancelRequested()).isTrue();
         abandon(processor);
 
         clock.advance(LEASE);
         maintenance().cycle();
 
-        var ended = store.getTask(id).orElseThrow();
+        var ended = store.task(id).orElseThrow();
         assertThat(ended.state()).isEqualTo(TaskState.CANCELLED);
         assertThat(ended.cancelReason()).isEqualTo("operator stop");
         assertThat(ended.attempts()).isEqualTo(1);
@@ -253,12 +253,12 @@ class TaskProcessorOverrunTest {
         store.promote(10);
         processor.processOnce();
         assertThat(executor.tasks).hasSize(1);
-        assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.CANCELLED);
+        assertThat(store.task(id).orElseThrow().state()).isEqualTo(TaskState.CANCELLED);
 
         release.countDown();
         worker.join(5_000);
 
-        var finalTask = store.getTask(id).orElseThrow();
+        var finalTask = store.task(id).orElseThrow();
         assertThat(finalTask.state()).isEqualTo(TaskState.CANCELLED);
         assertThat(finalTask.revision()).isEqualTo(ended.revision());
         assertThat(admission.attempts()).isEmpty();
@@ -310,16 +310,16 @@ class TaskProcessorOverrunTest {
             processor.renewOnce();
 
             assertThat(attempt.overrunSince()).isNull();
-            assertThat(attempt.cancelRequested()).isFalse();
+            assertThat(attempt.isCancelRequested()).isFalse();
             assertThat(reservations.abandoned()).isZero();
             assertThat(status.issues()).noneMatch(i -> i.kind() == Issue.Kind.ATTEMPT_ABANDONED);
-            assertThat(store.getTask(id).orElseThrow().leaseUntil())
+            assertThat(store.task(id).orElseThrow().leaseUntil())
                     .isEqualTo(clock.instant().plus(LEASE));
         } finally {
             ackRelease.countDown();
             worker.join(5_000);
         }
-        assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(store.task(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
         assertThat(admission.attempts()).isEmpty();
     }
 
@@ -403,7 +403,7 @@ class TaskProcessorOverrunTest {
                         .isInstanceOfSatisfying(
                                 TaskEvent.LeaseExpired.class,
                                 x -> assertThat(x.id()).isEqualTo(id)));
-        assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
+        assertThat(store.task(id).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
         store.promote(10);
         assertThat(attempt(id)).isSameAs(stale);
     }

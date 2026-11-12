@@ -39,7 +39,7 @@ class TaskHashesTest {
                 .attempts(1)
                 .maxAttempts(4)
                 .createdAt(Instant.ofEpochMilli(AT - 9_000))
-                .due(Instant.ofEpochMilli(AT - 1_000))
+                .dueAt(Instant.ofEpochMilli(AT - 1_000))
                 .stateChangedAt(Instant.ofEpochMilli(AT - 1_000))
                 .encodedPayload("{\"order\":1}")
                 .runnerId(2)
@@ -69,7 +69,7 @@ class TaskHashesTest {
         var h = new HashMap<String, String>();
         for (var i = 0; i < pairs.size(); i += 2) h.put(pairs.get(i), pairs.get(i + 1));
         h.put(F_STATE, String.valueOf(t.state().code()));
-        h.put(F_DUE, String.valueOf(t.due().toEpochMilli()));
+        h.put(F_DUE, String.valueOf(t.dueAt().toEpochMilli()));
         h.put(F_STATE_CHANGED, String.valueOf(t.stateChangedAt().toEpochMilli()));
         h.put("hs", t.steps() == null ? "0" : "1");
         h.put("fc", t.failures() == null ? "0" : "1");
@@ -140,7 +140,7 @@ class TaskHashesTest {
                 .state(TaskState.QUEUED)
                 .maxAttempts(3)
                 .createdAt(Instant.ofEpochMilli(AT - 9_000))
-                .due(Instant.ofEpochMilli(AT - 1_000))
+                .dueAt(Instant.ofEpochMilli(AT - 1_000))
                 .stateChangedAt(Instant.ofEpochMilli(AT - 1_000))
                 .build();
 

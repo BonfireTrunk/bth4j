@@ -186,7 +186,7 @@ public abstract class RunnerContract {
         var done = awaitState(id, TaskState.SUCCEEDED);
         assertThat(seen.get()).isEqualTo(new Payload("alpha", 7));
         assertThat(stateInside.get()).isEqualTo(TaskState.LEASED);
-        assertThat(viewInside.get().type()).isEqualTo("rc-payload");
+        assertThat(viewInside.get().typeName()).isEqualTo("rc-payload");
         assertThat(viewInside.get().queue()).isEqualTo("Q:DEF");
         assertThat(viewInside.get().headers()).containsEntry("trace", "t-1");
         assertThat(done.attempts()).isEqualTo(1);
@@ -287,8 +287,8 @@ public abstract class RunnerContract {
             var result = batch ? producer.enqueueAll(List.of(request)).getFirst() : producer.enqueue(request);
 
             assertThat(result).isEqualTo(new EnqueueResult.Accepted(first + 4));
-            assertThat(store.getTask(occupied)).isPresent();
-            assertThat(store.getTask(result.id())).isPresent();
+            assertThat(store.task(occupied)).isPresent();
+            assertThat(store.task(result.id())).isPresent();
         }
         assertThat(client.counts().get("Q:DEF").queued()).isEqualTo(4);
     }
@@ -301,7 +301,7 @@ public abstract class RunnerContract {
                 .isInstanceOf(TaskValidationException.class);
 
         long id = client.nextId();
-        assertThat(client.enqueue(TaskRequest.of(VOID_TYPE).id(id).build()).accepted())
+        assertThat(client.enqueue(TaskRequest.of(VOID_TYPE).id(id).build()).isAccepted())
                 .isTrue();
     }
 
@@ -337,11 +337,11 @@ public abstract class RunnerContract {
         startRunner(
                 b -> b.retryPolicy(RetryPolicy.fixed(Duration.ofMillis(400))).observer(events::add),
                 r -> r.register(VOID_TYPE, (ctx, payload) -> {
-                    attempts.add(ctx.attempt());
+                    attempts.add(ctx.attemptNumber());
                     startedAt.add(Instant.now());
-                    if (ctx.attempt() < 3) {
+                    if (ctx.attemptNumber() < 3) {
                         failedAt.add(Instant.now());
-                        throw new IllegalStateException("not yet " + ctx.attempt());
+                        throw new IllegalStateException("not yet " + ctx.attemptNumber());
                     }
                 }));
 
@@ -356,7 +356,7 @@ public abstract class RunnerContract {
             assertThat(retryAt.get(i)).isAfterOrEqualTo(failedAt.get(i).plusMillis(400));
             assertThat(startedAt.get(i + 1)).isAfterOrEqualTo(retryAt.get(i).minusMillis(50));
         }
-        assertThat(Duration.between(done.due(), retryAt.get(1)).abs()).isLessThanOrEqualTo(Duration.ofMillis(2));
+        assertThat(Duration.between(done.dueAt(), retryAt.get(1)).abs()).isLessThanOrEqualTo(Duration.ofMillis(2));
     }
 
     private static List<Instant> retryTimes(List<TaskEvent> events, long id) {
@@ -480,7 +480,7 @@ public abstract class RunnerContract {
         startRunner(
                 b -> b.observer(events::add),
                 r -> r.register(VOID_TYPE, (ctx, payload) -> {
-                    attempts.add(ctx.attempt());
+                    attempts.add(ctx.attemptNumber());
                     startedAt.add(Instant.now());
                     if (attempts.size() == 1) {
                         rescheduledAt.set(Instant.now());
@@ -501,9 +501,9 @@ public abstract class RunnerContract {
                 .filter(e -> e.task().id() == id)
                 .findFirst()
                 .orElseThrow();
-        assertThat(rescheduled.due()).isAfterOrEqualTo(rescheduledAt.get().plusMillis(400));
-        assertThat(startedAt.get(1)).isAfterOrEqualTo(rescheduled.due().minusMillis(50));
-        assertThat(Duration.between(done.due(), rescheduled.due()).abs()).isLessThanOrEqualTo(Duration.ofMillis(2));
+        assertThat(rescheduled.dueAt()).isAfterOrEqualTo(rescheduledAt.get().plusMillis(400));
+        assertThat(startedAt.get(1)).isAfterOrEqualTo(rescheduled.dueAt().minusMillis(50));
+        assertThat(Duration.between(done.dueAt(), rescheduled.dueAt()).abs()).isLessThanOrEqualTo(Duration.ofMillis(2));
     }
 
     @Test
@@ -526,7 +526,7 @@ public abstract class RunnerContract {
             });
             firstResults.add(first);
             secondResults.add(second);
-            if (ctx.attempt() == 1) throw new IllegalStateException("after the second step");
+            if (ctx.attemptNumber() == 1) throw new IllegalStateException("after the second step");
             ctx.step(
                     "three",
                     () -> runs.computeIfAbsent("three", k -> new AtomicInteger())
@@ -627,8 +627,8 @@ public abstract class RunnerContract {
                 enqueue(TaskRequest.of(VOID_TYPE).delay(Duration.ofMillis(300)).build());
 
         var done = awaitState(id, TaskState.SUCCEEDED);
-        assertThat(done.due()).isAfterOrEqualTo(enqueuedAfter.plusMillis(300));
-        assertThat(startedAt.get()).isAfterOrEqualTo(done.due().minusMillis(50));
+        assertThat(done.dueAt()).isAfterOrEqualTo(enqueuedAfter.plusMillis(300));
+        assertThat(startedAt.get()).isAfterOrEqualTo(done.dueAt().minusMillis(50));
     }
 
     @Test
@@ -951,7 +951,7 @@ public abstract class RunnerContract {
         var runner = startRunner(
                 b -> b.observer(events::add),
                 r -> r.register(VOID_TYPE, (ctx, payload) -> {
-                    if (ctx.attempt() == 1) {
+                    if (ctx.attemptNumber() == 1) {
                         started.countDown();
                         release.await(60, TimeUnit.SECONDS);
                     }
@@ -1123,7 +1123,7 @@ public abstract class RunnerContract {
 
         for (long id : new long[] {retried, rescheduled}) {
             var waiting = awaitState(id, TaskState.SCHEDULED);
-            assertThat(waiting.due())
+            assertThat(waiting.dueAt())
                     .as("task %d", id)
                     .isBetween(
                             from.plus(TaskRequest.MAX_TIME_FROM_NOW).minusSeconds(60),
@@ -1328,7 +1328,7 @@ public abstract class RunnerContract {
     void misfireFireOnceNowCreatesOneOccurrenceAndMovesOn() {
         var dues = new CopyOnWriteArrayList<Instant>();
         var runner = startRunner(
-                r -> r.register(VOID_TYPE, (ctx, payload) -> dues.add(ctx.task().due())));
+                r -> r.register(VOID_TYPE, (ctx, payload) -> dues.add(ctx.task().dueAt())));
         int minute = farMinute();
         var latest = latestGridInstant(minute);
         var missed = registerLate(
@@ -1372,7 +1372,7 @@ public abstract class RunnerContract {
     void misfireCatchUpCreatesAtMostTheConfiguredOccurrences() {
         var dues = new CopyOnWriteArrayList<Instant>();
         startRunner(
-                r -> r.register(VOID_TYPE, (ctx, payload) -> dues.add(ctx.task().due())));
+                r -> r.register(VOID_TYPE, (ctx, payload) -> dues.add(ctx.task().dueAt())));
         int minute = farMinute();
         var latest = latestGridInstant(minute);
         registerLate(

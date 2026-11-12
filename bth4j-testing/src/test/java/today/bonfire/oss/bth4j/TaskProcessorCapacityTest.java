@@ -82,13 +82,13 @@ class TaskProcessorCapacityTest {
         var replacement = processor(executor, 1);
         executor.runNext();
         assertThat(admission.attempts()).isEmpty();
-        assertThat(store.getTask(inheritedId).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(store.task(inheritedId).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
         assertThat(reservations.running(queueId)).isZero();
 
         long nextId = enqueue();
         processOnce(replacement);
 
-        assertThat(store.getTask(nextId).orElseThrow().state()).isEqualTo(TaskState.LEASED);
+        assertThat(store.task(nextId).orElseThrow().state()).isEqualTo(TaskState.LEASED);
     }
 
     @Test
@@ -114,24 +114,24 @@ class TaskProcessorCapacityTest {
 
         assertThat(attempt(id)).isSameAs(current);
         assertThat(reservations.running(queueId)).isEqualTo(1);
-        var leased = store.getTask(id).orElseThrow();
+        var leased = store.task(id).orElseThrow();
         assertThat(leased.state()).isEqualTo(TaskState.LEASED);
         assertThat(leased.revision()).isEqualTo(current.revision());
         clock.advance(Duration.ofMillis(100));
         processor.renewOnce();
-        assertThat(store.getTask(id).orElseThrow().leaseUntil())
+        assertThat(store.task(id).orElseThrow().leaseUntil())
                 .isEqualTo(clock.instant().plus(LEASE));
 
         executor.runNext();
-        assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(store.task(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
         assertThat(admission.attempts()).isEmpty();
         assertThat(reservations.running(queueId)).isZero();
 
         long first = enqueue();
         long second = enqueue();
         processOnce(processor);
-        assertThat(store.getTask(first).orElseThrow().state()).isEqualTo(TaskState.LEASED);
-        assertThat(store.getTask(second).orElseThrow().state()).isEqualTo(TaskState.LEASED);
+        assertThat(store.task(first).orElseThrow().state()).isEqualTo(TaskState.LEASED);
+        assertThat(store.task(second).orElseThrow().state()).isEqualTo(TaskState.LEASED);
     }
 
     @Test
@@ -542,19 +542,19 @@ class TaskProcessorCapacityTest {
                 1);
         long id = enqueue();
         processOnce(processor);
-        var leaseBefore = store.getTask(id).orElseThrow().leaseUntil();
+        var leaseBefore = store.task(id).orElseThrow().leaseUntil();
         clock.advance(Duration.ofMillis(300));
 
         processor.renewOnce();
 
         assertThat(attempt(id)).isNotNull();
-        assertThat(store.getTask(id).orElseThrow().leaseUntil()).isEqualTo(leaseBefore);
+        assertThat(store.task(id).orElseThrow().leaseUntil()).isEqualTo(leaseBefore);
         assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
         assertThat(reservations.running(queueId)).isEqualTo(1);
 
         processor.renewOnce();
 
-        assertThat(store.getTask(id).orElseThrow().leaseUntil())
+        assertThat(store.task(id).orElseThrow().leaseUntil())
                 .isEqualTo(clock.instant().plus(LEASE));
         executor.runNext();
         assertThat(state(id)).isEqualTo(TaskState.SUCCEEDED);
@@ -646,14 +646,14 @@ class TaskProcessorCapacityTest {
 
         processOnce(processor);
 
-        assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
+        assertThat(store.task(id).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
         assertThat(admission.attempts()).isEmpty();
         assertThat(reservations.running(queueId)).isZero();
         assertThat(executor.available()).isEqualTo(1);
 
         executor.reject = false;
         processOnce(processor);
-        assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.LEASED);
+        assertThat(store.task(id).orElseThrow().state()).isEqualTo(TaskState.LEASED);
         assertThat(reservations.running(queueId)).isEqualTo(1);
     }
 
@@ -967,7 +967,7 @@ class TaskProcessorCapacityTest {
     }
 
     private TaskState state(long id) {
-        return store.getTask(id).orElseThrow().state();
+        return store.task(id).orElseThrow().state();
     }
 
     private long leased(List<Long> ids) {

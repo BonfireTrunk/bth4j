@@ -115,7 +115,7 @@ final class TaskExecution implements Runnable, TaskContext {
         this.steps = new LinkedHashMap<>(record.steps() == null ? Map.of() : record.steps());
         this.cancelRequested = record.cancelRequestedAt() != null;
         this.cancelReason = record.cancelReason();
-        var registration = settings.registry().get(view.type());
+        var registration = settings.registry().get(view.typeName());
         this.interruptOnCancel = registration != null && registration.type().isInterruptOnCancel();
     }
 
@@ -223,11 +223,11 @@ final class TaskExecution implements Runnable, TaskContext {
         var started = s.clock().instant();
         startedAt = started;
         emit(new TaskEvent.Started(view, record.runnerId() == null ? 0 : record.runnerId()));
-        var registration = s.registry().get(view.type());
+        var registration = s.registry().get(view.typeName());
         if (registration == null) {
             freeSlot.run();
             reporting = true;
-            defer("no processor registered for " + view.type());
+            defer("no processor registered for " + view.typeName());
             return;
         }
         Throwable failure = null;
@@ -290,7 +290,7 @@ final class TaskExecution implements Runnable, TaskContext {
         apply(() -> s.store()
                 .reschedule(record.id(), record.revision(), s.clock().instant().plus(DEFER)));
         s.status().issue(Issue.Kind.UNKNOWN_TYPE, reason, record.id());
-        emit(new TaskEvent.Deferred(record.id(), view.queue(), view.type(), reason));
+        emit(new TaskEvent.Deferred(record.id(), view.queue(), view.typeName(), reason));
     }
 
     private void succeed(Instant started) {
@@ -375,7 +375,7 @@ final class TaskExecution implements Runnable, TaskContext {
     private String storedCancelReason(String fallback) {
         try {
             return s.inspection()
-                    .getTask(record.id())
+                    .task(record.id())
                     .map(TaskRecord::cancelReason)
                     .orElse(fallback);
         } catch (RuntimeException | Error e) {
@@ -459,7 +459,7 @@ final class TaskExecution implements Runnable, TaskContext {
      * operator looks at it. Only the issue is raised here, and only when the store paused the definition.
      */
     private void afterTerminal(TaskState state, Outcome outcome, ScheduleEffect pause) {
-        if (outcome != Outcome.APPLIED || pause == null || !pause.applied()) return;
+        if (outcome != Outcome.APPLIED || pause == null || !pause.isApplied()) return;
         var detail = "schedule " + record.scheduleId() + " paused: occurrence ended " + state;
         s.status().issue(Issue.Kind.SCHEDULE_PAUSED, detail, record.id());
         log.warn(detail);
@@ -541,7 +541,7 @@ final class TaskExecution implements Runnable, TaskContext {
     }
 
     @Override
-    public int attempt() {
+    public int attemptNumber() {
         return record.attempts();
     }
 
@@ -556,7 +556,7 @@ final class TaskExecution implements Runnable, TaskContext {
     }
 
     @Override
-    public boolean cancelRequested() {
+    public boolean isCancelRequested() {
         return cancelRequested;
     }
 

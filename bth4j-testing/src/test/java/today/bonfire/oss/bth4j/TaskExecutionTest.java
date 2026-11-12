@@ -130,7 +130,7 @@ class TaskExecutionTest {
             assertThat(thrown.get()).isSameAs(exit == BodyExit.FATAL ? fatal : null);
             assertThat(interruptedAtFinish).isFalse();
             assertThat(nextInterrupted.get()).isFalse();
-            var task = store.getTask(execution.taskId()).orElseThrow();
+            var task = store.task(execution.taskId()).orElseThrow();
             assertThat(task.state()).isEqualTo(TaskState.LEASED);
             assertThat(task.revision()).isEqualTo(execution.revision());
             assertThat(task.failures()).isNull();
@@ -172,7 +172,7 @@ class TaskExecutionTest {
         execution.run();
 
         assertThat(runs).hasValue(1);
-        var task = store.getTask(execution.taskId()).orElseThrow();
+        var task = store.task(execution.taskId()).orElseThrow();
         var expectedOutcome = takenOver ? TaskEvent.Outcome.LOST : TaskEvent.Outcome.APPLIED;
         if (fails) {
             assertThat(events.getLast()).isInstanceOfSatisfying(TaskEvent.Retrying.class, event -> {
@@ -223,7 +223,7 @@ class TaskExecutionTest {
                 .isInstanceOfSatisfying(
                         TaskEvent.Retrying.class,
                         event -> assertThat(event.outcome()).isEqualTo(TaskEvent.Outcome.APPLIED));
-        var task = store.getTask(execution.taskId()).orElseThrow();
+        var task = store.task(execution.taskId()).orElseThrow();
         assertThat(task.state()).isEqualTo(TaskState.SCHEDULED);
         assertThat(task.failures()).hasSize(1);
     }
@@ -240,7 +240,7 @@ class TaskExecutionTest {
         assertThat(ran).isFalse();
         assertThat(Thread.currentThread().isInterrupted()).isFalse();
         assertThat(interruptedAtFinish).isFalse();
-        assertThat(store.getTask(execution.taskId()).orElseThrow().state()).isEqualTo(TaskState.LEASED);
+        assertThat(store.task(execution.taskId()).orElseThrow().state()).isEqualTo(TaskState.LEASED);
         assertThat(events).hasSize(2);
         assertThat(events.getFirst()).isInstanceOf(TaskEvent.Started.class);
         assertThat(events.getLast())
@@ -278,7 +278,7 @@ class TaskExecutionTest {
             assertThat(runner.isAlive()).isFalse();
             assertThat(after.get()).isFalse();
             assertThat(interruptedAtFinish).isFalse();
-            assertThat(store.getTask(execution.taskId()).orElseThrow().state()).isEqualTo(TaskState.CANCELLED);
+            assertThat(store.task(execution.taskId()).orElseThrow().state()).isEqualTo(TaskState.CANCELLED);
             assertThat(events.getLast()).isInstanceOf(TaskEvent.Cancelled.class);
         } finally {
             release.countDown();
@@ -336,7 +336,7 @@ class TaskExecutionTest {
 
         execution.run();
 
-        var task = store.getTask(execution.taskId()).orElseThrow();
+        var task = store.task(execution.taskId()).orElseThrow();
         assertThat(task.state()).isEqualTo(TaskState.CANCELLED);
         assertThat(task.cancelReason()).isEqualTo("operator stop");
         assertThat(events.getLast()).isInstanceOf(TaskEvent.Cancelled.class);
@@ -462,7 +462,7 @@ class TaskExecutionTest {
         execution.run();
 
         assertThat(lastOutcome()).isEqualTo(TaskEvent.Outcome.LOST);
-        var task = store.getTask(execution.taskId()).orElseThrow();
+        var task = store.task(execution.taskId()).orElseThrow();
         assertThat(task.state()).isEqualTo(TaskState.QUEUED);
         assertThat(task.failures()).isNull();
     }
@@ -476,7 +476,7 @@ class TaskExecutionTest {
         execution.run();
 
         assertThat(lastOutcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN);
-        var task = store.getTask(execution.taskId()).orElseThrow();
+        var task = store.task(execution.taskId()).orElseThrow();
         assertThat(task.state()).isEqualTo(TaskState.LEASED);
         assertThat(task.revision()).isEqualTo(execution.revision());
         assertThat(task.failures()).isNull();
@@ -508,14 +508,14 @@ class TaskExecutionTest {
         execution.run();
 
         assertThat(lastOutcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN);
-        var task = store.getTask(execution.taskId()).orElseThrow();
+        var task = store.task(execution.taskId()).orElseThrow();
         assertThat(task.state()).isEqualTo(transition.committedState);
         assertThat(task.revision()).isEqualTo(execution.revision() + 1);
-        assertThat(storeCalls).filteredOn(c -> !c.equals("getTask")).containsExactly(transition.storeMethod);
+        assertThat(storeCalls).filteredOn(c -> !c.equals("task")).containsExactly(transition.storeMethod);
         if (transition == Transition.RETRY || transition == Transition.DIE)
             assertThat(task.failures()).hasSize(1);
         if (transition == Transition.RESCHEDULE) {
-            assertThat(task.due()).isEqualTo(clock.instant().plusSeconds(30));
+            assertThat(task.dueAt()).isEqualTo(clock.instant().plusSeconds(30));
         }
     }
 
@@ -533,7 +533,7 @@ class TaskExecutionTest {
         var schedule = store.schedules().getFirst();
         assertThat(schedule.definition().paused()).isFalse();
         assertThat(schedule.nextFireAt()).isAfter(clock.instant().plus(Duration.ofDays(365)));
-        assertThat(storeCalls).filteredOn(c -> !c.equals("getTask")).isEmpty();
+        assertThat(storeCalls).filteredOn(c -> !c.equals("task")).isEmpty();
     }
 
     @ParameterizedTest
@@ -554,8 +554,8 @@ class TaskExecutionTest {
         } else {
             assertThat(schedule.definition().paused()).isTrue();
         }
-        assertThat(storeCalls).filteredOn(c -> !c.equals("getTask")).containsExactly(transition.storeMethod);
-        assertThat(store.getTask(execution.taskId()).orElseThrow().state()).isEqualTo(transition.committedState);
+        assertThat(storeCalls).filteredOn(c -> !c.equals("task")).containsExactly(transition.storeMethod);
+        assertThat(store.task(execution.taskId()).orElseThrow().state()).isEqualTo(transition.committedState);
     }
 
     @ParameterizedTest
@@ -572,7 +572,7 @@ class TaskExecutionTest {
 
         assertThat(order).containsSubsequence("processor", "slot freed", transition.storeMethod);
         assertThat(order).containsOnlyOnce("slot freed");
-        assertThat(store.getTask(execution.taskId()).orElseThrow().state()).isEqualTo(transition.committedState);
+        assertThat(store.task(execution.taskId()).orElseThrow().state()).isEqualTo(transition.committedState);
     }
 
     @Test
@@ -587,7 +587,7 @@ class TaskExecutionTest {
         new TaskExecution(record, settings(), e -> {}).run(() -> order.add("slot freed"));
 
         assertThat(order).containsSubsequence("slot freed", "reschedule");
-        assertThat(store.getTask(record.id()).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
+        assertThat(store.task(record.id()).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
     }
 
     @Test
@@ -640,7 +640,7 @@ class TaskExecutionTest {
     private FullStore recording(List<String> order) {
         return (FullStore) Proxy.newProxyInstance(
                 FullStore.class.getClassLoader(), new Class<?>[] {FullStore.class}, (proxy, m, args) -> {
-                    if (!m.getName().equals("getTask")) order.add(m.getName().equals("ackAll") ? "ack" : m.getName());
+                    if (!m.getName().equals("task")) order.add(m.getName().equals("ackAll") ? "ack" : m.getName());
                     try {
                         return m.invoke(store, args);
                     } catch (InvocationTargetException e) {

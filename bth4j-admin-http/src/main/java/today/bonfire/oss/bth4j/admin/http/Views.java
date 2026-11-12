@@ -60,12 +60,12 @@ final class Views {
                 "revision", text(t.revision()),
                 "state", t.state().name(),
                 "queue", t.queue(),
-                "type", t.type(),
+                "type", t.typeName(),
                 "payloadVersion", t.payloadVersion(),
                 "attempts", t.attempts(),
                 "maxAttempts", t.maxAttempts(),
                 "createdAt", t.createdAt(),
-                "due", t.due(),
+                "dueAt", t.dueAt(),
                 "stateChangedAt", t.stateChangedAt(),
                 "claimedAt", t.claimedAt(),
                 "leaseUntil", t.leaseUntil(),
@@ -126,7 +126,7 @@ final class Views {
     static Map<String, Object> schedule(ScheduleView s) {
         var view = obj(
                 "id", s.id(),
-                "type", s.type(),
+                "type", s.typeName(),
                 "queue", s.queue(),
                 "account", s.account(),
                 "cron", s.cron(),
@@ -135,7 +135,7 @@ final class Views {
                 "fixedDelay", text(s.fixedDelay()),
                 "overlap", s.overlap().name(),
                 "paused", s.paused(),
-                "nextFire", s.nextFireAt(),
+                "nextFireAt", s.nextFireAt(),
                 "maxAttempts", s.maxAttempts(),
                 "maxRunTime", text(s.maxRunTime()));
         if (s.misfire() instanceof Misfire.CatchUp c) view.put("catchUpMaxFires", c.maxFires());
@@ -147,7 +147,7 @@ final class Views {
                 "id", r.id(),
                 "label", r.label(),
                 "startedAt", r.startedAt(),
-                "lastSeen", r.lastSeenAt(),
+                "lastSeenAt", r.lastSeenAt(),
                 "running", r.running(),
                 "accepting", r.accepting(),
                 "queues", List.copyOf(r.queues()),

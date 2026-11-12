@@ -19,7 +19,7 @@ class RetryPolicyTest {
                 .attempts(attempts)
                 .maxAttempts(100)
                 .queue("Q:DEF")
-                .type("event")
+                .typeName("event")
                 .build();
     }
 

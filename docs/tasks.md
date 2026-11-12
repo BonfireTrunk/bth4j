@@ -64,8 +64,8 @@ The rethrow rule applies to task execution only.
 
 ### What `TaskContext` gives a processor
 
-`TaskContext` gives `id()`, `attempt()`, `headers()`, `task()` (a `TaskView`) and `progress(text)`. It also has the
-cancel checks `cancelRequested()` and `checkCancelled()`, described in
+`TaskContext` gives `id()`, `attemptNumber()`, `headers()`, `task()` (a `TaskView`) and `progress(text)`. It also has the
+cancel checks `isCancelRequested()` and `checkCancelled()`, described in
 [Cancelling tasks](retries-and-cancelling.md#stopping-the-processor), and `step(name, ...)`, described next.
 
 ## Steps

@@ -121,7 +121,7 @@ export default {
       if (!t) return [];
       const stops = [
         { label: 'Created', at: t.createdAt, reached: true },
-        { label: 'Due', at: t.due, reached: Date.parse(t.due) <= Date.now() || t.state !== 'SCHEDULED' },
+        { label: 'Due', at: t.dueAt, reached: Date.parse(t.dueAt) <= Date.now() || t.state !== 'SCHEDULED' },
         { label: 'Claimed', at: t.claimedAt, reached: !!t.claimedAt },
       ];
       if (FINISHED[t.state]) stops.push({ label: FINISHED[t.state], at: t.stateChangedAt, reached: true });
@@ -161,7 +161,7 @@ export default {
         <state-badge :state="task.state" lg></state-badge>
         <span class="rev">revision {{ task.revision }}</span>
         <span v-if="task.state === 'LEASED' && task.leaseUntil" class="muted">lease <time-ago :at="task.leaseUntil"></time-ago></span>
-        <span v-else-if="task.state === 'SCHEDULED' || task.state === 'QUEUED'" class="muted">due <time-ago :at="task.due" late></time-ago></span>
+        <span v-else-if="task.state === 'SCHEDULED' || task.state === 'QUEUED'" class="muted">due <time-ago :at="task.dueAt" late></time-ago></span>
         <span class="spacer"></span>
         <button type="button" :disabled="!admin() || busy || !canRetry" :title="admin() ? (canRetry ? '' : 'Only DEAD, CANCELLED or EXPIRED tasks can be retried') : 'Admin role required'" @click="retry">Retry</button>
         <button type="button" class="danger" :disabled="!admin() || busy || !canCancel" :title="admin() ? (canCancel ? '' : 'Only QUEUED, SCHEDULED or LEASED tasks can be cancelled') : 'Admin role required'" @click="cancel">Cancel...</button>

@@ -47,6 +47,25 @@ class BackgroundRunnerBuilderTest {
     }
 
     @Test
+    void aRetentionMayBeZeroAndIsNeverNegativeOrNull() {
+        var builder = BackgroundRunner.builder();
+        Map<String, Function<Duration, BackgroundRunner.Builder>> settings = Map.of(
+                "succeededRetention", builder::succeededRetention,
+                "deadRetention", builder::deadRetention,
+                "cancelledRetention", builder::cancelledRetention,
+                "expiredRetention", builder::expiredRetention);
+
+        settings.forEach((name, setting) -> {
+            assertThatCode(() -> setting.apply(Duration.ZERO)).doesNotThrowAnyException();
+            for (Duration bad : new Duration[] {Duration.ofMillis(-1), null}) {
+                assertThatThrownBy(() -> setting.apply(bad))
+                        .isInstanceOf(TaskConfigurationException.class)
+                        .hasMessage(name + " cannot be null or negative");
+            }
+        });
+    }
+
+    @Test
     void everyIntervalHasAShortestValueAndIsAtMostOneHundredYears() {
         var builder = BackgroundRunner.builder();
         Map<Duration, List<Function<Duration, BackgroundRunner.Builder>>> settingsByShortest = Map.of(

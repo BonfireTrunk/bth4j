@@ -50,12 +50,12 @@ final class FakeAdminOps implements AdminOps {
                 .attempts(1)
                 .maxAttempts(3)
                 .createdAt(Instant.parse("2026-01-01T00:00:00Z"))
-                .due(Instant.parse("2026-01-01T00:00:01Z"))
+                .dueAt(Instant.parse("2026-01-01T00:00:01Z"))
                 .stateChangedAt(Instant.parse("2026-01-01T00:00:02Z"))
                 .encodedPayload(encodedPayload)
                 .maxRunTime(Duration.ofMinutes(5))
                 .queue(queue)
-                .type("send-mail")
+                .typeName("send-mail")
                 .build();
     }
 

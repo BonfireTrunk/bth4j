@@ -6,7 +6,7 @@ const STALE_MS = 60000;
 export default {
   setup() {
     const { data, loading, error, reload } = usePoll(() => api.runners(), 5000);
-    const isStale = (w) => !w.lastSeen || now.value - Date.parse(w.lastSeen) > STALE_MS;
+    const isStale = (w) => !w.lastSeenAt || now.value - Date.parse(w.lastSeenAt) > STALE_MS;
     return { data, loading, error, reload, isStale };
   },
   template: `
@@ -23,7 +23,7 @@ export default {
             <td>{{ w.queues.join(', ') || 'none' }}</td>
             <td>{{ w.types.join(', ') || 'none' }}</td>
             <td><time-ago :at="w.startedAt"></time-ago></td>
-            <td><time-ago :at="w.lastSeen"></time-ago></td>
+            <td><time-ago :at="w.lastSeenAt"></time-ago></td>
             <td class="num">{{ w.running }}</td>
             <td><span v-if="isStale(w)" class="tag issue">SILENT OVER 1 MIN</span><span v-else-if="!w.accepting" class="tag">quiet</span><span v-else class="muted">alive</span></td>
           </tr>

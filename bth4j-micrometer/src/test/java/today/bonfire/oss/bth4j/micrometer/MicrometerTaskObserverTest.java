@@ -27,7 +27,7 @@ class MicrometerTaskObserverTest {
                 .id(7)
                 .state(TaskState.LEASED)
                 .queue("emails")
-                .type("send")
+                .typeName("send")
                 .build();
     }
 

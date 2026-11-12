@@ -27,7 +27,7 @@ class LoggingTaskObserverTest {
                     .attempts(1)
                     .maxAttempts(3)
                     .queue("Q:DEF")
-                    .type("boom")
+                    .typeName("boom")
                     .build();
             var error = new RedactedFailure(IllegalStateException.class.getName());
 

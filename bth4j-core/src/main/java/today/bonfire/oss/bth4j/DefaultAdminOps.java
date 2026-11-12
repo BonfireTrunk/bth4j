@@ -61,7 +61,7 @@ final class DefaultAdminOps implements AdminOps {
 
     @Override
     public Optional<TaskView> task(long id) {
-        return store.getTask(id).map(names::view);
+        return store.task(id).map(names::view);
     }
 
     @Override
@@ -124,7 +124,7 @@ final class DefaultAdminOps implements AdminOps {
      */
     private TaskRecord readable(long id) {
         try {
-            return store.getTask(id).orElse(null);
+            return store.task(id).orElse(null);
         } catch (UnreadableTaskException e) {
             return null;
         }
@@ -139,7 +139,7 @@ final class DefaultAdminOps implements AdminOps {
             var types = new HashSet<String>();
             for (int id : r.typeIds()) types.add(names.typeName(id));
             views.add(new RunnerView(
-                    r.id(), r.label(), r.startedAt(), r.lastSeen(), r.running(), r.accepting(), queues, types));
+                    r.id(), r.label(), r.startedAt(), r.lastSeenAt(), r.running(), r.accepting(), queues, types));
         }
         return views;
     }
@@ -151,7 +151,7 @@ final class DefaultAdminOps implements AdminOps {
         }
         var cutoff = clock.instant().minus(liveWithin);
         var live = store.runners().stream()
-                .filter(w -> w.accepting() && !w.lastSeen().isBefore(cutoff))
+                .filter(w -> w.accepting() && !w.lastSeenAt().isBefore(cutoff))
                 .toList();
         var paused = new HashSet<Integer>();
         for (var queue : store.queues()) {

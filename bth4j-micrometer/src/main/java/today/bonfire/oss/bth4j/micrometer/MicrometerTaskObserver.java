@@ -59,7 +59,7 @@ public final class MicrometerTaskObserver implements TaskObserver {
                                 DURATION,
                                 commonTags.and(
                                         "type",
-                                        e.task().type(),
+                                        e.task().typeName(),
                                         "queue",
                                         e.task().queue()))
                         .record(e.runTime());
@@ -84,7 +84,7 @@ public final class MicrometerTaskObserver implements TaskObserver {
     }
 
     private void countTask(TaskView task, String result, TaskEvent.Outcome outcome) {
-        count(task.type(), task.queue(), result, outcome);
+        count(task.typeName(), task.queue(), result, outcome);
     }
 
     private void count(String type, String queue, String result, TaskEvent.Outcome outcome) {

@@ -161,12 +161,12 @@ class SqliteSharedFileTest {
         assertThat(runnerB).isNotEqualTo(runnerA);
         assertThat(second.queueId("default")).isEqualTo(queue);
         assertThat(second.typeId("send-mail")).isEqualTo(type);
-        assertThat(second.getTask(task.id())).isPresent();
+        assertThat(second.task(task.id())).isPresent();
         var claimed = first.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, runnerA, null))
                 .getFirst();
         assertThat(second.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, runnerB, null)))
                 .isEmpty();
-        assertThat(second.getTask(task.id()).orElseThrow().state()).isEqualTo(TaskState.LEASED);
+        assertThat(second.task(task.id()).orElseThrow().state()).isEqualTo(TaskState.LEASED);
 
         assertThat(second.ack(claimed.id(), claimed.revision() + 1, true, true, null))
                 .isFalse();
@@ -174,7 +174,7 @@ class SqliteSharedFileTest {
                 .isTrue();
         assertThat(first.ack(claimed.id(), claimed.revision(), true, true, null))
                 .isFalse();
-        assertThat(first.getTask(task.id()).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(first.task(task.id()).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
         assertThat(first.runners()).extracting(w -> w.id()).containsExactlyInAnyOrder(runnerA, runnerB);
     }
 
@@ -195,6 +195,6 @@ class SqliteSharedFileTest {
                 .isEqualTo(FailOutcome.RETRY);
         assertThat(first.ack(claimed.id(), claimed.revision(), true, true, null))
                 .isFalse();
-        assertThat(first.getTask(task.id()).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
+        assertThat(first.task(task.id()).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
     }
 }

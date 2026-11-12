@@ -147,9 +147,9 @@ class RedisScriptsIT {
                 new ClaimRequest(List.of(new QueueGrant(queue, 1, 3), new QueueGrant(other, 1, 1)), 4, LEASE, 1, null);
         spied.claim(request);
         spy.clearEvents();
-        store.enqueue(task(1).due(Instant.EPOCH).build());
-        store.enqueue(task(2).due(Instant.ofEpochMilli(1)).build());
-        store.enqueue(task(3).due(Instant.ofEpochMilli(2)).build());
+        store.enqueue(task(1).dueAt(Instant.EPOCH).build());
+        store.enqueue(task(2).dueAt(Instant.ofEpochMilli(1)).build());
+        store.enqueue(task(3).dueAt(Instant.ofEpochMilli(2)).build());
         store.enqueue(task(4).queueId(other).build());
 
         assertThat(spied.claim(request)).extracting(TaskRecord::id).containsExactly(1L, 4L, 2L, 3L);
@@ -222,7 +222,7 @@ class RedisScriptsIT {
         assertThat(store.fail(1, t.revision(), failure(1), null, true, null)).isEqualTo(FailOutcome.DEAD);
         assertThat(marker(1, "fc")).isEqualTo("1");
         assertThat(marker(1, "hs")).isEqualTo("1");
-        var dead = store.getTask(1).orElseThrow();
+        var dead = store.task(1).orElseThrow();
         assertThat(dead.state()).isEqualTo(TaskState.DEAD);
 
         assertThat(store.retry(1, dead.revision())).isEqualTo(RetryOutcome.RETRIED);
@@ -269,7 +269,7 @@ class RedisScriptsIT {
         }
 
         assertThat(jedis.llen(keys.failures(1))).isEqualTo(RedisScripts.MAX_FAILURES);
-        var back = store.getTask(1).orElseThrow();
+        var back = store.task(1).orElseThrow();
         assertThat(back.failures()).hasSize(RedisScripts.MAX_FAILURES);
         assertThat(back.failures().getFirst().message()).isEqualTo("boom 4");
         assertThat(back.failures().getLast().message()).isEqualTo("boom 23");
@@ -399,7 +399,7 @@ class RedisScriptsIT {
 
         assertThat(outcomes).containsOnly(EnqueueOutcome.STORED).hasSize(3);
         assertThat(spy.events()).containsExactly("pipeline 2");
-        assertThat(store.getTask(2).orElseThrow().encodedPayload()).isEqualTo(big);
+        assertThat(store.task(2).orElseThrow().encodedPayload()).isEqualTo(big);
     }
 
     @Test
@@ -587,17 +587,17 @@ class RedisScriptsIT {
         }
         var later = Instant.now().plusSeconds(3600).truncatedTo(ChronoUnit.MILLIS);
         var laterQueue = store.queueId("later");
-        store.enqueue(task(1).due(Instant.now().plusSeconds(1800)).build());
-        store.enqueue(task(2).queueId(laterQueue).due(later).build());
-        assertThat(store.getTask(1).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
+        store.enqueue(task(1).dueAt(Instant.now().plusSeconds(1800)).build());
+        store.enqueue(task(2).queueId(laterQueue).dueAt(later).build());
+        assertThat(store.task(1).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
         RedisFixtures.ageDue(jedis, keys, queue, 1, Instant.now().minusSeconds(5));
 
         var first = store.promote(100);
 
         assertThat(first.moved()).isEqualTo(1);
         assertThat(first.nextDue()).isEqualTo(later);
-        assertThat(store.getTask(1).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
-        assertThat(store.getTask(2).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
+        assertThat(store.task(1).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
+        assertThat(store.task(2).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
         var idle = store.promote(100);
         assertThat(idle.moved()).isZero();
         assertThat(idle.nextDue()).isEqualTo(later);
@@ -618,10 +618,10 @@ class RedisScriptsIT {
     @Test
     void promoteKeepsItsLimitAndReportsTheStillDueHeadAsNextDue() {
         var other = store.queueId("other");
-        store.enqueue(task(1).due(Instant.now().plusSeconds(1800)).build());
+        store.enqueue(task(1).dueAt(Instant.now().plusSeconds(1800)).build());
         store.enqueue(
-                task(2).queueId(other).due(Instant.now().plusSeconds(1800)).build());
-        store.enqueue(task(3).due(Instant.now().plusSeconds(1800)).build());
+                task(2).queueId(other).dueAt(Instant.now().plusSeconds(1800)).build());
+        store.enqueue(task(3).dueAt(Instant.now().plusSeconds(1800)).build());
         var past = Instant.now().minusSeconds(5);
         RedisFixtures.ageDue(jedis, keys, queue, 1, past);
         RedisFixtures.ageDue(jedis, keys, other, 2, past);

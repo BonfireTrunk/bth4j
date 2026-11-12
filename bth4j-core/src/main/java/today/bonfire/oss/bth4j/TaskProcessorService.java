@@ -460,7 +460,7 @@ class TaskProcessorService extends CustomThread {
         var maxRunTime = maxRunTime(e);
         if (!now.isAfter(started.plus(maxRunTime))) return;
         e.markOverrun(now);
-        if (e.cancelRequested()) return;
+        if (e.isCancelRequested()) return;
         log.warn("Task {} exceeded its maximum run time of {}, requesting cancellation", e.taskId(), maxRunTime);
         e.requestCancel("max run time " + maxRunTime + " exceeded");
     }

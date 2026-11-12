@@ -45,7 +45,7 @@ final class ScheduleFixtures {
                 .state(TaskState.QUEUED)
                 .maxAttempts(maxAttempts)
                 .createdAt(now)
-                .due(now)
+                .dueAt(now)
                 .scheduleId(SCHEDULE_ID)
                 .headers(Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT1M"))
                 .build();

@@ -245,18 +245,18 @@ class DefaultAdminOpsTest {
 
     @Test
     void taskIsReturnedWithQueueAndTypeNames() {
-        handlers.put("getTask", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
+        handlers.put("task", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
 
         var view = ops.task(42).orElseThrow();
 
         assertThat(view.id()).isEqualTo(42);
         assertThat(view.queue()).isEqualTo("Q:OTHER");
-        assertThat(view.type()).isEqualTo("send-mail");
+        assertThat(view.typeName()).isEqualTo("send-mail");
     }
 
     @Test
     void unknownTaskIsEmpty() {
-        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("task", a -> Optional.empty());
 
         assertThat(ops.task(42)).isEmpty();
     }
@@ -327,7 +327,7 @@ class DefaultAdminOpsTest {
     void retryAndDeleteDelegateWithTheRevisionAndReturnTheStoreAnswer() {
         handlers.put("retry", a -> a[1].equals(3) ? RetryOutcome.RETRIED : RetryOutcome.STALE);
         handlers.put("delete", a -> a[1].equals(4) ? DeleteOutcome.DELETED : DeleteOutcome.STALE);
-        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("task", a -> Optional.empty());
 
         assertThat(ops.retry(9, 3)).isEqualTo(RetryOutcome.RETRIED);
         assertThat(ops.retry(9, 2)).isEqualTo(RetryOutcome.STALE);
@@ -338,7 +338,7 @@ class DefaultAdminOpsTest {
 
     @Test
     void cancelReturnsEachStoreOutcomeUnchanged() {
-        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("task", a -> Optional.empty());
         for (var outcome : CancelOutcome.values()) {
             handlers.put("cancel", a -> outcome);
 
@@ -412,7 +412,7 @@ class DefaultAdminOpsTest {
                 "taskByKey",
                 a -> Optional.of(
                         record(42, OTHER_QUEUE_ID).toBuilder().revision(5).build()));
-        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("task", a -> Optional.empty());
         handlers.put("cancel", a -> CancelOutcome.REQUESTED);
 
         assertThat(ops.cancelByKey("invoice-9", "duplicate")).isEqualTo(CancelOutcome.REQUESTED);
@@ -422,7 +422,7 @@ class DefaultAdminOpsTest {
     @Test
     void cancelByKeyReportsAChangeBetweenTheReadAndTheCancelAsStale() {
         handlers.put("taskByKey", a -> Optional.of(record(42, OTHER_QUEUE_ID)));
-        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("task", a -> Optional.empty());
         handlers.put("cancel", a -> CancelOutcome.STALE);
 
         assertThat(ops.cancelByKey("invoice-9", "duplicate")).isEqualTo(CancelOutcome.STALE);
@@ -462,7 +462,7 @@ class DefaultAdminOpsTest {
                 .headers(Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT5S"))
                 .build();
         handlers.put("taskByKey", a -> Optional.of(occurrence));
-        handlers.put("getTask", a -> Optional.of(occurrence));
+        handlers.put("task", a -> Optional.of(occurrence));
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
 
         ops.cancelByKey("sched:poll", "stop");
@@ -473,7 +473,7 @@ class DefaultAdminOpsTest {
     @Test
     void cancelPassesTheReasonToTheStore() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
-        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("task", a -> Optional.empty());
 
         ops.cancel(1, 2, "duplicate");
 
@@ -483,7 +483,7 @@ class DefaultAdminOpsTest {
     @Test
     void cancelWithoutAReasonUsesTheOperatorDefault() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
-        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("task", a -> Optional.empty());
 
         ops.cancel(1, 2, null);
         ops.cancel(1, 2, "   ");
@@ -497,7 +497,7 @@ class DefaultAdminOpsTest {
     void cancelOfAWaitingFixedDelayOccurrencePassesThePauseToTheStore() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
         handlers.put(
-                "getTask",
+                "task",
                 a -> Optional.of(TaskRecord.builder()
                         .id((Long) a[0])
                         .queueId(OTHER_QUEUE_ID)
@@ -509,15 +509,14 @@ class DefaultAdminOpsTest {
 
         ops.cancel(7, 1, "stop");
 
-        assertThat(calls)
-                .containsExactly("getTask[7]", "cancel[7, 1, stop, ScheduleEffect[poll, occurrence 7, pause]]");
+        assertThat(calls).containsExactly("task[7]", "cancel[7, 1, stop, ScheduleEffect[poll, occurrence 7, pause]]");
     }
 
     @Test
     void deleteOfAFixedDelayOccurrencePassesThePauseToTheStore() {
         handlers.put("delete", a -> DeleteOutcome.DELETED);
         handlers.put(
-                "getTask",
+                "task",
                 a -> Optional.of(TaskRecord.builder()
                         .id((Long) a[0])
                         .queueId(OTHER_QUEUE_ID)
@@ -529,12 +528,12 @@ class DefaultAdminOpsTest {
 
         assertThat(ops.delete(7, 1)).isEqualTo(DeleteOutcome.DELETED);
 
-        assertThat(calls).containsExactly("getTask[7]", "delete[7, 1, ScheduleEffect[poll, occurrence 7, pause]]");
+        assertThat(calls).containsExactly("task[7]", "delete[7, 1, ScheduleEffect[poll, occurrence 7, pause]]");
     }
 
     @Test
     void aTaskThatCannotBeReadCanStillBeCancelledAndDeleted() {
-        handlers.put("getTask", a -> {
+        handlers.put("task", a -> {
             throw new UnreadableTaskException(
                     (Long) a[0], "task " + a[0] + " has a stored value that cannot be read", null);
         });
@@ -544,32 +543,32 @@ class DefaultAdminOpsTest {
         assertThat(ops.cancel(7, 1, "stop")).isEqualTo(CancelOutcome.CANCELLED);
         assertThat(ops.delete(7, 2)).isEqualTo(DeleteOutcome.DELETED);
 
-        assertThat(calls).containsExactly("getTask[7]", "cancel[7, 1, stop, null]", "getTask[7]", "delete[7, 2, null]");
+        assertThat(calls).containsExactly("task[7]", "cancel[7, 1, stop, null]", "task[7]", "delete[7, 2, null]");
     }
 
     @Test
     void cancelOfAnOrdinaryTaskDoesNotTouchSchedules() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
-        handlers.put("getTask", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
+        handlers.put("task", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
 
         ops.cancel(7, 1, "stop");
 
-        assertThat(calls).containsExactly("getTask[7]", "cancel[7, 1, stop, null]");
+        assertThat(calls).containsExactly("task[7]", "cancel[7, 1, stop, null]");
     }
 
     @Test
     void cancelRequestedOnARunningTaskPassesNoEffect() {
         handlers.put("cancel", a -> CancelOutcome.REQUESTED);
-        handlers.put("getTask", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
+        handlers.put("task", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
 
         assertThat(ops.cancel(7, 1, "stop")).isEqualTo(CancelOutcome.REQUESTED);
-        assertThat(calls).containsExactly("getTask[7]", "cancel[7, 1, stop, null]");
+        assertThat(calls).containsExactly("task[7]", "cancel[7, 1, stop, null]");
     }
 
     @Test
     void cancelRejectsAReasonLongerThan512CharactersWithoutCallingTheStore() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
-        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("task", a -> Optional.empty());
 
         assertThatThrownBy(() -> ops.cancel(1, 2, "x".repeat(513))).isInstanceOf(TaskValidationException.class);
         assertThat(calls).isEmpty();
@@ -638,7 +637,7 @@ class DefaultAdminOpsTest {
         assertThat(views).hasSize(2);
         var nightly = views.get(0);
         assertThat(nightly.id()).isEqualTo("nightly");
-        assertThat(nightly.type()).isEqualTo("send-mail");
+        assertThat(nightly.typeName()).isEqualTo("send-mail");
         assertThat(nightly.queue()).isEqualTo("Q:OTHER");
         assertThat(nightly.account()).isEqualTo("acme");
         assertThat(nightly.cron()).isEqualTo("0 2 * * *");

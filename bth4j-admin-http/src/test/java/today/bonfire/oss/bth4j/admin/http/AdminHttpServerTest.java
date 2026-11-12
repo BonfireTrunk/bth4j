@@ -908,7 +908,7 @@ class AdminHttpServerTest {
                 .containsEntry("maxAttempts", 3L)
                 .containsKeys(
                         "payloadVersion",
-                        "due",
+                        "dueAt",
                         "stateChangedAt",
                         "claimedAt",
                         "leaseUntil",
@@ -1011,7 +1011,7 @@ class AdminHttpServerTest {
                 .containsEntry("overlap", "SKIP")
                 .doesNotContainKey("catchUpMaxFires")
                 .containsEntry("maxRunTime", "PT10M")
-                .containsEntry("nextFire", "2026-02-01T00:00:00Z");
+                .containsEntry("nextFireAt", "2026-02-01T00:00:00Z");
         assertThat(jsonList(get("/api/v1/runners", login)).get(0))
                 .containsEntry("id", 2L)
                 .containsEntry("label", "w2");
@@ -1062,9 +1062,9 @@ class AdminHttpServerTest {
         var runners = jsonList(get("/api/v1/runners", viewer()));
         assertThat(runners).hasSize(2);
         assertThat(runners.getFirst())
-                .containsOnlyKeys("id", "label", "startedAt", "lastSeen", "running", "accepting", "queues", "types")
+                .containsOnlyKeys("id", "label", "startedAt", "lastSeenAt", "running", "accepting", "queues", "types")
                 .containsEntry("accepting", true)
-                .containsEntry("lastSeen", "2026-02-01T00:00:00Z")
+                .containsEntry("lastSeenAt", "2026-02-01T00:00:00Z")
                 .containsEntry("queues", List.of("default", "mail"))
                 .containsEntry("types", List.of("export", "send-mail"));
         assertThat(runners.get(1))

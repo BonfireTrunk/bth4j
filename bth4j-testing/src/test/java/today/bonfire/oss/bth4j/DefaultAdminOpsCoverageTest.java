@@ -54,7 +54,7 @@ class DefaultAdminOpsCoverageTest {
                 .id(store.allocateIds(1))
                 .queueId(otherQueue)
                 .typeId(type)
-                .due(clock.instant().plusSeconds(1))
+                .dueAt(clock.instant().plusSeconds(1))
                 .build());
 
         assertThat(admin.unservedWork()).containsExactly(new UnservedWork("main", null, 2));

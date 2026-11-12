@@ -20,8 +20,8 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 public interface ExecutionStore extends TaskStore {
 
     /**
-     * Stores a new task in state QUEUED, or SCHEDULED when {@link TaskRecord#due()} is in the future. The
-     * store sets {@code due} to its own time when it is null, and sets {@code stateChanged}.
+     * Stores a new task in state QUEUED, or SCHEDULED when {@link TaskRecord#dueAt()} is in the future. The
+     * store sets {@code dueAt} to its own time when it is null, and sets {@code stateChanged}.
      * <p>
      * The fields a producer sets (id, revision, queue, type, payload version, max attempts, created, due,
      * payload, account, headers, unique key, key keep, retry policy, schedule, retry-of, start-by and max run
@@ -55,10 +55,10 @@ public interface ExecutionStore extends TaskStore {
      * In a second pass in the same order, only filled grants may claim more, up to their cap minus what
      * they already took and the remaining count.
      * <p>
-     * Within each queue tasks are read by {@code (due, id)}; a store may order equal-due tasks by the id's
+     * Within each queue tasks are read by {@code (dueAt, id)}; a store may order equal-due tasks by the id's
      * decimal text (the Redis store does). Tasks outside {@link ClaimRequest#knownTypeIds()} are left
      * unchanged, including their due time; null accepts every type. Each claim adds one to {@code attempts},
-     * sets {@code claimedAt} and keeps {@code due}, returning the new revision, lease and runner.
+     * sets {@code claimedAt} and keeps {@code dueAt}, returning the new revision, lease and runner.
      * <p>
      * A claimed task with a stored value that cannot be read is left out of the result, and its lease ends at
      * once, so that {@link MaintenanceStore#reclaim} hands it to maintenance, which ends it DEAD. The other tasks
@@ -119,12 +119,12 @@ public interface ExecutionStore extends TaskStore {
             long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead, ScheduleEffect effect);
 
     /**
-     * Moves a LEASED task to SCHEDULED for {@code due} and gives the attempt back.
+     * Moves a LEASED task to SCHEDULED for {@code dueAt} and gives the attempt back.
      *
-     * @param due not null
+     * @param dueAt not null
      * @return false when the revision did not match
      */
-    boolean reschedule(long id, int revision, Instant due);
+    boolean reschedule(long id, int revision, Instant dueAt);
 
     /**
      * Returns a LEASED task to its queue with its due time unchanged and gives the attempt back.

@@ -310,7 +310,7 @@ class RecurringTaskService extends CustomThread {
                 .maxAttempts(def.maxAttempts())
                 .maxRunTime(def.maxRunTime())
                 .createdAt(clock.instant())
-                .due(d.fireAt())
+                .dueAt(d.fireAt())
                 .encodedPayload(def.encodedPayload())
                 .account(def.account())
                 .scheduleId(d.scheduleId());
@@ -325,7 +325,7 @@ class RecurringTaskService extends CustomThread {
         if (committed) {
             if (def.overlapSkip()
                     && inspection != null
-                    && inspection.getTask(occurrence.id()).isEmpty()) {
+                    && inspection.task(occurrence.id()).isEmpty()) {
                 var detail = "schedule " + d.scheduleId() + " skipped its fire at " + d.fireAt()
                         + ": the previous occurrence has not finished";
                 log.info(detail);

@@ -591,7 +591,7 @@ public final class SqliteTaskStore implements FullStore {
     }
 
     private Object[] insertValues(TaskRecord t, long now) {
-        var due = t.due() == null ? now : t.due().toEpochMilli();
+        var due = t.dueAt() == null ? now : t.dueAt().toEpochMilli();
         return new Object[] {
             t.id(),
             t.revision(),
@@ -850,7 +850,7 @@ public final class SqliteTaskStore implements FullStore {
      * new next fire time too and stays out of the due scan until it is resumed.
      */
     private void applyEffect(Connection c, ScheduleEffect effect) throws SQLException {
-        int changed = effect.pauses()
+        int changed = effect.isPause()
                 ? update(
                         c,
                         "UPDATE " + schedule + " SET paused = 1, occurrence_id = NULL"
@@ -1303,7 +1303,7 @@ public final class SqliteTaskStore implements FullStore {
     // ---- inspection ----------------------------------------------------------------------------------
 
     @Override
-    public Optional<TaskRecord> getTask(long id) {
+    public Optional<TaskRecord> task(long id) {
         return withConnection(c -> Optional.ofNullable(queryOne(
                 c, "SELECT * FROM " + task + " WHERE id = ? AND state < " + KEY_ONLY, SqliteTaskStore::read, id)));
     }
@@ -1616,7 +1616,7 @@ public final class SqliteTaskStore implements FullStore {
                 .attempts(rs.getInt("attempts"))
                 .maxAttempts(rs.getInt("max_attempts"))
                 .createdAt(getInstant(rs, "created"))
-                .due(getInstant(rs, "due"))
+                .dueAt(getInstant(rs, "due"))
                 .stateChangedAt(getInstant(rs, "state_changed"))
                 .encodedPayload(rs.getString("data"))
                 .runnerId(getInteger(rs, "worker_id"))

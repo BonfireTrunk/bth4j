@@ -15,7 +15,7 @@ public interface TaskContext {
     long id();
 
     /** @return the current attempt, starting at 1 */
-    int attempt();
+    int attemptNumber();
 
     Map<String, String> headers();
 
@@ -23,7 +23,7 @@ public interface TaskContext {
     Clock clock();
 
     /** @return true when an operator asked for this task to stop */
-    boolean cancelRequested();
+    boolean isCancelRequested();
 
     /**
      * Checks for cancellation or a known lost lease. After lease loss the old body can keep running until
@@ -34,7 +34,7 @@ public interface TaskContext {
      * result or failure still goes through the store's revision fence and can be applied before takeover.
      *
      * @throws TaskLeaseLostException when the runner knows the lease was lost
-     * @throws TaskCancelledException when {@link #cancelRequested()} is true, which ends the task as cancelled
+     * @throws TaskCancelledException when {@link #isCancelRequested()} is true, which ends the task as cancelled
      */
     void checkCancelled();
 

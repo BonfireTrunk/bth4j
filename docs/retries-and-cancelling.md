@@ -128,7 +128,7 @@ sequenceDiagram
     Note over Store,Runner: the next lease renewal, within a third of leaseDuration
     Runner->>Store: renew the lease
     Store-->>Runner: a cancel is requested
-    Runner->>Proc: ctx.cancelRequested() now shows the request
+    Runner->>Proc: ctx.isCancelRequested() now shows the request
     Proc->>Proc: ctx.checkCancelled() throws TaskCancelledException
     Proc-->>Runner: the processor stops
     Runner->>Store: the task ends CANCELLED
@@ -140,7 +140,7 @@ The processor decides how to stop:
 
 | What | Effect |
 |---|---|
-| `ctx.cancelRequested()` | shows the request |
+| `ctx.isCancelRequested()` | shows the request |
 | `ctx.checkCancelled()` | throws `TaskCancelledException`, which ends the task CANCELLED |
 | A task type declared with `withInterruptOnCancel()` | its thread is also interrupted once per attempt, so sleeps and blocking calls wake up; the exception that follows is treated as the cancellation |
 
@@ -163,7 +163,7 @@ runner.registry().register(EXPORT, (ctx, export) -> {
 |---|---|
 | The processor throws any exception, also a `TaskUnrecoverableException` or a `TaskRescheduleException` | The task ends CANCELLED. A body that reschedules itself every attempt can still be cancelled. |
 | The processor ignores the cancellation and returns normally, and the revision fence still accepts it | The task ends SUCCEEDED. The request is not applied after a normal return. |
-| The request reaches the store after the last renewal of an attempt that then fails | The request stays on the task when it is retried, so the next attempt starts with `cancelRequested()` true. |
+| The request reaches the store after the last renewal of an attempt that then fails | The request stays on the task when it is retried, so the next attempt starts with `isCancelRequested()` true. |
 | The runner dies while the cancel is pending | Maintenance ends the task CANCELLED when its lease expires, instead of retrying it. |
 
 ### Lease loss

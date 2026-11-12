@@ -410,7 +410,7 @@ class BackgroundRunnerCoverageTest {
             runner.start();
             long id = runner.client().enqueue(TaskRequest.of(type).build()).id();
             assertThat(claimEntered.await(5, TimeUnit.SECONDS)).isTrue();
-            assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.LEASED);
+            assertThat(store.task(id).orElseThrow().state()).isEqualTo(TaskState.LEASED);
 
             assertThat(runner.drain(Duration.ofMillis(200))).isFalse();
             assertThat(bodyStarted.getCount()).isEqualTo(1);
@@ -419,7 +419,7 @@ class BackgroundRunnerCoverageTest {
 
             assertThat(runner.drain(Duration.ofSeconds(5))).isTrue();
             assertThat(bodyStarted.getCount()).isZero();
-            assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+            assertThat(store.task(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
         } finally {
             claimRelease.countDown();
             runner.stop();

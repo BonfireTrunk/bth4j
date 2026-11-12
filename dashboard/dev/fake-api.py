@@ -40,7 +40,7 @@ def make_tasks():
         t = {
             "id": tid, "revision": str(1 + i % 5), "queue": qnames[i % 3], "type": ["send-mail", "build-report", "sync-account"][i % 3],
             "payloadVersion": 1, "state": state, "attempts": 1 if state != "QUEUED" else 0, "maxAttempts": 5,
-            "createdAt": iso(-86400 + i * 600), "due": iso(-86000 + i * 600), "stateChangedAt": iso(-3600 + i * 20),
+            "createdAt": iso(-86400 + i * 600), "dueAt": iso(-86000 + i * 600), "stateChangedAt": iso(-3600 + i * 20),
             "runnerId": 7 if state == "LEASED" else None, "leaseUntil": iso(30) if state == "LEASED" else None,
             "claimedAt": iso(-40) if state in ("LEASED", "SUCCEEDED", "DEAD") else None,
             "account": "acme" if i % 2 else None, "headers": {"trace": "t-%d" % i} if i % 4 == 0 else {},
@@ -69,13 +69,13 @@ def counts():
 
 schedules = {
     "nightly-report": {"id": "nightly-report", "type": "build-report", "queue": "reports", "account": None, "cron": "0 0 2 * * *", "zone": "Europe/Berlin",
-                       "misfire": "CATCH_UP", "catchUpMaxFires": 3, "fixedDelay": None, "overlap": "SKIP", "paused": False, "nextFire": iso(7200), "maxAttempts": 3},
+                       "misfire": "CATCH_UP", "catchUpMaxFires": 3, "fixedDelay": None, "overlap": "SKIP", "paused": False, "nextFireAt": iso(7200), "maxAttempts": 3},
     "mail-pump": {"id": "mail-pump", "type": "send-mail", "queue": "mail", "account": None, "cron": None, "zone": None,
-                  "misfire": "SKIP", "fixedDelay": "PT30S", "overlap": "ALLOW", "paused": True, "nextFire": iso(25), "maxAttempts": 5},
+                  "misfire": "SKIP", "fixedDelay": "PT30S", "overlap": "ALLOW", "paused": True, "nextFireAt": iso(25), "maxAttempts": 5},
 }
 runners = [
-    {"id": 7, "label": "host-a/1234", "startedAt": iso(-7200), "lastSeen": iso(-2), "running": 3, "accepting": True, "queues": ["default", "mail"], "types": ["send-mail"]},
-    {"id": 8, "label": "host-b/9876", "startedAt": iso(-9000), "lastSeen": iso(-300), "running": 0, "accepting": False, "queues": ["reports"], "types": ["build-report"]},
+    {"id": 7, "label": "host-a/1234", "startedAt": iso(-7200), "lastSeenAt": iso(-2), "running": 3, "accepting": True, "queues": ["default", "mail"], "types": ["send-mail"]},
+    {"id": 8, "label": "host-b/9876", "startedAt": iso(-9000), "lastSeenAt": iso(-300), "running": 0, "accepting": False, "queues": ["reports"], "types": ["build-report"]},
 ]
 issues = [
     {"at": iso(-600), "kind": "unknown-type", "detail": "No handler for type 'legacy-export'", "taskId": str(BASE_ID + 3)},

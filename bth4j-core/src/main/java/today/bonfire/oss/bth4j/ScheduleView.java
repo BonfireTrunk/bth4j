@@ -11,7 +11,7 @@ import java.time.Instant;
  */
 public record ScheduleView(
         String id,
-        String type,
+        String typeName,
         String queue,
         String account,
         String cron,

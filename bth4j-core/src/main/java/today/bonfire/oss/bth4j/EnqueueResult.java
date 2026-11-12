@@ -17,7 +17,7 @@ public sealed interface EnqueueResult {
         };
     }
 
-    default boolean accepted() {
+    default boolean isAccepted() {
         return this instanceof Accepted;
     }
 }

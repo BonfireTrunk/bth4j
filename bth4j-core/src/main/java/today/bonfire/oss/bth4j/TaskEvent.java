@@ -46,7 +46,7 @@ public interface TaskEvent {
     record Died(TaskView task, Throwable error, String reason, Outcome outcome) implements TaskEvent {}
 
     /** The processor asked for the task to run again later without counting the attempt. */
-    record Rescheduled(TaskView task, Instant due, Outcome outcome) implements TaskEvent {}
+    record Rescheduled(TaskView task, Instant dueAt, Outcome outcome) implements TaskEvent {}
 
     /** The task ended as cancelled. */
     record Cancelled(TaskView task, String reason, Outcome outcome) implements TaskEvent {}

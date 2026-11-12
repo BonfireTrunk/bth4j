@@ -85,7 +85,7 @@ class SqliteTransactionTest {
     }
 
     private TaskRecord get(long id) {
-        return store.getTask(id).orElseThrow();
+        return store.task(id).orElseThrow();
     }
 
     private List<TaskRecord> claim(int count) {
@@ -248,7 +248,7 @@ class SqliteTransactionTest {
             var stored = task().build();
             assertThat(store.enqueue(stored)).isEqualTo(EnqueueOutcome.STORED);
 
-            assertThat(pooled.getTask(stored.id())).isPresent();
+            assertThat(pooled.task(stored.id())).isPresent();
             assertThat(pooled.counts().get(queue).queued()).isEqualTo(1);
         }
     }
@@ -322,7 +322,7 @@ class SqliteTransactionTest {
             healWrites();
         }
 
-        batch.forEach(t -> assertThat(store.getTask(t.id())).isEmpty());
+        batch.forEach(t -> assertThat(store.task(t.id())).isEmpty());
         assertThat(store.enqueueAll(batch)).containsOnly(EnqueueOutcome.STORED);
     }
 
@@ -389,11 +389,11 @@ class SqliteTransactionTest {
         assertThat(get(o.leased().id()).revision()).isEqualTo(o.leased().revision());
         assertThat(occurrenceOf("ack")).isEqualTo(o.leased().id());
         assertThat(store.nextFireTimes()).containsEntry("ack", o.fireAt().plusSeconds(1));
-        assertThat(effect.applied()).isFalse();
+        assertThat(effect.isApplied()).isFalse();
 
         assertThat(store.ack(o.leased().id(), o.leased().revision(), true, true, effect))
                 .isTrue();
-        assertThat(effect.applied()).isTrue();
+        assertThat(effect.isApplied()).isTrue();
         assertThat(store.nextFireTimes()).containsEntry("ack", o.fireAt().plusSeconds(500));
         assertThat(occurrenceOf("ack")).isNull();
     }
@@ -417,11 +417,11 @@ class SqliteTransactionTest {
         assertThat(after.failures()).isNull();
         assertThat(occurrenceOf("dies")).isEqualTo(o.leased().id());
         assertThat(store.schedules().getFirst().definition().paused()).isFalse();
-        assertThat(effect.applied()).isFalse();
+        assertThat(effect.isApplied()).isFalse();
 
         assertThat(store.fail(o.leased().id(), o.leased().revision(), failure(1), null, true, effect))
                 .isEqualTo(FailOutcome.DEAD);
-        assertThat(effect.applied()).isTrue();
+        assertThat(effect.isApplied()).isTrue();
         assertThat(store.schedules().getFirst().definition().paused()).isTrue();
         assertThat(occurrenceOf("dies")).isNull();
     }
@@ -442,7 +442,7 @@ class SqliteTransactionTest {
             healWrites();
         }
 
-        assertThat(store.getTask(occurrence.id())).isEmpty();
+        assertThat(store.task(occurrence.id())).isEmpty();
         assertThat(occurrenceOf("commit")).isNull();
         assertThat(store.nextFireTimes()).containsEntry("commit", fireAt);
         assertThat(store.dueSchedules(clock.instant(), 10)).hasSize(1);
@@ -463,19 +463,19 @@ class SqliteTransactionTest {
         try (var c = database.dataSource().getConnection()) {
             c.setAutoCommit(false);
             assertThat(store.enqueue(c, rolledBack)).isEqualTo(EnqueueOutcome.STORED);
-            assertThat(store.getTask(rolledBack.id())).isEmpty();
+            assertThat(store.task(rolledBack.id())).isEmpty();
             c.rollback();
 
             assertThat(store.enqueue(c, committed)).isEqualTo(EnqueueOutcome.STORED);
             assertThat(store.enqueue(c, committed)).isEqualTo(EnqueueOutcome.EXISTS);
             assertThat(store.enqueue(c, other)).isEqualTo(new EnqueueOutcome.DuplicateKey(committed.id()));
-            assertThat(store.getTask(committed.id())).isEmpty();
+            assertThat(store.task(committed.id())).isEmpty();
             c.commit();
             assertThat(c.isClosed()).isFalse();
             c.setAutoCommit(true);
         }
 
-        assertThat(store.getTask(rolledBack.id())).isEmpty();
+        assertThat(store.task(rolledBack.id())).isEmpty();
         assertThat(get(committed.id()).state()).isEqualTo(TaskState.QUEUED);
         var unused = task().build();
         assertThatThrownBy(() -> store.enqueue(null, unused)).isInstanceOf(TaskValidationException.class);
@@ -495,7 +495,7 @@ class SqliteTransactionTest {
             c.setAutoCommit(true);
         }
 
-        assertThat(store.getTask(rolledBack.id())).isEmpty();
+        assertThat(store.task(rolledBack.id())).isEmpty();
         assertThat(store.enqueue(rolledBack)).isEqualTo(EnqueueOutcome.STORED);
     }
 
@@ -550,7 +550,7 @@ class SqliteTransactionTest {
                 .isInstanceOf(TaskStoreException.class)
                 .hasMessageContaining("did not settle");
         healWrites();
-        assertThat(store.getTask(never.id())).isEmpty();
+        assertThat(store.task(never.id())).isEmpty();
         assertThat(get(third.id()).state()).isEqualTo(TaskState.QUEUED);
     }
 
@@ -593,10 +593,11 @@ class SqliteTransactionTest {
     @Test
     void everyTimeComesFromTheStoreClock() {
         var now = clock.instant();
-        var t = enqueueAndClaim(task().createdAt(null).due(null).uniqueKey("k").keyKeep(Duration.ofMinutes(1)));
+        var t = enqueueAndClaim(
+                task().createdAt(null).dueAt(null).uniqueKey("k").keyKeep(Duration.ofMinutes(1)));
 
         assertThat(t.createdAt()).isEqualTo(now);
-        assertThat(t.due()).isEqualTo(now);
+        assertThat(t.dueAt()).isEqualTo(now);
         assertThat(t.stateChangedAt()).isEqualTo(now);
         assertThat(t.claimedAt()).isEqualTo(now);
         assertThat(t.leaseUntil()).isEqualTo(now.plus(LEASE));
@@ -605,7 +606,7 @@ class SqliteTransactionTest {
                 .findFirst()
                 .orElseThrow();
         assertThat(runner.startedAt()).isEqualTo(now);
-        assertThat(runner.lastSeen()).isEqualTo(now);
+        assertThat(runner.lastSeenAt()).isEqualTo(now);
 
         clock.advance(Duration.ofSeconds(5));
         var later = clock.instant();
@@ -614,7 +615,7 @@ class SqliteTransactionTest {
                 .singleElement()
                 .satisfies(s -> assertThat(s.owned()).isTrue());
         assertThat(get(t.id()).leaseUntil()).isEqualTo(later.plus(LEASE));
-        assertThat(store.runners().getFirst().lastSeen()).isEqualTo(later);
+        assertThat(store.runners().getFirst().lastSeenAt()).isEqualTo(later);
         assertThat(store.runners().getFirst().startedAt()).isEqualTo(now);
 
         assertThat(store.ack(t.id(), t.revision(), true, true, null)).isTrue();
@@ -626,7 +627,7 @@ class SqliteTransactionTest {
         var retryAt = later.plusSeconds(60);
         assertThat(store.fail(retried.id(), retried.revision(), failure(1), retryAt, true, null))
                 .isEqualTo(FailOutcome.RETRY);
-        assertThat(get(retried.id()).due()).isEqualTo(retryAt);
+        assertThat(get(retried.id()).dueAt()).isEqualTo(retryAt);
         assertThat(get(retried.id()).stateChangedAt()).isEqualTo(later);
         clock.advance(Duration.ofSeconds(61));
         assertThat(store.promote(10).moved()).isEqualTo(1);
@@ -727,7 +728,7 @@ class SqliteTransactionTest {
         var row = row(t.id());
         assertThat(row.state()).isEqualTo(7);
 
-        assertThat(store.getTask(t.id())).isEmpty();
+        assertThat(store.task(t.id())).isEmpty();
         assertThat(store.taskByKey("gone")).isEmpty();
         assertThat(store.counts().get(queue).succeeded()).isZero();
         assertThat(store.delete(t.id(), row.revision(), null)).isEqualTo(DeleteOutcome.NOT_FOUND);

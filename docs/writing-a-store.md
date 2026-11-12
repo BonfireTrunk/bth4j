@@ -45,7 +45,7 @@ An arrow means "extends".
 | `ExecutionStore` | `enqueue`, `enqueueAll`, `claim`, `renew`, `ack`, `fail`, `failExpired`, `finishCancelled`, `reschedule`, `unclaim`, `saveSteps`, `progress` |
 | `MaintenanceStore` | `promote`, `reclaim`, `expire`, `purge`, `purgeRunners`, `releaseKeys`, `nextDue` |
 | `ScheduleStore` | `putSchedule`, `deleteSchedule`, `nextFireTimes`, `schedules`, `dueSchedules`, `commitSchedule`, `pauseSchedule`, `resumeSchedule`, `triggerSchedule`, `setNextFire` |
-| `InspectionStore` | `getTask`, `taskByKey`, `holdsKey`, `counts`, `tasks` (by state, paged by an opaque cursor on `(due, id)` for QUEUED and SCHEDULED and on `(stateChangedAt, id)` for the other states) |
+| `InspectionStore` | `task`, `taskByKey`, `holdsKey`, `counts`, `tasks` (by state, paged by an opaque cursor on `(dueAt, id)` for QUEUED and SCHEDULED and on `(stateChangedAt, id)` for the other states) |
 | `AdminStore` | `cancel`, `retry`, `delete`, `pauseQueue`, `queues`, `heartbeat`, `runners` |
 
 ## What a store needs from its engine
@@ -72,7 +72,7 @@ See [Redis](stores/redis.md), [PostgreSQL](stores/postgresql.md) and [SQLite](st
 | Rule | What it means |
 |---|---|
 | Never write a null field | Steps and failures are encoded to JSON by the core (`RecordJson`). The store only fences and writes the whole field, so step logic is not duplicated per engine. |
-| Use the store's clock | Time for `due` defaults, leases, promote, reclaim and retention is the store's clock. |
+| Use the store's clock | Time for `dueAt` defaults, leases, promote, reclaim and retention is the store's clock. |
 | Be safe under concurrency | Calls are made concurrently from many threads and processes. Each must be atomic and safe to repeat. |
 | Throw `TaskStoreException` | A failure to reach the engine throws `TaskStoreException`. Callers retry on their next cycle. A stored task that cannot be read throws `UnreadableTaskException`, which is not a store failure: a retry would fail the same way. |
 | Check the schema in `init()` | `init()` creates the schema or verifies the store's schema version (`StoreInfo.schemaVersion`) and refuses another one. |
@@ -87,7 +87,7 @@ See [Redis](stores/redis.md), [PostgreSQL](stores/postgresql.md) and [SQLite](st
 |---|---|
 | `QueueGrant(queueId, share, cap)` | requires `0 <= share <= cap` |
 | `grants` | must be non-empty and contain no duplicate queue ids |
-| Passes | The store performs both passes atomically across all grants, claiming each queue by `(due, id)`. Redis may compare equal-due ids as decimal text. |
+| Passes | The store performs both passes atomically across all grants, claiming each queue by `(dueAt, id)`. Redis may compare equal-due ids as decimal text. |
 | Total | Total claims never exceed `count`. |
 | Without policies | Each queue has `share = cap = count`, preserving queue preference order. |
 | Unknown types | They stay unchanged, including their due times. A null `knownTypeIds` accepts every type. |
