@@ -532,9 +532,9 @@ class TaskExecutionTest {
         execution.run();
 
         assertThat(lastOutcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN);
-        var schedule = store.recurringDefinitions().getFirst();
+        var schedule = store.schedules().getFirst();
         assertThat(schedule.definition().paused()).isFalse();
-        assertThat(schedule.nextFire()).isAfter(clock.instant().plus(Duration.ofDays(365)));
+        assertThat(schedule.nextFireAt()).isAfter(clock.instant().plus(Duration.ofDays(365)));
         assertThat(storeCalls).filteredOn(c -> !c.equals("getTask")).isEmpty();
     }
 
@@ -549,10 +549,10 @@ class TaskExecutionTest {
         execution.run();
 
         assertThat(lastOutcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN);
-        var schedule = store.recurringDefinitions().getFirst();
+        var schedule = store.schedules().getFirst();
         if (transition == Transition.ACK) {
             assertThat(schedule.definition().paused()).isFalse();
-            assertThat(schedule.nextFire()).isEqualTo(clock.instant().plus(Duration.ofMinutes(1)));
+            assertThat(schedule.nextFireAt()).isEqualTo(clock.instant().plus(Duration.ofMinutes(1)));
         } else {
             assertThat(schedule.definition().paused()).isTrue();
         }

@@ -638,22 +638,24 @@ public abstract class RunnerContract {
         startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {}));
         var before = Instant.now();
 
-        var next = client.putSchedule(ScheduleDefinition.of("every-minute", VOID_TYPE, "* * * * *", Overlap.ALLOW));
+        var put = client.putSchedule(ScheduleDefinition.of("every-minute", VOID_TYPE, "* * * * *", Overlap.ALLOW));
 
-        assertThat(next)
+        assertThat(put.outcome()).isEqualTo(PutScheduleOutcome.CREATED);
+        assertThat(put.nextFireAt())
                 .isAfter(before.minusSeconds(1))
                 .isBeforeOrEqualTo(Instant.now().plusSeconds(61));
-        assertThat(client.schedules()).containsKey("every-minute");
-        assertThat(client.schedules().get("every-minute")).isAfter(before.minusSeconds(1));
+        assertThat(client.nextFireTimes()).containsKey("every-minute");
+        assertThat(client.nextFireTimes().get("every-minute")).isAfter(before.minusSeconds(1));
 
         var yearly = ScheduleDefinition.of("yearly", VOID_TYPE, "0 0 1 1 *", Overlap.ALLOW);
-        var yearlyNext = client.putSchedule(yearly);
-        assertThat(client.putSchedule(yearly)).isEqualTo(yearlyNext);
-        assertThat(client.schedules().get("yearly")).isEqualTo(yearlyNext);
+        var yearlyNext = client.putSchedule(yearly).nextFireAt();
+        assertThat(client.putSchedule(yearly))
+                .isEqualTo(new PutScheduleResult(PutScheduleOutcome.UNCHANGED, yearlyNext));
+        assertThat(client.nextFireTimes().get("yearly")).isEqualTo(yearlyNext);
 
         assertThat(client.deleteSchedule("yearly")).isTrue();
         assertThat(client.deleteSchedule("yearly")).isFalse();
-        assertThat(client.schedules()).doesNotContainKey("yearly");
+        assertThat(client.nextFireTimes()).doesNotContainKey("yearly");
     }
 
     @Test
@@ -1257,7 +1259,7 @@ public abstract class RunnerContract {
                 .findFirst()
                 .orElseThrow();
         assertThat(tick.paused()).isFalse();
-        assertThat(tick.nextFire()).isAfter(Instant.now().minusSeconds(2));
+        assertThat(tick.nextFireAt()).isAfter(Instant.now().minusSeconds(2));
     }
 
     @Test
@@ -1289,18 +1291,18 @@ public abstract class RunnerContract {
         startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));
         var tick = ScheduleDefinition.every("tick", VOID_TYPE, Duration.ofHours(1));
         client.putSchedule(tick);
-        store.triggerRecurring("tick", Instant.now());
+        store.triggerSchedule("tick", Instant.now());
         await("the triggered run", () -> runs.get() >= 1);
         await("the re-arm one delay ahead", () -> {
-            var next = client.schedules().get("tick");
+            var next = client.nextFireTimes().get("tick");
             return next.isAfter(Instant.now().plus(Duration.ofMinutes(30)))
                     && next.isBefore(Instant.now().plus(Duration.ofHours(2)));
         });
 
-        store.triggerRecurring("tick", Instant.now().plus(Duration.ofDays(36_500)));
+        store.triggerSchedule("tick", Instant.now().plus(Duration.ofDays(36_500)));
         client.putSchedule(tick);
 
-        assertThat(client.schedules().get("tick")).isBefore(Instant.now().plus(Duration.ofHours(2)));
+        assertThat(client.nextFireTimes().get("tick")).isBefore(Instant.now().plus(Duration.ofHours(2)));
     }
 
     @Test
@@ -1334,15 +1336,17 @@ public abstract class RunnerContract {
         var missed = registerLate(
                 "late-once",
                 cronAt(minute),
-                today.bonfire.oss.bth4j.spi.RecurringDefinition.MISFIRE_FIRE_ONCE_NOW,
+                today.bonfire.oss.bth4j.spi.StoredSchedule.MISFIRE_FIRE_ONCE_NOW,
                 0,
                 Duration.ofMinutes(10));
 
         await("one catch-up run", () -> dues.size() == 1);
-        await("a future fire time", () -> client.schedules().get("late-once").isAfter(Instant.now()));
+        await(
+                "a future fire time",
+                () -> client.nextFireTimes().get("late-once").isAfter(Instant.now()));
         pause(300);
         assertThat(dues).containsExactly(missed);
-        assertThat(client.schedules().get("late-once")).isEqualTo(latest.plus(Duration.ofHours(1)));
+        assertThat(client.nextFireTimes().get("late-once")).isEqualTo(latest.plus(Duration.ofHours(1)));
         assertThat(runner.issues()).anyMatch(i -> i.kind() == Issue.Kind.SCHEDULE_MISFIRE);
     }
 
@@ -1353,11 +1357,13 @@ public abstract class RunnerContract {
         registerLate(
                 "late-skip",
                 farCron(),
-                today.bonfire.oss.bth4j.spi.RecurringDefinition.MISFIRE_SKIP,
+                today.bonfire.oss.bth4j.spi.StoredSchedule.MISFIRE_SKIP,
                 0,
                 Duration.ofMinutes(10));
 
-        await("a future fire time", () -> client.schedules().get("late-skip").isAfter(Instant.now()));
+        await(
+                "a future fire time",
+                () -> client.nextFireTimes().get("late-skip").isAfter(Instant.now()));
         pause(300);
         assertThat(runs.get()).isZero();
         assertThat(client.tasks(TaskState.QUEUED, null, null, 10).items()).isEmpty();
@@ -1374,15 +1380,17 @@ public abstract class RunnerContract {
         registerLate(
                 "late-catch",
                 cronAt(minute),
-                today.bonfire.oss.bth4j.spi.RecurringDefinition.MISFIRE_CATCH_UP,
+                today.bonfire.oss.bth4j.spi.StoredSchedule.MISFIRE_CATCH_UP,
                 2,
                 Duration.ofHours(10));
 
         await("two catch-up runs", () -> dues.size() == 2);
-        await("a future fire time", () -> client.schedules().get("late-catch").isAfter(Instant.now()));
+        await(
+                "a future fire time",
+                () -> client.nextFireTimes().get("late-catch").isAfter(Instant.now()));
         pause(300);
         assertThat(dues).containsExactlyInAnyOrder(latest.minus(Duration.ofHours(1)), latest);
-        assertThat(client.schedules().get("late-catch")).isEqualTo(latest.plus(Duration.ofHours(1)));
+        assertThat(client.nextFireTimes().get("late-catch")).isEqualTo(latest.plus(Duration.ofHours(1)));
     }
 
     @Test
@@ -1409,7 +1417,7 @@ public abstract class RunnerContract {
                 .findFirst()
                 .orElseThrow();
         assertThat(guarded.overlap()).isEqualTo(Overlap.SKIP);
-        assertThat(guarded.nextFire()).isAfter(Instant.now());
+        assertThat(guarded.nextFireAt()).isAfter(Instant.now());
 
         release.countDown();
         await(
@@ -1433,7 +1441,7 @@ public abstract class RunnerContract {
         assertThat(view.zone()).isEqualTo("Asia/Kolkata");
         assertThat(view.misfire()).isEqualTo(Misfire.SKIP);
         assertThat(view.cron()).isEqualTo("30 9 * * *");
-        assertThat(view.nextFire().atZone(java.time.ZoneId.of("Asia/Kolkata")).getHour())
+        assertThat(view.nextFireAt().atZone(java.time.ZoneId.of("Asia/Kolkata")).getHour())
                 .isEqualTo(9);
 
         assertThat(runner.admin().pauseSchedule("kolkata", true)).isTrue();
@@ -1474,7 +1482,7 @@ public abstract class RunnerContract {
 
     /** @return the missed fire time the definition is stored with */
     private Instant registerLate(String id, String cron, String misfire, int catchUpMaxFires, Duration late) {
-        var def = new today.bonfire.oss.bth4j.spi.RecurringDefinition(
+        var def = new today.bonfire.oss.bth4j.spi.StoredSchedule(
                 id,
                 store.typeId(VOID_TYPE.name()),
                 1,
@@ -1493,7 +1501,7 @@ public abstract class RunnerContract {
                 0);
         var missed =
                 Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MILLIS).minus(late);
-        store.putRecurring(def, missed, missed);
+        store.putSchedule(def, missed, missed);
         return missed;
     }
 

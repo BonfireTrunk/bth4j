@@ -23,9 +23,8 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
-import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.StateCounts;
+import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 
@@ -370,9 +369,10 @@ public final class TaskClient {
      * such as a parked fixed-delay definition, resets it. A fixed-delay definition first fires one delay from
      * now.
      *
-     * @return the next fire time it has after the put: the stored one when it was kept
+     * @return whether the definition was created, changed or found unchanged, and the next fire time it has
+     *         after the put: the stored one when it was kept
      */
-    public <T> Instant putSchedule(ScheduleDefinition<T> definition) {
+    public <T> PutScheduleResult putSchedule(ScheduleDefinition<T> definition) {
         var now = clock.instant();
         Instant next;
         Instant keepUntil;
@@ -388,7 +388,7 @@ public final class TaskClient {
             keepUntil = Cron.next(definition.cron(), next, zone).orElse(next);
         }
         var type = definition.type();
-        var stored = new RecurringDefinition(
+        var stored = new StoredSchedule(
                 definition.id(),
                 names.typeId(type.name()),
                 type.payloadVersion(),
@@ -396,41 +396,40 @@ public final class TaskClient {
                 definition.account(),
                 definition.cron(),
                 definition.zone() == null ? null : definition.zone().getId(),
-                RecurringDefinition.misfireCode(definition.misfire()),
-                RecurringDefinition.misfireMaxFires(definition.misfire()),
-                definition.fixedDelay() == null ? null : definition.fixedDelay().toMillis(),
+                StoredSchedule.misfireCode(definition.misfire()),
+                StoredSchedule.misfireMaxFires(definition.misfire()),
+                definition.fixedDelay(),
                 definition.overlap() == Overlap.SKIP,
                 codecs.encode(type, definition.payload()),
                 definition.maxAttempts() != null ? definition.maxAttempts() : defaultMaxAttempts,
-                definition.maxRunTime() == null ? null : definition.maxRunTime().toMillis(),
+                definition.maxRunTime(),
                 false,
                 0);
-        var result = store.putRecurring(stored, next, keepUntil);
+        var result = store.putSchedule(stored, next, keepUntil);
         var outcome = result.outcome();
-        next = result.nextFire();
         var timing = definition.isFixedDelay() ? "every " + definition.fixedDelay() : definition.cron();
-        if (outcome == PutRecurringOutcome.UNCHANGED) {
+        if (outcome == PutScheduleOutcome.UNCHANGED) {
             log.debug("Schedule {} ({}) is registered already", definition.id(), timing);
         } else {
             log.info(
                     "{} schedule {} ({}) next at {}",
-                    outcome == PutRecurringOutcome.CREATED ? "Registered" : "Changed",
+                    outcome == PutScheduleOutcome.CREATED ? "Registered" : "Changed",
                     definition.id(),
                     timing,
-                    next);
+                    result.nextFireAt());
         }
-        return next;
+        return result;
     }
 
     /** @return true when a definition with that id existed */
     public boolean deleteSchedule(String id) {
         StoredText.requirePresent("schedule id", id);
-        return store.deleteRecurring(id);
+        return store.deleteSchedule(id);
     }
 
-    /** @return every definition's id with its next fire time */
-    public Map<String, Instant> schedules() {
-        return store.recurringSchedules();
+    /** @return every definition's id with its next fire time; {@link AdminOps#schedules()} lists the definitions */
+    public Map<String, Instant> nextFireTimes() {
+        return store.nextFireTimes();
     }
 
     /** @return the task with that id, in whatever state it is */

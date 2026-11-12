@@ -44,7 +44,7 @@ An arrow means "extends".
 | `TaskStore` | `info`, `init`, `allocateIds`, `allocateWorkerId`, `queueId`, `typeId`, `queueNames`, `typeNames` |
 | `ExecutionStore` | `enqueue`, `enqueueAll`, `claim`, `renew`, `ack`, `fail`, `failExpired`, `finishCancelled`, `reschedule`, `unclaim`, `saveSteps`, `progress` |
 | `MaintenanceStore` | `promote`, `reclaim`, `expire`, `purge`, `purgeWorkers`, `releaseKeys`, `nextDue` |
-| `ScheduleStore` | `putRecurring`, `deleteRecurring`, `recurringSchedules`, `recurringDefinitions`, `dueRecurring`, `commitRecurring`, `pauseRecurring`, `resumeRecurring`, `triggerRecurring`, `setNextFire` |
+| `ScheduleStore` | `putSchedule`, `deleteSchedule`, `nextFireTimes`, `schedules`, `dueSchedules`, `commitSchedule`, `pauseSchedule`, `resumeSchedule`, `triggerSchedule`, `setNextFire` |
 | `InspectionStore` | `getTask`, `taskByKey`, `holdsKey`, `counts`, `tasks` (by state, paged by an opaque cursor on `(due, id)` for QUEUED and SCHEDULED and on `(stateChangedAt, id)` for the other states) |
 | `AdminStore` | `cancel`, `retry`, `delete`, `pauseQueue`, `queues`, `heartbeat`, `workers` |
 
@@ -129,7 +129,7 @@ flowchart TD
 | `AdminStore.cancel`, `retry`, `delete` | Each answers in the same atomic step as the change, with the first reason that applies: no such task (`NOT_FOUND`), then another revision (`STALE`), then a state that refuses the change (`FINISHED`, `NOT_RETRYABLE` or `LEASED`). A key-only row, which is a removed task that still holds its key, is not a task. A `retry` that finds the task's unique key held by another task, which only damaged data can cause, throws `TaskStoreException` and changes nothing. |
 | `allocateWorkerId` | Creates accepting workers. |
 | `StoreArguments` | Holds the argument checks every store applies. Every time the library hands a store lies within `TaskRequest.MAX_TIME_FROM_NOW` of now. |
-| `ScheduleStore.triggerRecurring(scheduleId, fireAt)` | The operator's trigger. It marks the fire time it stores, and `dueRecurring` reports the mark as `DueSchedule.triggered()`, so that the runner creates the task however late it takes the fire up. The mark goes with the next write that replaces the fire time. |
+| `ScheduleStore.triggerSchedule(scheduleId, fireAt)` | The operator's trigger. It marks the fire time it stores, and `dueSchedules` reports the mark as `DueSchedule.triggered()`, so that the runner creates the task however late it takes the fire up. The mark goes with the next write that replaces the fire time. |
 | `StoreContract` | Covers these behaviors for every store implementation. |
 
 ## Testing your store

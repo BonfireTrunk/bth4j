@@ -42,6 +42,8 @@ import redis.clients.jedis.UnifiedJedis;
 import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.jedis.providers.PooledConnectionProvider;
 import today.bonfire.oss.bth4j.Loggers;
+import today.bonfire.oss.bth4j.PutScheduleOutcome;
+import today.bonfire.oss.bth4j.PutScheduleResult;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
@@ -55,13 +57,11 @@ import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
-import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
-import today.bonfire.oss.bth4j.spi.PutRecurringResult;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.RecordJson;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
+import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 
@@ -1650,23 +1650,23 @@ class RedisTaskStoreIT {
 
     // ---- schedules -----------------------------------------------------------------------------------
 
-    private RecurringDefinition definition(String id, String cron) {
-        return new RecurringDefinition(id, type, 2, queue, "acme", cron, "{\"d\":1}", 5, 0);
+    private StoredSchedule definition(String id, String cron) {
+        return new StoredSchedule(id, type, 2, queue, "acme", cron, "{\"d\":1}", 5, 0);
     }
 
-    private RecurringDefinition otherData(String id, String cron) {
-        return new RecurringDefinition(id, type, 2, queue, "acme", cron, "{\"d\":2}", 5, 0);
+    private StoredSchedule otherData(String id, String cron) {
+        return new StoredSchedule(id, type, 2, queue, "acme", cron, "{\"d\":2}", 5, 0);
     }
 
     @Test
     void recurringDefinitionsAreStoredListedAndDeleted() {
         var fire = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
 
-        store.putRecurring(definition("s", "* * * * *"), fire, fire);
+        store.putSchedule(definition("s", "* * * * *"), fire, fire);
 
-        assertThat(store.recurringSchedules()).containsEntry("s", fire);
-        assertThat(store.dueRecurring(fire.minusSeconds(1), 10)).isEmpty();
-        var due = store.dueRecurring(fire, 10).getFirst();
+        assertThat(store.nextFireTimes()).containsEntry("s", fire);
+        assertThat(store.dueSchedules(fire.minusSeconds(1), 10)).isEmpty();
+        var due = store.dueSchedules(fire, 10).getFirst();
         assertThat(due.scheduleId()).isEqualTo("s");
         assertThat(due.fireAt()).isEqualTo(fire);
         var d = due.definition();
@@ -1678,9 +1678,9 @@ class RedisTaskStoreIT {
         assertThat(d.encodedPayload()).isEqualTo("{\"d\":1}");
         assertThat(d.maxAttempts()).isEqualTo(5);
         assertThat(d.revision()).isPositive();
-        assertThat(store.deleteRecurring("s")).isTrue();
-        assertThat(store.deleteRecurring("s")).isFalse();
-        assertThat(store.recurringSchedules()).isEmpty();
+        assertThat(store.deleteSchedule("s")).isTrue();
+        assertThat(store.deleteSchedule("s")).isFalse();
+        assertThat(store.nextFireTimes()).isEmpty();
         assertThat(jedis.exists(keys.cronDefinition("s"))).isFalse();
     }
 
@@ -1688,45 +1688,45 @@ class RedisTaskStoreIT {
     void replacingADefinitionKeepsTheFireTimeOnlyWhenTheCronIsUnchanged() {
         var first = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
         var second = first.plusSeconds(500);
-        store.putRecurring(definition("s", "* * * * *"), first, first);
-        var rev1 = store.dueRecurring(first, 1).getFirst().definition().revision();
+        store.putSchedule(definition("s", "* * * * *"), first, first);
+        var rev1 = store.dueSchedules(first, 1).getFirst().definition().revision();
 
-        assertThat(store.putRecurring(definition("s", "* * * * *"), second, second))
-                .extracting(PutRecurringResult::outcome)
-                .isEqualTo(PutRecurringOutcome.UNCHANGED);
-        assertThat(store.recurringSchedules()).containsEntry("s", first);
-        assertThat(store.dueRecurring(first, 1).getFirst().definition().revision())
+        assertThat(store.putSchedule(definition("s", "* * * * *"), second, second))
+                .extracting(PutScheduleResult::outcome)
+                .isEqualTo(PutScheduleOutcome.UNCHANGED);
+        assertThat(store.nextFireTimes()).containsEntry("s", first);
+        assertThat(store.dueSchedules(first, 1).getFirst().definition().revision())
                 .isEqualTo(rev1);
-        assertThat(store.putRecurring(otherData("s", "* * * * *"), second, second))
-                .extracting(PutRecurringResult::outcome)
-                .isEqualTo(PutRecurringOutcome.CHANGED);
-        assertThat(store.recurringSchedules()).containsEntry("s", first);
-        var rev2 = store.dueRecurring(first, 1).getFirst().definition().revision();
-        assertThat(store.putRecurring(definition("s", "0 * * * *"), second, second))
-                .extracting(PutRecurringResult::outcome)
-                .isEqualTo(PutRecurringOutcome.CHANGED);
+        assertThat(store.putSchedule(otherData("s", "* * * * *"), second, second))
+                .extracting(PutScheduleResult::outcome)
+                .isEqualTo(PutScheduleOutcome.CHANGED);
+        assertThat(store.nextFireTimes()).containsEntry("s", first);
+        var rev2 = store.dueSchedules(first, 1).getFirst().definition().revision();
+        assertThat(store.putSchedule(definition("s", "0 * * * *"), second, second))
+                .extracting(PutScheduleResult::outcome)
+                .isEqualTo(PutScheduleOutcome.CHANGED);
 
         assertThat(rev2).isGreaterThan(rev1);
-        assertThat(store.recurringSchedules()).containsEntry("s", second);
+        assertThat(store.nextFireTimes()).containsEntry("s", second);
     }
 
     @Test
     void commitStoresTheOccurrenceScheduledAndAdvancesTheDefinitionOnce() {
         var fire = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MILLIS);
         var next = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
-        store.putRecurring(definition("s", "* * * * *"), fire, fire);
-        var due = store.dueRecurring(Instant.now(), 10).getFirst();
+        store.putSchedule(definition("s", "* * * * *"), fire, fire);
+        var due = store.dueSchedules(Instant.now(), 10).getFirst();
         var occurrence = task(50).scheduleId("s").due(fire).build();
 
-        assertThat(store.commitRecurring(due, next, occurrence)).isTrue();
+        assertThat(store.commitSchedule(due, next, occurrence)).isTrue();
 
         var stored = store.getTask(50).orElseThrow();
         assertThat(stored.state()).isEqualTo(TaskState.SCHEDULED);
         assertThat(stored.due()).isEqualTo(fire);
         assertThat(stored.scheduleId()).isEqualTo("s");
-        assertThat(store.recurringSchedules()).containsEntry("s", next);
+        assertThat(store.nextFireTimes()).containsEntry("s", next);
         assertThat(jedis.zscore(keys.scheduled(queue), "50")).isEqualTo((double) fire.toEpochMilli());
-        assertThat(store.commitRecurring(due, next.plusSeconds(60), task(51).build()))
+        assertThat(store.commitSchedule(due, next.plusSeconds(60), task(51).build()))
                 .isFalse();
         assertThat(store.getTask(51)).isEmpty();
         assertThat(store.promote(10).moved()).isEqualTo(1);
@@ -1735,16 +1735,16 @@ class RedisTaskStoreIT {
     @Test
     void commitIsRejectedForAReplacedOrDeletedDefinition() {
         var fire = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MILLIS);
-        store.putRecurring(definition("s", "* * * * *"), fire, fire);
-        var due = store.dueRecurring(Instant.now(), 10).getFirst();
-        store.putRecurring(otherData("s", "* * * * *"), fire, fire);
+        store.putSchedule(definition("s", "* * * * *"), fire, fire);
+        var due = store.dueSchedules(Instant.now(), 10).getFirst();
+        store.putSchedule(otherData("s", "* * * * *"), fire, fire);
 
-        assertThat(store.commitRecurring(due, fire.plusSeconds(60), task(60).build()))
+        assertThat(store.commitSchedule(due, fire.plusSeconds(60), task(60).build()))
                 .isFalse();
 
-        var fresh = store.dueRecurring(Instant.now(), 10).getFirst();
-        store.deleteRecurring("s");
-        assertThat(store.commitRecurring(fresh, fire.plusSeconds(60), task(61).build()))
+        var fresh = store.dueSchedules(Instant.now(), 10).getFirst();
+        store.deleteSchedule("s");
+        assertThat(store.commitSchedule(fresh, fire.plusSeconds(60), task(61).build()))
                 .isFalse();
         assertThat(store.getTask(60)).isEmpty();
         assertThat(store.getTask(61)).isEmpty();

@@ -21,6 +21,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import today.bonfire.oss.bth4j.PutScheduleOutcome;
 import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
@@ -31,12 +32,11 @@ import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
-import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StateCounts;
+import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.testing.MutableClock;
@@ -143,9 +143,24 @@ class SqliteTransactionTest {
         sql("DROP TRIGGER IF EXISTS " + prefix + "_boom");
     }
 
-    private RecurringDefinition fixedDelay(String id, long delayMs) {
-        return new RecurringDefinition(
-                id, type, 1, queue, null, null, null, null, 0, delayMs, false, null, 1, null, false, 0);
+    private StoredSchedule fixedDelay(String id, long delayMs) {
+        return new StoredSchedule(
+                id,
+                type,
+                1,
+                queue,
+                null,
+                null,
+                null,
+                null,
+                0,
+                Duration.ofMillis(delayMs),
+                false,
+                null,
+                1,
+                null,
+                false,
+                0);
     }
 
     // ---- the state a connection is returned in ----------------------------------------------------------
@@ -336,11 +351,11 @@ class SqliteTransactionTest {
 
     private Occurrence leasedOccurrenceOfFixedDelay(String scheduleId, String key) {
         var fireAt = clock.instant().minusSeconds(10);
-        store.putRecurring(fixedDelay(scheduleId, 60_000), fireAt, fireAt);
-        var due = store.dueRecurring(clock.instant(), 10).getFirst();
+        store.putSchedule(fixedDelay(scheduleId, 60_000), fireAt, fireAt);
+        var due = store.dueSchedules(clock.instant(), 10).getFirst();
         var builder = task();
         if (key != null) builder.uniqueKey(key);
-        assertThat(store.commitRecurring(due, fireAt.plusSeconds(1), builder.build()))
+        assertThat(store.commitSchedule(due, fireAt.plusSeconds(1), builder.build()))
                 .isTrue();
         assertThat(store.promote(10).moved()).isEqualTo(1);
         return new Occurrence(fireAt, due, claim(1).getFirst());
@@ -373,13 +388,13 @@ class SqliteTransactionTest {
         assertThat(get(o.leased().id()).state()).isEqualTo(TaskState.LEASED);
         assertThat(get(o.leased().id()).revision()).isEqualTo(o.leased().revision());
         assertThat(occurrenceOf("ack")).isEqualTo(o.leased().id());
-        assertThat(store.recurringSchedules()).containsEntry("ack", o.fireAt().plusSeconds(1));
+        assertThat(store.nextFireTimes()).containsEntry("ack", o.fireAt().plusSeconds(1));
         assertThat(effect.applied()).isFalse();
 
         assertThat(store.ack(o.leased().id(), o.leased().revision(), true, true, effect))
                 .isTrue();
         assertThat(effect.applied()).isTrue();
-        assertThat(store.recurringSchedules()).containsEntry("ack", o.fireAt().plusSeconds(500));
+        assertThat(store.nextFireTimes()).containsEntry("ack", o.fireAt().plusSeconds(500));
         assertThat(occurrenceOf("ack")).isNull();
     }
 
@@ -401,29 +416,27 @@ class SqliteTransactionTest {
         assertThat(after.revision()).isEqualTo(o.leased().revision());
         assertThat(after.failures()).isNull();
         assertThat(occurrenceOf("dies")).isEqualTo(o.leased().id());
-        assertThat(store.recurringDefinitions().getFirst().definition().paused())
-                .isFalse();
+        assertThat(store.schedules().getFirst().definition().paused()).isFalse();
         assertThat(effect.applied()).isFalse();
 
         assertThat(store.fail(o.leased().id(), o.leased().revision(), failure(1), null, true, effect))
                 .isEqualTo(FailOutcome.DEAD);
         assertThat(effect.applied()).isTrue();
-        assertThat(store.recurringDefinitions().getFirst().definition().paused())
-                .isTrue();
+        assertThat(store.schedules().getFirst().definition().paused()).isTrue();
         assertThat(occurrenceOf("dies")).isNull();
     }
 
     @Test
     void aRecurringCommitThatFailsAfterTheOccurrenceIsInsertedStoresNothing() throws SQLException {
         var fireAt = clock.instant().minusSeconds(10);
-        store.putRecurring(fixedDelay("commit", 60_000), fireAt, fireAt);
-        var due = store.dueRecurring(clock.instant(), 10).getFirst();
+        store.putSchedule(fixedDelay("commit", 60_000), fireAt, fireAt);
+        var due = store.dueSchedules(clock.instant(), 10).getFirst();
         var occurrence = task().build();
 
         failWrites(
                 "UPDATE", "schedule", "NEW.occurrence_id IS NOT NULL AND OLD.occurrence_id IS NOT NEW.occurrence_id");
         try {
-            assertThatThrownBy(() -> store.commitRecurring(due, fireAt.plusSeconds(1), occurrence))
+            assertThatThrownBy(() -> store.commitSchedule(due, fireAt.plusSeconds(1), occurrence))
                     .isInstanceOf(TaskStoreException.class);
         } finally {
             healWrites();
@@ -431,11 +444,10 @@ class SqliteTransactionTest {
 
         assertThat(store.getTask(occurrence.id())).isEmpty();
         assertThat(occurrenceOf("commit")).isNull();
-        assertThat(store.recurringSchedules()).containsEntry("commit", fireAt);
-        assertThat(store.dueRecurring(clock.instant(), 10)).hasSize(1);
+        assertThat(store.nextFireTimes()).containsEntry("commit", fireAt);
+        assertThat(store.dueSchedules(clock.instant(), 10)).hasSize(1);
 
-        assertThat(store.commitRecurring(due, fireAt.plusSeconds(1), occurrence))
-                .isTrue();
+        assertThat(store.commitSchedule(due, fireAt.plusSeconds(1), occurrence)).isTrue();
         assertThat(occurrenceOf("commit")).isEqualTo(occurrence.id());
         assertThat(get(occurrence.id()).scheduleId()).isEqualTo("commit");
         assertThat(get(occurrence.id()).revision()).isEqualTo(occurrence.revision());
@@ -623,19 +635,19 @@ class SqliteTransactionTest {
 
     @Test
     void putRecurringReturnsTheNextFireTimeAsStoredInWholeMilliseconds() {
-        var created = store.putRecurring(
+        var created = store.putSchedule(
                 fixedDelay("sub-ms", 60_000), Instant.parse("2100-06-15T12:01:00.123456789Z"), clock.instant());
 
-        assertThat(created.outcome()).isEqualTo(PutRecurringOutcome.CREATED);
-        assertThat(created.nextFire()).isEqualTo(Instant.parse("2100-06-15T12:01:00.123Z"));
-        assertThat(store.recurringSchedules()).containsEntry("sub-ms", created.nextFire());
+        assertThat(created.outcome()).isEqualTo(PutScheduleOutcome.CREATED);
+        assertThat(created.nextFireAt()).isEqualTo(Instant.parse("2100-06-15T12:01:00.123Z"));
+        assertThat(store.nextFireTimes()).containsEntry("sub-ms", created.nextFireAt());
 
-        var changed = store.putRecurring(
+        var changed = store.putSchedule(
                 fixedDelay("sub-ms", 30_000), Instant.parse("2100-06-15T12:00:30.987654Z"), clock.instant());
 
-        assertThat(changed.outcome()).isEqualTo(PutRecurringOutcome.CHANGED);
-        assertThat(changed.nextFire()).isEqualTo(Instant.parse("2100-06-15T12:00:30.987Z"));
-        assertThat(store.recurringSchedules()).containsEntry("sub-ms", changed.nextFire());
+        assertThat(changed.outcome()).isEqualTo(PutScheduleOutcome.CHANGED);
+        assertThat(changed.nextFireAt()).isEqualTo(Instant.parse("2100-06-15T12:00:30.987Z"));
+        assertThat(store.nextFireTimes()).containsEntry("sub-ms", changed.nextFireAt());
     }
 
     @Test

@@ -26,6 +26,8 @@ import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.postgresql.ds.PGSimpleDataSource;
+import today.bonfire.oss.bth4j.PutScheduleOutcome;
+import today.bonfire.oss.bth4j.PutScheduleResult;
 import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
@@ -40,14 +42,12 @@ import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
-import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
-import today.bonfire.oss.bth4j.spi.PutRecurringResult;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.StepResult;
+import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 
@@ -956,18 +956,18 @@ class PostgresTaskStoreIT {
 
     // ---- recurring definitions -----------------------------------------------------------------------
 
-    private RecurringDefinition definition(String id, String cron) {
-        return new RecurringDefinition(id, type, 1, queue, "acme", cron, "{\"x\":1}", 4, 0);
+    private StoredSchedule definition(String id, String cron) {
+        return new StoredSchedule(id, type, 1, queue, "acme", cron, "{\"x\":1}", 4, 0);
     }
 
     @Test
     void recurringOccurrenceIsCommittedOncePerFireTime() {
         var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MILLIS);
         var nextFire = fireAt.plusSeconds(3600);
-        store.putRecurring(definition("hourly", "0 * * * *"), fireAt, fireAt);
+        store.putSchedule(definition("hourly", "0 * * * *"), fireAt, fireAt);
 
-        assertThat(store.recurringSchedules()).containsExactly(Map.entry("hourly", fireAt));
-        var due = store.dueRecurring(Instant.now(), 10);
+        assertThat(store.nextFireTimes()).containsExactly(Map.entry("hourly", fireAt));
+        var due = store.dueSchedules(Instant.now(), 10);
         assertThat(due).hasSize(1);
         DueSchedule d = due.getFirst();
         assertThat(d.fireAt()).isEqualTo(fireAt);
@@ -982,41 +982,41 @@ class PostgresTaskStoreIT {
                 .encodedPayload(d.definition().encodedPayload())
                 .maxAttempts(4)
                 .build();
-        assertThat(store.commitRecurring(d, nextFire, occurrence)).isTrue();
-        assertThat(store.commitRecurring(d, nextFire, task(newId()).build())).isFalse();
+        assertThat(store.commitSchedule(d, nextFire, occurrence)).isTrue();
+        assertThat(store.commitSchedule(d, nextFire, task(newId()).build())).isFalse();
 
         var r = get(id);
         assertThat(r.state()).isEqualTo(TaskState.SCHEDULED);
         assertThat(r.due()).isEqualTo(fireAt);
         assertThat(r.scheduleId()).isEqualTo("hourly");
         assertThat(r.revision()).isZero();
-        assertThat(store.recurringSchedules()).containsExactly(Map.entry("hourly", nextFire));
-        assertThat(store.dueRecurring(Instant.now(), 10)).isEmpty();
+        assertThat(store.nextFireTimes()).containsExactly(Map.entry("hourly", nextFire));
+        assertThat(store.dueSchedules(Instant.now(), 10)).isEmpty();
     }
 
     @Test
     void putRecurringKeepsTheFireTimeForAnUnchangedCronAndTheRevisionForAnUnchangedDefinition() {
         var first = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
-        assertThat(store.putRecurring(definition("job", "0 * * * *"), first, first))
-                .isEqualTo(new PutRecurringResult(PutRecurringOutcome.CREATED, first));
-        long revision = store.dueRecurring(first, 10).getFirst().definition().revision();
+        assertThat(store.putSchedule(definition("job", "0 * * * *"), first, first))
+                .isEqualTo(new PutScheduleResult(PutScheduleOutcome.CREATED, first));
+        long revision = store.dueSchedules(first, 10).getFirst().definition().revision();
 
-        assertThat(store.putRecurring(definition("job", "0 * * * *"), first.plusSeconds(600), first.plusSeconds(600)))
-                .isEqualTo(new PutRecurringResult(PutRecurringOutcome.UNCHANGED, first));
-        assertThat(store.recurringSchedules()).containsEntry("job", first);
-        assertThat(store.dueRecurring(first, 10).getFirst().definition().revision())
+        assertThat(store.putSchedule(definition("job", "0 * * * *"), first.plusSeconds(600), first.plusSeconds(600)))
+                .isEqualTo(new PutScheduleResult(PutScheduleOutcome.UNCHANGED, first));
+        assertThat(store.nextFireTimes()).containsEntry("job", first);
+        assertThat(store.dueSchedules(first, 10).getFirst().definition().revision())
                 .isEqualTo(revision);
 
-        var otherData = new RecurringDefinition("job", type, 1, queue, "acme", "0 * * * *", "{\"x\":2}", 4, 0);
-        assertThat(store.putRecurring(otherData, first.plusSeconds(600), first.plusSeconds(600)))
-                .isEqualTo(new PutRecurringResult(PutRecurringOutcome.CHANGED, first));
-        assertThat(store.recurringSchedules()).containsEntry("job", first);
-        var d = store.dueRecurring(first, 10).getFirst();
+        var otherData = new StoredSchedule("job", type, 1, queue, "acme", "0 * * * *", "{\"x\":2}", 4, 0);
+        assertThat(store.putSchedule(otherData, first.plusSeconds(600), first.plusSeconds(600)))
+                .isEqualTo(new PutScheduleResult(PutScheduleOutcome.CHANGED, first));
+        assertThat(store.nextFireTimes()).containsEntry("job", first);
+        var d = store.dueSchedules(first, 10).getFirst();
         assertThat(d.definition().revision()).isGreaterThan(revision);
 
-        store.putRecurring(definition("job", "*/5 * * * *"), first.plusSeconds(600), first.plusSeconds(600));
-        assertThat(store.recurringSchedules()).containsEntry("job", first.plusSeconds(600));
-        assertThat(store.commitRecurring(
+        store.putSchedule(definition("job", "*/5 * * * *"), first.plusSeconds(600), first.plusSeconds(600));
+        assertThat(store.nextFireTimes()).containsEntry("job", first.plusSeconds(600));
+        assertThat(store.commitSchedule(
                         d, first.plusSeconds(1200), task(newId()).build()))
                 .isFalse();
     }
@@ -1317,8 +1317,8 @@ class PostgresTaskStoreIT {
 
     // ---- wave 2: schedule controls -------------------------------------------------------------------
 
-    private RecurringDefinition fullDefinition(String id) {
-        return new RecurringDefinition(
+    private StoredSchedule fullDefinition(String id) {
+        return new StoredSchedule(
                 id,
                 type,
                 2,
@@ -1326,7 +1326,7 @@ class PostgresTaskStoreIT {
                 "acme",
                 "0 9 * * *",
                 "Europe/Berlin",
-                RecurringDefinition.MISFIRE_CATCH_UP,
+                StoredSchedule.MISFIRE_CATCH_UP,
                 3,
                 null,
                 true,
@@ -1337,75 +1337,87 @@ class PostgresTaskStoreIT {
                 0);
     }
 
-    private RecurringDefinition fixedDelay(String id, long delayMs) {
-        return new RecurringDefinition(
-                id, type, 1, queue, null, null, null, null, 0, delayMs, false, null, 1, null, false, 0);
+    private StoredSchedule fixedDelay(String id, long delayMs) {
+        return new StoredSchedule(
+                id,
+                type,
+                1,
+                queue,
+                null,
+                null,
+                null,
+                null,
+                0,
+                Duration.ofMillis(delayMs),
+                false,
+                null,
+                1,
+                null,
+                false,
+                0);
     }
 
     @Test
     void recurringDefinitionsRoundTripEveryField() {
         var at = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
-        store.putRecurring(fullDefinition("b-cron"), at, at);
-        store.putRecurring(fixedDelay("a-delay", 60_000), at.plusSeconds(1), at.plusSeconds(1));
+        store.putSchedule(fullDefinition("b-cron"), at, at);
+        store.putSchedule(fixedDelay("a-delay", 60_000), at.plusSeconds(1), at.plusSeconds(1));
 
-        var all = store.recurringDefinitions();
+        var all = store.schedules();
         assertThat(all).extracting(x -> x.definition().scheduleId()).containsExactly("a-delay", "b-cron");
         var delay = all.getFirst();
         assertThat(delay.definition().withRevision(0)).isEqualTo(fixedDelay("a-delay", 60_000));
         assertThat(delay.definition().revision()).isPositive();
-        assertThat(delay.nextFire()).isEqualTo(at.plusSeconds(1));
+        assertThat(delay.nextFireAt()).isEqualTo(at.plusSeconds(1));
         assertThat(all.get(1).definition().withRevision(0)).isEqualTo(fullDefinition("b-cron"));
 
-        store.putRecurring(fixedDelay("a-delay", 60_000), at.plusSeconds(500), at.plusSeconds(500));
-        assertThat(store.recurringSchedules()).containsEntry("a-delay", at.plusSeconds(1));
-        store.putRecurring(fixedDelay("a-delay", 30_000), at.plusSeconds(500), at.plusSeconds(500));
-        assertThat(store.recurringSchedules()).containsEntry("a-delay", at.plusSeconds(500));
-        var zoneChanged = new RecurringDefinition(
+        store.putSchedule(fixedDelay("a-delay", 60_000), at.plusSeconds(500), at.plusSeconds(500));
+        assertThat(store.nextFireTimes()).containsEntry("a-delay", at.plusSeconds(1));
+        store.putSchedule(fixedDelay("a-delay", 30_000), at.plusSeconds(500), at.plusSeconds(500));
+        assertThat(store.nextFireTimes()).containsEntry("a-delay", at.plusSeconds(500));
+        var zoneChanged = new StoredSchedule(
                 "b-cron", type, 2, queue, "acme", "0 9 * * *", "UTC", null, 0, null, false, "{}", 5, null, false, 0);
-        store.putRecurring(zoneChanged, at.plusSeconds(700), at.plusSeconds(700));
-        assertThat(store.recurringSchedules()).containsEntry("b-cron", at.plusSeconds(700));
+        store.putSchedule(zoneChanged, at.plusSeconds(700), at.plusSeconds(700));
+        assertThat(store.nextFireTimes()).containsEntry("b-cron", at.plusSeconds(700));
     }
 
     @Test
     void aPausedDefinitionIsNotDueAndCannotCommit() {
         var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MILLIS);
-        store.putRecurring(definition("p", "0 * * * *"), fireAt, fireAt);
-        var due = store.dueRecurring(Instant.now(), 10).getFirst();
+        store.putSchedule(definition("p", "0 * * * *"), fireAt, fireAt);
+        var due = store.dueSchedules(Instant.now(), 10).getFirst();
 
-        assertThat(store.pauseRecurring("p")).isTrue();
-        assertThat(store.dueRecurring(Instant.now(), 10)).isEmpty();
-        assertThat(store.recurringDefinitions().getFirst().definition().paused())
-                .isTrue();
-        assertThat(store.recurringDefinitions().getFirst().nextFire()).isEqualTo(fireAt);
-        assertThat(store.commitRecurring(
+        assertThat(store.pauseSchedule("p")).isTrue();
+        assertThat(store.dueSchedules(Instant.now(), 10)).isEmpty();
+        assertThat(store.schedules().getFirst().definition().paused()).isTrue();
+        assertThat(store.schedules().getFirst().nextFireAt()).isEqualTo(fireAt);
+        assertThat(store.commitSchedule(
                         due, fireAt.plusSeconds(3600), task(newId()).build()))
                 .isFalse();
 
-        assertThat(store.resumeRecurring("p", null)).isTrue();
-        assertThat(store.dueRecurring(Instant.now(), 10)).hasSize(1);
-        assertThat(store.pauseRecurring("missing")).isFalse();
-        assertThat(store.resumeRecurring("missing", null)).isFalse();
+        assertThat(store.resumeSchedule("p", null)).isTrue();
+        assertThat(store.dueSchedules(Instant.now(), 10)).hasSize(1);
+        assertThat(store.pauseSchedule("missing")).isFalse();
+        assertThat(store.resumeSchedule("missing", null)).isFalse();
     }
 
     @Test
     void reputtingADefinitionKeepsItsPausedFlag() {
         var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MILLIS);
-        store.putRecurring(definition("kept", "0 * * * *"), fireAt, fireAt);
-        store.pauseRecurring("kept");
+        store.putSchedule(definition("kept", "0 * * * *"), fireAt, fireAt);
+        store.pauseSchedule("kept");
 
-        store.putRecurring(definition("kept", "0 * * * *"), fireAt, fireAt);
-        assertThat(store.recurringDefinitions().getFirst().definition().paused())
-                .isTrue();
-        assertThat(store.dueRecurring(Instant.now(), 10)).isEmpty();
+        store.putSchedule(definition("kept", "0 * * * *"), fireAt, fireAt);
+        assertThat(store.schedules().getFirst().definition().paused()).isTrue();
+        assertThat(store.dueSchedules(Instant.now(), 10)).isEmpty();
 
-        store.resumeRecurring("kept", null);
-        store.putRecurring(definition("kept", "0 * * * *").withPaused(true), fireAt, fireAt);
-        assertThat(store.recurringDefinitions().getFirst().definition().paused())
-                .isFalse();
-        assertThat(store.dueRecurring(Instant.now(), 10)).hasSize(1);
+        store.resumeSchedule("kept", null);
+        store.putSchedule(definition("kept", "0 * * * *").withPaused(true), fireAt, fireAt);
+        assertThat(store.schedules().getFirst().definition().paused()).isFalse();
+        assertThat(store.dueSchedules(Instant.now(), 10)).hasSize(1);
 
-        store.putRecurring(definition("new", "0 * * * *").withPaused(true), fireAt, fireAt);
-        assertThat(store.recurringDefinitions())
+        store.putSchedule(definition("new", "0 * * * *").withPaused(true), fireAt, fireAt);
+        assertThat(store.schedules())
                 .filteredOn(s -> s.definition().scheduleId().equals("new"))
                 .singleElement()
                 .satisfies(s -> assertThat(s.definition().paused()).isTrue());
@@ -1414,25 +1426,25 @@ class PostgresTaskStoreIT {
     @Test
     void triggerRecurringReplacesTheFireTimeAndFencesAnOlderCommit() {
         var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MILLIS);
-        store.putRecurring(definition("n", "0 * * * *"), fireAt, fireAt);
-        var due = store.dueRecurring(Instant.now(), 10).getFirst();
+        store.putSchedule(definition("n", "0 * * * *"), fireAt, fireAt);
+        var due = store.dueSchedules(Instant.now(), 10).getFirst();
         var later = fireAt.plusSeconds(120);
 
-        assertThat(store.triggerRecurring("n", later)).isTrue();
-        assertThat(store.recurringSchedules()).containsEntry("n", later);
-        assertThat(store.commitRecurring(
+        assertThat(store.triggerSchedule("n", later)).isTrue();
+        assertThat(store.nextFireTimes()).containsEntry("n", later);
+        assertThat(store.commitSchedule(
                         due, fireAt.plusSeconds(3600), task(newId()).build()))
                 .isFalse();
-        assertThat(store.triggerRecurring("missing", later)).isFalse();
+        assertThat(store.triggerSchedule("missing", later)).isFalse();
     }
 
     @Test
     void anOccurrenceWhoseKeyIsHeldIsSkippedButTheDefinitionAdvances() {
         var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MILLIS);
-        store.putRecurring(definition("o", "* * * * *"), fireAt, fireAt);
+        store.putSchedule(definition("o", "* * * * *"), fireAt, fireAt);
         long first = newId();
-        var d1 = store.dueRecurring(Instant.now(), 10).getFirst();
-        assertThat(store.commitRecurring(
+        var d1 = store.dueSchedules(Instant.now(), 10).getFirst();
+        assertThat(store.commitSchedule(
                         d1,
                         fireAt.plusSeconds(1),
                         task(first).uniqueKey("sched:o").build()))
@@ -1440,9 +1452,9 @@ class PostgresTaskStoreIT {
         assertThat(store.promote(10).moved()).isEqualTo(1);
 
         long second = newId();
-        var d2 = store.dueRecurring(Instant.now(), 10).getFirst();
+        var d2 = store.dueSchedules(Instant.now(), 10).getFirst();
         assertThat(d2.fireAt()).isEqualTo(fireAt.plusSeconds(1));
-        assertThat(store.commitRecurring(
+        assertThat(store.commitSchedule(
                         d2,
                         fireAt.plusSeconds(2),
                         task(second).uniqueKey("sched:o").build()))
@@ -1450,13 +1462,13 @@ class PostgresTaskStoreIT {
 
         assertThat(store.getTask(second)).isEmpty();
         assertThat(get(first).state()).isEqualTo(TaskState.QUEUED);
-        assertThat(store.recurringSchedules()).containsEntry("o", fireAt.plusSeconds(2));
+        assertThat(store.nextFireTimes()).containsEntry("o", fireAt.plusSeconds(2));
 
         var t = claim(1).getFirst();
         store.ack(t.id(), t.revision(), true, true, null);
         long third = newId();
-        var d3 = store.dueRecurring(Instant.now(), 10).getFirst();
-        assertThat(store.commitRecurring(
+        var d3 = store.dueSchedules(Instant.now(), 10).getFirst();
+        assertThat(store.commitSchedule(
                         d3,
                         fireAt.plusSeconds(3),
                         task(third).uniqueKey("sched:o").build()))
@@ -1578,11 +1590,11 @@ class PostgresTaskStoreIT {
 
     private Occurrence leasedOccurrenceOfFixedDelay(String scheduleId, String key) {
         var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MILLIS);
-        store.putRecurring(fixedDelay(scheduleId, 60_000), fireAt, fireAt);
-        var due = store.dueRecurring(Instant.now(), 10).getFirst();
+        store.putSchedule(fixedDelay(scheduleId, 60_000), fireAt, fireAt);
+        var due = store.dueSchedules(Instant.now(), 10).getFirst();
         var builder = task(newId());
         if (key != null) builder.uniqueKey(key);
-        assertThat(store.commitRecurring(due, fireAt.plusSeconds(1), builder.build()))
+        assertThat(store.commitSchedule(due, fireAt.plusSeconds(1), builder.build()))
                 .isTrue();
         assertThat(store.promote(10).moved()).isEqualTo(1);
         return new Occurrence(fireAt, due, claim(1).getFirst());
@@ -1604,13 +1616,13 @@ class PostgresTaskStoreIT {
         assertThat(get(o.leased().id()).state()).isEqualTo(TaskState.LEASED);
         assertThat(get(o.leased().id()).revision()).isEqualTo(o.leased().revision());
         assertThat(occurrenceOf("ack")).isEqualTo(o.leased().id());
-        assertThat(store.recurringSchedules()).containsEntry("ack", o.fireAt().plusSeconds(1));
+        assertThat(store.nextFireTimes()).containsEntry("ack", o.fireAt().plusSeconds(1));
         assertThat(effect.applied()).isFalse();
 
         assertThat(store.ack(o.leased().id(), o.leased().revision(), true, true, effect))
                 .isTrue();
         assertThat(effect.applied()).isTrue();
-        assertThat(store.recurringSchedules()).containsEntry("ack", o.fireAt().plusSeconds(500));
+        assertThat(store.nextFireTimes()).containsEntry("ack", o.fireAt().plusSeconds(500));
         assertThat(occurrenceOf("ack")).isZero();
     }
 
@@ -1632,29 +1644,27 @@ class PostgresTaskStoreIT {
         assertThat(task.revision()).isEqualTo(o.leased().revision());
         assertThat(task.failures()).isNullOrEmpty();
         assertThat(occurrenceOf("dies")).isEqualTo(o.leased().id());
-        assertThat(store.recurringDefinitions().getFirst().definition().paused())
-                .isFalse();
+        assertThat(store.schedules().getFirst().definition().paused()).isFalse();
         assertThat(effect.applied()).isFalse();
 
         assertThat(store.fail(o.leased().id(), o.leased().revision(), failure(1), null, true, effect))
                 .isEqualTo(FailOutcome.DEAD);
         assertThat(effect.applied()).isTrue();
-        assertThat(store.recurringDefinitions().getFirst().definition().paused())
-                .isTrue();
+        assertThat(store.schedules().getFirst().definition().paused()).isTrue();
         assertThat(occurrenceOf("dies")).isZero();
     }
 
     @Test
     void aRecurringCommitThatFailsAfterTheOccurrenceIsInsertedStoresNothing() throws SQLException {
         var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MILLIS);
-        store.putRecurring(fixedDelay("commit", 60_000), fireAt, fireAt);
-        var due = store.dueRecurring(Instant.now(), 10).getFirst();
+        store.putSchedule(fixedDelay("commit", 60_000), fireAt, fireAt);
+        var due = store.dueSchedules(Instant.now(), 10).getFirst();
         long occurrence = newId();
 
         failScheduleUpdatesWhen(
                 "NEW.occurrence_id IS NOT NULL AND OLD.occurrence_id IS DISTINCT FROM NEW.occurrence_id");
         try {
-            assertThatThrownBy(() -> store.commitRecurring(
+            assertThatThrownBy(() -> store.commitSchedule(
                             due, fireAt.plusSeconds(1), task(occurrence).build()))
                     .isInstanceOf(TaskStoreException.class);
         } finally {
@@ -1663,10 +1673,10 @@ class PostgresTaskStoreIT {
 
         assertThat(store.getTask(occurrence)).isEmpty();
         assertThat(occurrenceOf("commit")).isZero();
-        assertThat(store.recurringSchedules()).containsEntry("commit", fireAt);
-        assertThat(store.dueRecurring(Instant.now(), 10)).hasSize(1);
+        assertThat(store.nextFireTimes()).containsEntry("commit", fireAt);
+        assertThat(store.dueSchedules(Instant.now(), 10)).hasSize(1);
 
-        assertThat(store.commitRecurring(
+        assertThat(store.commitSchedule(
                         due, fireAt.plusSeconds(1), task(occurrence).build()))
                 .isTrue();
         assertThat(occurrenceOf("commit")).isEqualTo(occurrence);
@@ -1696,7 +1706,7 @@ class PostgresTaskStoreIT {
     @Test
     void anAckContendingWithARecurringCommitFinishesWithCorrectOwnership() throws Exception {
         var o = leasedOccurrenceOfFixedDelay("busy", "sched:busy");
-        var nextDue = store.dueRecurring(Instant.now(), 10).getFirst();
+        var nextDue = store.dueSchedules(Instant.now(), 10).getFirst();
         assertThat(nextDue.fireAt()).isEqualTo(o.fireAt().plusSeconds(1));
         var effect = ScheduleEffect.rearm("busy", o.leased().id(), o.fireAt().plusSeconds(500));
         long skipped = newId();
@@ -1709,7 +1719,7 @@ class PostgresTaskStoreIT {
                         + o.leased().id());
             }
 
-            var commit = pool.submit(() -> store.commitRecurring(
+            var commit = pool.submit(() -> store.commitSchedule(
                     nextDue,
                     o.fireAt().plusSeconds(2),
                     task(skipped).uniqueKey("sched:busy").build()));
@@ -1728,7 +1738,7 @@ class PostgresTaskStoreIT {
         assertThat(store.getTask(o.leased().id())).isEmpty();
         assertThat(effect.applied()).isTrue();
         assertThat(occurrenceOf("busy")).isZero();
-        assertThat(store.recurringSchedules()).containsEntry("busy", o.fireAt().plusSeconds(500));
+        assertThat(store.nextFireTimes()).containsEntry("busy", o.fireAt().plusSeconds(500));
     }
 
     @Test
@@ -1784,7 +1794,7 @@ class PostgresTaskStoreIT {
     void aPutWaitingOnARecurringCommitSeesTheOccurrenceItStored() throws Exception {
         var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MILLIS);
         var parked = fireAt.plus(Duration.ofDays(36_500));
-        store.putRecurring(fixedDelay("race", 60_000), fireAt, fireAt);
+        store.putSchedule(fixedDelay("race", 60_000), fireAt, fireAt);
         long occurrence = newId();
 
         var pool = Executors.newSingleThreadExecutor();
@@ -1798,17 +1808,17 @@ class PostgresTaskStoreIT {
             }
             assertThat(store.enqueue(holder, task(occurrence).scheduleId("race").build()))
                     .isEqualTo(EnqueueOutcome.STORED);
-            var put = pool.submit(() -> store.putRecurring(fixedDelay("race", 60_000), fireAt, fireAt));
+            var put = pool.submit(() -> store.putSchedule(fixedDelay("race", 60_000), fireAt, fireAt));
             awaitLockWaiters(1);
             holder.commit();
 
             assertThat(put.get(10, TimeUnit.SECONDS))
-                    .isEqualTo(new PutRecurringResult(PutRecurringOutcome.UNCHANGED, parked));
+                    .isEqualTo(new PutScheduleResult(PutScheduleOutcome.UNCHANGED, parked));
         } finally {
             pool.shutdownNow();
         }
         assertThat(occurrenceOf("race")).isEqualTo(occurrence);
-        assertThat(store.recurringSchedules()).containsEntry("race", parked);
+        assertThat(store.nextFireTimes()).containsEntry("race", parked);
     }
 
     @Test
@@ -1823,7 +1833,7 @@ class PostgresTaskStoreIT {
             var commits = new ArrayList<Future<Void>>();
             var late = new PostgresTaskStore(
                     runningBeforeFirst("INSERT INTO " + prefix + "_schedule", () -> {
-                        store.putRecurring(fixedDelay("race", 60_000), fireAt, fireAt);
+                        store.putSchedule(fixedDelay("race", 60_000), fireAt, fireAt);
                         try (var ps = holder.prepareStatement("UPDATE " + prefix
                                 + "_schedule SET next_fire = ?, occurrence_id = ? WHERE id = 'race'")) {
                             ps.setObject(1, java.time.OffsetDateTime.ofInstant(parked, java.time.ZoneOffset.UTC));
@@ -1843,15 +1853,15 @@ class PostgresTaskStoreIT {
                     }),
                     prefix);
 
-            assertThat(late.putRecurring(fixedDelay("race", 60_000), fireAt, fireAt))
-                    .isEqualTo(new PutRecurringResult(PutRecurringOutcome.UNCHANGED, parked));
+            assertThat(late.putSchedule(fixedDelay("race", 60_000), fireAt, fireAt))
+                    .isEqualTo(new PutScheduleResult(PutScheduleOutcome.UNCHANGED, parked));
             assertThat(commits).hasSize(1);
             commits.getFirst().get(10, TimeUnit.SECONDS);
         } finally {
             pool.shutdownNow();
         }
         assertThat(occurrenceOf("race")).isEqualTo(occurrence);
-        assertThat(store.recurringSchedules()).containsEntry("race", parked);
+        assertThat(store.nextFireTimes()).containsEntry("race", parked);
     }
 
     /**

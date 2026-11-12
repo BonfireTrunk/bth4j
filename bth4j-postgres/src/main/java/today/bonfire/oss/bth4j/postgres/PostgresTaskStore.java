@@ -24,6 +24,8 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Pattern;
 import javax.sql.DataSource;
+import today.bonfire.oss.bth4j.PutScheduleOutcome;
+import today.bonfire.oss.bth4j.PutScheduleResult;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
@@ -41,19 +43,17 @@ import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
-import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
-import today.bonfire.oss.bth4j.spi.PutRecurringResult;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecordJson;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
-import today.bonfire.oss.bth4j.spi.RecurringSchedule;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
+import today.bonfire.oss.bth4j.spi.ScheduleEntry;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.StoreArguments;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
+import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
@@ -319,7 +319,7 @@ public final class PostgresTaskStore implements FullStore {
                 + " RETURNING xmax = 0, next_fire";
         dueScheduleSql =
                 "SELECT * FROM " + schedule + " WHERE NOT paused AND next_fire <= ? ORDER BY next_fire LIMIT ?";
-        // a definition paused between dueRecurring and the commit does not fire
+        // a definition paused between dueSchedules and the commit does not fire
         commitScheduleSql = "WITH adv AS (UPDATE " + schedule + " SET next_fire = ?, triggered = false"
                 + "   WHERE id = ? AND rev = ? AND next_fire = ? AND NOT paused RETURNING id),"
                 + " ins AS (INSERT INTO " + task
@@ -1076,7 +1076,7 @@ public final class PostgresTaskStore implements FullStore {
                         + " WHERE id = ? AND occurrence_id = ?";
         try (var ps = c.prepareStatement(sql)) {
             var i = 1;
-            if (!effect.pauses()) setInstant(ps, i++, effect.nextFire());
+            if (!effect.pauses()) setInstant(ps, i++, effect.nextFireAt());
             ps.setString(i++, effect.scheduleId());
             ps.setLong(i, effect.occurrenceId());
             if (ps.executeUpdate() == 1) effect.markApplied();
@@ -1324,18 +1324,18 @@ public final class PostgresTaskStore implements FullStore {
      * locks that row and replaces it with a new snapshot.
      */
     @Override
-    public PutRecurringResult putRecurring(RecurringDefinition d, Instant nextFire, Instant keepUntil) {
+    public PutScheduleResult putSchedule(StoredSchedule d, Instant nextFire, Instant keepUntil) {
         return inTransaction(c -> {
             for (int round = 0; round < SETTLE_ROUNDS; round++) {
                 if (lockSchedule(c, d.scheduleId())) return replaceSchedule(c, d, nextFire, keepUntil);
                 try (var ps = c.prepareStatement(createScheduleSql)) {
                     bindSchedule(ps, d, nextFire);
                     try (var rs = ps.executeQuery()) {
-                        if (rs.next()) return new PutRecurringResult(PutRecurringOutcome.CREATED, getInstant(rs, 1));
+                        if (rs.next()) return new PutScheduleResult(PutScheduleOutcome.CREATED, getInstant(rs, 1));
                     }
                 }
             }
-            throw new TaskStoreException("putRecurring did not settle for schedule " + d.scheduleId());
+            throw new TaskStoreException("putSchedule did not settle for schedule " + d.scheduleId());
         });
     }
 
@@ -1349,8 +1349,7 @@ public final class PostgresTaskStore implements FullStore {
         }
     }
 
-    private static void bindSchedule(PreparedStatement ps, RecurringDefinition d, Instant nextFire)
-            throws SQLException {
+    private static void bindSchedule(PreparedStatement ps, StoredSchedule d, Instant nextFire) throws SQLException {
         ps.setString(1, d.scheduleId());
         ps.setInt(2, d.typeId());
         ps.setInt(3, d.payloadVersion());
@@ -1360,19 +1359,19 @@ public final class PostgresTaskStore implements FullStore {
         ps.setString(7, d.zone());
         ps.setString(8, d.misfire());
         ps.setInt(9, d.catchUpMaxFires());
-        if (d.fixedDelayMs() == null) ps.setNull(10, Types.BIGINT);
-        else ps.setLong(10, d.fixedDelayMs());
+        if (d.fixedDelay() == null) ps.setNull(10, Types.BIGINT);
+        else ps.setLong(10, d.fixedDelay().toMillis());
         ps.setBoolean(11, d.overlapSkip());
         ps.setString(12, d.encodedPayload());
         ps.setInt(13, d.maxAttempts());
-        if (d.maxRunTimeMs() == null) ps.setNull(14, Types.INTEGER);
-        else ps.setInt(14, Math.toIntExact(d.maxRunTimeMs()));
+        if (d.maxRunTime() == null) ps.setNull(14, Types.INTEGER);
+        else ps.setInt(14, Math.toIntExact(d.maxRunTime().toMillis()));
         ps.setBoolean(15, d.paused());
         setInstant(ps, 16, nextFire);
     }
 
     /** Replaces the definition whose row this transaction has locked. */
-    private PutRecurringResult replaceSchedule(Connection c, RecurringDefinition d, Instant nextFire, Instant keepUntil)
+    private PutScheduleResult replaceSchedule(Connection c, StoredSchedule d, Instant nextFire, Instant keepUntil)
             throws SQLException {
         try (var ps = c.prepareStatement(putScheduleSql)) {
             bindSchedule(ps, d, nextFire);
@@ -1381,8 +1380,8 @@ public final class PostgresTaskStore implements FullStore {
             setInstant(ps, 19, keepUntil);
             try (var rs = ps.executeQuery()) {
                 if (rs.next()) {
-                    return new PutRecurringResult(
-                            rs.getBoolean(1) ? PutRecurringOutcome.CREATED : PutRecurringOutcome.CHANGED,
+                    return new PutScheduleResult(
+                            rs.getBoolean(1) ? PutScheduleOutcome.CREATED : PutScheduleOutcome.CHANGED,
                             getInstant(rs, 2));
                 }
             }
@@ -1392,18 +1391,18 @@ public final class PostgresTaskStore implements FullStore {
             ps.setString(1, d.scheduleId());
             try (var rs = ps.executeQuery()) {
                 rs.next();
-                return new PutRecurringResult(PutRecurringOutcome.UNCHANGED, getInstant(rs, 1));
+                return new PutScheduleResult(PutScheduleOutcome.UNCHANGED, getInstant(rs, 1));
             }
         }
     }
 
     @Override
-    public boolean deleteRecurring(String scheduleId) {
+    public boolean deleteSchedule(String scheduleId) {
         return update("DELETE FROM " + schedule + " WHERE id = ?", ps -> ps.setString(1, scheduleId));
     }
 
     @Override
-    public Map<String, Instant> recurringSchedules() {
+    public Map<String, Instant> nextFireTimes() {
         return withConnection(c -> {
             var result = new HashMap<String, Instant>();
             try (var ps = c.prepareStatement("SELECT id, next_fire FROM " + schedule);
@@ -1417,7 +1416,7 @@ public final class PostgresTaskStore implements FullStore {
     }
 
     @Override
-    public List<DueSchedule> dueRecurring(Instant upTo, int limit) {
+    public List<DueSchedule> dueSchedules(Instant upTo, int limit) {
         StoreArguments.requireLimit(limit);
         return withConnection(c -> {
             try (var ps = c.prepareStatement(dueScheduleSql)) {
@@ -1447,7 +1446,7 @@ public final class PostgresTaskStore implements FullStore {
      * occurrence_id is empty and the holder belongs to the schedule, the holder becomes it.
      */
     @Override
-    public boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord o) {
+    public boolean commitSchedule(DueSchedule due, Instant nextFire, TaskRecord o) {
         StoreArguments.requireKey(o.uniqueKey());
         var fixedDelay = due.definition().isFixedDelay();
         SqlFunction<Boolean> commit = c -> {
@@ -2134,25 +2133,25 @@ public final class PostgresTaskStore implements FullStore {
     }
 
     @Override
-    public List<RecurringSchedule> recurringDefinitions() {
+    public List<ScheduleEntry> schedules() {
         return withConnection(c -> {
-            var result = new ArrayList<RecurringSchedule>();
+            var result = new ArrayList<ScheduleEntry>();
             try (var ps = c.prepareStatement("SELECT * FROM " + schedule + " ORDER BY id COLLATE \"C\"");
                     var rs = ps.executeQuery()) {
-                while (rs.next()) result.add(new RecurringSchedule(readDefinition(rs), getInstant(rs, "next_fire")));
+                while (rs.next()) result.add(new ScheduleEntry(readDefinition(rs), getInstant(rs, "next_fire")));
             }
             return result;
         });
     }
 
     @Override
-    public boolean pauseRecurring(String scheduleId) {
+    public boolean pauseSchedule(String scheduleId) {
         return update("UPDATE " + schedule + " SET paused = true WHERE id = ?", ps -> ps.setString(1, scheduleId));
     }
 
     /** Only a paused row is written; the existence check reads the same statement's snapshot. */
     @Override
-    public boolean resumeRecurring(String scheduleId, Instant nextFire) {
+    public boolean resumeSchedule(String scheduleId, Instant nextFire) {
         return withConnection(c -> {
             try (var ps = c.prepareStatement("WITH u AS (UPDATE " + schedule + " SET paused = false,"
                     + "   next_fire = CASE WHEN " + occurrenceRunning() + " THEN next_fire"
@@ -2182,7 +2181,7 @@ public final class PostgresTaskStore implements FullStore {
 
     /** A commit already in flight for the old definition fails, because it checks the revision and fire time it read. */
     @Override
-    public boolean triggerRecurring(String scheduleId, Instant fireAt) {
+    public boolean triggerSchedule(String scheduleId, Instant fireAt) {
         return update(
                 "UPDATE " + schedule + " SET next_fire = ?, triggered = true, rev = nextval('" + scheduleSeq
                         + "'), occurrence_id = NULL WHERE id = ?",
@@ -2205,8 +2204,8 @@ public final class PostgresTaskStore implements FullStore {
                 });
     }
 
-    private static RecurringDefinition readDefinition(ResultSet rs) throws SQLException {
-        return new RecurringDefinition(
+    private static StoredSchedule readDefinition(ResultSet rs) throws SQLException {
+        return new StoredSchedule(
                 rs.getString("id"),
                 rs.getInt("type_id"),
                 rs.getInt("payload_version"),
@@ -2216,11 +2215,11 @@ public final class PostgresTaskStore implements FullStore {
                 rs.getString("zone"),
                 rs.getString("misfire"),
                 rs.getInt("catch_up_max"),
-                getLong(rs, "fixed_delay_ms"),
+                getMillis(rs, "fixed_delay_ms"),
                 rs.getBoolean("overlap_skip"),
                 rs.getString("data"),
                 rs.getInt("max_attempts"),
-                getLong(rs, "max_run_ms"),
+                getMillis(rs, "max_run_ms"),
                 rs.getBoolean("paused"),
                 rs.getLong("rev"));
     }

@@ -26,10 +26,10 @@ import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.DeleteOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
-import today.bonfire.oss.bth4j.spi.RecurringSchedule;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
+import today.bonfire.oss.bth4j.spi.ScheduleEntry;
 import today.bonfire.oss.bth4j.spi.StateCounts;
+import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
@@ -98,20 +98,20 @@ class DefaultAdminOpsTest {
                 .build();
     }
 
-    private static RecurringDefinition definition(String id, String cron, Long fixedDelayMs, boolean paused) {
-        return definition(id, cron, fixedDelayMs, paused, "Europe/Berlin", RecurringDefinition.MISFIRE_SKIP, 0, true);
+    private static StoredSchedule definition(String id, String cron, Duration fixedDelay, boolean paused) {
+        return definition(id, cron, fixedDelay, paused, "Europe/Berlin", StoredSchedule.MISFIRE_SKIP, 0, true);
     }
 
-    private static RecurringDefinition definition(
+    private static StoredSchedule definition(
             String id,
             String cron,
-            Long fixedDelayMs,
+            Duration fixedDelay,
             boolean paused,
             String zone,
             String misfire,
             int catchUpMaxFires,
             boolean overlapSkip) {
-        return new RecurringDefinition(
+        return new StoredSchedule(
                 id,
                 TYPE_ID,
                 1,
@@ -121,7 +121,7 @@ class DefaultAdminOpsTest {
                 zone,
                 misfire,
                 catchUpMaxFires,
-                fixedDelayMs,
+                fixedDelay,
                 overlapSkip,
                 null,
                 5,
@@ -578,20 +578,20 @@ class DefaultAdminOpsTest {
     @Test
     void aScheduleWhoseZoneThisJvmDoesNotKnowIsListedWithTheOthers() {
         handlers.put(
-                "recurringDefinitions",
+                "schedules",
                 a -> List.of(
-                        new RecurringSchedule(
+                        new ScheduleEntry(
                                 definition(
                                         "lost-zone",
                                         "0 2 * * *",
                                         null,
                                         false,
                                         "Mars/Olympus_Mons",
-                                        RecurringDefinition.MISFIRE_SKIP,
+                                        StoredSchedule.MISFIRE_SKIP,
                                         0,
                                         false),
                                 NOW),
-                        new RecurringSchedule(definition("nightly", "0 2 * * *", null, false), NOW)));
+                        new ScheduleEntry(definition("nightly", "0 2 * * *", null, false), NOW)));
 
         var views = ops.schedules();
 
@@ -602,10 +602,10 @@ class DefaultAdminOpsTest {
     @Test
     void schedulesAreViewedWithResolvedNames() {
         handlers.put(
-                "recurringDefinitions",
+                "schedules",
                 a -> List.of(
-                        new RecurringSchedule(definition("nightly", "0 2 * * *", null, false), NOW.plusSeconds(60)),
-                        new RecurringSchedule(definition("poll", null, 90_000L, true), NOW)));
+                        new ScheduleEntry(definition("nightly", "0 2 * * *", null, false), NOW.plusSeconds(60)),
+                        new ScheduleEntry(definition("poll", null, Duration.ofMillis(90_000), true), NOW)));
 
         var views = ops.schedules();
 
@@ -621,7 +621,7 @@ class DefaultAdminOpsTest {
         assertThat(nightly.fixedDelay()).isNull();
         assertThat(nightly.overlap()).isEqualTo(Overlap.SKIP);
         assertThat(nightly.paused()).isFalse();
-        assertThat(nightly.nextFire()).isEqualTo(NOW.plusSeconds(60));
+        assertThat(nightly.nextFireAt()).isEqualTo(NOW.plusSeconds(60));
         assertThat(nightly.maxAttempts()).isEqualTo(5);
         assertThat(views.get(1).fixedDelay()).isEqualTo(Duration.ofSeconds(90));
         assertThat(views.get(1).paused()).isTrue();
@@ -630,22 +630,29 @@ class DefaultAdminOpsTest {
     @Test
     void scheduleViewMapsZoneMisfireAndOverlapToTheirTypes() {
         handlers.put(
-                "recurringDefinitions",
+                "schedules",
                 a -> List.of(
-                        new RecurringSchedule(
+                        new ScheduleEntry(
                                 definition(
                                         "zoned",
                                         "0 2 * * *",
                                         null,
                                         false,
                                         "Europe/Berlin",
-                                        RecurringDefinition.MISFIRE_CATCH_UP,
+                                        StoredSchedule.MISFIRE_CATCH_UP,
                                         4,
                                         false),
                                 NOW),
-                        new RecurringSchedule(
+                        new ScheduleEntry(
                                 definition(
-                                        "plain", null, 1_000L, false, null, RecurringDefinition.MISFIRE_SKIP, 0, true),
+                                        "plain",
+                                        null,
+                                        Duration.ofMillis(1_000),
+                                        false,
+                                        null,
+                                        StoredSchedule.MISFIRE_SKIP,
+                                        0,
+                                        true),
                                 NOW)));
 
         var views = ops.schedules();
@@ -660,69 +667,68 @@ class DefaultAdminOpsTest {
 
     @Test
     void pausingAScheduleOnlyTellsTheStore() {
-        handlers.put("pauseRecurring", a -> true);
+        handlers.put("pauseSchedule", a -> true);
 
         assertThat(ops.pauseSchedule("poll", true)).isTrue();
 
-        assertThat(calls).containsExactly("pauseRecurring[poll]");
+        assertThat(calls).containsExactly("pauseSchedule[poll]");
     }
 
     @Test
     void resumingAnUnknownScheduleReturnsFalseAndDoesNothingElse() {
-        handlers.put("resumeRecurring", a -> false);
-        handlers.put("recurringDefinitions", a -> List.of());
+        handlers.put("resumeSchedule", a -> false);
+        handlers.put("schedules", a -> List.of());
 
         assertThat(ops.pauseSchedule("missing", false)).isFalse();
 
-        assertThat(calls).containsExactly("recurringDefinitions[]", "resumeRecurring[missing, null]");
+        assertThat(calls).containsExactly("schedules[]", "resumeSchedule[missing, null]");
     }
 
     @Test
     void resumingAFixedDelayScheduleRearmsItsNextFireFromNowInTheSameStoreCall() {
-        handlers.put("resumeRecurring", a -> true);
+        handlers.put("resumeSchedule", a -> true);
         handlers.put(
-                "recurringDefinitions",
+                "schedules",
                 a -> List.of(
-                        new RecurringSchedule(definition("other", null, 1_000L, false), NOW),
-                        new RecurringSchedule(definition("poll", null, 90_000L, false), NOW.plusSeconds(999))));
+                        new ScheduleEntry(definition("other", null, Duration.ofMillis(1_000), false), NOW),
+                        new ScheduleEntry(
+                                definition("poll", null, Duration.ofMillis(90_000), false), NOW.plusSeconds(999))));
 
         assertThat(ops.pauseSchedule("poll", false)).isTrue();
 
-        assertThat(calls)
-                .containsExactly("recurringDefinitions[]", "resumeRecurring[poll, " + NOW.plusSeconds(90) + "]");
+        assertThat(calls).containsExactly("schedules[]", "resumeSchedule[poll, " + NOW.plusSeconds(90) + "]");
     }
 
     @Test
     void resumingACronScheduleKeepsItsNextFire() {
-        handlers.put("resumeRecurring", a -> true);
+        handlers.put("resumeSchedule", a -> true);
         handlers.put(
-                "recurringDefinitions",
-                a -> List.of(new RecurringSchedule(definition("nightly", "0 2 * * *", null, false), NOW)));
+                "schedules", a -> List.of(new ScheduleEntry(definition("nightly", "0 2 * * *", null, false), NOW)));
 
         assertThat(ops.pauseSchedule("nightly", false)).isTrue();
 
-        assertThat(calls).containsExactly("recurringDefinitions[]", "resumeRecurring[nightly, null]");
+        assertThat(calls).containsExactly("schedules[]", "resumeSchedule[nightly, null]");
     }
 
     @Test
     void triggeringAScheduleSetsItsNextFireToNow() {
-        handlers.put("triggerRecurring", a -> true);
+        handlers.put("triggerSchedule", a -> true);
 
         assertThat(ops.triggerSchedule("nightly")).isTrue();
 
-        assertThat(calls).containsExactly("triggerRecurring[nightly, " + NOW + "]");
+        assertThat(calls).containsExactly("triggerSchedule[nightly, " + NOW + "]");
     }
 
     @Test
     void triggeringAnUnknownScheduleReturnsTheStoreAnswer() {
-        handlers.put("triggerRecurring", a -> false);
+        handlers.put("triggerSchedule", a -> false);
 
         assertThat(ops.triggerSchedule("missing")).isFalse();
     }
 
     @Test
     void deletingAScheduleDelegatesToTheStore() {
-        handlers.put("deleteRecurring", a -> a[0].equals("nightly"));
+        handlers.put("deleteSchedule", a -> a[0].equals("nightly"));
 
         assertThat(ops.deleteSchedule("nightly")).isTrue();
         assertThat(ops.deleteSchedule("missing")).isFalse();

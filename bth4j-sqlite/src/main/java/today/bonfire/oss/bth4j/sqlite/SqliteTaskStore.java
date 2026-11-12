@@ -24,6 +24,8 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Pattern;
 import javax.sql.DataSource;
+import today.bonfire.oss.bth4j.PutScheduleOutcome;
+import today.bonfire.oss.bth4j.PutScheduleResult;
 import today.bonfire.oss.bth4j.common.Json;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
@@ -42,19 +44,17 @@ import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
-import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
-import today.bonfire.oss.bth4j.spi.PutRecurringResult;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecordJson;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
-import today.bonfire.oss.bth4j.spi.RecurringSchedule;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
+import today.bonfire.oss.bth4j.spi.ScheduleEntry;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.StoreArguments;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
+import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
@@ -612,7 +612,7 @@ public final class SqliteTaskStore implements FullStore {
             t.scheduleId(),
             t.retryOf(),
             t.startBy(),
-            t.maxRunTime() == null ? null : t.maxRunTime().toMillis()
+            millisOrNull(t.maxRunTime())
         };
     }
 
@@ -861,7 +861,7 @@ public final class SqliteTaskStore implements FullStore {
                         c,
                         "UPDATE " + schedule + " SET next_fire = ?, triggered = 0, occurrence_id = NULL"
                                 + " WHERE id = ? AND occurrence_id = ?",
-                        effect.nextFire(),
+                        effect.nextFireAt(),
                         effect.scheduleId(),
                         effect.occurrenceId());
         if (changed == 1) effect.markApplied();
@@ -1098,7 +1098,7 @@ public final class SqliteTaskStore implements FullStore {
      * nothing writes nothing, so it keeps the revision.
      */
     @Override
-    public PutRecurringResult putRecurring(RecurringDefinition d, Instant fireAt, Instant keepUntil) {
+    public PutScheduleResult putSchedule(StoredSchedule d, Instant fireAt, Instant keepUntil) {
         var nextFire = Instant.ofEpochMilli(fireAt.toEpochMilli());
         return inTransaction(c -> {
             var old = queryOne(
@@ -1124,20 +1124,20 @@ public final class SqliteTaskStore implements FullStore {
                         d.zone(),
                         d.misfire(),
                         d.catchUpMaxFires(),
-                        d.fixedDelayMs(),
+                        millisOrNull(d.fixedDelay()),
                         d.overlapSkip(),
                         d.encodedPayload(),
                         d.maxAttempts(),
-                        d.maxRunTimeMs(),
+                        millisOrNull(d.maxRunTime()),
                         d.paused(),
                         rev,
                         nextFire);
-                return new PutRecurringResult(PutRecurringOutcome.CREATED, nextFire);
+                return new PutScheduleResult(PutScheduleOutcome.CREATED, nextFire);
             }
             var stored = old.definition();
             boolean sameTiming = Objects.equals(stored.cron(), d.cron())
                     && Objects.equals(stored.zone(), d.zone())
-                    && Objects.equals(stored.fixedDelayMs(), d.fixedDelayMs());
+                    && Objects.equals(stored.fixedDelay(), d.fixedDelay());
             boolean occurrenceRunning = old.occurrenceId() != null
                     && queryOne(
                                     c,
@@ -1146,7 +1146,7 @@ public final class SqliteTaskStore implements FullStore {
                                     old.occurrenceId())
                             != null;
             boolean keepFire =
-                    sameTiming && (occurrenceRunning || !old.nextFire().isAfter(keepUntil));
+                    sameTiming && (occurrenceRunning || !old.nextFireAt().isAfter(keepUntil));
             boolean sameDefinition = sameTiming
                     && stored.typeId() == d.typeId()
                     && stored.payloadVersion() == d.payloadVersion()
@@ -1157,11 +1157,11 @@ public final class SqliteTaskStore implements FullStore {
                     && stored.overlapSkip() == d.overlapSkip()
                     && Objects.equals(stored.encodedPayload(), d.encodedPayload())
                     && stored.maxAttempts() == d.maxAttempts()
-                    && Objects.equals(stored.maxRunTimeMs(), d.maxRunTimeMs());
+                    && Objects.equals(stored.maxRunTime(), d.maxRunTime());
             if (sameDefinition && keepFire && (old.occurrenceId() == null || occurrenceRunning)) {
-                return new PutRecurringResult(PutRecurringOutcome.UNCHANGED, old.nextFire());
+                return new PutScheduleResult(PutScheduleOutcome.UNCHANGED, old.nextFireAt());
             }
-            var fire = keepFire ? old.nextFire() : nextFire;
+            var fire = keepFire ? old.nextFireAt() : nextFire;
             update(
                     c,
                     "UPDATE " + schedule + " SET type_id = ?, payload_version = ?, queue_id = ?, account = ?,"
@@ -1176,27 +1176,27 @@ public final class SqliteTaskStore implements FullStore {
                     d.zone(),
                     d.misfire(),
                     d.catchUpMaxFires(),
-                    d.fixedDelayMs(),
+                    millisOrNull(d.fixedDelay()),
                     d.overlapSkip(),
                     d.encodedPayload(),
                     d.maxAttempts(),
-                    d.maxRunTimeMs(),
+                    millisOrNull(d.maxRunTime()),
                     nextValue(c, NEXT_SCHEDULE_REV, 1),
                     sameTiming && occurrenceRunning ? old.occurrenceId() : null,
                     fire,
                     keepFire && old.triggered(),
                     d.scheduleId());
-            return new PutRecurringResult(PutRecurringOutcome.CHANGED, fire);
+            return new PutScheduleResult(PutScheduleOutcome.CHANGED, fire);
         });
     }
 
     @Override
-    public boolean deleteRecurring(String scheduleId) {
+    public boolean deleteSchedule(String scheduleId) {
         return inTransaction(c -> update(c, "DELETE FROM " + schedule + " WHERE id = ?", scheduleId) == 1);
     }
 
     @Override
-    public Map<String, Instant> recurringSchedules() {
+    public Map<String, Instant> nextFireTimes() {
         return withConnection(c -> {
             var result = new HashMap<String, Instant>();
             queryEach(c, "SELECT id, next_fire FROM " + schedule, rs -> result.put(rs.getString(1), instant(rs, 2)));
@@ -1205,7 +1205,7 @@ public final class SqliteTaskStore implements FullStore {
     }
 
     @Override
-    public List<DueSchedule> dueRecurring(Instant upTo, int limit) {
+    public List<DueSchedule> dueSchedules(Instant upTo, int limit) {
         StoreArguments.requireLimit(limit);
         return withConnection(c -> {
             var result = new ArrayList<DueSchedule>();
@@ -1216,7 +1216,7 @@ public final class SqliteTaskStore implements FullStore {
                     rs -> {
                         var row = readSchedule(rs);
                         result.add(new DueSchedule(
-                                row.definition().scheduleId(), row.nextFire(), row.definition(), row.triggered()));
+                                row.definition().scheduleId(), row.nextFireAt(), row.definition(), row.triggered()));
                     },
                     upTo,
                     limit);
@@ -1232,7 +1232,7 @@ public final class SqliteTaskStore implements FullStore {
      * holder becomes it.
      */
     @Override
-    public boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord o) {
+    public boolean commitSchedule(DueSchedule due, Instant nextFire, TaskRecord o) {
         StoreArguments.requireKey(o.uniqueKey());
         var fixedDelay = due.definition().isFixedDelay();
         return inTransaction(c -> {
@@ -1272,7 +1272,7 @@ public final class SqliteTaskStore implements FullStore {
                             ? null
                             : o.keyKeep().toMillis(),
                     o.startBy(),
-                    o.maxRunTime() == null ? null : o.maxRunTime().toMillis(),
+                    millisOrNull(o.maxRunTime()),
                     o.retryOf());
             if (fixedDelay) {
                 if (update(
@@ -1660,6 +1660,10 @@ public final class SqliteTaskStore implements FullStore {
         return rs.wasNull() ? null : value;
     }
 
+    private static Long millisOrNull(Duration d) {
+        return d == null ? null : d.toMillis();
+    }
+
     private static Duration getMillis(ResultSet rs, String column) throws SQLException {
         long value = rs.getLong(column);
         return rs.wasNull() ? null : Duration.ofMillis(value);
@@ -1906,25 +1910,25 @@ public final class SqliteTaskStore implements FullStore {
     }
 
     @Override
-    public List<RecurringSchedule> recurringDefinitions() {
+    public List<ScheduleEntry> schedules() {
         return withConnection(c -> {
-            var result = new ArrayList<RecurringSchedule>();
+            var result = new ArrayList<ScheduleEntry>();
             queryEach(c, "SELECT " + SCHEDULE_COLUMNS + " FROM " + schedule + " ORDER BY id", rs -> {
                 var row = readSchedule(rs);
-                result.add(new RecurringSchedule(row.definition(), row.nextFire()));
+                result.add(new ScheduleEntry(row.definition(), row.nextFireAt()));
             });
             return result;
         });
     }
 
     @Override
-    public boolean pauseRecurring(String scheduleId) {
+    public boolean pauseSchedule(String scheduleId) {
         return inTransaction(c -> update(c, "UPDATE " + schedule + " SET paused = 1 WHERE id = ?", scheduleId) == 1);
     }
 
     /** Only a paused row is written; a definition that is not paused is left as it is. */
     @Override
-    public boolean resumeRecurring(String scheduleId, Instant nextFire) {
+    public boolean resumeSchedule(String scheduleId, Instant nextFire) {
         return inTransaction(c -> {
             boolean replacesFire = nextFire != null
                     && queryOne(
@@ -1951,7 +1955,7 @@ public final class SqliteTaskStore implements FullStore {
 
     /** A commit already in flight for the old definition fails, because it checks the revision and fire time it read. */
     @Override
-    public boolean triggerRecurring(String scheduleId, Instant fireAt) {
+    public boolean triggerSchedule(String scheduleId, Instant fireAt) {
         return inTransaction(c -> {
             if (queryOne(c, "SELECT 1 FROM " + schedule + " WHERE id = ?", rs -> true, scheduleId) == null) {
                 return false;
@@ -1985,11 +1989,10 @@ public final class SqliteTaskStore implements FullStore {
             + " next_fire, occurrence_id, triggered";
 
     /** A stored definition with the next fire time, the occurrence in flight and whether an operator set that time. */
-    private record ScheduleRow(
-            RecurringDefinition definition, Instant nextFire, Long occurrenceId, boolean triggered) {}
+    private record ScheduleRow(StoredSchedule definition, Instant nextFireAt, Long occurrenceId, boolean triggered) {}
 
     private static ScheduleRow readSchedule(ResultSet rs) throws SQLException {
-        var definition = new RecurringDefinition(
+        var definition = new StoredSchedule(
                 rs.getString("id"),
                 rs.getInt("type_id"),
                 rs.getInt("payload_version"),
@@ -1999,11 +2002,11 @@ public final class SqliteTaskStore implements FullStore {
                 rs.getString("zone"),
                 rs.getString("misfire"),
                 rs.getInt("catch_up_max"),
-                getLong(rs, "fixed_delay_ms"),
+                getMillis(rs, "fixed_delay_ms"),
                 rs.getInt("overlap_skip") != 0,
                 rs.getString("data"),
                 rs.getInt("max_attempts"),
-                getLong(rs, "max_run_ms"),
+                getMillis(rs, "max_run_ms"),
                 rs.getInt("paused") != 0,
                 rs.getLong("rev"));
         return new ScheduleRow(

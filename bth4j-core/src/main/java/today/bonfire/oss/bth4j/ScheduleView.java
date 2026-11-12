@@ -20,6 +20,6 @@ public record ScheduleView(
         Duration fixedDelay,
         Overlap overlap,
         boolean paused,
-        Instant nextFire,
+        Instant nextFireAt,
         int maxAttempts,
         Duration maxRunTime) {}

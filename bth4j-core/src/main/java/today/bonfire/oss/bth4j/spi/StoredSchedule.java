@@ -1,24 +1,28 @@
 package today.bonfire.oss.bth4j.spi;
 
+import java.time.Duration;
 import today.bonfire.oss.bth4j.Misfire;
 
 /**
- * A recurring definition as the store keeps it. Each occurrence becomes a task with the definition's type,
- * queue, account, payload, maximum attempts and maximum run time.
+ * A schedule as the store keeps it: the stored form of a {@link today.bonfire.oss.bth4j.ScheduleDefinition}.
+ * Each occurrence becomes a task with the definition's type, queue, account, payload, maximum attempts and
+ * maximum run time.
  *
  * @param cron         five-field expression, or null for a fixed-delay definition
  * @param zone         zone id the cron expression is evaluated in; null means UTC
  * @param misfire      {@code SKIP}, {@code FIRE_ONCE_NOW} or {@code CATCH_UP}; null means FIRE_ONCE_NOW
  * @param catchUpMaxFires most occurrences a CATCH_UP misfire may create
- * @param fixedDelayMs delay between the end of one occurrence and the next, or null for cron
+ * @param fixedDelay   delay between the end of one occurrence and the next, or null for cron; kept in whole
+ *                     milliseconds, anything finer is cut off
  * @param overlapSkip  true gives each occurrence the unique key {@code sched:<scheduleId>} so that one is
  *                     skipped while the previous one is not finished
- * @param paused       a paused definition is left out of {@link ScheduleStore#dueRecurring}
- * @param maxRunTimeMs     maximum run time of each occurrence's attempts, or null for the runner's default
- * @param revision     assigned by {@link ScheduleStore#putRecurring}, kept when the put changes nothing; a commit
+ * @param paused       a paused definition is left out of {@link ScheduleStore#dueSchedules}
+ * @param maxRunTime   maximum run time of each occurrence's attempts, or null for the runner's default; kept in
+ *                     whole milliseconds like {@code fixedDelay}
+ * @param revision     assigned by {@link ScheduleStore#putSchedule}, kept when the put changes nothing; a commit
  *                     for an older revision is rejected
  */
-public record RecurringDefinition(
+public record StoredSchedule(
         String scheduleId,
         int typeId,
         int payloadVersion,
@@ -28,13 +32,22 @@ public record RecurringDefinition(
         String zone,
         String misfire,
         int catchUpMaxFires,
-        Long fixedDelayMs,
+        Duration fixedDelay,
         boolean overlapSkip,
         String encodedPayload,
         int maxAttempts,
-        Long maxRunTimeMs,
+        Duration maxRunTime,
         boolean paused,
         long revision) {
+
+    public StoredSchedule {
+        fixedDelay = wholeMillis(fixedDelay);
+        maxRunTime = wholeMillis(maxRunTime);
+    }
+
+    private static Duration wholeMillis(Duration d) {
+        return d == null ? null : Duration.ofMillis(d.toMillis());
+    }
 
     public static final String MISFIRE_SKIP = "SKIP";
     public static final String MISFIRE_FIRE_ONCE_NOW = "FIRE_ONCE_NOW";
@@ -65,7 +78,7 @@ public record RecurringDefinition(
     }
 
     /** A cron definition in UTC with the default misfire handling and no overlap protection. */
-    public RecurringDefinition(
+    public StoredSchedule(
             String scheduleId,
             int typeId,
             int payloadVersion,
@@ -94,8 +107,8 @@ public record RecurringDefinition(
                 revision);
     }
 
-    public RecurringDefinition withRevision(long revision) {
-        return new RecurringDefinition(
+    public StoredSchedule withRevision(long revision) {
+        return new StoredSchedule(
                 scheduleId,
                 typeId,
                 payloadVersion,
@@ -105,17 +118,17 @@ public record RecurringDefinition(
                 zone,
                 misfire,
                 catchUpMaxFires,
-                fixedDelayMs,
+                fixedDelay,
                 overlapSkip,
                 encodedPayload,
                 maxAttempts,
-                maxRunTimeMs,
+                maxRunTime,
                 paused,
                 revision);
     }
 
-    public RecurringDefinition withPaused(boolean paused) {
-        return new RecurringDefinition(
+    public StoredSchedule withPaused(boolean paused) {
+        return new StoredSchedule(
                 scheduleId,
                 typeId,
                 payloadVersion,
@@ -125,16 +138,16 @@ public record RecurringDefinition(
                 zone,
                 misfire,
                 catchUpMaxFires,
-                fixedDelayMs,
+                fixedDelay,
                 overlapSkip,
                 encodedPayload,
                 maxAttempts,
-                maxRunTimeMs,
+                maxRunTime,
                 paused,
                 revision);
     }
 
     public boolean isFixedDelay() {
-        return fixedDelayMs != null;
+        return fixedDelay != null;
     }
 }

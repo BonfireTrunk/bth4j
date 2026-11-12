@@ -15,10 +15,10 @@ import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.DeleteOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
-import today.bonfire.oss.bth4j.spi.RecurringSchedule;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
+import today.bonfire.oss.bth4j.spi.ScheduleEntry;
 import today.bonfire.oss.bth4j.spi.StateCounts;
+import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
@@ -190,11 +190,11 @@ final class DefaultAdminOps implements AdminOps {
     @Override
     public List<ScheduleView> schedules() {
         var result = new ArrayList<ScheduleView>();
-        for (var s : store.recurringDefinitions()) result.add(view(s));
+        for (var s : store.schedules()) result.add(view(s));
         return result;
     }
 
-    private ScheduleView view(RecurringSchedule s) {
+    private ScheduleView view(ScheduleEntry s) {
         var d = s.definition();
         return new ScheduleView(
                 d.scheduleId(),
@@ -203,40 +203,40 @@ final class DefaultAdminOps implements AdminOps {
                 d.account(),
                 d.cron(),
                 d.zone(),
-                RecurringDefinition.misfire(d.misfire(), d.catchUpMaxFires()),
-                d.fixedDelayMs() == null ? null : Duration.ofMillis(d.fixedDelayMs()),
+                StoredSchedule.misfire(d.misfire(), d.catchUpMaxFires()),
+                d.fixedDelay(),
                 d.overlapSkip() ? Overlap.SKIP : Overlap.ALLOW,
                 d.paused(),
-                s.nextFire(),
+                s.nextFireAt(),
                 d.maxAttempts(),
-                d.maxRunTimeMs() == null ? null : Duration.ofMillis(d.maxRunTimeMs()));
+                d.maxRunTime());
     }
 
     @Override
     public boolean pauseSchedule(String id, boolean paused) {
         StoredText.requirePresent("schedule id", id);
-        if (paused) return store.pauseRecurring(id);
+        if (paused) return store.pauseSchedule(id);
         // a fixed-delay definition parks its next fire while paused, so it resumes one delay from now; the store
         // applies that only to a paused definition whose occurrence is not still running
-        var next = store.recurringDefinitions().stream()
+        var next = store.schedules().stream()
                 .filter(s ->
                         s.definition().scheduleId().equals(id) && s.definition().isFixedDelay())
                 .findFirst()
-                .map(s -> clock.instant().plusMillis(s.definition().fixedDelayMs()))
+                .map(s -> clock.instant().plus(s.definition().fixedDelay()))
                 .orElse(null);
-        return store.resumeRecurring(id, next);
+        return store.resumeSchedule(id, next);
     }
 
     @Override
     public boolean triggerSchedule(String id) {
         StoredText.requirePresent("schedule id", id);
-        return store.triggerRecurring(id, clock.instant());
+        return store.triggerSchedule(id, clock.instant());
     }
 
     @Override
     public boolean deleteSchedule(String id) {
         StoredText.requirePresent("schedule id", id);
-        return store.deleteRecurring(id);
+        return store.deleteSchedule(id);
     }
 
     @Override

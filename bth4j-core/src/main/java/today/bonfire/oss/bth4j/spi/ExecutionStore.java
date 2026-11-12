@@ -28,7 +28,7 @@ public interface ExecutionStore extends TaskStore {
      * {@link TaskValidationException}. A new task starts without run fields: the store ignores the record's
      * attempts, worker, lease, claim time, key-until, cancel request and reason, progress, steps and failures,
      * and stores the task with none of them and zero attempts. This holds for every way a task gets in,
-     * including {@link #enqueueAll} and {@link ScheduleStore#commitRecurring}.
+     * including {@link #enqueueAll} and {@link ScheduleStore#commitSchedule}.
      * <p>
      * When the record has a {@link TaskRecord#uniqueKey()} and another task holds it, nothing is stored and
      * {@link EnqueueOutcome.DuplicateKey} names that task. A key is held while its task is not terminal, and

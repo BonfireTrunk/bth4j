@@ -8,7 +8,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * A change to a recurring definition that the end of its fixed-delay occurrence applies in the same atomic step
  * as the task transition, so that a process dying right after the transition cannot leave the definition
  * parked. The store records the id of the in-flight occurrence of a fixed-delay definition when
- * {@link ScheduleStore#commitRecurring} stores it. The effect applies only while that id equals
+ * {@link ScheduleStore#commitSchedule} stores it. The effect applies only while that id equals
  * {@code occurrenceId}, and then clears it; otherwise it does nothing, because the definition was replaced, its
  * timing changed or a newer occurrence took over. A re-arm of a paused definition stores the next fire time
  * but leaves the definition paused; resuming makes it due.
@@ -47,7 +47,7 @@ public final class ScheduleEffect {
     }
 
     /** @return the new next fire time, or null when the effect pauses the definition */
-    public Instant nextFire() {
+    public Instant nextFireAt() {
         return nextFire;
     }
 

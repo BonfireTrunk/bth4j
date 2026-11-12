@@ -395,7 +395,7 @@ class BackgroundRunnerCoverageTest {
         var release = new CountDownLatch(1);
         var blocked = new CountDownLatch(3);
         var observed = StoreInterceptor.around(store, (method, args, real) -> {
-            if (method.equals("claim") || method.equals("promote") || method.equals("dueRecurring")) {
+            if (method.equals("claim") || method.equals("promote") || method.equals("dueSchedules")) {
                 blocked.countDown();
                 awaitUninterruptibly(release);
             }
@@ -462,7 +462,7 @@ class BackgroundRunnerCoverageTest {
         var release = new CountDownLatch(1);
         var blocked = new CountDownLatch(1);
         var observed = StoreInterceptor.around(new InMemoryStore(new MutableClock()), (method, args, real) -> {
-            if (method.equals("dueRecurring")) {
+            if (method.equals("dueSchedules")) {
                 blocked.countDown();
                 awaitUninterruptibly(release);
             }

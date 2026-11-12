@@ -14,9 +14,9 @@ import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.InspectionStore;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.ScheduleStore;
+import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 
@@ -138,7 +138,7 @@ class RecurringTaskService extends CustomThread {
         var queued = 0;
         try {
             for (var round = 0; round < MAX_ROUNDS_PER_CYCLE && this.canContinueProcessing; round++) {
-                var due = store.dueRecurring(clock.instant().plus(checkInterval), batchSize);
+                var due = store.dueSchedules(clock.instant().plus(checkInterval), batchSize);
                 var progressed = 0;
                 for (var d : due) {
                     Progress progress;
@@ -184,8 +184,7 @@ class RecurringTaskService extends CustomThread {
             }
             // catch-up gives every missed fire its own occurrence, also the ones that are late by less than the
             // threshold; the other policies continue from now
-            var catchesUp =
-                    RecurringDefinition.misfire(def.misfire(), def.catchUpMaxFires()) instanceof Misfire.CatchUp;
+            var catchesUp = StoredSchedule.misfire(def.misfire(), def.catchUpMaxFires()) instanceof Misfire.CatchUp;
             var ahead = d.fireAt().isAfter(now);
             if (ahead && def.overlapSkip() && earlierOccurrenceMayBeOpen(d)) {
                 return Progress.NONE;
@@ -230,7 +229,7 @@ class RecurringTaskService extends CustomThread {
 
     private Progress misfired(DueSchedule d, Instant now, ZoneId zone, Duration late) {
         var def = d.definition();
-        var misfire = RecurringDefinition.misfire(def.misfire(), def.catchUpMaxFires());
+        var misfire = StoredSchedule.misfire(def.misfire(), def.catchUpMaxFires());
         switch (misfire) {
             case Misfire.Skip s -> {
                 var next = nextOrPark(def, now, zone, d.fireAt());
@@ -291,9 +290,9 @@ class RecurringTaskService extends CustomThread {
 
     /**
      * A definition that never fires again still gets this occurrence; parking its next fire far ahead keeps it
-     * out of dueRecurring without a revision-checked delete.
+     * out of dueSchedules without a revision-checked delete.
      */
-    private Instant nextOrPark(RecurringDefinition def, Instant after, ZoneId zone, Instant fireAt) {
+    private Instant nextOrPark(StoredSchedule def, Instant after, ZoneId zone, Instant fireAt) {
         return Cron.next(def.cron(), after, zone).orElseGet(() -> {
             log.warn("Recurring task {} never fires again after {}", def.scheduleId(), fireAt);
             return fireAt.plus(NEVER);
@@ -310,21 +309,20 @@ class RecurringTaskService extends CustomThread {
                 .payloadVersion(def.payloadVersion())
                 .state(d.fireAt().isAfter(clock.instant()) ? TaskState.SCHEDULED : TaskState.QUEUED)
                 .maxAttempts(def.maxAttempts())
-                .maxRunTime(def.maxRunTimeMs() == null ? null : Duration.ofMillis(def.maxRunTimeMs()))
+                .maxRunTime(def.maxRunTime())
                 .createdAt(clock.instant())
                 .due(d.fireAt())
                 .encodedPayload(def.encodedPayload())
                 .account(def.account())
                 .scheduleId(d.scheduleId());
         if (def.isFixedDelay()) {
-            builder.headers(Map.of(
-                    FIXED_DELAY_HEADER, Duration.ofMillis(def.fixedDelayMs()).toString()));
+            builder.headers(Map.of(FIXED_DELAY_HEADER, def.fixedDelay().toString()));
         }
         if (def.overlapSkip()) {
             builder.uniqueKey(OVERLAP_KEY_PREFIX + d.scheduleId());
         }
         var occurrence = builder.build();
-        var committed = store.commitRecurring(d, next, occurrence);
+        var committed = store.commitSchedule(d, next, occurrence);
         if (committed) {
             if (def.overlapSkip()
                     && inspection != null

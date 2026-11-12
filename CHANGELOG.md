@@ -13,10 +13,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Breaking: `TaskClient.putSchedule` returns `PutScheduleResult(outcome, nextFireAt)`: whether the definition was created, changed or found unchanged (`PutScheduleOutcome`), and the next fire time it has. It returned only the time, and the outcome was only logged. `TaskClient.schedules()`, the map of schedule id to next fire time, is `nextFireTimes()`; `AdminOps.schedules()` lists the definitions.
+- Breaking, store SPI: the schedule methods say "schedule" as the API does. The stored names (tables, columns, Redis keys) are unchanged.
+
+  | Before | Now |
+  |---|---|
+  | `RecurringDefinition` | `StoredSchedule` |
+  | `RecurringSchedule(definition, nextFire)` | `ScheduleEntry(definition, nextFireAt)` |
+  | `spi.PutRecurringResult`, `spi.PutRecurringOutcome` | `PutScheduleResult`, `PutScheduleOutcome` in `today.bonfire.oss.bth4j` |
+  | `putRecurring`, `deleteRecurring`, `pauseRecurring`, `resumeRecurring`, `triggerRecurring` | `putSchedule`, `deleteSchedule`, `pauseSchedule`, `resumeSchedule`, `triggerSchedule` |
+  | `dueRecurring`, `commitRecurring` | `dueSchedules`, `commitSchedule` |
+  | `recurringDefinitions()`, `recurringSchedules()` | `schedules()`, `nextFireTimes()` |
+  | `ScheduleEffect.nextFire()` | `nextFireAt()` |
+
+  `StoredSchedule` holds `Duration fixedDelay` and `Duration maxRunTime` where it held the millisecond numbers `fixedDelayMs` and `maxRunTimeMs`; the record cuts both to whole milliseconds, which is what every store keeps. `ScheduleView.nextFire` is `nextFireAt`.
+- `TaskState.SCHEDULED` is documented as what it is: a task waiting for its due time, which is a delayed task, a task waiting for its next attempt, or an occurrence of a schedule created ahead of its fire time. Schedules themselves are not tasks; `AdminOps.schedules()` lists them.
 - Breaking, stored data: the stores write a new layout and `init` refuses everything written by 4.x or older: PostgreSQL schema 4, Redis layout 6, SQLite schema 2. There is no migration. Let the old runners finish their work, then start on a new table prefix, Redis namespace or SQLite file, or drop the old ones.
   - PostgreSQL keeps every time in a `timestamptz(3)` column, so the database itself holds whole milliseconds. The code that read rows written with microseconds before 4.2.0 is gone, and the cursor of a task listing counts milliseconds.
   - The schedule row has a `triggered` column (PostgreSQL, SQLite) or a `trg` field (Redis).
-- Breaking, store SPI: `ScheduleStore.setNextFire(scheduleId, nextFire)`, the operator's write, is `triggerRecurring(scheduleId, fireAt)`, and `DueSchedule` has `triggered`. The store marks a triggered fire time until another write replaces it; see the fix for late triggers below. The runner's `setNextFire(scheduleId, revision, expectedFire, nextFire)` is unchanged. `StoreContract.writeOtherSchemaVersion(namespace)` lets the contract tests see `init` refuse another schema version.
+- Breaking, store SPI: `ScheduleStore.setNextFire(scheduleId, nextFire)`, the operator's write, is `triggerSchedule(scheduleId, fireAt)`, and `DueSchedule` has `triggered`. The store marks a triggered fire time until another write replaces it; see the fix for late triggers below. The runner's `setNextFire(scheduleId, revision, expectedFire, nextFire)` is unchanged. `StoreContract.writeOtherSchemaVersion(namespace)` lets the contract tests see `init` refuse another schema version.
 - Breaking, store SPI: `InspectionStore.holdsKey(id, key)` is new. It tells whether the task with that id holds a unique key now, also after the task was removed inside the key's keep window, which `taskByKey` does not show. The client asks it for a resend whose `startBy` has passed (see the fix below).
 - Breaking: `TaskRequest.Builder.uniqueKey` refuses a key that starts with `sched:` with a `TaskValidationException`. An occurrence of a schedule with `Overlap.SKIP` holds the key `sched:<schedule id>`, so an application task with such a key made that schedule drop its fires, and a fixed-delay schedule could stay parked behind it. `taskByKey` and `cancelByKey` still take such a key.
 - Breaking: a step name with U+0000 is a `TaskValidationException`, and the step's body does not run. Since 4.2.0 the name was stored with U+FFFD in its place, so two step names that differed only there shared one checkpoint and the second step returned the result of the first without running.
@@ -83,13 +98,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TaskRequest.Builder.uniqueKey(key)` sets the key to be taken until the task is done; after `uniqueKey(key, keepFor)` on the same builder it kept the earlier keep window.
 - `RetryPolicy.exponential` counts a base or cap longer than `TaskRequest.MAX_TIME_FROM_NOW` as that long.
 - Store SPI: a task that was removed while its unique key is still kept, sent again with its id and that key, answers `EnqueueOutcome.EXISTS` on every store, so the client returns `Accepted`. Redis and the in-memory store answered `DuplicateKey` with the request's own id (`Duplicate` from the client); PostgreSQL and SQLite already answered `EXISTS`. The task is not stored again on any store, before or now. A new contract test covers it.
-- Store SPI: `ScheduleStore.resumeRecurring` ignores the given next fire time while the recorded occurrence of the definition is not finished, and keeps the stored time and revision. A new contract test covers it on every store.
+- Store SPI: `ScheduleStore.resumeSchedule` ignores the given next fire time while the recorded occurrence of the definition is not finished, and keeps the stored time and revision. A new contract test covers it on every store.
 - Store SPI: more points where the stores behave alike, each with a contract test.
-  - A `limit` below 1 throws `TaskValidationException` on every store, in `promote`, `reclaim`, `expire`, `purge`, `releaseKeys`, `dueRecurring` and `tasks` (`StoreArguments.requireLimit`). The SPI said so and no store did: each answered in its own way, an empty result on most. `TaskClient.tasks` and `AdminOps.tasks` throw it for a limit below 1 too; they returned an empty page.
+  - A `limit` below 1 throws `TaskValidationException` on every store, in `promote`, `reclaim`, `expire`, `purge`, `releaseKeys`, `dueSchedules` and `tasks` (`StoreArguments.requireLimit`). The SPI said so and no store did: each answered in its own way, an empty result on most. `TaskClient.tasks` and `AdminOps.tasks` throw it for a limit below 1 too; they returned an empty page.
   - A new task without a created time is created at the store's time of the call, a key keep without a unique key is dropped (`TaskRecord.asNew()` drops it), and an occurrence that names no schedule belongs to the schedule that fired it. The in-memory store and Redis kept these fields as given; PostgreSQL and SQLite already stored them this way.
   - An empty unique key throws `TaskValidationException` (`StoreArguments.requireKey`). Redis stored the task without enforcing the key. The client never sends one.
   - A fixed-delay commit that stores nothing, because another task of the schedule holds the unique key, records that task as the running occurrence only while it is not finished. The in-memory store and Redis also recorded a finished task whose key window was still open, and the schedule then waited for a task that had ended.
-  - `recurringDefinitions()` lists by the Unicode code points of the id (`ScheduleStore.ID_ORDER`), which is the order of its UTF-8 bytes. The in-memory store and Redis compared UTF-16 units, which puts characters above U+FFFF elsewhere.
+  - `schedules()` lists by the Unicode code points of the id (`ScheduleStore.ID_ORDER`), which is the order of its UTF-8 bytes. The in-memory store and Redis compared UTF-16 units, which puts characters above U+FFFF elsewhere.
   - A new contract test pins the order of `workers()`, which was the same on every store already.
 - Redis: a listing orders tasks of the same time by the id as text (10 before 9), the order in which a claim takes them, and finds its page by rank. Before, a page read every task that shared the time of its first entry to sort them by number, however many there were. `StoreContract.orderOfIdsThatShareATime()` lets a store state such an order.
 - Admin HTTP: `GET /me` also returns the session's CSRF token.
@@ -97,7 +112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- PostgreSQL: registering a schedule that another caller registers at the same moment no longer undoes a commit in flight. `putRecurring` locked the row before it wrote, but when the row did not exist yet at the lock and existed at the write, the write waited for a runner's commit of the first occurrence and then judged the definition by what was visible before that commit: it forgot the running occurrence and replaced the parked fire time, so a second occurrence could start beside the first. A definition that is not there yet is now only inserted, and the next round locks the row that appeared.
+- PostgreSQL: registering a schedule that another caller registers at the same moment no longer undoes a commit in flight. `putSchedule` locked the row before it wrote, but when the row did not exist yet at the lock and existed at the write, the write waited for a runner's commit of the first occurrence and then judged the definition by what was visible before that commit: it forgot the running occurrence and replaced the parked fire time, so a second occurrence could start beside the first. A definition that is not there yet is now only inserted, and the next round locks the row that appeared.
 - Redis: failing a task whose queue field cannot be read removes it from the leased index of every queue. Its entry stayed in the index of its real queue, so `counts()` showed a leased task that no longer existed.
 - `MicrometerRunnerMetrics.close()` keeps its tags taken until its meters are removed. A binding with the same tags made in between was handed the closing one's gauges, which were then removed.
 - Admin HTTP: an error log line for a request in the 4.x form `tasks/by-key/<key>` no longer shows the key.
@@ -122,7 +137,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A runner stopped right after `start()` no longer leaves a `RejectedExecutionException` stack trace from the maintenance thread.
 - `new RetryPolicy.Decision.RetryAfter(null)` counts as no delay, as `Decision.retryAfter(null)` does; the task stayed LEASED.
 - `RetryPolicy.exponential` keeps doubling up to the cap; it stopped at base x 2^20, which is 2.9 hours for a 10 ms base.
-- PostgreSQL: `recurringDefinitions()` lists by the bytes of the id (`COLLATE "C"`), as the other stores do, whatever the collation of the database.
+- PostgreSQL: `schedules()` lists by the bytes of the id (`COLLATE "C"`), as the other stores do, whatever the collation of the database.
 - Redis: a task listing leaves out a task that left the listed state between the read of the ids and the read of the records.
 - PostgreSQL: the store reads the time when a statement starts (`statement_timestamp()`), not when its transaction began. `enqueue(Connection, ...)` in a long transaction of the caller judged key windows, due times and the created time by the start of that transaction, so a key whose window ended meanwhile still counted as taken.
 - PostgreSQL: `enqueue` settles a contended unique key over up to 100 rounds. It gave up with "did not settle" when the holder of the key was released and replaced three times in a row.

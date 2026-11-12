@@ -1507,14 +1507,15 @@ class TaskClientTest {
         var client = builder().build();
         var definition = ScheduleDefinition.of("nightly", TYPED, new Payload("p"), "0 3 * * *", Overlap.ALLOW);
 
-        var next = client.putSchedule(definition);
+        var put = client.putSchedule(definition);
 
-        assertThat(next).isEqualTo(Instant.parse("2030-01-01T03:00:00Z"));
-        assertThat(client.schedules()).containsEntry("nightly", next);
+        assertThat(put)
+                .isEqualTo(new PutScheduleResult(PutScheduleOutcome.CREATED, Instant.parse("2030-01-01T03:00:00Z")));
+        assertThat(client.nextFireTimes()).containsEntry("nightly", put.nextFireAt());
 
         assertThat(client.deleteSchedule("nightly")).isTrue();
         assertThat(client.deleteSchedule("nightly")).isFalse();
-        assertThat(client.schedules()).isEmpty();
+        assertThat(client.nextFireTimes()).isEmpty();
     }
 
     @Test
@@ -1526,10 +1527,25 @@ class TaskClientTest {
         var same = client.putSchedule(ScheduleDefinition.of("s", VOID, "0 3 * * *", Overlap.ALLOW));
         var changed = client.putSchedule(ScheduleDefinition.of("s", VOID, "0 5 * * *", Overlap.ALLOW));
 
-        assertThat(first).isEqualTo(Instant.parse("2030-01-01T03:00:00Z"));
-        assertThat(same).isEqualTo(first);
-        assertThat(changed).isEqualTo(Instant.parse("2030-01-01T05:00:00Z"));
-        assertThat(client.schedules()).containsOnly(java.util.Map.entry("s", changed));
+        var three = Instant.parse("2030-01-01T03:00:00Z");
+        var five = Instant.parse("2030-01-01T05:00:00Z");
+        assertThat(first).isEqualTo(new PutScheduleResult(PutScheduleOutcome.CREATED, three));
+        assertThat(same).isEqualTo(new PutScheduleResult(PutScheduleOutcome.UNCHANGED, three));
+        assertThat(changed).isEqualTo(new PutScheduleResult(PutScheduleOutcome.CHANGED, five));
+        assertThat(client.nextFireTimes()).containsOnly(java.util.Map.entry("s", five));
+    }
+
+    @Test
+    void registeringAFixedDelayScheduleAgainAnswersTheStoredNextFireTime() {
+        var client = builder().build();
+        var every = ScheduleDefinition.every("poll", VOID, Duration.ofMinutes(5));
+        var first = client.putSchedule(every);
+        clock.advance(Duration.ofSeconds(10));
+
+        var again = client.putSchedule(every);
+
+        assertThat(first.nextFireAt()).isEqualTo(Instant.parse("2030-01-01T00:05:00Z"));
+        assertThat(again).isEqualTo(new PutScheduleResult(PutScheduleOutcome.UNCHANGED, first.nextFireAt()));
     }
 
     @Test
@@ -1538,7 +1554,7 @@ class TaskClientTest {
 
         assertThatThrownBy(() -> client.putSchedule(ScheduleDefinition.of("bad", VOID, "not a cron", Overlap.ALLOW)))
                 .isInstanceOf(TaskValidationException.class);
-        assertThat(client.schedules()).isEmpty();
+        assertThat(client.nextFireTimes()).isEmpty();
     }
 
     @Test

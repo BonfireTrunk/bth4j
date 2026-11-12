@@ -14,8 +14,8 @@ import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.TaskView;
 import today.bonfire.oss.bth4j.UnservedWork;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.StateCounts;
+import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /** Maps core types to the JSON structures of the API: ids and revisions as strings, times and durations as ISO-8601. */
@@ -132,11 +132,11 @@ final class Views {
                 "account", s.account(),
                 "cron", s.cron(),
                 "zone", s.zone(),
-                "misfire", RecurringDefinition.misfireCode(s.misfire()),
+                "misfire", StoredSchedule.misfireCode(s.misfire()),
                 "fixedDelay", text(s.fixedDelay()),
                 "overlap", s.overlap().name(),
                 "paused", s.paused(),
-                "nextFire", s.nextFire(),
+                "nextFire", s.nextFireAt(),
                 "maxAttempts", s.maxAttempts(),
                 "maxRunTime", text(s.maxRunTime()));
         if (s.misfire() instanceof Misfire.CatchUp c) view.put("catchUpMaxFires", c.maxFires());

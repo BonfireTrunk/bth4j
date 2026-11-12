@@ -480,7 +480,7 @@ class FailureDetailTest {
                             acked = true;
                             var effect = (ScheduleEffect) args[4];
                             if (effect != null && !effect.pauses()) {
-                                nextFire.set(effect.nextFire());
+                                nextFire.set(effect.nextFireAt());
                                 effect.markApplied();
                             }
                             yield true;

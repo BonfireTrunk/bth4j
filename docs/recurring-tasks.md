@@ -17,7 +17,7 @@ A recurring definition creates one task for each of its fire times, from a cron 
 
 ## Registering a definition
 
-`client.putSchedule(ScheduleDefinition.of(id, type, payload, cron, overlap))` creates or replaces a definition and returns the next fire time. The cron expression has 5 fields (Unix format). The last argument says what happens to a fire while the previous occurrence has not finished (see [Overlap](#overlap)); a cron definition has no default for it. Each fire time creates one task, exactly once across all instances.
+`client.putSchedule(ScheduleDefinition.of(id, type, payload, cron, overlap))` creates or replaces a definition. It returns a `PutScheduleResult`: `outcome()` says whether the definition was `CREATED`, `CHANGED` or found `UNCHANGED`, and `nextFireAt()` is the next fire time it has. The cron expression has 5 fields (Unix format). The last argument says what happens to a fire while the previous occurrence has not finished (see [Overlap](#overlap)); a cron definition has no default for it. Each fire time creates one task, exactly once across all instances.
 
 These methods refine a definition:
 
@@ -31,7 +31,7 @@ These methods refine a definition:
 | `.misfire(...)` | what happens to missed fire times (see [Misfires](#misfires)) |
 | `.overlap(...)` | changes the overlap rule; for a fixed-delay definition this is where it is set (see [Overlap](#overlap)) |
 
-`client.deleteSchedule(id)` removes a definition and `client.schedules()` lists the definitions.
+`client.deleteSchedule(id)` removes a definition. `client.nextFireTimes()` gives the next fire time of every definition by id, and `admin.schedules()` lists the definitions in full (see [Admin API](admin.md#admin-api)). A definition is not a task and has no state: `tasks(TaskState.SCHEDULED, ...)` lists tasks that wait for their due time, occurrences created ahead of their fire time among them, not definitions.
 
 ### Registering the same id again
 

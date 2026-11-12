@@ -1,7 +1,7 @@
-package today.bonfire.oss.bth4j.spi;
+package today.bonfire.oss.bth4j;
 
-/** Result of {@link ScheduleStore#putRecurring}. */
-public enum PutRecurringOutcome {
+/** What {@link TaskClient#putSchedule} did. */
+public enum PutScheduleOutcome {
     /** no definition with that id existed */
     CREATED,
     /** the definition, its next fire time or its recorded occurrence changed; it has a new revision */

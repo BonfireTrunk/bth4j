@@ -4,15 +4,19 @@ import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import today.bonfire.oss.bth4j.PutScheduleResult;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
-/** Recurring definitions. Each occurrence is a task of its own, created exactly once across all runners. */
+/**
+ * Schedules: the definitions of recurring tasks. Each occurrence is a task of its own, created exactly once
+ * across all runners.
+ */
 public interface ScheduleStore extends TaskStore {
 
     /**
      * Creates or replaces a definition. The store assigns the revision. When a definition with that id exists,
      * its timing (cron expression, zone and fixed delay) is unchanged and either the occurrence it has in
-     * flight (see {@link #commitRecurring}) is not finished or its stored next fire time is not later than
+     * flight (see {@link #commitSchedule}) is not finished or its stored next fire time is not later than
      * {@code keepUntil}, the stored next fire time is kept; otherwise it becomes {@code nextFire}. A stored
      * time later than {@code keepUntil} with no occurrence in flight has skipped fires: a fixed-delay
      * definition whose re-arm was lost, or a time pushed far out by a stale write. Changed timing forgets the
@@ -22,20 +26,20 @@ public interface ScheduleStore extends TaskStore {
      *
      * @return whether the definition was created, changed or found unchanged, with the next fire time it has
      */
-    PutRecurringResult putRecurring(RecurringDefinition definition, Instant nextFire, Instant keepUntil);
+    PutScheduleResult putSchedule(StoredSchedule definition, Instant nextFire, Instant keepUntil);
 
     /** @return true when a definition with that id existed */
-    boolean deleteRecurring(String scheduleId);
+    boolean deleteSchedule(String scheduleId);
 
     /** @return every definition's id with its next fire time */
-    Map<String, Instant> recurringSchedules();
+    Map<String, Instant> nextFireTimes();
 
     /**
      * @param limit at least 1
      * @return definitions whose next fire time is at or before {@code upTo}, up to the limit
      * @throws TaskValidationException if the limit is below 1
      */
-    List<DueSchedule> dueRecurring(Instant upTo, int limit);
+    List<DueSchedule> dueSchedules(Instant upTo, int limit);
 
     /**
      * Stores the occurrence (SCHEDULED for {@link DueSchedule#fireAt()}) and advances the definition to
@@ -51,10 +55,10 @@ public interface ScheduleStore extends TaskStore {
      *
      * @return true when committed
      */
-    boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord occurrence);
+    boolean commitSchedule(DueSchedule due, Instant nextFire, TaskRecord occurrence);
 
     /**
-     * The order of {@link #recurringDefinitions()}: by the code points of the ids, which is also the byte order
+     * The order of {@link #schedules()}: by the code points of the ids, which is also the byte order
      * of their UTF-8 form, so a database that compares bytes and a store that compares in Java list alike.
      */
     Comparator<String> ID_ORDER = (a, b) -> {
@@ -71,18 +75,18 @@ public interface ScheduleStore extends TaskStore {
     };
 
     /** @return every definition with its next fire time, in {@link #ID_ORDER} */
-    List<RecurringSchedule> recurringDefinitions();
+    List<ScheduleEntry> schedules();
 
     /**
-     * Pauses a definition. A paused definition keeps its next fire time but is left out of {@link #dueRecurring}.
+     * Pauses a definition. A paused definition keeps its next fire time but is left out of {@link #dueSchedules}.
      *
      * @return false when no definition with that id exists
      */
-    boolean pauseRecurring(String scheduleId);
+    boolean pauseSchedule(String scheduleId);
 
     /**
      * Resumes a paused definition in one step. A {@code nextFire} that is not null replaces its next fire time and
-     * assigns a new revision, as {@link #triggerRecurring} does; a fixed-delay definition needs one,
+     * assigns a new revision, as {@link #triggerSchedule} does; a fixed-delay definition needs one,
      * because it parks its next fire while paused. While the recorded occurrence is not finished, {@code nextFire}
      * is ignored and the stored time and revision stay: the end of that occurrence sets the next fire, and a time
      * given here would start a second occurrence beside it. The recorded occurrence is kept. A definition that is
@@ -90,7 +94,7 @@ public interface ScheduleStore extends TaskStore {
      *
      * @return false when no definition with that id exists
      */
-    boolean resumeRecurring(String scheduleId, Instant nextFire);
+    boolean resumeSchedule(String scheduleId, Instant nextFire);
 
     /**
      * Operator write: makes the definition fire at {@code fireAt} (trigger now). It replaces the next fire time
@@ -99,16 +103,16 @@ public interface ScheduleStore extends TaskStore {
      * does nothing either; when the triggered occurrence is skipped because that occurrence still holds the key,
      * the skipped commit records it again.
      * <p>
-     * The fire time is marked as triggered: {@link #dueRecurring} reports it with
+     * The fire time is marked as triggered: {@link #dueSchedules} reports it with
      * {@link DueSchedule#triggered()}, so that the runner does not treat it as a missed fire. The mark lasts as
      * long as this fire time: every other write that replaces the next fire time removes it
-     * ({@link #commitRecurring}, {@link #setNextFire}, a {@link ScheduleEffect} that re-arms, a
-     * {@link #putRecurring} or {@link #resumeRecurring} that stores another time), and a write that keeps the
+     * ({@link #commitSchedule}, {@link #setNextFire}, a {@link ScheduleEffect} that re-arms, a
+     * {@link #putSchedule} or {@link #resumeSchedule} that stores another time), and a write that keeps the
      * time keeps the mark.
      *
      * @return false when no definition with that id exists
      */
-    boolean triggerRecurring(String scheduleId, Instant fireAt);
+    boolean triggerSchedule(String scheduleId, Instant fireAt);
 
     /**
      * Runner write for a misfire: replaces the next fire time and keeps the revision, but only while the

@@ -30,6 +30,8 @@ import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.jedis.exceptions.JedisException;
 import redis.clients.jedis.resps.Tuple;
 import today.bonfire.oss.bth4j.Loggers;
+import today.bonfire.oss.bth4j.PutScheduleOutcome;
+import today.bonfire.oss.bth4j.PutScheduleResult;
 import today.bonfire.oss.bth4j.common.Json;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
@@ -48,19 +50,17 @@ import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
-import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
-import today.bonfire.oss.bth4j.spi.PutRecurringResult;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecordJson;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
-import today.bonfire.oss.bth4j.spi.RecurringSchedule;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
+import today.bonfire.oss.bth4j.spi.ScheduleEntry;
 import today.bonfire.oss.bth4j.spi.ScheduleStore;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.StoreArguments;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
+import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
@@ -563,7 +563,7 @@ public final class RedisTaskStore implements FullStore {
         return List.of(
                 effect.scheduleId(),
                 String.valueOf(effect.occurrenceId()),
-                effect.pauses() ? "" : ms(effect.nextFire()));
+                effect.pauses() ? "" : ms(effect.nextFireAt()));
     }
 
     @Override
@@ -760,7 +760,7 @@ public final class RedisTaskStore implements FullStore {
     // ---- schedules -----------------------------------------------------------------------------------
 
     @Override
-    public PutRecurringResult putRecurring(RecurringDefinition d, Instant nextFire, Instant keepUntil) {
+    public PutScheduleResult putSchedule(StoredSchedule d, Instant nextFire, Instant keepUntil) {
         var args = new ArrayList<String>();
         args.add(d.scheduleId());
         args.add(ms(nextFire));
@@ -786,11 +786,11 @@ public final class RedisTaskStore implements FullStore {
         if (d.catchUpMaxFires() != 0) {
             args.addAll(List.of(F_CATCH_UP, String.valueOf(d.catchUpMaxFires())));
         }
-        if (d.fixedDelayMs() != null) {
-            args.addAll(List.of(F_FIXED_DELAY, String.valueOf(d.fixedDelayMs())));
+        if (d.fixedDelay() != null) {
+            args.addAll(List.of(F_FIXED_DELAY, String.valueOf(d.fixedDelay().toMillis())));
         }
-        if (d.maxRunTimeMs() != null) {
-            args.addAll(List.of(F_MAX_RUN_TIME, String.valueOf(d.maxRunTimeMs())));
+        if (d.maxRunTime() != null) {
+            args.addAll(List.of(F_MAX_RUN_TIME, String.valueOf(d.maxRunTime().toMillis())));
         }
         if (d.overlapSkip()) {
             args.addAll(List.of(F_OVERLAP_SKIP, "1"));
@@ -805,25 +805,25 @@ public final class RedisTaskStore implements FullStore {
             args.addAll(List.of(F_DATA, d.encodedPayload()));
         }
         var r = (List<?>) guard(() -> scripts.run(RedisScripts.CRON_PUT, args));
-        return new PutRecurringResult(
-                PutRecurringOutcome.valueOf((String) r.get(0)), Instant.ofEpochMilli(num(r.get(1))));
+        return new PutScheduleResult(
+                PutScheduleOutcome.valueOf((String) r.get(0)), Instant.ofEpochMilli(num(r.get(1))));
     }
 
     @Override
-    public boolean deleteRecurring(String scheduleId) {
+    public boolean deleteSchedule(String scheduleId) {
         return num(guard(() -> scripts.run(RedisScripts.CRON_DELETE, List.of(scheduleId)))) == 1;
     }
 
     @Override
-    public Map<String, Instant> recurringSchedules() {
+    public Map<String, Instant> nextFireTimes() {
         var result = new LinkedHashMap<String, Instant>();
-        recurringDefinitions().forEach(r -> result.put(r.definition().scheduleId(), r.nextFire()));
+        schedules().forEach(r -> result.put(r.definition().scheduleId(), r.nextFireAt()));
         return result;
     }
 
     @Override
     @SuppressWarnings("unchecked")
-    public List<DueSchedule> dueRecurring(Instant upTo, int limit) {
+    public List<DueSchedule> dueSchedules(Instant upTo, int limit) {
         StoreArguments.requireLimit(limit);
         return guard(() -> {
             var due = jedis.zrangeByScoreWithScores(keys.cron, "-inf", ms(upTo), 0, limit);
@@ -848,8 +848,8 @@ public final class RedisTaskStore implements FullStore {
         });
     }
 
-    private static RecurringDefinition definition(String id, Map<String, String> d) {
-        return new RecurringDefinition(
+    private static StoredSchedule definition(String id, Map<String, String> d) {
+        return new StoredSchedule(
                 id,
                 Integer.parseInt(d.get(F_TYPE)),
                 Integer.parseInt(d.get(F_PAYLOAD_VERSION)),
@@ -859,17 +859,17 @@ public final class RedisTaskStore implements FullStore {
                 d.get(F_ZONE),
                 d.get(F_MISFIRE),
                 d.containsKey(F_CATCH_UP) ? Integer.parseInt(d.get(F_CATCH_UP)) : 0,
-                d.containsKey(F_FIXED_DELAY) ? Long.parseLong(d.get(F_FIXED_DELAY)) : null,
+                d.containsKey(F_FIXED_DELAY) ? Duration.ofMillis(Long.parseLong(d.get(F_FIXED_DELAY))) : null,
                 "1".equals(d.get(F_OVERLAP_SKIP)),
                 d.get(F_DATA),
                 Integer.parseInt(d.get(F_MAX_ATTEMPTS)),
-                d.containsKey(F_MAX_RUN_TIME) ? Long.parseLong(d.get(F_MAX_RUN_TIME)) : null,
+                d.containsKey(F_MAX_RUN_TIME) ? Duration.ofMillis(Long.parseLong(d.get(F_MAX_RUN_TIME))) : null,
                 "1".equals(d.get(F_PAUSED)),
                 Long.parseLong(d.get(F_REVISION)));
     }
 
     @Override
-    public boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord given) {
+    public boolean commitSchedule(DueSchedule due, Instant nextFire, TaskRecord given) {
         StoreArguments.requireKey(given.uniqueKey());
         var occurrence = given.scheduleId() != null
                 ? given
@@ -1264,7 +1264,7 @@ public final class RedisTaskStore implements FullStore {
     // ---- wave 2: schedule controls -------------------------------------------------------------------
 
     @Override
-    public List<RecurringSchedule> recurringDefinitions() {
+    public List<ScheduleEntry> schedules() {
         return guard(() -> {
             var ids = jedis.smembers(keys.cronDefinitions).stream()
                     .sorted(ScheduleStore.ID_ORDER)
@@ -1274,11 +1274,11 @@ public final class RedisTaskStore implements FullStore {
                 ids.forEach(id -> hashes.add(pipeline.hgetAll(keys.cronDefinition(id))));
                 pipeline.sync();
             }
-            var out = new ArrayList<RecurringSchedule>(ids.size());
+            var out = new ArrayList<ScheduleEntry>(ids.size());
             for (var i = 0; i < ids.size(); i++) {
                 var h = hashes.get(i).get();
                 if (!h.isEmpty()) {
-                    out.add(new RecurringSchedule(
+                    out.add(new ScheduleEntry(
                             definition(ids.get(i), h), Instant.ofEpochMilli(Long.parseLong(h.get(F_NEXT)))));
                 }
             }
@@ -1287,18 +1287,18 @@ public final class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public boolean pauseRecurring(String scheduleId) {
+    public boolean pauseSchedule(String scheduleId) {
         return num(guard(() -> scripts.run(RedisScripts.CRON_PAUSE, List.of(scheduleId)))) == 1;
     }
 
     @Override
-    public boolean resumeRecurring(String scheduleId, Instant nextFire) {
+    public boolean resumeSchedule(String scheduleId, Instant nextFire) {
         var args = List.of(scheduleId, nextFire == null ? "" : ms(nextFire));
         return num(guard(() -> scripts.run(RedisScripts.CRON_RESUME, args))) == 1;
     }
 
     @Override
-    public boolean triggerRecurring(String scheduleId, Instant fireAt) {
+    public boolean triggerSchedule(String scheduleId, Instant fireAt) {
         var args = List.of(scheduleId, ms(fireAt));
         return num(guard(() -> scripts.run(RedisScripts.CRON_TRIGGER, args))) == 1;
     }
