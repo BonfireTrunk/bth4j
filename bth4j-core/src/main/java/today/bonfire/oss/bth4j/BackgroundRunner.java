@@ -86,7 +86,8 @@ public final class BackgroundRunner implements AutoCloseable {
                 : switch (b.concurrency) {
                     case Concurrency.Fixed f -> new FixedExecutor(f.limit());
                     case Concurrency.Adaptive a ->
-                        new DefaultVtExecutor(a, detail -> status.issue("resource-signal-unavailable", detail, null));
+                        new DefaultVtExecutor(
+                                a, detail -> status.issue(Issue.Kind.RESOURCE_SIGNAL_UNAVAILABLE, detail, null));
                 };
         this.client = TaskClient.builder()
                 .store(store)

@@ -47,9 +47,10 @@ public interface MaintenanceStore extends TaskStore {
      * Moves QUEUED and SCHEDULED tasks whose {@link TaskRecord#startBy()} has passed to EXPIRED (revision +1,
      * unique key handled like a terminal transition), oldest first, up to the limit.
      *
-     * @return the ids moved
+     * @return the tasks moved, each with the queue and type id it had, read in the same atomic step as the move so
+     *         that a purge or delete right after cannot take them away
      */
-    List<Long> expire(int limit);
+    List<ExpiredTask> expire(int limit);
 
     /**
      * Deletes worker rows whose last heartbeat is older than {@code staleAfter}.

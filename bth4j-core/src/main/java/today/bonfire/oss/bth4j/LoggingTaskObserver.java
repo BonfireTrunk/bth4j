@@ -61,6 +61,7 @@ public final class LoggingTaskObserver implements TaskObserver {
             case TaskEvent.ScheduleFired e ->
                 log.info("schedule {} fired for {} as task {}", e.scheduleId(), e.fireAt(), e.taskId());
             case TaskEvent.Purged e -> log.debug("purged {} {} tasks", e.count(), e.state());
+            default -> {}
         }
     }
 

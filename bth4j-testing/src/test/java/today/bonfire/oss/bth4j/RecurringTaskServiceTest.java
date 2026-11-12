@@ -74,7 +74,7 @@ class RecurringTaskServiceTest {
             assertThat(occurrences()).isEmpty();
             assertThat(events).isEmpty();
             assertThat(status.issues()).singleElement().satisfies(i -> {
-                assertThat(i.kind()).isEqualTo("schedule-misfire");
+                assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_MISFIRE);
                 assertThat(i.detail()).endsWith("skipped, next at " + nextHour);
             });
         } else {
@@ -121,7 +121,7 @@ class RecurringTaskServiceTest {
         assertThat(occurrences()).hasSize(1);
         assertThat(status.issues())
                 .singleElement()
-                .satisfies(i -> assertThat(i.kind()).isEqualTo("schedule-misfire"));
+                .satisfies(i -> assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_MISFIRE));
         assertThat(store.recurringSchedules()).containsEntry(ID, T0.plus(Duration.ofHours(4)));
     }
 
@@ -143,7 +143,7 @@ class RecurringTaskServiceTest {
                 .containsExactlyElementsOf(missed);
         assertThat(store.recurringSchedules()).containsEntry(ID, T0.plus(Duration.ofMinutes(40)));
         assertThat(status.issues()).singleElement().satisfies(i -> {
-            assertThat(i.kind()).isEqualTo("schedule-misfire");
+            assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_MISFIRE);
             assertThat(i.detail()).endsWith("catching up the last 3 fires from " + resume);
         });
     }
@@ -162,7 +162,7 @@ class RecurringTaskServiceTest {
         assertThat(store.recurringSchedules()).containsEntry(ID, last.plusSeconds(60));
         assertThat(status.issues())
                 .singleElement()
-                .satisfies(i -> assertThat(i.kind()).isEqualTo("schedule-misfire"));
+                .satisfies(i -> assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_MISFIRE));
     }
 
     @Test
@@ -198,7 +198,7 @@ class RecurringTaskServiceTest {
                 .satisfies(o -> assertThat(o.due()).isEqualTo(T0));
         assertThat(store.recurringSchedules()).containsEntry(ID, clock.instant().plusSeconds(60));
         assertThat(status.issues()).singleElement().satisfies(i -> {
-            assertThat(i.kind()).isEqualTo("schedule-misfire");
+            assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_MISFIRE);
             assertThat(i.detail()).endsWith("fires missed, firing once now");
         });
     }
@@ -253,7 +253,7 @@ class RecurringTaskServiceTest {
                         e -> assertThat(((TaskEvent.ScheduleFired) e).fireAt()).isEqualTo(T0));
         assertThat(store.recurringSchedules()).containsEntry(ID, T0.plus(Duration.ofMinutes(40)));
         assertThat(status.issues()).singleElement().satisfies(i -> {
-            assertThat(i.kind()).isEqualTo("schedule-misfire");
+            assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_MISFIRE);
             assertThat(i.detail()).endsWith("firing once now");
         });
     }
@@ -320,7 +320,7 @@ class RecurringTaskServiceTest {
         assertThat(events).isEmpty();
         assertThat(status.issues())
                 .singleElement()
-                .satisfies(i -> assertThat(i.kind()).isEqualTo("schedule-overlap"));
+                .satisfies(i -> assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_OVERLAP));
         assertThat(store.recurringSchedules()).containsEntry(ID, T0.plus(Duration.ofHours(2)));
     }
 
@@ -400,7 +400,7 @@ class RecurringTaskServiceTest {
         assertThat(events).singleElement().isInstanceOf(TaskEvent.ScheduleFired.class);
         assertThat(store.recurringSchedules()).containsEntry("broken", T0.plus(Duration.ofHours(1)));
         assertThat(status.issues()).singleElement().satisfies(i -> {
-            assertThat(i.kind()).isEqualTo("schedule-broken");
+            assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_BROKEN);
             assertThat(i.detail()).contains("schedule broken").contains("moved from " + T0);
         });
     }
@@ -418,7 +418,7 @@ class RecurringTaskServiceTest {
                 .satisfies(o -> assertThat(o.scheduleId()).isEqualTo(ID));
         assertThat(status.issues())
                 .hasSize(5)
-                .allSatisfy(i -> assertThat(i.kind()).isEqualTo("schedule-broken"));
+                .allSatisfy(i -> assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_BROKEN));
     }
 
     @Test
@@ -430,7 +430,7 @@ class RecurringTaskServiceTest {
         assertThat(store.recurringSchedules()).containsEntry("gone", T0.plus(Duration.ofHours(1)));
         assertThat(status.issues())
                 .singleElement()
-                .satisfies(i -> assertThat(i.kind()).isEqualTo("schedule-broken"));
+                .satisfies(i -> assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_BROKEN));
     }
 
     @Test
@@ -448,7 +448,7 @@ class RecurringTaskServiceTest {
         assertThat(occurrences()).isEmpty();
         assertThat(status.issues())
                 .singleElement()
-                .satisfies(i -> assertThat(i.kind()).isEqualTo("store-error"));
+                .satisfies(i -> assertThat(i.kind()).isEqualTo(Issue.Kind.STORE_ERROR));
     }
 
     @Test
@@ -471,7 +471,7 @@ class RecurringTaskServiceTest {
                 .satisfies(t -> assertThat(t.due()).isEqualTo(fire.plusSeconds(1)));
         assertThat(status.issues())
                 .singleElement()
-                .satisfies(i -> assertThat(i.kind()).isEqualTo("schedule-broken"));
+                .satisfies(i -> assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_BROKEN));
     }
 
     @Test
@@ -493,7 +493,7 @@ class RecurringTaskServiceTest {
         assertThat(status.lastStoreError()).contains("store down");
         assertThat(status.issues())
                 .singleElement()
-                .satisfies(i -> assertThat(i.kind()).isEqualTo("store-error"));
+                .satisfies(i -> assertThat(i.kind()).isEqualTo(Issue.Kind.STORE_ERROR));
     }
 
     @Test
@@ -589,7 +589,7 @@ class RecurringTaskServiceTest {
                 .satisfies(o -> assertThat(o.scheduleId()).isEqualTo(ID));
         assertThat(calls.get()).isGreaterThanOrEqualTo(2);
         assertThat(status.issues()).singleElement().satisfies(i -> {
-            assertThat(i.kind()).isEqualTo("store-error");
+            assertThat(i.kind()).isEqualTo(Issue.Kind.STORE_ERROR);
             assertThat(i.detail()).isEqualTo(error);
             assertThat(i.taskId()).isNull();
         });
@@ -612,7 +612,7 @@ class RecurringTaskServiceTest {
         runLoopUntil(() -> calls.get() >= 3);
 
         assertThat(status.issues()).singleElement().satisfies(i -> {
-            assertThat(i.kind()).isEqualTo("store-error");
+            assertThat(i.kind()).isEqualTo(Issue.Kind.STORE_ERROR);
             assertThat(i.detail()).startsWith("today.bonfire.oss.bth4j.exceptions.TaskStoreException: store down");
         });
     }

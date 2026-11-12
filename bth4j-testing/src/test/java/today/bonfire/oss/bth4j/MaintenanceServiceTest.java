@@ -17,6 +17,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
+import today.bonfire.oss.bth4j.spi.ExpiredTask;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
@@ -59,6 +60,14 @@ class MaintenanceServiceTest {
     private Duration workerStaleAfter = Duration.ofMinutes(10);
     private Duration checkInterval = Duration.ofSeconds(5);
 
+    private TaskEvent.LeaseExpired leaseExpired(long id, int attempts, int maxAttempts, boolean dead) {
+        return new TaskEvent.LeaseExpired(id, "Q:DEF", TYPE.name(), attempts, maxAttempts, dead);
+    }
+
+    private TaskEvent.Expired expired(long id) {
+        return new TaskEvent.Expired(id, "Q:DEF", TYPE.name());
+    }
+
     // ---- expired leases -------------------------------------------------------------------------------
 
     @Test
@@ -76,7 +85,7 @@ class MaintenanceServiceTest {
             assertThat(f.attempt()).isEqualTo(1);
             assertThat(f.message()).isEqualTo("lease expired after attempt 1");
         });
-        assertThat(events).containsExactly(new TaskEvent.LeaseExpired(id, 1, 3, false));
+        assertThat(events).containsExactly(leaseExpired(id, 1, 3, false));
     }
 
     @Test
@@ -95,10 +104,10 @@ class MaintenanceServiceTest {
             assertThat(f.message()).isEqualTo("task " + id + " has a stored value that cannot be read");
         });
         assertThat(status.issues()).singleElement().satisfies(i -> {
-            assertThat(i.kind()).isEqualTo("corrupt-task");
+            assertThat(i.kind()).isEqualTo(Issue.Kind.CORRUPT_TASK);
             assertThat(i.taskId()).isEqualTo(id);
         });
-        assertThat(events).containsExactly(new TaskEvent.LeaseExpired(id, 1, 3, true));
+        assertThat(events).containsExactly(leaseExpired(id, 1, 3, true));
     }
 
     @Test
@@ -111,7 +120,7 @@ class MaintenanceServiceTest {
         cycle();
 
         assertThat(state(id)).isEqualTo(TaskState.DEAD);
-        assertThat(status.issues()).extracting(Issue::kind).containsExactly("corrupt-task");
+        assertThat(status.issues()).extracting(Issue::kind).containsExactly(Issue.Kind.CORRUPT_TASK);
     }
 
     @Test
@@ -183,7 +192,7 @@ class MaintenanceServiceTest {
                 .singleElement()
                 .satisfies(f -> assertThat(f.type()).isEqualTo("lease-expired"));
         assertThat(asked).hasValue(0);
-        assertThat(events).containsExactly(new TaskEvent.LeaseExpired(id, 1, 1, true));
+        assertThat(events).containsExactly(leaseExpired(id, 1, 1, true));
     }
 
     @Test
@@ -195,7 +204,7 @@ class MaintenanceServiceTest {
         cycle();
 
         assertThat(store.getTask(id)).isEmpty();
-        assertThat(events).containsExactly(new TaskEvent.LeaseExpired(id, 1, 1, true));
+        assertThat(events).containsExactly(leaseExpired(id, 1, 1, true));
     }
 
     @Test
@@ -241,7 +250,7 @@ class MaintenanceServiceTest {
         cycle();
 
         assertThat(state(id)).isEqualTo(TaskState.DEAD);
-        assertThat(events).containsExactly(new TaskEvent.LeaseExpired(id, 1, 3, true));
+        assertThat(events).containsExactly(leaseExpired(id, 1, 3, true));
     }
 
     @Test
@@ -254,7 +263,7 @@ class MaintenanceServiceTest {
         assertThat(store.getTask(id).orElseThrow().due())
                 .isEqualTo(clock.instant().plus(RETRY_DELAY));
         assertThat(status.issues()).singleElement().satisfies(i -> {
-            assertThat(i.kind()).isEqualTo("retry-policy");
+            assertThat(i.kind()).isEqualTo(Issue.Kind.RETRY_POLICY);
             assertThat(i.detail()).isEqualTo("unknown retry policy missing");
             assertThat(i.taskId()).isEqualTo(id);
         });
@@ -271,7 +280,7 @@ class MaintenanceServiceTest {
         var task = store.getTask(id).orElseThrow();
         assertThat(task.state()).isEqualTo(TaskState.SCHEDULED);
         assertThat(task.due()).isEqualTo(clock.instant());
-        assertThat(events).containsExactly(new TaskEvent.LeaseExpired(id, 1, 3, false));
+        assertThat(events).containsExactly(leaseExpired(id, 1, 3, false));
     }
 
     @ParameterizedTest
@@ -293,10 +302,10 @@ class MaintenanceServiceTest {
         assertThat(task.state()).isEqualTo(TaskState.SCHEDULED);
         assertThat(task.due()).isEqualTo(clock.instant());
         assertThat(status.issues()).singleElement().satisfies(i -> {
-            assertThat(i.kind()).isEqualTo("retry-policy");
+            assertThat(i.kind()).isEqualTo(Issue.Kind.RETRY_POLICY);
             assertThat(i.taskId()).isEqualTo(id);
         });
-        assertThat(events).containsExactly(new TaskEvent.LeaseExpired(id, 1, 3, false));
+        assertThat(events).containsExactly(leaseExpired(id, 1, 3, false));
     }
 
     @Test
@@ -345,11 +354,11 @@ class MaintenanceServiceTest {
         assertThat(store.recurringDefinitions().getFirst().definition().paused())
                 .isTrue();
         assertThat(status.issues()).singleElement().satisfies(i -> {
-            assertThat(i.kind()).isEqualTo("schedule-paused");
+            assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_PAUSED);
             assertThat(i.taskId()).isEqualTo(id);
             assertThat(i.detail()).isEqualTo("schedule sched paused: occurrence ended DEAD");
         });
-        assertThat(events).containsExactly(new TaskEvent.LeaseExpired(id, 1, 1, true));
+        assertThat(events).containsExactly(leaseExpired(id, 1, 1, true));
     }
 
     @Test
@@ -363,7 +372,7 @@ class MaintenanceServiceTest {
         assertThat(store.recurringDefinitions().getFirst().definition().paused())
                 .isFalse();
         assertThat(status.issues()).isEmpty();
-        assertThat(events).containsExactly(new TaskEvent.LeaseExpired(id, 1, 3, false));
+        assertThat(events).containsExactly(leaseExpired(id, 1, 3, false));
     }
 
     @Test
@@ -378,7 +387,7 @@ class MaintenanceServiceTest {
         assertThat(store.recurringDefinitions().getFirst().definition().paused())
                 .isTrue();
         assertThat(status.issues()).singleElement().satisfies(i -> {
-            assertThat(i.kind()).isEqualTo("schedule-paused");
+            assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_PAUSED);
             assertThat(i.detail()).isEqualTo("schedule sched paused: occurrence ended CANCELLED");
         });
     }
@@ -424,7 +433,7 @@ class MaintenanceServiceTest {
 
         assertThat(state(first)).isEqualTo(TaskState.LEASED);
         assertThat(state(second)).isEqualTo(TaskState.SCHEDULED);
-        assertThat(events).containsExactly(new TaskEvent.LeaseExpired(second, 1, 3, false));
+        assertThat(events).containsExactly(leaseExpired(second, 1, 3, false));
     }
 
     @Test
@@ -438,6 +447,23 @@ class MaintenanceServiceTest {
 
         assertThat(ids).allSatisfy(id -> assertThat(state(id)).isEqualTo(TaskState.SCHEDULED));
         assertThat(events).hasSize(5).allMatch(e -> e instanceof TaskEvent.LeaseExpired);
+    }
+
+    @Test
+    void aQueueOrTypeThatCannotBeNamedIsReportedAsUnknownOnAnExpiredTaskAndOnAnExpiredLease() throws Exception {
+        long leased = leased(request().maxAttempts(3).build());
+        long late = client.enqueue(
+                        request().startBy(clock.instant().plusSeconds(1)).build())
+                .id();
+        serviceStore = withoutQueueAndType();
+        clock.advance(LEASE.plusSeconds(1));
+
+        cycle();
+
+        assertThat(events)
+                .containsExactlyInAnyOrder(
+                        new TaskEvent.LeaseExpired(leased, "unknown", "unknown", 1, 3, false),
+                        new TaskEvent.Expired(late, "unknown", "unknown"));
     }
 
     @Test
@@ -456,7 +482,7 @@ class MaintenanceServiceTest {
         assertThat(ids).allSatisfy(id -> assertThat(state(id)).isEqualTo(TaskState.EXPIRED));
         assertThat(events)
                 .containsExactlyInAnyOrderElementsOf(
-                        ids.stream().map(TaskEvent.Expired::new).toList());
+                        ids.stream().map(this::expired).toList());
     }
 
     @Test
@@ -476,12 +502,12 @@ class MaintenanceServiceTest {
 
         assertThat(state(leasedId)).isEqualTo(TaskState.LEASED);
         assertThat(state(late)).isEqualTo(TaskState.EXPIRED);
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
 
         cycle();
 
         assertThat(state(leasedId)).isEqualTo(TaskState.SCHEDULED);
-        assertThat(events).contains(new TaskEvent.LeaseExpired(leasedId, 1, 3, false));
+        assertThat(events).contains(leaseExpired(leasedId, 1, 3, false));
     }
 
     // ---- purge ----------------------------------------------------------------------------------------
@@ -622,7 +648,7 @@ class MaintenanceServiceTest {
 
         assertThat(store.getTask(id)).isPresent();
         assertThat(events).isEmpty();
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
 
         purge();
 
@@ -647,7 +673,7 @@ class MaintenanceServiceTest {
         purge();
 
         assertThat(store.getTask(id).orElseThrow().uniqueKey()).isEqualTo("k");
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
 
         purge();
 
@@ -757,7 +783,7 @@ class MaintenanceServiceTest {
         assertThat(status.lastStoreErrorAt()).isEqualTo(clock.instant());
         assertThat(status.lastStoreError()).isEqualTo(new TaskStoreException("store down").toString());
         assertThat(status.issues()).singleElement().satisfies(i -> {
-            assertThat(i.kind()).isEqualTo("store-error");
+            assertThat(i.kind()).isEqualTo(Issue.Kind.STORE_ERROR);
             assertThat(i.detail()).isEqualTo(new TaskStoreException("store down").toString());
         });
 
@@ -864,7 +890,7 @@ class MaintenanceServiceTest {
 
         assertThat(store.workers()).hasSize(1);
         assertThat(status.issues()).singleElement().satisfies(i -> {
-            assertThat(i.kind()).isEqualTo("store-error");
+            assertThat(i.kind()).isEqualTo(Issue.Kind.STORE_ERROR);
             assertThat(i.detail()).isEqualTo(new TaskStoreException("store down").toString());
         });
 
@@ -922,12 +948,31 @@ class MaintenanceServiceTest {
                         request().startBy(clock.instant().plusSeconds(1)).build())
                 .id();
         clock.advance(Duration.ofSeconds(2));
-        assertThat(store.expire(10)).containsExactly(id);
+        assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactly(id);
         return id;
     }
 
     private TaskState state(long id) {
         return store.getTask(id).orElseThrow().state();
+    }
+
+    /** The store as maintenance sees it when it cannot say which queue and type a task has: id 0 and an id nobody registered. */
+    private FullStore withoutQueueAndType() {
+        return StoreInterceptor.around(store, (method, args, real) -> {
+            var result = real.proceed();
+            if (method.equals("reclaim")) {
+                return ((List<ExpiredLease>) result)
+                        .stream()
+                                .map(e -> new ExpiredLease(
+                                        e.id(), e.revision(), e.attempts(), e.maxAttempts(), 0, 9999, false))
+                                .toList();
+            }
+            if (method.equals("expire")) {
+                return ((List<ExpiredTask>) result)
+                        .stream().map(e -> new ExpiredTask(e.id(), 0, 9999)).toList();
+            }
+            return result;
+        });
     }
 
     /** Another worker takes the tasks back after the sweeper listed them, before it can transition them. */

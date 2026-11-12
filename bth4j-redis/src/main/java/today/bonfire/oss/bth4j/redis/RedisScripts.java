@@ -939,7 +939,10 @@ final class RedisScripts {
             return redis.call('ZRANGE', key, from, from + tonumber(ARGV[5]) - 1, 'WITHSCORES')
             """;
 
-    /** ARGV: limit. Expires QUEUED and SCHEDULED tasks whose start-by time passed, oldest first; returns their ids. */
+    /**
+     * ARGV: limit. Expires QUEUED and SCHEDULED tasks whose start-by time passed, oldest first; returns, for each,
+     * its id, queue id and type id as text. A number that cannot be read is 0, which is never a registered id.
+     */
     static final String EXPIRE = PRELUDE + """
             local at = now()
             local ids = redis.call('ZRANGE', P .. 'startby', '-inf', at, 'BYSCORE', 'LIMIT', 0, ARGV[2])
@@ -951,6 +954,8 @@ final class RedisScripts {
               if (state == 0 or state == 1) and v[2] and v[6] then
                 finish(tkey, id, v[2], state, 6, at, tonumber(v[3]), v[4], v[5], {}, true)
                 out[#out + 1] = id
+                out[#out + 1] = tostring(tonumber(v[2]) or 0)
+                out[#out + 1] = tostring(tonumber(v[6]) or 0)
               end
               zrem(P .. 'startby', id)
             end

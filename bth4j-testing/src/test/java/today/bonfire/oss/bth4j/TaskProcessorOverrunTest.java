@@ -117,7 +117,7 @@ class TaskProcessorOverrunTest {
         assertThat(store.getTask(id).orElseThrow().leaseUntil()).isEqualTo(renewedUntil);
         assertThat(reservations.abandoned()).isEqualTo(1);
         assertThat(status.issues())
-                .filteredOn(i -> i.kind().equals("attempt-abandoned"))
+                .filteredOn(i -> i.kind() == Issue.Kind.ATTEMPT_ABANDONED)
                 .singleElement()
                 .satisfies(i -> {
                     assertThat(i.taskId()).isEqualTo(id);
@@ -314,7 +314,7 @@ class TaskProcessorOverrunTest {
             assertThat(attempt.overrunSince()).isNull();
             assertThat(attempt.cancelRequested()).isFalse();
             assertThat(reservations.abandoned()).isZero();
-            assertThat(status.issues()).noneMatch(i -> i.kind().equals("attempt-abandoned"));
+            assertThat(status.issues()).noneMatch(i -> i.kind() == Issue.Kind.ATTEMPT_ABANDONED);
             assertThat(store.getTask(id).orElseThrow().leaseUntil())
                     .isEqualTo(clock.instant().plus(LEASE));
         } finally {

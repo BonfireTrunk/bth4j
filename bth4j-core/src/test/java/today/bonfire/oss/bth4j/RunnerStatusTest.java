@@ -25,7 +25,7 @@ class RunnerStatusTest {
 
         assertThat(status.issues())
                 .singleElement()
-                .satisfies(i -> assertThat(i.kind()).isEqualTo("store-error"));
+                .satisfies(i -> assertThat(i.kind()).isEqualTo(Issue.Kind.STORE_ERROR));
     }
 
     @Test
@@ -59,7 +59,7 @@ class RunnerStatusTest {
         assertThat(status.storeError(new TaskStoreException("store down"))).isFalse();
 
         assertThat(status.issues()).singleElement().satisfies(i -> {
-            assertThat(i.kind()).isEqualTo("store-error");
+            assertThat(i.kind()).isEqualTo(Issue.Kind.STORE_ERROR);
             assertThat(i.at()).isEqualTo(Instant.EPOCH.plusSeconds(10));
             assertThat(i.detail()).contains("store down").contains("3 times");
         });
@@ -70,15 +70,15 @@ class RunnerStatusTest {
         status.storeError(new TaskStoreException("store down"));
         for (int i = 0; i < RunnerStatus.MAX_ISSUES + 50; i++) {
             status.storeError(new TaskStoreException("store down"));
-            if (i % 10 == 0) status.issue("lease-lost", "lease not renewed", (long) i);
+            if (i % 10 == 0) status.issue(Issue.Kind.LEASE_LOST, "lease not renewed", (long) i);
         }
 
         assertThat(status.issues()).hasSizeLessThanOrEqualTo(RunnerStatus.MAX_ISSUES);
         assertThat(status.issues())
-                .filteredOn(i -> i.kind().equals("store-error"))
+                .filteredOn(i -> i.kind() == Issue.Kind.STORE_ERROR)
                 .hasSize(1);
         assertThat(status.issues())
-                .filteredOn(i -> i.kind().equals("lease-lost"))
+                .filteredOn(i -> i.kind() == Issue.Kind.LEASE_LOST)
                 .hasSizeGreaterThan(10);
     }
 

@@ -25,6 +25,7 @@ import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
+import today.bonfire.oss.bth4j.spi.ExpiredTask;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
@@ -638,6 +639,7 @@ public final class InMemoryStore implements FullStore {
                             t.revision(),
                             t.attempts(),
                             t.maxAttempts(),
+                            t.queueId(),
                             t.typeId(),
                             t.cancelRequestedAt() != null))
                     .toList();
@@ -994,7 +996,7 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public List<Long> expire(int limit) {
+    public List<ExpiredTask> expire(int limit) {
         StoreArguments.requireLimit(limit);
         lock.lock();
         try {
@@ -1015,7 +1017,9 @@ public final class InMemoryStore implements FullStore {
                                 .stateChangedAt(now),
                         now);
             }
-            return overdue.stream().map(TaskRecord::id).toList();
+            return overdue.stream()
+                    .map(t -> new ExpiredTask(t.id(), t.queueId(), t.typeId()))
+                    .toList();
         } finally {
             lock.unlock();
         }

@@ -736,7 +736,7 @@ class DefaultAdminOpsTest {
 
     @Test
     void issuesAreTheSuppliedList() {
-        var issue = new Issue(NOW, "store-error", "boom", null);
+        var issue = new Issue(NOW, Issue.Kind.STORE_ERROR, "boom", null);
         issues = () -> List.of(issue);
 
         assertThat(ops.issues()).containsExactly(issue);

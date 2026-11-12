@@ -138,6 +138,42 @@ class NamesTest {
     }
 
     @Test
+    void anEventNamesARegisteredQueueAndTypeAndSaysUnknownForTheRest() {
+        var store = new RegistryStore();
+        var names = new Names(store);
+        int queue = names.queueId("Q:DEF");
+        int type = names.typeId("send");
+
+        assertThat(names.queueNameOrUnknown(queue)).isEqualTo("Q:DEF");
+        assertThat(names.typeNameOrUnknown(type)).isEqualTo("send");
+        assertThat(names.queueNameOrUnknown(77)).isEqualTo("unknown");
+        assertThat(names.typeNameOrUnknown(78)).isEqualTo("unknown");
+    }
+
+    @Test
+    void anIdOfZeroIsUnknownWithoutAskingTheRegistry() {
+        var store = new RegistryStore();
+        var names = new Names(store);
+
+        assertThat(names.queueNameOrUnknown(0)).isEqualTo("unknown");
+        assertThat(names.typeNameOrUnknown(0)).isEqualTo("unknown");
+
+        assertThat(store.queueNamesCalls).hasValue(0);
+        assertThat(store.typeNamesCalls).hasValue(0);
+    }
+
+    @Test
+    void anEventLoadsAnIdAnotherProcessRegisteredFromTheRegistry() {
+        var store = new RegistryStore();
+        int foreignQueue = store.queueId("Q:OTHER");
+        int foreignType = store.typeId("other-type");
+        var names = new Names(store);
+
+        assertThat(names.queueNameOrUnknown(foreignQueue)).isEqualTo("Q:OTHER");
+        assertThat(names.typeNameOrUnknown(foreignType)).isEqualTo("other-type");
+    }
+
+    @Test
     void viewResolvesQueueAndTypeNames() {
         var store = new RegistryStore();
         var names = new Names(store);

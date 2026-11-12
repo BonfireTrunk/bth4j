@@ -333,7 +333,7 @@ class TaskProcessorService extends CustomThread {
     /** A store that returned more tasks than asked for: the extra ones go back to their queue, unrun. */
     private List<TaskRecord> withinSlots(List<TaskRecord> tasks, int slots) {
         var detail = "store returned " + tasks.size() + " tasks for a claim of " + slots;
-        settings.status().issue("store-error", detail, null);
+        settings.status().issue(Issue.Kind.STORE_ERROR, detail, null);
         log.error("The {}, returning the extra ones to their queue", detail);
         for (var extra : tasks.subList(slots, tasks.size())) {
             try {
@@ -358,7 +358,7 @@ class TaskProcessorService extends CustomThread {
                     execution.taskId(),
                     e);
         }
-        settings.status().issue("executor-rejected", cause.toString(), execution.taskId());
+        settings.status().issue(Issue.Kind.EXECUTOR_REJECTED, cause.toString(), execution.taskId());
         log.warn("Executor rejected task {}, returned to its queue", execution.taskId(), cause);
     }
 
@@ -436,7 +436,7 @@ class TaskProcessorService extends CustomThread {
                     if (execution.reporting()) continue;
                     lost++;
                     execution.leaseLost();
-                    settings.status().issue("lease-lost", "lease not renewed", execution.taskId());
+                    settings.status().issue(Issue.Kind.LEASE_LOST, "lease not renewed", execution.taskId());
                 } else if (status.cancelRequested()) {
                     execution.requestCancel(null);
                 }
@@ -478,7 +478,7 @@ class TaskProcessorService extends CustomThread {
             var detail = "task " + e.taskId() + " ran past its maximum run time of " + maxRunTime(e)
                     + " and did not stop; its lease is no longer renewed and its slots stay held until it ends ("
                     + reservations.abandoned() + " abandoned attempts hold slots)";
-            settings.status().issue("attempt-abandoned", detail, e.taskId());
+            settings.status().issue(Issue.Kind.ATTEMPT_ABANDONED, detail, e.taskId());
             log.warn(detail);
         }
         return true;

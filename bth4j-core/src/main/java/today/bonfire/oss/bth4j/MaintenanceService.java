@@ -165,10 +165,19 @@ class MaintenanceService extends CustomThread {
         var outcome = store.failExpired(e.id(), e.revision(), failure, retryAt, keepDead, pause);
         log.warn("Lease of task {} expired after attempt {}: {}", e.id(), e.attempts(), outcome);
         if (outcome != FailOutcome.LOST) {
-            observer.emit(
-                    new TaskEvent.LeaseExpired(e.id(), e.attempts(), e.maxAttempts(), outcome == FailOutcome.DEAD));
+            observer.emit(leaseExpired(e, outcome == FailOutcome.DEAD));
         }
         if (outcome == FailOutcome.DEAD) pauseParkedSchedule(record, TaskState.DEAD, pause);
+    }
+
+    private TaskEvent.LeaseExpired leaseExpired(ExpiredLease e, boolean dead) {
+        return new TaskEvent.LeaseExpired(
+                e.id(),
+                names.queueNameOrUnknown(e.queueId()),
+                names.typeNameOrUnknown(e.typeId()),
+                e.attempts(),
+                e.maxAttempts(),
+                dead);
     }
 
     /**
@@ -178,7 +187,7 @@ class MaintenanceService extends CustomThread {
     private void pauseParkedSchedule(TaskRecord record, TaskState ended, ScheduleEffect pause) {
         if (pause == null || !pause.applied()) return;
         var detail = "schedule " + record.scheduleId() + " paused: occurrence ended " + ended;
-        status.issue("schedule-paused", detail, record.id());
+        status.issue(Issue.Kind.SCHEDULE_PAUSED, detail, record.id());
         log.warn(detail);
     }
 
@@ -191,9 +200,9 @@ class MaintenanceService extends CustomThread {
                 new FailureInfo(e.attempts(), clock.instant(), "unreadable-record", unreadable.getMessage(), null);
         var outcome = store.failExpired(e.id(), e.revision(), failure, null, keepDead, null);
         if (outcome == FailOutcome.LOST) return;
-        status.issue("corrupt-task", unreadable.getMessage(), e.id());
+        status.issue(Issue.Kind.CORRUPT_TASK, unreadable.getMessage(), e.id());
         log.error("Task {} has a stored value that cannot be read, it ended {}", e.id(), outcome, unreadable);
-        observer.emit(new TaskEvent.LeaseExpired(e.id(), e.attempts(), e.maxAttempts(), true));
+        observer.emit(leaseExpired(e, true));
     }
 
     /** A cancelled task whose worker died must not run again. */
@@ -212,7 +221,7 @@ class MaintenanceService extends CustomThread {
     private RetryPolicy.Decision decide(TaskRecord record) {
         var policy = retryPolicies.named(record.retryPolicy());
         if (policy == null) {
-            status.issue("retry-policy", "unknown retry policy " + record.retryPolicy(), record.id());
+            status.issue(Issue.Kind.RETRY_POLICY, "unknown retry policy " + record.retryPolicy(), record.id());
             log.warn("Task {} names unknown retry policy {}, using the default", record.id(), record.retryPolicy());
             policy = retryPolicies.defaultPolicy();
         }
@@ -228,7 +237,7 @@ class MaintenanceService extends CustomThread {
                         record.id(),
                         Failures.describe(failureDetail, policyError));
             }
-            status.issue("retry-policy", Failures.describe(failureDetail, policyError), record.id());
+            status.issue(Issue.Kind.RETRY_POLICY, Failures.describe(failureDetail, policyError), record.id());
             return RetryPolicy.Decision.retryAfter(Duration.ZERO);
         }
     }
@@ -237,10 +246,11 @@ class MaintenanceService extends CustomThread {
         try {
             int count;
             do {
-                var ids = store.expire(batchSize);
-                count = ids.size();
-                for (var id : ids) {
-                    observer.emit(new TaskEvent.Expired(id));
+                var tasks = store.expire(batchSize);
+                count = tasks.size();
+                for (var t : tasks) {
+                    observer.emit(new TaskEvent.Expired(
+                            t.id(), names.queueNameOrUnknown(t.queueId()), names.typeNameOrUnknown(t.typeId())));
                 }
                 if (count > 0) log.info("Expired {} tasks that missed their start-by time", count);
             } while (count == batchSize && canContinueProcessing);

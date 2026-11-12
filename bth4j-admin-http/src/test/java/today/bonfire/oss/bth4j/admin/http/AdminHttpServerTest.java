@@ -893,8 +893,8 @@ class AdminHttpServerTest {
     @Test
     void overviewHasCountsPerQueueTotalsWorkersIssuesAndHealth() throws Exception {
         ops.workers.add(new WorkerInfo(1, "w", Instant.EPOCH, Instant.EPOCH, 0, true, Set.of(), Set.of()));
-        ops.issues.add(new Issue(Instant.EPOCH, "store-error", "boom", 5L));
-        ops.issues.add(new Issue(Instant.EPOCH, "lease-lost", "x", null));
+        ops.issues.add(new Issue(Instant.EPOCH, Issue.Kind.STORE_ERROR, "boom", 5L));
+        ops.issues.add(new Issue(Instant.EPOCH, Issue.Kind.LEASE_LOST, "x", null));
         ops.health = new RunnerHealth(RunnerHealth.Status.RUNNING, 1, 2, 0, null, null, null, null, 2);
         start();
 
@@ -944,7 +944,7 @@ class AdminHttpServerTest {
     void queuesSchedulesWorkersAndIssuesAreListed() throws Exception {
         ops.schedules.add(schedule("nightly"));
         ops.workers.add(new WorkerInfo(2, "w2", Instant.EPOCH, Instant.EPOCH, 1, true, Set.of(), Set.of()));
-        ops.issues.add(new Issue(Instant.EPOCH, "store-error", "boom", 5L));
+        ops.issues.add(new Issue(Instant.EPOCH, Issue.Kind.STORE_ERROR, "boom", 5L));
         start();
         var login = viewer();
 

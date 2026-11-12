@@ -40,6 +40,7 @@ import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
+import today.bonfire.oss.bth4j.spi.ExpiredTask;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
@@ -648,7 +649,13 @@ public final class RedisTaskStore implements FullStore {
             var fields = new ArrayList<Response<List<String>>>(ids.size());
             try (var pipeline = jedis.pipelined()) {
                 ids.forEach(id -> fields.add(pipeline.hmget(
-                        keys.task(Long.parseLong(id)), F_REVISION, F_ATTEMPTS, F_MAX_ATTEMPTS, F_TYPE, F_CANCEL_AT)));
+                        keys.task(Long.parseLong(id)),
+                        F_REVISION,
+                        F_ATTEMPTS,
+                        F_MAX_ATTEMPTS,
+                        F_QUEUE,
+                        F_TYPE,
+                        F_CANCEL_AT)));
                 pipeline.sync();
             }
             var out = new ArrayList<ExpiredLease>(ids.size());
@@ -678,10 +685,10 @@ public final class RedisTaskStore implements FullStore {
     }
 
     /**
-     * One reclaimed lease from its hash fields (rev, att, max, ty, cra). A task whose other numbers cannot be read
-     * comes back with its revision and zero counts, so that maintenance finds it unreadable and ends it. One whose
-     * revision cannot be read cannot be fenced: it is null, and reclaim gives it a readable revision for the next
-     * round.
+     * One reclaimed lease from its hash fields (rev, att, max, q, ty, cra). A task whose attempt counts cannot be read
+     * comes back with its revision and zero counts, so that maintenance finds it unreadable and ends it; a queue or
+     * type id that cannot be read is 0. One whose revision cannot be read cannot be fenced: it is null, and reclaim
+     * gives it a readable revision for the next round.
      */
     private static ExpiredLease expiredLease(long id, List<String> v) {
         int revision;
@@ -690,16 +697,25 @@ public final class RedisTaskStore implements FullStore {
         } catch (NumberFormatException e) {
             return null;
         }
+        int attempts = 0;
+        int maxAttempts = 0;
         try {
-            return new ExpiredLease(
-                    id,
-                    revision,
-                    Integer.parseInt(v.get(1)),
-                    Integer.parseInt(v.get(2)),
-                    Integer.parseInt(v.get(3)),
-                    v.get(4) != null);
+            attempts = Integer.parseInt(v.get(1));
+            maxAttempts = Integer.parseInt(v.get(2));
         } catch (NumberFormatException e) {
-            return new ExpiredLease(id, revision, 0, 0, 0, v.get(4) != null);
+            attempts = 0;
+            maxAttempts = 0;
+        }
+        return new ExpiredLease(
+                id, revision, attempts, maxAttempts, idOrZero(v.get(3)), idOrZero(v.get(4)), v.get(5) != null);
+    }
+
+    /** A queue or type id that cannot be read is 0, which is never a registered id. */
+    private static int idOrZero(String text) {
+        try {
+            return Integer.parseInt(text);
+        } catch (NumberFormatException e) {
+            return 0;
         }
     }
 
@@ -1114,10 +1130,15 @@ public final class RedisTaskStore implements FullStore {
 
     @Override
     @SuppressWarnings("unchecked")
-    public List<Long> expire(int limit) {
+    public List<ExpiredTask> expire(int limit) {
         StoreArguments.requireLimit(limit);
         var r = (List<Object>) guard(() -> scripts.run(RedisScripts.EXPIRE, List.of(String.valueOf(limit))));
-        return r.stream().map(o -> Long.parseLong((String) o)).toList();
+        var out = new ArrayList<ExpiredTask>(r.size() / 3);
+        for (var i = 0; i < r.size(); i += 3) {
+            long id = Long.parseLong((String) r.get(i));
+            out.add(new ExpiredTask(id, idOrZero((String) r.get(i + 1)), idOrZero((String) r.get(i + 2))));
+        }
+        return out;
     }
 
     @Override

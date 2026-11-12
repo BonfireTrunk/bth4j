@@ -3,6 +3,7 @@ package today.bonfire.oss.bth4j.spi;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.time.Clock;
@@ -265,6 +266,10 @@ public abstract class StoreContract {
         return new FailureInfo(attempt, now(), "java.lang.IllegalStateException", "boom " + attempt, null);
     }
 
+    private static List<Long> ids(List<ExpiredTask> expired) {
+        return expired.stream().map(ExpiredTask::id).toList();
+    }
+
     private static Instant millis(Instant instant) {
         return instant.truncatedTo(ChronoUnit.MILLIS);
     }
@@ -482,8 +487,45 @@ public abstract class StoreContract {
 
         assertThat(counts()).isEqualTo(before);
         assertThat(store.dueRecurring(fire, 10)).hasSize(1);
-        assertThat(store.expire(10)).containsExactly(overdue);
+        assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactly(overdue);
         assertThat(store.purge(TaskState.SUCCEEDED, Duration.ZERO, 10)).isEqualTo(1);
+    }
+
+    @Test
+    void expireReportsTheQueueAndTypeOfEachTaskItMoves() {
+        int otherQueue = store.queueId("expire-queue");
+        int otherType = store.typeId("expire-type");
+        Instant startBy = now().plus(SHORT);
+        long queued = put(task().startBy(startBy));
+        long scheduled = put(
+                task(otherQueue, otherType).due(now().plus(Duration.ofHours(1))).startBy(startBy));
+        assumeBefore(startBy);
+        advance(PAST_SHORT);
+
+        assertThat(store.expire(10))
+                .containsExactlyInAnyOrder(
+                        new ExpiredTask(queued, queue, type), new ExpiredTask(scheduled, otherQueue, otherType));
+    }
+
+    @Test
+    void expireHandsBackTheQueueAndTypeOfATaskThatIsPurgedOrDeletedRightAfter() {
+        int otherQueue = store.queueId("expire-queue");
+        int otherType = store.typeId("expire-type");
+        Instant startBy = now().plus(SHORT);
+        long purged = put(task().startBy(startBy));
+        long deleted = put(task(otherQueue, otherType).startBy(startBy));
+        assumeBefore(startBy);
+        advance(PAST_SHORT);
+
+        List<ExpiredTask> expired = store.expire(10);
+        assertThat(store.delete(deleted, get(deleted).revision(), null)).isTrue();
+        assertThat(store.purge(TaskState.EXPIRED, Duration.ZERO, 10)).isEqualTo(1);
+
+        assertThat(store.getTask(purged)).isEmpty();
+        assertThat(store.getTask(deleted)).isEmpty();
+        assertThat(expired)
+                .containsExactlyInAnyOrder(
+                        new ExpiredTask(purged, queue, type), new ExpiredTask(deleted, otherQueue, otherType));
     }
 
     @Test
@@ -897,7 +939,7 @@ public abstract class StoreContract {
         assertThat(store.fail(expiring.id(), expiring.revision(), failure(1), now().plusSeconds(60), true, null))
                 .isEqualTo(FailOutcome.RETRY);
         advance(PAST_SHORT);
-        assertThat(store.expire(10)).containsExactly(expiring.id());
+        assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactly(expiring.id());
         assertThat(get(expiring.id()).workerId())
                 .as("expired after fail with a retry")
                 .isNull();
@@ -982,7 +1024,7 @@ public abstract class StoreContract {
         TaskRecord removed = leased(task().uniqueKey("removed").keyKeep(longest));
         long expired = put(task().uniqueKey("expired").keyKeep(longest).startBy(now().plus(SHORT)));
         advance(PAST_SHORT);
-        assertThat(store.expire(10)).containsExactly(expired);
+        assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactly(expired);
         assertThat(store.fail(removed.id(), removed.revision(), failure(1), null, false, null))
                 .isEqualTo(FailOutcome.DEAD);
 
@@ -1533,7 +1575,7 @@ public abstract class StoreContract {
 
         advance(PAST_SHORT);
         Instant from = now();
-        List<Long> expired = store.expire(100);
+        List<Long> expired = ids(store.expire(100));
         Instant to = now();
         assertThat(expired)
                 .containsExactlyInAnyOrderElementsOf(
@@ -1931,7 +1973,7 @@ public abstract class StoreContract {
             case EXPIRED: {
                 long id = put(builder.startBy(now().plus(SHORT)));
                 advance(PAST_SHORT);
-                assertThat(store.expire(10)).containsExactly(id);
+                assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactly(id);
                 return id;
             }
             default:
@@ -2721,7 +2763,7 @@ public abstract class StoreContract {
     void retryOfAnExpiredKeyedTaskKeepsTheKeyAndClearsTheDeadline() {
         long id = put(task().uniqueKey("k").keyKeep(Duration.ofHours(1)).startBy(now().plus(SHORT)));
         advance(PAST_SHORT);
-        assertThat(store.expire(10)).containsExactly(id);
+        assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactly(id);
 
         assertThat(store.retry(id, get(id).revision())).isEqualTo(RetryOutcome.RETRIED);
 
@@ -3341,6 +3383,21 @@ public abstract class StoreContract {
     }
 
     @Test
+    void reclaimReportsTheQueueAndTypeOfEachExpiredLease() {
+        int otherQueue = store.queueId("lease-queue");
+        int otherType = store.typeId("lease-type");
+        put(task());
+        TaskRecord first = claim(1, SHORT, null).get(0);
+        put(task(otherQueue, otherType));
+        TaskRecord second = claim(1, SHORT, null, otherQueue).get(0);
+        advance(PAST_SHORT);
+
+        assertThat(store.reclaim(10))
+                .extracting(ExpiredLease::id, ExpiredLease::queueId, ExpiredLease::typeId)
+                .containsExactlyInAnyOrder(tuple(first.id(), queue, type), tuple(second.id(), otherQueue, otherType));
+    }
+
+    @Test
     void reclaimIgnoresLeasesThatAreStillLive() {
         TaskRecord running = leased(task());
         assertThat(store.reclaim(10)).isEmpty();
@@ -3466,7 +3523,7 @@ public abstract class StoreContract {
             }
             advance(PAST_SHORT);
             for (int i = 0; i < count; i++) {
-                List<Long> expired = store.expire(1);
+                List<Long> expired = ids(store.expire(1));
                 assertThat(expired).hasSize(1);
                 ids.add(expired.get(0));
                 advance(Duration.ofMillis(20));
@@ -4159,7 +4216,7 @@ public abstract class StoreContract {
     private TaskRecord expired() {
         long id = put(task().uniqueKey("k").startBy(now().plus(SHORT)));
         advance(PAST_SHORT);
-        assertThat(store.expire(10)).containsExactly(id);
+        assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactly(id);
         return get(id);
     }
 
@@ -4567,7 +4624,7 @@ public abstract class StoreContract {
         advance(window.plusMillis(100));
 
         assertThat(store.promote(10).moved()).isEqualTo(1);
-        assertThat(store.expire(10)).containsExactlyInAnyOrder(overdue, lateScheduled);
+        assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactlyInAnyOrder(overdue, lateScheduled);
 
         assertThat(get(scheduled).state()).isEqualTo(TaskState.QUEUED);
         assertThat(get(overdue).state()).isEqualTo(TaskState.EXPIRED);
@@ -4606,11 +4663,11 @@ public abstract class StoreContract {
         long keep = put(task().startBy(now().plus(Duration.ofHours(1))));
         long none = putNew();
         int revision = get(queued).revision();
-        List<Long> expiredEarly = store.expire(10);
+        List<Long> expiredEarly = ids(store.expire(10));
         assumeBefore(startBy);
         assertThat(expiredEarly).isEmpty();
         advance(PAST_SHORT);
-        assertThat(store.expire(10)).containsExactlyInAnyOrder(queued, scheduled);
+        assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactlyInAnyOrder(queued, scheduled);
         assertThat(get(queued).state()).isEqualTo(TaskState.EXPIRED);
         assertThat(get(queued).revision()).isEqualTo(revision + 1);
         assertThat(get(queued).uniqueKey()).isNull();
@@ -4646,7 +4703,7 @@ public abstract class StoreContract {
     void expireKeepsTheKeyWindowOfATaskWithKeyKeep() {
         long id = put(task().uniqueKey("k").keyKeep(Duration.ofHours(1)).startBy(now().plus(SHORT)));
         advance(PAST_SHORT);
-        assertThat(store.expire(10)).containsExactly(id);
+        assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactly(id);
         assertThat(get(id).uniqueKey()).isEqualTo("k");
         assertThat(get(id).keyUntil()).isNotNull();
         assertThat(store.enqueue(task().uniqueKey("k").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(id));
@@ -5109,7 +5166,7 @@ public abstract class StoreContract {
 
         List<Turn<List<Long>>> raced = raceNumbered(RACING_THREADS, thread -> {
             List<Long> mine = new ArrayList<>();
-            for (List<Long> got; !(got = store.expire(5)).isEmpty(); ) {
+            for (List<Long> got; !(got = ids(store.expire(5))).isEmpty(); ) {
                 mine.addAll(got);
             }
             return mine;
@@ -5155,7 +5212,7 @@ public abstract class StoreContract {
             }
             case EXPIRED -> {
                 advance(PAST_SHORT);
-                assertThat(store.expire(count)).containsExactlyInAnyOrderElementsOf(ids);
+                assertThat(store.expire(count)).extracting(ExpiredTask::id).containsExactlyInAnyOrderElementsOf(ids);
             }
             default -> throw new IllegalArgumentException(state.toString());
         }
@@ -7996,10 +8053,16 @@ public abstract class StoreContract {
         List<Long> byDeadline = ids.reversed();
         advance(PAST_SHORT);
 
-        assertThat(store.expire(2)).as("expire(2)").containsExactlyInAnyOrderElementsOf(byDeadline.subList(0, 2));
-        assertThat(store.expire(3)).as("expire(3)").containsExactlyInAnyOrderElementsOf(byDeadline.subList(2, 5));
+        assertThat(store.expire(2))
+                .extracting(ExpiredTask::id)
+                .as("expire(2)")
+                .containsExactlyInAnyOrderElementsOf(byDeadline.subList(0, 2));
+        assertThat(store.expire(3))
+                .extracting(ExpiredTask::id)
+                .as("expire(3)")
+                .containsExactlyInAnyOrderElementsOf(byDeadline.subList(2, 5));
         assertThat(get(byDeadline.get(5)).state()).isEqualTo(TaskState.QUEUED);
-        assertThat(store.expire(5)).as("expire(5)").containsExactly(byDeadline.get(5));
+        assertThat(store.expire(5)).extracting(ExpiredTask::id).as("expire(5)").containsExactly(byDeadline.get(5));
         assertThat(store.expire(5)).isEmpty();
     }
 
@@ -8016,7 +8079,7 @@ public abstract class StoreContract {
             }
             advance(PAST_SHORT);
             for (int i = 0; i < count; i++) {
-                finished.addAll(store.expire(1));
+                finished.addAll(ids(store.expire(1)));
                 advance(Duration.ofMillis(20));
             }
             assertThat(finished).hasSize(count);
@@ -8408,7 +8471,7 @@ public abstract class StoreContract {
         long none = putNew();
 
         assertThat(claim(10)).extracting(TaskRecord::id).containsExactlyInAnyOrder(future, none);
-        assertThat(store.expire(10)).containsExactlyInAnyOrder(past, scheduledPast);
+        assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactlyInAnyOrder(past, scheduledPast);
         assertThat(get(past).state()).isEqualTo(TaskState.EXPIRED);
         assertThat(get(scheduledPast).state()).isEqualTo(TaskState.EXPIRED);
         assertThat(get(future).state()).isEqualTo(TaskState.LEASED);
@@ -8478,7 +8541,7 @@ public abstract class StoreContract {
         });
         advance(PAST_MID);
         Instant expiredFrom = now();
-        assertThat(store.expire(10)).containsExactly(expiring);
+        assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactly(expiring);
         Instant expiredUntil = get(expiring).keyUntil();
         assertThat(expiredUntil).isAfterOrEqualTo(millis(expiredFrom).plus(window));
         EnqueueOutcome whileExpiredOpen =
@@ -8558,7 +8621,7 @@ public abstract class StoreContract {
         assertThat(store.cancel(toCancel, get(toCancel).revision(), "stop", null))
                 .isEqualTo(CancelOutcome.CANCELLED);
         ended.put(TaskState.CANCELLED, toCancel);
-        List<Long> expired = store.expire(1);
+        List<Long> expired = ids(store.expire(1));
         assertThat(expired).hasSize(1);
         ended.put(TaskState.EXPIRED, expired.get(0));
     }

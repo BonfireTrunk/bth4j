@@ -121,6 +121,9 @@ flowchart TD
 | Method or type | What it does |
 |---|---|
 | `InspectionStore.holdsKey(id, key)` | Tells whether the task with that id holds the unique key now: open, finished inside its keep window, or removed inside it. `taskByKey` shows the first two only. |
+| `MaintenanceStore.expire(limit)` | Returns `ExpiredTask(id, queueId, typeId)` for each task it moved to EXPIRED. The queue and type id are read in the same atomic step as the move, never afterwards: the task may be purged or deleted right after. |
+| `MaintenanceStore.reclaim(limit)` | Returns `ExpiredLease` with `queueId` and `typeId`, read by the same statement or script that lists the lease. |
+| An id a store cannot read | A store that cannot read a queue or type id from a damaged record reports 0. Registered ids start at 1, so 0 is never a real id, and the runner names it `unknown` in the event. |
 | `InspectionStore.queuedByType()` | Returns exact QUEUED counts as queue id to type id to count, with only non-zero entries. |
 | `AdminStore.heartbeat(workerId, label, queueIds, typeIds, running, accepting)` | Persists the worker's accepting state, exposed by `WorkerInfo.accepting()`. It creates the row again under the same id when maintenance purged it. |
 | `allocateWorkerId` | Creates accepting workers. |
