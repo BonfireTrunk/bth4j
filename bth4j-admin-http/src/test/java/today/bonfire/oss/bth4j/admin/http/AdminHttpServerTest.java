@@ -65,7 +65,7 @@ class AdminHttpServerTest {
         }
     }
 
-    private record Login(String cookie, String csrf) {}
+    private record Login(String cookie, String csrf, String setCookie) {}
 
     @TempDir
     Path tmp;
@@ -147,7 +147,7 @@ class AdminHttpServerTest {
         assertThat(res.statusCode()).isEqualTo(200);
         var cookie = res.headers().firstValue("Set-Cookie").orElseThrow();
         return new Login(
-                cookie.substring(0, cookie.indexOf(';')), (String) json(res).get("csrf"));
+                cookie.substring(0, cookie.indexOf(';')), (String) json(res).get("csrf"), cookie);
     }
 
     private Login admin() throws Exception {
@@ -335,7 +335,7 @@ class AdminHttpServerTest {
         start();
 
         assertThat(get("/api/v1/me", null).statusCode()).isEqualTo(401);
-        assertThat(get("/api/v1/overview", new Login("bth4j_session=bogus", "x"))
+        assertThat(get("/api/v1/overview", new Login("bth4j_session=bogus", "x", null))
                         .statusCode())
                 .isEqualTo(401);
         assertThat(send("POST", "/api/v1/queues/default/pause", null, null).statusCode())
@@ -435,15 +435,15 @@ class AdminHttpServerTest {
     }
 
     @Test
-    void sessionExpiresAfterTheTtlWithoutRequestsAndSlidesWhileActive() throws Exception {
+    void aSessionEndsTheTtlAfterTheSignInAlsoWhileItIsUsed() throws Exception {
         start(builder().sessionTtl(Duration.ofMinutes(10)));
         var login = admin();
 
         clock.advance(Duration.ofMinutes(6));
         assertThat(get("/api/v1/me", login).statusCode()).isEqualTo(200);
-        clock.advance(Duration.ofMinutes(6));
+        clock.advance(Duration.ofMinutes(4).minusMillis(1));
         assertThat(get("/api/v1/me", login).statusCode()).isEqualTo(200);
-        clock.advance(Duration.ofMinutes(10));
+        clock.advance(Duration.ofMillis(1));
 
         assertThat(get("/api/v1/me", login).statusCode()).isEqualTo(401);
     }
@@ -1176,16 +1176,13 @@ class AdminHttpServerTest {
     }
 
     @Test
-    void authenticatedResponsesReissueTheCookieWithAFreshMaxAge() throws Exception {
+    void onlyTheSignInSetsTheSessionCookieAndItsMaxAgeIsTheTtl() throws Exception {
         start(builder().sessionTtl(Duration.ofMinutes(10)));
         var login = admin();
         clock.advance(Duration.ofMinutes(6));
 
-        var res = get("/api/v1/me", login);
-
-        assertThat(res.headers().firstValue("Set-Cookie").orElseThrow())
-                .startsWith(login.cookie() + ";")
-                .contains("Max-Age=600");
+        assertThat(login.setCookie()).startsWith(login.cookie() + ";").contains("Max-Age=600");
+        assertThat(get("/api/v1/me", login).headers().firstValue("Set-Cookie")).isEmpty();
         assertThat(get("/api/v1/me", null).headers().firstValue("Set-Cookie")).isEmpty();
     }
 
@@ -1300,6 +1297,19 @@ class AdminHttpServerTest {
         assertThat(sessions.size()).isEqualTo(1 + Sessions.PER_USER);
         assertThat(sessions.find(admin.token())).isNotNull();
         assertThat(sessions.find(firstViewer.token())).isNull();
+    }
+
+    @Test
+    void aSignInDropsTheSessionsWhoseLifetimeHasPassedAlsoWhenTheyWereUsed() {
+        var sessions = new Sessions(clock, Duration.ofHours(1), 1000);
+        var used = sessions.create("a", Role.ADMIN);
+        clock.advance(Duration.ofMinutes(59));
+        assertThat(sessions.find(used.token())).isNotNull();
+        clock.advance(Duration.ofMinutes(1));
+
+        sessions.create("b", Role.ADMIN);
+
+        assertThat(sessions.size()).isEqualTo(1);
     }
 
     @Test

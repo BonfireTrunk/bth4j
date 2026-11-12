@@ -127,7 +127,7 @@ At least one user is required. A server runs once: `start()` after `stop()` thro
 | `bind(host, port)` | Where the server listens. The default is `127.0.0.1` and `8787`. |
 | `user(name, password, role)` | Adds a user with a [role](#roles). At least one user is required. |
 | `staticDir(path)` | Serves the dashboard from that directory at the server's address. |
-| `sessionTtl` | How long a session lasts after the last request. The default is 12 hours. |
+| `sessionTtl` | How long a session lasts, counted from the sign-in. The default is 12 hours. |
 | `https(SSLContext)` | Makes the server speak HTTPS and marks the cookie `Secure`. |
 | `secureCookie(true)` | Marks the cookie `Secure` when the server itself speaks plain HTTP. |
 | `trustedProxies(addresses)` | Names the reverse proxies in front of the server, so that failed logins are counted per client and not per proxy. See [Failed logins](#failed-logins). |
@@ -159,8 +159,8 @@ sequenceDiagram
 |---|---|
 | Cookie | `bth4j_session`, `HttpOnly`, `SameSite=Strict`. |
 | Storage | Sessions are kept in memory and end when the server stops. |
-| Lifetime | A session lasts 12 hours after the last request (`sessionTtl`). |
-| Cookie expiry | Every authenticated response renews the cookie's `Max-Age`, so the browser's expiry follows the sliding session expiry. |
+| Lifetime | A session ends 12 hours after the sign-in (`sessionTtl`), also while it is used. The dashboard then asks for the sign-in again. |
+| Cookie expiry | The sign-in sets the cookie with `Max-Age` equal to `sessionTtl`. Later responses do not set it again, so the browser drops the cookie when the server ends the session. |
 | Sessions per user | At most 20. A login past that ends that user's oldest session. |
 | Failed logins | Counted by address and by user name. The fifth failure blocks for 10 seconds (HTTP 429). See [Failed logins](#failed-logins). |
 

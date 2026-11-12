@@ -279,9 +279,6 @@ public final class AdminHttpServer {
         }
         var session = authenticate(ex);
         var logout = method.equals("DELETE") && segments.equals(List.of("session"));
-        if (!logout) {
-            ex.getResponseHeaders().add("Set-Cookie", sessionCookie(session.token(), sessionTtl.toSeconds()));
-        }
         var mutation = method.equals("POST") || method.equals("DELETE");
         if (mutation) {
             var sent = ex.getRequestHeaders().getFirst(CSRF_HEADER);
@@ -801,7 +798,10 @@ public final class AdminHttpServer {
             return this;
         }
 
-        /** How long a session survives without a request; the default is 12 hours. */
+        /**
+         * How long a session lasts, counted from the sign-in; the default is 12 hours. Requests do not make it last
+         * longer.
+         */
         public Builder sessionTtl(Duration ttl) {
             this.sessionTtl = ttl;
             return this;
