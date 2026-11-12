@@ -142,6 +142,15 @@ At least one user is required. A server runs once: `start()` after `stop()` thro
 | `Role.ADMIN` | Yes | Yes |
 | `Role.VIEWER` | Everything, including task payloads | No. Every mutation answers 403. |
 
+Every signed-in user, a viewer too, reads what the tasks carry. Give an account only to people who may see that data.
+
+| Shown | Where it comes from | How to keep it out |
+|---|---|---|
+| Payload, headers, step results, progress, cancel reason | what the application put into the task | do not put it into the task; store a reference instead |
+| Failure message and stack of the last 20 attempts | the exceptions the processors threw. A message can quote data the processor read while it ran: a database error that names the duplicate value, a parse error that quotes its input, an HTTP error that quotes the URL | [`failureDetail(FailureDetail.CLASS_NAME_ONLY)`](configuration.md#what-failuredetail-covers) on the runner records the class name only, in the store, the logs and the events |
+
+A failure stays as long as its task does: 90 days for a dead task by default (`deadRetention`).
+
 ### Signing in and sessions
 
 A client signs in with `POST /api/v1/session` and `{"user", "password"}`. The reply sets the `bth4j_session` cookie and carries a CSRF token. The client sends the token as `X-CSRF-Token` on every POST and DELETE. `GET /api/v1/me` returns the token again, so a second browser tab that shares the cookie can ask for it.

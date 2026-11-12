@@ -115,6 +115,8 @@ What the runner reports about tasks and how much of a failure it records. See [M
 
 ### What `failureDetail` covers
 
+The default `FULL` is what finding the cause of a failed task needs. An exception message can carry customer data that the processor read while it ran, and with `FULL` it is stored with the task, written to the runner's log and shown by the admin API and the dashboard to every signed-in user (see [Roles](admin.md#roles)). Set `CLASS_NAME_ONLY` where that must not happen. It does not cover what the application itself puts into a task: payload, headers, step results, progress and cancel reasons are stored and shown as before.
+
 | Text or output | With `CLASS_NAME_ONLY` |
 |---|---|
 | The stored failure | carries no message and no stack |
