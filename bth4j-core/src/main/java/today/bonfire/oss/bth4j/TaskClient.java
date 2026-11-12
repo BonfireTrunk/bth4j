@@ -58,7 +58,7 @@ public final class TaskClient {
         this.queues = b.queues;
         this.clock = b.clock;
         this.defaultMaxAttempts = b.defaultMaxAttempts;
-        this.admin = new DefaultAdminOps(store, names, queues, clock, null, null);
+        this.admin = new DefaultAdminOps(store, names, clock, null, null);
     }
 
     public static Builder builder() {

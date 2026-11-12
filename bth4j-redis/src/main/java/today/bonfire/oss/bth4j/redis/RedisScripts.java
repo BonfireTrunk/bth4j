@@ -985,12 +985,14 @@ final class RedisScripts {
     /**
      * ARGV: id, revision, reason as for FINISH_CANCELLED, then the schedule effect as for ACK. Returns CANCELLED
      * (QUEUED or SCHEDULED, moved; CANCELLED+ when the effect changed the definition), REQUESTED (LEASED, only
-     * the request is stored and the revision stays) or STALE.
+     * the request is stored and the revision stays), NOT_FOUND (no such task), STALE (another revision) or
+     * FINISHED (the task is in a final state), checked in that order.
      */
     static final String CANCEL = PRELUDE + """
             local id = ARGV[2]
             local tkey = P .. 't:' .. id
             local v = redis.call('HMGET', tkey, 'rev', 'state', 'q', 'uk', 'kk')
+            if not v[1] then return 'NOT_FOUND' end
             if v[1] ~= ARGV[3] then return 'STALE' end
             local state = tonumber(v[2])
             local at = now()
@@ -1007,6 +1009,7 @@ final class RedisScripts {
               redis.call('HSET', tkey, unpack(extra))
               return 'REQUESTED'
             end
+            if state and state >= 3 then return 'FINISHED' end
             return 'STALE'
             """;
 
@@ -1015,16 +1018,18 @@ final class RedisScripts {
      * retried EXPIRED task is not expired again. Steps and failures stay. A task that still has its uk field
      * (its keep window is open, so the field has not expired) becomes the open holder of the key again: k: is
      * taken with the SET NX GET that STORE uses and loses its expiry, and uk and kk are rewritten so they lose
-     * theirs, while ku goes. Returns 1, 0 on a mismatch, or 2 when another task holds the key; nothing changes
-     * then.
+     * theirs, while ku goes. Returns RETRIED, NOT_FOUND (no such task), STALE (another revision) or
+     * NOT_RETRYABLE (another state), checked in that order, or KEY_HELD when another task holds the key; nothing
+     * changes then.
      */
     static final String RETRY = PRELUDE + """
             local id = ARGV[2]
             local tkey = P .. 't:' .. id
             local v = redis.call('HMGET', tkey, 'rev', 'state', 'q', 'uk', 'kk')
-            if v[1] ~= ARGV[3] then return 0 end
+            if not v[1] then return 'NOT_FOUND' end
+            if v[1] ~= ARGV[3] then return 'STALE' end
             local state = tonumber(v[2])
-            if state < 4 or state > 6 then return 0 end
+            if state < 4 or state > 6 then return 'NOT_RETRYABLE' end
             local at = now()
             local f = {'state', 0, 'sc', at, 'rev', tonumber(v[1]) + 1, 'due', at, 'att', 0}
             if v[4] then
@@ -1032,7 +1037,7 @@ final class RedisScripts {
               local holder = redis.call('SET', kkey, id, 'NX', 'GET')
               if holder then
                 if holder ~= id and (redis.call('PTTL', kkey) ~= -1 or redis.call('EXISTS', P .. 't:' .. holder) == 1) then
-                  return 2
+                  return 'KEY_HELD'
                 end
                 redis.call('SET', kkey, id)
               end
@@ -1046,20 +1051,22 @@ final class RedisScripts {
             redis.call('HSET', tkey, unpack(f))
             redis.call('HDEL', tkey, 'wid', 'lease', 'cra', 'crs', 'ku', 'sb')
             flush()
-            return 1
+            return 'RETRIED'
             """;
 
     /**
-     * ARGV: id, revision, then the schedule effect as for ACK. Removes a task in any state but LEASED. Returns 1
-     * (2 when the effect changed the definition), or 0 on a mismatch.
+     * ARGV: id, revision, then the schedule effect as for ACK. Removes a task in any state but LEASED. Returns
+     * DELETED (DELETED+ when the effect changed the definition), NOT_FOUND (no such task), STALE (another
+     * revision) or LEASED, checked in that order.
      */
     static final String DELETE = PRELUDE + """
             local id = ARGV[2]
             local tkey = P .. 't:' .. id
             local v = redis.call('HMGET', tkey, 'rev', 'state', 'q', 'uk')
-            if v[1] ~= ARGV[3] then return 0 end
+            if not v[1] then return 'NOT_FOUND' end
+            if v[1] ~= ARGV[3] then return 'STALE' end
             local state = tonumber(v[2])
-            if state == 2 then return 0 end
+            if state == 2 then return 'LEASED' end
             -- with an unreadable state or queue the zset entry is left behind; every reader drops an entry whose
             -- hash is gone
             if state and v[3] then leave(id, v[3], state) end
@@ -1071,7 +1078,7 @@ final class RedisScripts {
             redis.call('UNLINK', tkey, P .. 'd:' .. id, P .. 'st:' .. id, P .. 'f:' .. id)
             local fx = effect(ARGV[4], ARGV[5], ARGV[6])
             flush()
-            return 1 + fx
+            return fx == 1 and 'DELETED+' or 'DELETED'
             """;
 
     /** ARGV: label, queue ids JSON, type ids JSON. Records coverage and start time; returns the worker id. */

@@ -27,6 +27,7 @@ import javax.sql.DataSource;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
+import today.bonfire.oss.bth4j.spi.DeleteOutcome;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
@@ -1930,7 +1931,9 @@ public final class PostgresTaskStore implements FullStore {
 
     /**
      * Admin cancel keeps the payload, so that a cancelled task can be retried as it was. The two branches
-     * exclude each other by state, so at most one touches the row.
+     * exclude each other by state, so at most one touches the row. When neither does, one read of the same
+     * statement tells missing, another revision and a final state apart; a row that changed after the statement
+     * began and matches its read anyway is answered as another revision.
      */
     @Override
     public CancelOutcome cancel(long id, int revision, String reason, ScheduleEffect effect) {
@@ -1952,17 +1955,23 @@ public final class PostgresTaskStore implements FullStore {
                 + " SET cancel_requested_at = date_trunc('milliseconds', statement_timestamp()), cancel_reason = ?"
                 + FENCE
                 + "   RETURNING 2)"
-                + " SELECT COALESCE((SELECT 1 FROM c), (SELECT 2 FROM r), 0)")) {
+                + " SELECT COALESCE((SELECT 1 FROM c), (SELECT 2 FROM r),"
+                + "   (SELECT CASE WHEN revision <> ? THEN 3 WHEN state >= 3 THEN 4 ELSE 3 END FROM " + task
+                + "    WHERE id = ? AND state < " + KEY_ONLY + "), 0)")) {
             ps.setString(1, reason);
             ps.setLong(2, id);
             ps.setInt(3, revision);
             ps.setString(4, reason);
             ps.setLong(5, id);
             ps.setInt(6, revision);
+            ps.setInt(7, revision);
+            ps.setLong(8, id);
             return switch ((int) single(ps)) {
                 case 1 -> CancelOutcome.CANCELLED;
                 case 2 -> CancelOutcome.REQUESTED;
-                default -> CancelOutcome.STALE;
+                case 3 -> CancelOutcome.STALE;
+                case 4 -> CancelOutcome.FINISHED;
+                default -> CancelOutcome.NOT_FOUND;
             };
         }
     }
@@ -1977,32 +1986,54 @@ public final class PostgresTaskStore implements FullStore {
     @Override
     public RetryOutcome retry(long id, int revision) {
         return inTransaction(c -> {
-            try (var ps = c.prepareStatement("UPDATE " + task
+            try (var ps = c.prepareStatement("WITH u AS (UPDATE " + task
                     + " SET state = 0, due = date_trunc('milliseconds', statement_timestamp()), attempts = 0, revision = revision + 1,"
                     + " state_changed = date_trunc('milliseconds', statement_timestamp()), worker_id = NULL, lease_until = NULL, cancel_requested_at = NULL,"
                     + " cancel_reason = NULL,"
                     + " key_keep_ms = CASE WHEN unique_key IS NULL OR key_until <= date_trunc('milliseconds', statement_timestamp()) THEN NULL ELSE key_keep_ms END,"
                     + " unique_key = CASE WHEN key_until <= date_trunc('milliseconds', statement_timestamp()) THEN NULL ELSE unique_key END, key_until = NULL,"
-                    + " start_by = NULL WHERE id = ? AND revision = ? AND state IN (4, 5, 6)")) {
+                    + " start_by = NULL WHERE id = ? AND revision = ? AND state IN (4, 5, 6)"
+                    + " RETURNING 1)"
+                    + " SELECT COALESCE((SELECT 1 FROM u),"
+                    + "   (SELECT CASE WHEN revision <> ? THEN 3 WHEN state IN (4, 5, 6) THEN 3 ELSE 2 END FROM " + task
+                    + "    WHERE id = ? AND state < " + KEY_ONLY + "), 0)")) {
                 ps.setLong(1, id);
                 ps.setInt(2, revision);
-                return ps.executeUpdate() == 1 ? RetryOutcome.RETRIED : RetryOutcome.STALE;
+                ps.setInt(3, revision);
+                ps.setLong(4, id);
+                return switch ((int) single(ps)) {
+                    case 1 -> RetryOutcome.RETRIED;
+                    case 2 -> RetryOutcome.NOT_RETRYABLE;
+                    case 3 -> RetryOutcome.STALE;
+                    default -> RetryOutcome.NOT_FOUND;
+                };
             }
         });
     }
 
     @Override
-    public boolean delete(long id, int revision, ScheduleEffect effect) {
-        SqlFunction<Boolean> delete = c -> {
+    public DeleteOutcome delete(long id, int revision, ScheduleEffect effect) {
+        SqlFunction<DeleteOutcome> delete = c -> {
             if (effect != null) lockSchedule(c, effect);
-            try (var ps = c.prepareStatement(
-                    "DELETE FROM " + task + " WHERE id = ? AND revision = ? AND state NOT IN (2, " + KEY_ONLY + ")")) {
+            try (var ps = c.prepareStatement("WITH d AS (DELETE FROM " + task
+                    + " WHERE id = ? AND revision = ? AND state NOT IN (2, " + KEY_ONLY + ") RETURNING 1)"
+                    + " SELECT COALESCE((SELECT 1 FROM d),"
+                    + "   (SELECT CASE WHEN revision <> ? THEN 3 WHEN state = 2 THEN 4 ELSE 3 END FROM " + task
+                    + "    WHERE id = ? AND state < " + KEY_ONLY + "), 0)")) {
                 ps.setLong(1, id);
                 ps.setInt(2, revision);
-                if (ps.executeUpdate() != 1) return false;
+                ps.setInt(3, revision);
+                ps.setLong(4, id);
+                var outcome = switch ((int) single(ps)) {
+                    case 1 -> DeleteOutcome.DELETED;
+                    case 3 -> DeleteOutcome.STALE;
+                    case 4 -> DeleteOutcome.LEASED;
+                    default -> DeleteOutcome.NOT_FOUND;
+                };
+                if (outcome != DeleteOutcome.DELETED) return outcome;
             }
             if (effect != null) applyEffect(c, effect);
-            return true;
+            return DeleteOutcome.DELETED;
         };
         return effect == null ? withConnection(delete) : inTransaction(delete);
     }

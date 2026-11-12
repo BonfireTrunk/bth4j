@@ -20,6 +20,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
+import today.bonfire.oss.bth4j.spi.DeleteOutcome;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
@@ -315,6 +316,10 @@ public final class InMemoryStore implements FullStore {
         }
         keptKeys.remove(key);
         return null;
+    }
+
+    private static TaskStoreException keyHeldByAnother(long id, long holderId) {
+        return new TaskStoreException("Cannot retry task " + id + ": its unique key is held by task " + holderId);
     }
 
     private void releaseKey(long id) {
@@ -1038,7 +1043,10 @@ public final class InMemoryStore implements FullStore {
         lock.lock();
         try {
             TaskRecord t = tasks.get(id);
-            if (t == null || t.revision() != revision) {
+            if (t == null) {
+                return CancelOutcome.NOT_FOUND;
+            }
+            if (t.revision() != revision) {
                 return CancelOutcome.STALE;
             }
             Instant now = clock.instant();
@@ -1059,7 +1067,7 @@ public final class InMemoryStore implements FullStore {
                 save(t.toBuilder().cancelReason(reason).cancelRequestedAt(now).build());
                 return CancelOutcome.REQUESTED;
             }
-            return CancelOutcome.STALE;
+            return CancelOutcome.FINISHED;
         } finally {
             lock.unlock();
         }
@@ -1070,12 +1078,14 @@ public final class InMemoryStore implements FullStore {
         lock.lock();
         try {
             TaskRecord t = tasks.get(id);
-            if (t == null
-                    || t.revision() != revision
-                    || (t.state() != TaskState.DEAD
-                            && t.state() != TaskState.CANCELLED
-                            && t.state() != TaskState.EXPIRED)) {
+            if (t == null) {
+                return RetryOutcome.NOT_FOUND;
+            }
+            if (t.revision() != revision) {
                 return RetryOutcome.STALE;
+            }
+            if (t.state() != TaskState.DEAD && t.state() != TaskState.CANCELLED && t.state() != TaskState.EXPIRED) {
+                return RetryOutcome.NOT_RETRYABLE;
             }
             Instant now = clock.instant();
             String key = t.uniqueKey();
@@ -1089,12 +1099,13 @@ public final class InMemoryStore implements FullStore {
                 if (holderId != null && holderId != id) {
                     TaskRecord holder = tasks.get(holderId);
                     if (holder != null && keyHeld(holder, now)) {
-                        return RetryOutcome.DUPLICATE;
+                        throw keyHeldByAnother(id, holderId);
                     }
                     releaseKey(holderId);
                 }
-                if (keptKeyHolder(key, now) != null) {
-                    return RetryOutcome.DUPLICATE;
+                Long keptBy = keptKeyHolder(key, now);
+                if (keptBy != null) {
+                    throw keyHeldByAnother(id, keptBy);
                 }
                 keyHolders.put(key, id);
             }
@@ -1119,16 +1130,22 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public boolean delete(long id, int revision, ScheduleEffect effect) {
+    public DeleteOutcome delete(long id, int revision, ScheduleEffect effect) {
         lock.lock();
         try {
             TaskRecord t = tasks.get(id);
-            if (t == null || t.revision() != revision || t.state() == TaskState.LEASED) {
-                return false;
+            if (t == null) {
+                return DeleteOutcome.NOT_FOUND;
+            }
+            if (t.revision() != revision) {
+                return DeleteOutcome.STALE;
+            }
+            if (t.state() == TaskState.LEASED) {
+                return DeleteOutcome.LEASED;
             }
             remove(t);
             applyEffect(effect);
-            return true;
+            return DeleteOutcome.DELETED;
         } finally {
             lock.unlock();
         }

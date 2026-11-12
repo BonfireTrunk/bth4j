@@ -44,6 +44,7 @@ import redis.clients.jedis.providers.PooledConnectionProvider;
 import today.bonfire.oss.bth4j.Loggers;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
+import today.bonfire.oss.bth4j.spi.DeleteOutcome;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
@@ -669,7 +670,7 @@ class RedisTaskStoreIT {
                 .as("an unreadable keep window counts as none")
                 .isFalse();
         assertThat(store.delete(3, Integer.parseInt(jedis.hget(keys.task(3), "rev")), null))
-                .isTrue();
+                .isEqualTo(DeleteOutcome.DELETED);
         assertThat(jedis.exists(keys.task(3))).isFalse();
     }
 
@@ -918,7 +919,7 @@ class RedisTaskStoreIT {
         store.enqueue(task(3).typeId(second).due(Instant.ofEpochMilli(1)).build());
         var first = store.tasks(TaskState.QUEUED, queue, null, 1);
         assertThat(first.items()).extracting(TaskRecord::id).containsExactly(10L);
-        assertThat(store.delete(10, 0, null)).isTrue();
+        assertThat(store.delete(10, 0, null)).isEqualTo(DeleteOutcome.DELETED);
         assertThat(queuedTypes()).containsExactly(second);
 
         var next = store.tasks(TaskState.QUEUED, queue, first.next(), 1);
@@ -1581,7 +1582,7 @@ class RedisTaskStoreIT {
             cursor = page.next();
             if (!page.items().isEmpty() && cursor != null) {
                 var last = page.items().getLast();
-                assertThat(store.delete(last.id(), last.revision(), null)).isTrue();
+                assertThat(store.delete(last.id(), last.revision(), null)).isEqualTo(DeleteOutcome.DELETED);
             }
         } while (cursor != null);
 
