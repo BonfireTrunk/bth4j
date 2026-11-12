@@ -112,6 +112,10 @@ Other details:
 | Recurring-definition hash, field `trg` | set to 1 while the next fire time is one an operator triggered |
 | Runner hash, field `accepting` | set to 1 on registration; the heartbeat script updates it |
 | `ts:<digest>` lifetime | expires a day after the last claim that named it; a claim writes it again when it is missing |
+| Work per call | lease renewals and batched acknowledgements go in groups of 256 leases, and one call removes at most 500 stale runners, so that no call blocks the server for long |
+| Zset writes | are collected per key and sent as one command per key at the end of a script |
+| Task ids in scripts | travel as text, because a Lua number is a double and keeps 53 bits; revisions, attempts and times are numbers |
+| Time | every script reads `TIME` itself, so due times, leases and retention follow the Redis server; reading the clock before a write needs effect replication, the default since Redis 7.0 |
 | Claim | takes the intersection of the `active:<queue-id>` set and the `ts:<digest>` set, so its cost grows with the types that have queued tasks, not with the types registered |
 
 ### Memory encodings

@@ -42,6 +42,7 @@ Runners with the same namespace on the same database share the work.
 | `init` | Takes a transaction-level advisory lock for the namespace. Then it only reads the stored schema version when the tables exist. It runs DDL only when there is no schema yet. |
 | Starting a runner | Takes no table lock. |
 | Claim | One statement that runs both grant passes, each with a bounded per-queue `FOR UPDATE SKIP LOCKED` scan, so a claim is atomic without a transaction. |
+| Enqueue of several tasks | One `INSERT ... SELECT FROM unnest(...) ON CONFLICT DO NOTHING RETURNING id` for the batch. The conflict target is left out, so it covers the id and the unique key alike. |
 | `queuedByType()` | One `GROUP BY` over the queued rows. |
 | `counts()` | Reads an index of the counts per queue and state. |
 | Listing one finished state of one queue | Reads an index of the finished tasks of that queue. |

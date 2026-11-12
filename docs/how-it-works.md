@@ -148,9 +148,8 @@ the work without locks.
 | SQLite | Every write runs in a `BEGIN IMMEDIATE` transaction. A claim is several statements in one such transaction. |
 
 Each store page describes its storage layout: [Redis](stores/redis.md#inside-the-redis-store),
-[PostgreSQL](stores/postgresql.md#inside-the-postgresql-store) and [SQLite](stores/sqlite.md#inside-the-sqlite-store). The design, the
-record layout and the store contract as they were decided for 3.0 are in [design-3.0.md](design-3.0.md); where
-that page and a guide differ, the guide is current.
+[PostgreSQL](stores/postgresql.md#inside-the-postgresql-store) and [SQLite](stores/sqlite.md#inside-the-sqlite-store). The rules every
+store follows, with the reason for each, are in [Writing a store](writing-a-store.md).
 
 ## One attempt
 

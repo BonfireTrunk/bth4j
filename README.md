@@ -202,8 +202,7 @@ jedis.close();
 | [Stores](docs/stores.md) | choosing a store and how the stores differ: clocks, precision, durability, transactions |
 | [Redis store](docs/stores/redis.md), [PostgreSQL store](docs/stores/postgresql.md), [SQLite store](docs/stores/sqlite.md) | setup, requirements, caveats and the inside of each store |
 | [Writing a store](docs/writing-a-store.md) | the store interfaces, the rules every store follows, the contract tests |
-| [Upgrading from 2.x](docs/upgrading.md) | moving 2.x data and what changed in the API |
-| [Design record of 3.0](docs/design-3.0.md) | the design, the record layout, the store contract and the storage layouts as built for 3.0 |
+| [Upgrading from 4.x to 5.0](docs/upgrading.md) | what to do with your data, the changes the compiler does not show, and every old name with its new one |
 | [Changelog](CHANGELOG.md) | every release and what it changed |
 
 ## Requirements

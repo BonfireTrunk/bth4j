@@ -157,6 +157,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Redis: a listing orders tasks of the same time by the id as text (10 before 9), the order in which a claim takes them, and finds its page by rank. Before, a page read every task that shared the time of its first entry to sort them by number, however many there were. `StoreContract.orderOfIdsThatShareATime()` lets a store state such an order.
 - Admin HTTP: `GET /me` also returns the session's CSRF token.
 - fastjson2 2.0.66.
+- Documentation: [Upgrading](docs/upgrading.md) covers 4.x to 5.0, with every old name beside its new one. [Writing a store](docs/writing-a-store.md) has the rules of the fence, the time fields, ids, unique keys, the ways a task ends and schedules, each with its reason. The design record of 3.0, which described storage that no longer exists, the roadmap whose findings are done, and the 2.x upgrade page are removed; they are in the git history.
 
 ### Fixed
 
