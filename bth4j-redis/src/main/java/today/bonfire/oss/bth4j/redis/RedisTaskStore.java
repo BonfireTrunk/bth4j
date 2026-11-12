@@ -79,10 +79,10 @@ public final class RedisTaskStore implements FullStore {
     private static final Logger log = LoggerFactory.getLogger(Loggers.REDIS_STORE);
 
     /**
-     * The key layout this class writes, stored in the namespace's {@code meta} hash. {@link #init} refuses a
-     * namespace with any other layout.
+     * The version of the keys this class writes, stored in the namespace's {@code meta} hash. {@link #init}
+     * refuses a namespace with any other version.
      */
-    public static final int LAYOUT_VERSION = 6;
+    public static final int SCHEMA_VERSION = 6;
 
     private static final int PAGE_CHUNK = 500;
 
@@ -163,33 +163,33 @@ public final class RedisTaskStore implements FullStore {
 
     @Override
     public StoreInfo info() {
-        return new StoreInfo("redis", LAYOUT_VERSION);
+        return new StoreInfo("redis", SCHEMA_VERSION);
     }
 
     /**
-     * Checks that the server evicts no keys and has hash field expiry, then writes the layout version of a new
+     * Checks that the server evicts no keys and has hash field expiry, then writes the schema version of a new
      * namespace and checks it on an existing one. The eviction policy comes from {@code INFO memory}; when the
      * server refuses that command (an ACL without {@code +info}, a renamed or disabled command) or its reply has no
      * {@code maxmemory_policy}, init logs a warning to {@link Loggers#REDIS_STORE} and goes on without the check.
      *
      * @throws TaskConfigurationException when the server's {@code maxmemory-policy} is not {@code noeviction}, or
      *                                    the server does not know {@code HPEXPIREAT}
-     * @throws TaskStoreException         when the namespace has a layout other than {@value #LAYOUT_VERSION}, or
-     *                                    holds keys of the store without a layout version
+     * @throws TaskStoreException         when the namespace has a schema version other than {@value #SCHEMA_VERSION}, or
+     *                                    holds keys of the store without a schema version
      */
     @Override
     public void init() {
         checkEvictionPolicy();
         checkHashFieldExpiry();
-        var version = String.valueOf(LAYOUT_VERSION);
+        var version = String.valueOf(SCHEMA_VERSION);
         var found = (String) guard(() -> scripts.run(RedisScripts.INIT, List.of(version)));
         if (found.isEmpty()) {
             throw new TaskStoreException("Redis namespace " + keys.namespace
-                    + " holds keys without a layout version, this library needs layout version " + LAYOUT_VERSION);
+                    + " holds keys without a schema version, this library needs schema version " + SCHEMA_VERSION);
         }
         if (!version.equals(found)) {
-            throw new TaskStoreException("Redis namespace " + keys.namespace + " has layout version " + found
-                    + ", expected " + LAYOUT_VERSION);
+            throw new TaskStoreException("Redis namespace " + keys.namespace + " has schema version " + found
+                    + ", expected " + SCHEMA_VERSION);
         }
     }
 

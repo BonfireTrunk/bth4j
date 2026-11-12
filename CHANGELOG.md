@@ -43,11 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | Store SPI: `ScheduleEffect.pauses()`, `applied()` | `isPause()`, `isApplied()` | as above |
 
   A script that reads a renamed field of the admin API gets no error: the field is missing. Events, `UnservedWork` and the admin API keep `type` for the type's name. Stored column and key names do not change.
+- Breaking: every store calls its name a namespace and its version a schema version. `RedisTaskStore.LAYOUT_VERSION` is `SCHEMA_VERSION`, as in the two SQL stores, and the Redis messages say "schema version". The second constructor argument of `PostgresTaskStore` and `SqliteTaskStore` is the namespace, as in `RedisTaskStore`: the name every table starts with. A name that is not allowed is refused with `namespace must match ...`; the message said `prefix`. Table and key names do not change.
 - Breaking: an application no longer needs a store-author type to read or list anything.
   - `TaskView` has no `record()` and no public constructor from a `TaskRecord`. `TaskView.builder()` makes a view by hand, for a test of an observer, a retry policy or an `AdminOps` fake.
   - `AdminOps.runners()` returns `RunnerView`: the runner's id, label, times, running count and accepting state, with the queues and task types it processes by name (`queues()`, `types()`). It returned the store's record with numeric queue and type ids.
-  - Redis: the class `Keys` and `RedisTaskStore.keys()` are not public. Key names are an internal of the store; [the Redis store page](docs/stores/redis.md#inside-the-redis-store) lists the keys of the layout.
-- Breaking: one word for the process that runs tasks. It was a "runner" in `BackgroundRunner` and `RunnerHealth` and a "worker" in the registry, the settings, the admin API and the dashboard; it is a runner everywhere. Stored names (the tables `<prefix>_worker`, the column `worker_id`, the Redis keys) are unchanged, so no data moves.
+  - Redis: the class `Keys` and `RedisTaskStore.keys()` are not public. Key names are an internal of the store; [the Redis store page](docs/stores/redis.md#inside-the-redis-store) lists the keys.
+- Breaking: one word for the process that runs tasks. It was a "runner" in `BackgroundRunner` and `RunnerHealth` and a "worker" in the registry, the settings, the admin API and the dashboard; it is a runner everywhere. Stored names (the tables `<namespace>_worker`, the column `worker_id`, the Redis keys) are unchanged, so no data moves.
 
   | Before | Now |
   |---|---|
@@ -75,7 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `StoredSchedule` holds `Duration fixedDelay` and `Duration maxRunTime` where it held the millisecond numbers `fixedDelayMs` and `maxRunTimeMs`; the record cuts both to whole milliseconds, which is what every store keeps. `ScheduleView.nextFire` is `nextFireAt`.
 - `TaskState.SCHEDULED` is documented as what it is: a task waiting for its due time, which is a delayed task, a task waiting for its next attempt, or an occurrence of a schedule created ahead of its fire time. Schedules themselves are not tasks; `AdminOps.schedules()` lists them.
-- Breaking, stored data: the stores write a new layout and `init` refuses everything written by 4.x or older: PostgreSQL schema 4, Redis layout 6, SQLite schema 2. There is no migration. Let the old runners finish their work, then start on a new table prefix, Redis namespace or SQLite file, or drop the old ones.
+- Breaking, stored data: the stores write a new schema version and `init` refuses everything written by 4.x or older: PostgreSQL 4, Redis 6, SQLite 2. There is no migration. Let the old runners finish their work, then start on a new namespace or SQLite file, or drop the old tables and keys.
   - PostgreSQL keeps every time in a `timestamptz(3)` column, so the database itself holds whole milliseconds. The code that read rows written with microseconds before 4.2.0 is gone, and the cursor of a task listing counts milliseconds.
   - The schedule row has a `triggered` column (PostgreSQL, SQLite) or a `trg` field (Redis).
 - Breaking, store SPI: `ScheduleStore.setNextFire(scheduleId, nextFire)`, the operator's write, is `triggerSchedule(scheduleId, fireAt)`, and `DueSchedule` has `triggered`. The store marks a triggered fire time until another write replaces it; see the fix for late triggers below. The runner's `setNextFire(scheduleId, revision, expectedFire, nextFire)` is unchanged. `StoreContract.writeOtherSchemaVersion(namespace)` lets the contract tests see `init` refuse another schema version.
@@ -122,17 +123,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runner settings that are now checked when they are set or when the runner is built, each with a `TaskConfigurationException`:
   - Every interval has a shortest value and is at most 100 years: `scheduleCheckInterval` at least 10 ms (any positive value passed, and one nanosecond polled the store without pause). A duration too long to count in milliseconds is refused; it threw `ArithmeticException`.
   - `concurrency` and `taskExecutor` together are refused; the executor won without a word.
-  - `workerStaleAfter` must be at least three times `maintenanceCheckInterval`, which is how often the heartbeat is written; below that the purge removed live workers.
+  - `runnerStaleTimeout` must be at least three times `maintenanceCheckInterval`, which is how often the heartbeat is written; below that the purge removed live runners.
   - A queue name is at most 128 characters, as a task type name is.
   - `TaskType.of(name, (Class) null)` and `TaskType.of(name, (PayloadCodec) null)` are refused; the tasks of such a type ended as dead.
 - `TaskRequest.Builder.retryPolicy(name)` takes a name of 1 to 64 characters (`TaskRequest.MAX_RETRY_POLICY_LENGTH`), the rule the runner has for the names it registers; null still means the default policy.
 - `TaskView` has `retryPolicy()`, `keyKeep()` and `keyUntil()`. `TaskViewPage` and `TaskPage` copy the list they are given.
-- `AdminHttpServer.Builder.user` refuses a second user with the same name; the later one replaced the earlier without a word.
+- `AdminHttpServer.Builder.addUser` refuses a second user with the same name; the later one replaced the earlier without a word.
 - `MicrometerRunnerMetrics.bind` refuses a second binding with the same tags on one registry while the first is open, with a `TaskConfigurationException`. The registry handed the second one the gauges of the first, so it showed the first runner's values, and closing either removed the gauges of both. Null tags count as no tags.
 - Admin HTTP: failed logins are also counted by the user name they give, known or not: the fifth failure blocks logins with that name from any address for 10 seconds. Before, a client with many addresses could guess without limit. IPv6 addresses are counted by their /64 network. Failures are forgotten when no attempt followed them for 10 minutes; they were kept until the server stopped, so a fifth mistyped password weeks later still blocked.
 
 - `bth4j-micrometer` needs `micrometer-core` 1.17 or newer on the classpath (tested on 1.17.2). The meters are the same.
-- Redis: `init` refuses a namespace that holds keys of the store but no layout version, as PostgreSQL and SQLite refuse tables without a version. It wrote the current version on such a namespace, for example one restored without its `meta` key, and worked on whatever was there. A new contract test covers every store.
+- Redis: `init` refuses a namespace that holds keys of the store but no schema version, as PostgreSQL and SQLite refuse tables without a version. It wrote the current version on such a namespace, for example one restored without its `meta` key, and worked on whatever was there. A new contract test covers every store.
 - PostgreSQL: the store cuts the server's clock to the millisecond, as the other stores do. It rounded, which put its clock up to half a millisecond ahead of the server's: a task due in the next millisecond was queued at once, and a lease, a key window or a `startBy` ended that much early.
 - Redis: `init` refuses a server without hash field expiry (`HPEXPIREAT`: Redis 7.4 or newer, Valkey 9 or newer) with a `TaskConfigurationException` that names the versions, before it writes anything. Such a server passed `init` before, and the first task that finished with a keep window failed inside its script after part of the writes.
 - Arguments that are now refused when they are handed in:
@@ -141,7 +142,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `purgeInterval` and `serviceCheckInterval` below one millisecond are a `TaskConfigurationException` in the builder; they failed in `start()`.
   - `taskByKey(null)` and `cancelByKey(null, ...)` are a `TaskValidationException`; Redis looked up the key "null".
   - A schedule id with U+0000 is a `TaskValidationException` in `TaskClient.deleteSchedule` and in `AdminOps.pauseSchedule`, `triggerSchedule` and `deleteSchedule`.
-  - `AdminHttpServer.Builder.user` refuses an empty password, for example from an environment variable that is set but empty.
+  - `AdminHttpServer.Builder.addUser` refuses an empty password, for example from an environment variable that is set but empty.
 - `TaskRequest.Builder.uniqueKey(key)` sets the key to be taken until the task is done; after `uniqueKey(key, keepFor)` on the same builder it kept the earlier keep window.
 - `RetryPolicy.exponential` counts a base or cap longer than `TaskRequest.MAX_TIME_FROM_NOW` as that long.
 - Store SPI: a task that was removed while its unique key is still kept, sent again with its id and that key, answers `EnqueueOutcome.EXISTS` on every store, so the client returns `Accepted`. Redis and the in-memory store answered `DuplicateKey` with the request's own id (`Duplicate` from the client); PostgreSQL and SQLite already answered `EXISTS`. The task is not stored again on any store, before or now. A new contract test covers it.
@@ -152,7 +153,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - An empty unique key throws `TaskValidationException` (`StoreArguments.requireKey`). Redis stored the task without enforcing the key. The client never sends one.
   - A fixed-delay commit that stores nothing, because another task of the schedule holds the unique key, records that task as the running occurrence only while it is not finished. The in-memory store and Redis also recorded a finished task whose key window was still open, and the schedule then waited for a task that had ended.
   - `schedules()` lists by the Unicode code points of the id (`ScheduleStore.ID_ORDER`), which is the order of its UTF-8 bytes. The in-memory store and Redis compared UTF-16 units, which puts characters above U+FFFF elsewhere.
-  - A new contract test pins the order of `workers()`, which was the same on every store already.
+  - A new contract test pins the order of `runners()`, which was the same on every store already.
 - Redis: a listing orders tasks of the same time by the id as text (10 before 9), the order in which a claim takes them, and finds its page by rank. Before, a page read every task that shared the time of its first entry to sort them by number, however many there were. `StoreContract.orderOfIdsThatShareATime()` lets a store state such an order.
 - Admin HTTP: `GET /me` also returns the session's CSRF token.
 - fastjson2 2.0.66.

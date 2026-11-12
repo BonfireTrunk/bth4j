@@ -162,14 +162,14 @@ class RedisTaskStoreIT {
     @Test
     void initWritesSchemaAndRefusesAnotherVersion() {
         assertThat(store.info().engine()).isEqualTo("redis");
-        assertThat(jedis.hget(keys.meta, "schema")).isEqualTo(String.valueOf(RedisTaskStore.LAYOUT_VERSION));
+        assertThat(jedis.hget(keys.meta, "schema")).isEqualTo(String.valueOf(RedisTaskStore.SCHEMA_VERSION));
         store.init();
 
         jedis.hset(keys.meta, "schema", "99");
 
         assertThatThrownBy(store::init)
                 .isInstanceOf(TaskStoreException.class)
-                .hasMessageContaining("layout version 99, expected " + RedisTaskStore.LAYOUT_VERSION);
+                .hasMessageContaining("schema version 99, expected " + RedisTaskStore.SCHEMA_VERSION);
         assertThat(jedis.hget(keys.meta, "schema")).isEqualTo("99");
     }
 
@@ -254,7 +254,7 @@ class RedisTaskStoreIT {
                         .contains("did not check that maxmemory-policy is noeviction");
             });
             assertThat(limited.hget(other.keys().meta, "schema"))
-                    .isEqualTo(String.valueOf(RedisTaskStore.LAYOUT_VERSION));
+                    .isEqualTo(String.valueOf(RedisTaskStore.SCHEMA_VERSION));
         } finally {
             jedis.sendCommand(Protocol.Command.ACL, "DELUSER", "no-info");
         }
@@ -279,7 +279,7 @@ class RedisTaskStoreIT {
                         .contains("Redis INFO memory has no maxmemory_policy, so init did not check");
             });
             assertThat(proxy.hget(other.keys().meta, "schema"))
-                    .isEqualTo(String.valueOf(RedisTaskStore.LAYOUT_VERSION));
+                    .isEqualTo(String.valueOf(RedisTaskStore.SCHEMA_VERSION));
         }
     }
 

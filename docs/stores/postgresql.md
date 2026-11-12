@@ -12,7 +12,7 @@ On this page:
 
 ## Set up
 
-Create the store from a pooled `DataSource` and a table prefix:
+Create the store from a pooled `DataSource` and a namespace, the name every table starts with:
 
 ```java
 var store = new PostgresTaskStore(dataSource, "bth");   // tables bth_task, bth_queue, bth_type, bth_worker, bth_schedule, bth_meta
@@ -20,7 +20,7 @@ var store = new PostgresTaskStore(dataSource, "bth");   // tables bth_task, bth_
 
 The tables are created when the runner or client is built. Or run `store.schemaStatements()` from your migration tool.
 
-Runners with the same prefix on the same database share the work.
+Runners with the same namespace on the same database share the work.
 
 ## Requirements
 
@@ -29,8 +29,8 @@ Runners with the same prefix on the same database share the work.
 | Module | `bth4j-postgres`, which uses only `java.sql`. The application supplies the JDBC driver and a pooled `DataSource`. |
 | PostgreSQL | 16 or newer is supported, 17 or newer recommended. The tests run on 18. |
 | Isolation level | The store runs at the connection's isolation level. It is written for READ COMMITTED, PostgreSQL's default. |
-| Table prefix | Lower case letters, digits and underscores, starting with a letter, at most 41 characters |
-| Schema version | 4, stored in `<prefix>_meta`. `init` refuses tables with another version, which includes every table set written by bth4j 4.x or older; there is no migration. Start with a new prefix or drop the tables. |
+| Namespace | Lower case letters, digits and underscores, starting with a letter, at most 41 characters |
+| Schema version | 4, stored in `<namespace>_meta`. `init` refuses tables with another version, which includes every table set written by bth4j 4.x or older; there is no migration. Start with a new namespace or drop the tables. |
 | Privileges of a runner role on existing tables | SELECT, INSERT, UPDATE and DELETE on the tables, and USAGE on the sequences |
 | Query timeouts | None set by the store. Configure them on the driver and pool (see [No query timeout](#no-query-timeout)). |
 
@@ -39,7 +39,7 @@ Runners with the same prefix on the same database share the work.
 | Operation | What the store does |
 |---|---|
 | Clock | Takes the current time from the database server: the time the statement started (`statement_timestamp()`), cut to whole milliseconds. Inside your own transaction that is the time of each statement, not the start of the transaction. See [which clock decides](../stores.md#which-clock-decides). |
-| `init` | Takes a transaction-level advisory lock for the prefix. Then it only reads the stored schema version when the tables exist. It runs DDL only when there is no schema yet. |
+| `init` | Takes a transaction-level advisory lock for the namespace. Then it only reads the stored schema version when the tables exist. It runs DDL only when there is no schema yet. |
 | Starting a runner | Takes no table lock. |
 | Claim | One statement that runs both grant passes, each with a bounded per-queue `FOR UPDATE SKIP LOCKED` scan, so a claim is atomic without a transaction. |
 | `queuedByType()` | One `GROUP BY` over the queued rows. |
@@ -82,11 +82,11 @@ A claim walks the queued tasks of a queue in due order past those of types it do
 
 | Item | Detail |
 |---|---|
-| Tables | `<prefix>_task`, `<prefix>_queue`, `<prefix>_type`, `<prefix>_worker`, `<prefix>_schedule`, `<prefix>_meta` |
+| Tables | `<namespace>_task`, `<namespace>_queue`, `<namespace>_type`, `<namespace>_worker`, `<namespace>_schedule`, `<namespace>_meta` |
 | Foreign keys | none |
 | Schema version | 4 |
 | Times | `timestamptz(3)` columns: whole milliseconds |
-| Task types | stored in `<prefix>_type`, and as `type_id` columns in the task and schedule tables |
+| Task types | stored in `<namespace>_type`, and as `type_id` columns in the task and schedule tables |
 | Runner coverage | `queue_ids` and `type_ids` as `smallint[] NOT NULL` |
 | `accepting` | a required boolean, true on registration and updated by the heartbeat |
 | `payload_version`, `catch_up_max` | `integer`, so every positive Java `int` is stored |
@@ -98,8 +98,8 @@ A claim walks the queued tasks of a queue in due order past those of types it do
 |---|---|
 | Claim | the queued tasks of a queue in due order, past those of types it does not handle |
 | `queuedByType()` | one `GROUP BY queue_id, type_id` over the queued rows |
-| `counts()` | the `<prefix>_task_counts` index (`queue_id, state`) |
-| Listing one finished state of one queue | `<prefix>_task_finished_queue` |
+| `counts()` | the `<namespace>_task_counts` index (`queue_id, state`) |
+| Listing one finished state of one queue | `<namespace>_task_finished_queue` |
 | Listing QUEUED across all queues | the queued index, once per queue, merged by due time and id |
 
 The queued partial index ends with `type_id` to cover the `queuedByType()` counts while preserving claim order. It uses ordinary index columns.

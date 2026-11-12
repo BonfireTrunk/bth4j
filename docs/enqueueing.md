@@ -336,4 +336,4 @@ A caller id taken by another writer after the preflight also fails with `Enqueue
 ## Inside the id check (PostgreSQL)
 
 On PostgreSQL the id check reads the id sequence with `pg_sequence_last_value`. It needs only the USAGE privilege on
-`<prefix>_task_id`, which `allocateIds` already uses.
+`<namespace>_task_id`, which `allocateIds` already uses.

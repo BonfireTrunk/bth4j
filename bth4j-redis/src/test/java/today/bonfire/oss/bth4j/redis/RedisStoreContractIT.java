@@ -76,7 +76,7 @@ class RedisStoreContractIT extends StoreContract {
 
     @Override
     protected boolean writeOtherSchemaVersion(String namespace) {
-        jedis.hset(new Keys(namespace).meta, Keys.SCHEMA, String.valueOf(RedisTaskStore.LAYOUT_VERSION + 1));
+        jedis.hset(new Keys(namespace).meta, Keys.SCHEMA, String.valueOf(RedisTaskStore.SCHEMA_VERSION + 1));
         return true;
     }
 

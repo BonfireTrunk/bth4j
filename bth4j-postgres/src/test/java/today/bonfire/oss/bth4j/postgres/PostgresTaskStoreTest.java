@@ -35,11 +35,12 @@ class PostgresTaskStoreTest {
     }
 
     @Test
-    void prefixMustBeAPlainLowerCaseIdentifier() {
+    void namespaceMustBeAPlainLowerCaseIdentifier() {
         for (var bad : new String[] {null, "", "Bth", "1bth", "bth-tasks", "bth tasks", "a".repeat(42)}) {
             assertThatThrownBy(() -> new PostgresTaskStore(DATA_SOURCE, bad))
-                    .as("prefix %s", bad)
-                    .isInstanceOf(TaskConfigurationException.class);
+                    .as("namespace %s", bad)
+                    .isInstanceOf(TaskConfigurationException.class)
+                    .hasMessageStartingWith("namespace must match ");
         }
         assertThatCode(() -> new PostgresTaskStore(DATA_SOURCE, "bth_2")).doesNotThrowAnyException();
     }

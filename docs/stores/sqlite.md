@@ -13,7 +13,7 @@ On this page:
 
 ## Set up
 
-Put SQLite in WAL mode with a busy timeout, then create the store from a pooled `DataSource` and a table prefix:
+Put SQLite in WAL mode with a busy timeout, then create the store from a pooled `DataSource` and a namespace, the name every table starts with:
 
 ```java
 var config = new SQLiteConfig();
@@ -32,7 +32,7 @@ The store is for one or more runners in one process, or in several processes on 
 
 Network file systems are not supported. SQLite's WAL mode does not work over them, and the store does not detect them. For runners on several machines use PostgreSQL or Redis.
 
-The tables are created when the runner or client is built. Or run `store.schemaStatements()` from your migration tool. Runners with the same prefix on the same database file share the work.
+The tables are created when the runner or client is built. Or run `store.schemaStatements()` from your migration tool. Runners with the same namespace on the same database file share the work.
 
 ## Requirements
 
@@ -44,8 +44,8 @@ The tables are created when the runner or client is built. Or run `store.schemaS
 | `journal_mode` | `wal` on the connection `init` receives |
 | `busy_timeout` | At least 1000 on the connection `init` receives |
 | `synchronous` | Your choice. It is not checked. |
-| Table prefix | Lower case letters, digits and underscores, starting with a letter, at most 41 characters, and neither `sqlite` nor starting with `sqlite_`, because SQLite reserves table names that start with `sqlite_` |
-| Schema version | 2, stored in `<prefix>_meta`. `init` refuses tables with another version, which includes every database written by bth4j 4.2, and tables that have no `<prefix>_meta`; there is no migration. When the version matches, it only reads. |
+| Namespace | Lower case letters, digits and underscores, starting with a letter, at most 41 characters, and neither `sqlite` nor starting with `sqlite_`, because SQLite reserves table names that start with `sqlite_` |
+| Schema version | 2, stored in `<namespace>_meta`. `init` refuses tables with another version, which includes every database written by bth4j 4.2, and tables that have no `<namespace>_meta`; there is no migration. When the version matches, it only reads. |
 | Clock | The store's `java.time.Clock`: the third constructor argument, `Clock.systemUTC()` by default |
 | JDK 25 | The JVM prints a warning when sqlite-jdbc loads its native library, unless the application starts with `--enable-native-access=ALL-UNNAMED` |
 
@@ -122,11 +122,11 @@ The queued partial index ends with `type_id`, and a claim walks the queued tasks
 
 | Item | Detail |
 |---|---|
-| Tables | `<prefix>_task`, `<prefix>_queue`, `<prefix>_type`, `<prefix>_worker`, `<prefix>_schedule`, `<prefix>_meta` |
+| Tables | `<namespace>_task`, `<namespace>_queue`, `<namespace>_type`, `<namespace>_worker`, `<namespace>_schedule`, `<namespace>_meta` |
 | Table mode | all tables are `STRICT` |
 | Foreign keys | none |
 | Times | epoch milliseconds, taken from the store's `java.time.Clock` |
-| Schema version | 2, stored in `<prefix>_meta` |
+| Schema version | 2, stored in `<namespace>_meta` |
 | Claim lease | one `UPDATE` that takes the id list through `json_each` |
 | Key-only row | state code 7, content columns empty |
 | Queued partial index | ends with `type_id` |

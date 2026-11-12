@@ -40,11 +40,12 @@ class SqliteTaskStoreTest {
     }
 
     @Test
-    void prefixMustBeAPlainLowerCaseIdentifier() {
+    void namespaceMustBeAPlainLowerCaseIdentifier() {
         for (var bad : new String[] {null, "", "Bth", "1bth", "bth-tasks", "bth tasks", "a".repeat(42)}) {
             assertThatThrownBy(() -> new SqliteTaskStore(DATA_SOURCE, bad))
-                    .as("prefix %s", bad)
-                    .isInstanceOf(TaskConfigurationException.class);
+                    .as("namespace %s", bad)
+                    .isInstanceOf(TaskConfigurationException.class)
+                    .hasMessageStartingWith("namespace must match ");
         }
         assertThatCode(() -> new SqliteTaskStore(DATA_SOURCE, "bth_2")).doesNotThrowAnyException();
         assertThatCode(() -> new SqliteTaskStore(DATA_SOURCE, "a".repeat(41), Clock.systemUTC()))
@@ -52,11 +53,12 @@ class SqliteTaskStoreTest {
     }
 
     @Test
-    void prefixesThatWouldMakeTableNamesSqliteReservesAreRejected() {
+    void namespacesThatWouldMakeTableNamesSqliteReservesAreRejected() {
         for (var reserved : new String[] {"sqlite", "sqlite_", "sqlite_app"}) {
             assertThatThrownBy(() -> new SqliteTaskStore(DATA_SOURCE, reserved))
-                    .as("prefix %s", reserved)
+                    .as("namespace %s", reserved)
                     .isInstanceOf(TaskConfigurationException.class)
+                    .hasMessageStartingWith("namespace " + reserved + " would make table names")
                     .hasMessageContaining("reserves");
         }
         assertThatCode(() -> new SqliteTaskStore(DATA_SOURCE, "sqlitex")).doesNotThrowAnyException();

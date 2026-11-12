@@ -62,9 +62,9 @@ import today.bonfire.oss.bth4j.spi.TaskRecord;
 
 /**
  * {@link FullStore} on SQLite (3.45 or newer in WAL mode, tested on 3.54): one row per task in
- * {@code <prefix>_task} with a state column, name registries in {@code <prefix>_queue} and
- * {@code <prefix>_type}, runners in {@code <prefix>_runner}, recurring definitions in
- * {@code <prefix>_schedule}, counters in {@code <prefix>_meta}. All tables are STRICT; times are epoch
+ * {@code <namespace>_task} with a state column, name registries in {@code <namespace>_queue} and
+ * {@code <namespace>_type}, runners in {@code <namespace>_worker}, recurring definitions in
+ * {@code <namespace>_schedule}, counters in {@code <namespace>_meta}. All tables are STRICT; times are epoch
  * milliseconds from the {@link Clock} given to the store, never from an SQL function. Runners that share the
  * database file share the work, in one process or in several processes on one machine.
  * <p>
@@ -94,7 +94,7 @@ public final class SqliteTaskStore implements FullStore {
     /** The smallest {@code busy_timeout}, in milliseconds, that {@link #init} accepts. */
     public static final int MIN_BUSY_TIMEOUT_MS = 1000;
 
-    private static final Pattern PREFIX = Pattern.compile("[a-z][a-z0-9_]{0,40}");
+    private static final Pattern NAMESPACE = Pattern.compile("[a-z][a-z0-9_]{0,40}");
     private static final int MAX_FAILURES = 20;
     private static final int MAX_REGISTRY_ID = Short.MAX_VALUE;
     private static final String FAILED = "SQLite task store operation failed";
@@ -136,7 +136,7 @@ public final class SqliteTaskStore implements FullStore {
 
     private final DataSource dataSource;
     private final Clock clock;
-    private final String prefix;
+    private final String namespace;
     private final String meta;
     private final String queue;
     private final String type;
@@ -163,12 +163,12 @@ public final class SqliteTaskStore implements FullStore {
 
     /**
      * @param dataSource connections to the database; the store does not close it
-     * @param prefix     table name prefix, lower case letters, digits and underscores, starting with a letter, at
+     * @param namespace  the name every table starts with, lower case letters, digits and underscores, starting with a letter, at
      *                   most 41 characters.
-     *                   Runners with the same prefix on the same database file share the work.
+     *                   Runners with the same namespace on the same database file share the work.
      */
-    public SqliteTaskStore(DataSource dataSource, String prefix) {
-        this(dataSource, prefix, Clock.systemUTC());
+    public SqliteTaskStore(DataSource dataSource, String namespace) {
+        this(dataSource, namespace, Clock.systemUTC());
     }
 
     /**
@@ -176,25 +176,25 @@ public final class SqliteTaskStore implements FullStore {
      *              control. Runners that share a database file should agree on the time, which they do when they run
      *              on one machine
      */
-    public SqliteTaskStore(DataSource dataSource, String prefix, Clock clock) {
+    public SqliteTaskStore(DataSource dataSource, String namespace, Clock clock) {
         if (dataSource == null) throw new TaskConfigurationException("DataSource is required");
-        if (prefix == null || !PREFIX.matcher(prefix).matches()) {
-            throw new TaskConfigurationException("prefix must match " + PREFIX.pattern());
+        if (namespace == null || !NAMESPACE.matcher(namespace).matches()) {
+            throw new TaskConfigurationException("namespace must match " + NAMESPACE.pattern());
         }
-        if (prefix.equals("sqlite") || prefix.startsWith("sqlite_")) {
-            throw new TaskConfigurationException("prefix " + prefix + " would make table names starting with sqlite_,"
-                    + " which SQLite reserves for itself");
+        if (namespace.equals("sqlite") || namespace.startsWith("sqlite_")) {
+            throw new TaskConfigurationException("namespace " + namespace
+                    + " would make table names starting with sqlite_," + " which SQLite reserves for itself");
         }
         if (clock == null) throw new TaskConfigurationException("clock is required");
         this.dataSource = dataSource;
         this.clock = clock;
-        this.prefix = prefix;
-        this.meta = prefix + "_meta";
-        this.queue = prefix + "_queue";
-        this.type = prefix + "_type";
-        this.runner = prefix + "_worker";
-        this.task = prefix + "_task";
-        this.schedule = prefix + "_schedule";
+        this.namespace = namespace;
+        this.meta = namespace + "_meta";
+        this.queue = namespace + "_queue";
+        this.type = namespace + "_type";
+        this.runner = namespace + "_worker";
+        this.task = namespace + "_task";
+        this.schedule = namespace + "_schedule";
 
         // ON CONFLICT without a target covers both the id and the unique key; the caller tells the two apart. A new
         // task starts without run fields (ExecutionStore#enqueue), so only the producer's fields are bound
@@ -247,7 +247,7 @@ public final class SqliteTaskStore implements FullStore {
         return new StoreInfo("sqlite", SCHEMA_VERSION);
     }
 
-    /** The DDL for this prefix, idempotent; for migration tools that manage the schema themselves. */
+    /** The DDL for this namespace, idempotent; for migration tools that manage the schema themselves. */
     public List<String> schemaStatements() {
         return List.of(
                 "CREATE TABLE IF NOT EXISTS " + meta
@@ -398,7 +398,7 @@ public final class SqliteTaskStore implements FullStore {
         }
     }
 
-    /** @return whether the schema of this version is there; refuses another version and a layout without a version */
+    /** @return whether the schema of this version is there; refuses another version and tables without a version */
     private boolean schemaPresent(Connection c) throws SQLException {
         boolean hasMeta = tableExists(c, meta);
         if (!hasMeta) {
@@ -1671,7 +1671,7 @@ public final class SqliteTaskStore implements FullStore {
 
     @Override
     public String toString() {
-        return "SqliteTaskStore[" + prefix + "]";
+        return "SqliteTaskStore[" + namespace + "]";
     }
 
     // ---- cancellation, expiry, admin, runners, schedule controls ---------------------------------------

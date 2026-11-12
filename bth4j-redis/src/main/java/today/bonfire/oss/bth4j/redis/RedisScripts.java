@@ -755,7 +755,7 @@ final class RedisScripts {
             """;
 
     /**
-     * ARGV: layout version. Returns the layout version of the namespace and writes the given one when the
+     * ARGV: schema version. Returns the schema version of the namespace and writes the given one when the
      * namespace is new. Returns '' for a namespace that has no version but one of the keys that every used
      * namespace has.
      */

@@ -61,9 +61,9 @@ import today.bonfire.oss.bth4j.spi.TaskRecord;
 
 /**
  * {@link FullStore} on PostgreSQL (16 or newer, 17 or newer recommended, tested on 18): one row per task in
- * {@code <prefix>_task} with a state column, name registries in
- * {@code <prefix>_queue} and {@code <prefix>_type}, runners in {@code <prefix>_runner}, recurring
- * definitions in {@code <prefix>_schedule}. Each transition's check and writes commit together: claims use
+ * {@code <namespace>_task} with a state column, name registries in
+ * {@code <namespace>_queue} and {@code <namespace>_type}, runners in {@code <namespace>_worker}, recurring
+ * definitions in {@code <namespace>_schedule}. Each transition's check and writes commit together: claims use
  * {@code FOR UPDATE SKIP LOCKED}, the fenced transitions are {@code UPDATE ... WHERE id = ? AND revision = ?
  * AND state = 2}, and {@link #fail} locks the row before it reads the failures it appends to. Runners that
  * share the tables share the work. The database clock decides due times, leases and retention: every statement
@@ -84,7 +84,7 @@ public final class PostgresTaskStore implements FullStore {
      */
     public static final int SCHEMA_VERSION = 4;
 
-    private static final Pattern PREFIX = Pattern.compile("[a-z][a-z0-9_]{0,40}");
+    private static final Pattern NAMESPACE = Pattern.compile("[a-z][a-z0-9_]{0,40}");
     private static final int MAX_FAILURES = 20;
     private static final int MAX_REGISTRY_ID = Short.MAX_VALUE;
     /** SQLSTATE of nextval past the sequence's maximum: the smallint registry is full */
@@ -118,7 +118,7 @@ public final class PostgresTaskStore implements FullStore {
     private static final String FENCE = " WHERE id = ? AND revision = ? AND state = 2";
 
     private final DataSource dataSource;
-    private final String prefix;
+    private final String namespace;
     private final String meta;
     private final String queue;
     private final String type;
@@ -158,25 +158,25 @@ public final class PostgresTaskStore implements FullStore {
 
     /**
      * @param dataSource connections to the database; the store does not close it
-     * @param prefix     table name prefix, lower case letters, digits and underscores, starting with a letter, at
+     * @param namespace  the name every table starts with, lower case letters, digits and underscores, starting with a letter, at
      *                   most 41 characters.
-     *                   Runners with the same prefix on the same database share the work.
+     *                   Runners with the same namespace on the same database share the work.
      */
-    public PostgresTaskStore(DataSource dataSource, String prefix) {
+    public PostgresTaskStore(DataSource dataSource, String namespace) {
         if (dataSource == null) throw new TaskConfigurationException("DataSource is required");
-        if (prefix == null || !PREFIX.matcher(prefix).matches()) {
-            throw new TaskConfigurationException("prefix must match " + PREFIX.pattern());
+        if (namespace == null || !NAMESPACE.matcher(namespace).matches()) {
+            throw new TaskConfigurationException("namespace must match " + NAMESPACE.pattern());
         }
         this.dataSource = dataSource;
-        this.prefix = prefix;
-        this.meta = prefix + "_meta";
-        this.queue = prefix + "_queue";
-        this.type = prefix + "_type";
-        this.runner = prefix + "_worker";
-        this.task = prefix + "_task";
-        this.schedule = prefix + "_schedule";
-        this.taskIdSeq = prefix + "_task_id";
-        this.scheduleSeq = prefix + "_schedule_rev";
+        this.namespace = namespace;
+        this.meta = namespace + "_meta";
+        this.queue = namespace + "_queue";
+        this.type = namespace + "_type";
+        this.runner = namespace + "_worker";
+        this.task = namespace + "_task";
+        this.schedule = namespace + "_schedule";
+        this.taskIdSeq = namespace + "_task_id";
+        this.scheduleSeq = namespace + "_schedule_rev";
 
         // one statement for any number of tasks; ON CONFLICT without a target covers both the id and the
         // unique key, and enqueueAll tells the two apart afterwards. Rows go in unique key order, so two batches
@@ -391,7 +391,7 @@ public final class PostgresTaskStore implements FullStore {
         return new StoreInfo("postgresql", SCHEMA_VERSION);
     }
 
-    /** The DDL for this prefix, idempotent; for migration tools that manage the schema themselves. */
+    /** The DDL for this namespace, idempotent; for migration tools that manage the schema themselves. */
     public List<String> schemaStatements() {
         return List.of(
                 "CREATE TABLE IF NOT EXISTS " + meta + " (key text PRIMARY KEY, value text NOT NULL)",
@@ -487,7 +487,7 @@ public final class PostgresTaskStore implements FullStore {
      * Checks the schema version, and creates the tables, indexes and sequences when there is no schema yet. A
      * matching schema runs no DDL, so a role with only data privileges can start, and a start takes no table lock.
      * Safe to call from several runners at once: they serialize on a transaction-level advisory lock for the
-     * prefix.
+     * namespace.
      *
      * @throws TaskStoreException when the tables carry another schema version, or a task table exists
      *                            without a version
@@ -496,7 +496,7 @@ public final class PostgresTaskStore implements FullStore {
     public void init() {
         inTransaction(c -> {
             try (var ps = c.prepareStatement("SELECT pg_advisory_xact_lock(hashtext(?))")) {
-                ps.setString(1, "bth4j:" + prefix);
+                ps.setString(1, "bth4j:" + namespace);
                 ps.executeQuery().close();
             }
             boolean hasMeta;
@@ -1868,7 +1868,7 @@ public final class PostgresTaskStore implements FullStore {
 
     @Override
     public String toString() {
-        return "PostgresTaskStore[" + prefix + "]";
+        return "PostgresTaskStore[" + namespace + "]";
     }
 
     // ---- wave 2: cancellation, expiry, admin, runners, schedule controls -------------------------------

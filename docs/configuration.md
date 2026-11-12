@@ -24,7 +24,7 @@ How the runner finds its store, its processors and its JSON mapping, and how it 
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `store` | required | `new RedisTaskStore(jedis, "namespace")`, `new PostgresTaskStore(dataSource, "prefix")`, `new SqliteTaskStore(dataSource, "prefix")` or `new InMemoryStore()` |
+| `store` | required | `new RedisTaskStore(jedis, "namespace")`, `new PostgresTaskStore(dataSource, "namespace")`, `new SqliteTaskStore(dataSource, "namespace")` or `new InMemoryStore()` |
 | `registry` | new registry | the processor registry; by default created by the runner and reached with `runner.registry()` |
 | `jsonMapper` | none | payloads and step results as JSON; needed unless every task type has its own codec. A runner without one refuses to start when a registered task type has a JSON payload |
 | `clock` | `Clock.systemUTC()` | clock for client-side instants (`createdAt`, delays, retry times) |
