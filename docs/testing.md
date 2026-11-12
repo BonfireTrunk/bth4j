@@ -65,7 +65,7 @@ TaskView task = TaskView.builder()
 assertThat(policy.decide(task, new IOException("reset"))).isInstanceOf(RetryPolicy.Decision.RetryAfter.class);
 ```
 
-A field that is not set is null, zero or empty.
+A view that is given nothing else is a QUEUED task with payload version 1 and one attempt allowed; every other field that is not set is null, zero or empty.
 
 ## Pinning the stored form of a payload
 

@@ -23,7 +23,10 @@ public final class TaskView {
         this.type = type;
     }
 
-    /** @return a builder for a view made by hand; a field that is not set is null, zero or empty */
+    /**
+     * @return a builder for a view made by hand: a QUEUED task with payload version 1 and one attempt allowed;
+     *         every other field that is not set is null, zero or empty
+     */
     public static Builder builder() {
         return new Builder();
     }

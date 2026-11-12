@@ -85,11 +85,14 @@ class TaskViewTest {
     }
 
     @Test
-    void aViewBuiltWithOnlyItsNamesHasEmptyFields() {
+    void aViewBuiltWithOnlyItsNamesIsAQueuedTaskWithEmptyFields() {
         var view = TaskView.builder().queue("mail").type("send").build();
 
         assertThat(view.id()).isZero();
-        assertThat(view.state()).isNull();
+        assertThat(view.state()).isEqualTo(TaskState.QUEUED);
+        assertThat(view.payloadVersion()).isEqualTo(1);
+        assertThat(view.attempts()).isZero();
+        assertThat(view.maxAttempts()).isEqualTo(1);
         assertThat(view.runnerId()).isNull();
         assertThat(view.headers()).isEmpty();
         assertThat(view.steps()).isEmpty();
