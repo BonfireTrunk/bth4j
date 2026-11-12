@@ -12,7 +12,9 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
  * Cron definitions fire by wall-clock time in {@code zone} (UTC by default). When a runner was down past a
  * fire time, {@link #misfire} decides what happens (one occurrence now by default). Fixed-delay definitions
  * fire {@code fixedDelay} after the previous occurrence ended; a failed occurrence pauses the definition.
- * {@link Overlap#SKIP} prevents a new occurrence while the previous one has not finished.
+ * {@link Overlap#SKIP} prevents a new occurrence while the previous one has not finished. A cron definition
+ * has no default for it, the caller chooses; a fixed-delay definition defaults to {@link Overlap#ALLOW}, which
+ * only matters for a fire an operator triggers while an occurrence runs.
  *
  * @param cron       five-field unix expression; null for a fixed-delay definition
  * @param fixedDelay delay between the end of an occurrence and the next, at least {@link #MIN_FIXED_DELAY} and at
@@ -58,15 +60,27 @@ public record ScheduleDefinition<T>(
         }
         TaskRequest.requireMaxRunTime(maxRunTime);
         if (misfire == null) misfire = Misfire.FIRE_ONCE_NOW;
-        if (overlap == null) overlap = Overlap.ALLOW;
+        if (overlap == null) {
+            if (fixedDelay == null) {
+                throw new TaskValidationException(
+                        "a cron schedule needs an overlap rule: Overlap.ALLOW or Overlap.SKIP");
+            }
+            overlap = Overlap.ALLOW;
+        }
     }
 
-    public static <T> ScheduleDefinition<T> of(String id, TaskType<T> type, T payload, String cron) {
-        return new ScheduleDefinition<>(id, type, payload, cron, null, null, null, null, null, null, null, null);
+    /**
+     * A definition that fires on a cron expression.
+     *
+     * @param overlap what happens to a fire while the previous occurrence has not finished: {@link Overlap#ALLOW}
+     *     runs both, {@link Overlap#SKIP} drops the fire
+     */
+    public static <T> ScheduleDefinition<T> of(String id, TaskType<T> type, T payload, String cron, Overlap overlap) {
+        return new ScheduleDefinition<>(id, type, payload, cron, null, null, null, overlap, null, null, null, null);
     }
 
-    public static ScheduleDefinition<Void> of(String id, TaskType<Void> type, String cron) {
-        return of(id, type, null, cron);
+    public static ScheduleDefinition<Void> of(String id, TaskType<Void> type, String cron, Overlap overlap) {
+        return of(id, type, null, cron, overlap);
     }
 
     /** A definition that fires {@code delay} after each occurrence ends, starting {@code delay} from now. */

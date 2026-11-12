@@ -173,7 +173,7 @@ if (result instanceof EnqueueResult.Duplicate d) {
     log.info("already queued as task {}", d.existingId());
 }
 
-client.putSchedule(ScheduleDefinition.of("nightly-report", NIGHTLY_REPORT, "30 2 * * *").queue("Q:LOW"));
+client.putSchedule(ScheduleDefinition.of("nightly-report", NIGHTLY_REPORT, "30 2 * * *", Overlap.ALLOW).queue("Q:LOW"));
 
 // on shutdown
 runner.stop();                                         // waits for running tasks, up to the shutdown timeout

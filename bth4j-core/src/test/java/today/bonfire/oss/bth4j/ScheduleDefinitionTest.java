@@ -21,7 +21,7 @@ class ScheduleDefinitionTest {
 
     @Test
     void cronFactoryLeavesFixedDelayAndOptionsUnset() {
-        var d = ScheduleDefinition.of("nightly", WITH_PAYLOAD, "data", "0 2 * * *");
+        var d = ScheduleDefinition.of("nightly", WITH_PAYLOAD, "data", "0 2 * * *", Overlap.ALLOW);
 
         assertThat(d.id()).isEqualTo("nightly");
         assertThat(d.type()).isEqualTo(WITH_PAYLOAD);
@@ -37,7 +37,7 @@ class ScheduleDefinitionTest {
 
     @Test
     void payloadlessCronFactory() {
-        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *");
+        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW);
 
         assertThat(d.payload()).isNull();
         assertThat(d.cron()).isEqualTo("0 2 * * *");
@@ -62,40 +62,65 @@ class ScheduleDefinitionTest {
     }
 
     @Test
-    void misfireDefaultsToFireOnceNowAndOverlapToAllow() {
-        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *");
+    void misfireDefaultsToFireOnceNow() {
+        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW);
 
         assertThat(d.misfire()).isEqualTo(Misfire.FIRE_ONCE_NOW);
+    }
+
+    @Test
+    void aCronDefinitionTakesTheOverlapRuleItIsGivenAndIsRefusedWithoutOne() {
+        assertThat(ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *", Overlap.SKIP)
+                        .overlap())
+                .isEqualTo(Overlap.SKIP);
+        assertThat(ScheduleDefinition.of("nightly", WITH_PAYLOAD, "data", "0 2 * * *", Overlap.ALLOW)
+                        .overlap())
+                .isEqualTo(Overlap.ALLOW);
+        assertThatThrownBy(() -> ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *", null))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessageContaining("overlap rule");
+        assertThatThrownBy(() -> ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *", Overlap.SKIP)
+                        .overlap(null))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessageContaining("overlap rule");
+    }
+
+    @Test
+    void aFixedDelayDefinitionAllowsOverlapUnlessToldOtherwise() {
+        var d = ScheduleDefinition.every("poll", NO_PAYLOAD, Duration.ofMinutes(5));
+
         assertThat(d.overlap()).isEqualTo(Overlap.ALLOW);
+        assertThat(d.overlap(Overlap.SKIP).overlap()).isEqualTo(Overlap.SKIP);
+        assertThat(d.overlap(Overlap.SKIP).overlap(null).overlap()).isEqualTo(Overlap.ALLOW);
     }
 
     @Test
     void nullIdIsRejected() {
-        assertThatThrownBy(() -> ScheduleDefinition.of(null, NO_PAYLOAD, "0 2 * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of(null, NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("schedule id");
     }
 
     @Test
     void blankIdIsRejected() {
-        assertThatThrownBy(() -> ScheduleDefinition.of("", NO_PAYLOAD, "0 2 * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of("", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> ScheduleDefinition.of("   ", NO_PAYLOAD, "0 2 * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of("   ", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class);
     }
 
     @Test
     void idLongerThan128CharactersIsRejectedAndExactly128IsAccepted() {
-        assertThat(ScheduleDefinition.of("a".repeat(128), NO_PAYLOAD, "0 2 * * *")
+        assertThat(ScheduleDefinition.of("a".repeat(128), NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW)
                         .id())
                 .hasSize(128);
-        assertThatThrownBy(() -> ScheduleDefinition.of("a".repeat(129), NO_PAYLOAD, "0 2 * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of("a".repeat(129), NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class);
     }
 
     @Test
     void nullTypeIsRejected() {
-        assertThatThrownBy(() -> ScheduleDefinition.of("id", (TaskType<Void>) null, "0 2 * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of("id", (TaskType<Void>) null, "0 2 * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("type");
     }
@@ -120,10 +145,10 @@ class ScheduleDefinitionTest {
 
     @Test
     void neitherCronNorFixedDelayIsRejected() {
-        assertThatThrownBy(() -> ScheduleDefinition.of("id", NO_PAYLOAD, null))
+        assertThatThrownBy(() -> ScheduleDefinition.of("id", NO_PAYLOAD, null, Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("exactly one");
-        assertThatThrownBy(() -> ScheduleDefinition.of("id", NO_PAYLOAD, "  "))
+        assertThatThrownBy(() -> ScheduleDefinition.of("id", NO_PAYLOAD, "  ", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class);
     }
 
@@ -140,7 +165,7 @@ class ScheduleDefinitionTest {
 
     @Test
     void anAccountFollowsTheTaskRule() {
-        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *");
+        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW);
         String longest = "a".repeat(TaskRequest.MAX_ACCOUNT_LENGTH);
         assertThat(d.account(longest).account()).isEqualTo(longest);
         assertThatThrownBy(() -> d.account(longest + "a"))
@@ -150,9 +175,9 @@ class ScheduleDefinitionTest {
 
     @Test
     void anIdOrAccountWithAU0000IsRejected() {
-        assertThatThrownBy(() -> ScheduleDefinition.of("night\u0000ly", NO_PAYLOAD, "0 2 * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of("night\u0000ly", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class);
-        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *");
+        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW);
         assertThatThrownBy(() -> d.account("a\u0000b")).isInstanceOf(TaskValidationException.class);
     }
 
@@ -177,14 +202,14 @@ class ScheduleDefinitionTest {
 
     @Test
     void typeWithPayloadRequiresOne() {
-        assertThatThrownBy(() -> ScheduleDefinition.of("id", WITH_PAYLOAD, null, "0 2 * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of("id", WITH_PAYLOAD, null, "0 2 * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("payload");
     }
 
     @Test
     void maxAttemptsOutsideOneToShortMaxIsRejected() {
-        var d = ScheduleDefinition.of("id", NO_PAYLOAD, "0 2 * * *");
+        var d = ScheduleDefinition.of("id", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW);
 
         assertThatThrownBy(() -> d.maxAttempts(0)).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> d.maxAttempts(-1)).isInstanceOf(TaskValidationException.class);
@@ -195,7 +220,7 @@ class ScheduleDefinitionTest {
 
     @Test
     void maxRunTimeFollowsTheTaskRule() {
-        var d = ScheduleDefinition.of("id", NO_PAYLOAD, "0 2 * * *");
+        var d = ScheduleDefinition.of("id", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW);
 
         assertThat(d.maxRunTime()).isNull();
         assertThatThrownBy(() -> d.maxRunTime(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
@@ -208,7 +233,7 @@ class ScheduleDefinitionTest {
 
     @Test
     void withersChangeOnlyTheirFieldAndReturnNewInstances() {
-        var base = ScheduleDefinition.of("id", WITH_PAYLOAD, "data", "0 2 * * *");
+        var base = ScheduleDefinition.of("id", WITH_PAYLOAD, "data", "0 2 * * *", Overlap.ALLOW);
         var berlin = ZoneId.of("Europe/Berlin");
 
         assertThat(base.zone(berlin)).isNotSameAs(base).isEqualTo(copyWith(base, berlin, null, null, null, null, null));
@@ -244,15 +269,12 @@ class ScheduleDefinitionTest {
     }
 
     @Test
-    void settingMisfireOrOverlapToNullRestoresTheDefault() {
-        var d = ScheduleDefinition.of("id", NO_PAYLOAD, "0 2 * * *")
+    void settingMisfireToNullRestoresTheDefault() {
+        var d = ScheduleDefinition.of("id", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW)
                 .misfire(Misfire.SKIP)
-                .overlap(Overlap.SKIP)
-                .misfire(null)
-                .overlap(null);
+                .misfire(null);
 
         assertThat(d.misfire()).isEqualTo(Misfire.FIRE_ONCE_NOW);
-        assertThat(d.overlap()).isEqualTo(Overlap.ALLOW);
     }
 
     @Test

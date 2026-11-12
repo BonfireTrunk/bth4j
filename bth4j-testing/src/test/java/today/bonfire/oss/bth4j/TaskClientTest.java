@@ -1431,7 +1431,7 @@ class TaskClientTest {
     @Test
     void schedulePutDeleteAndList() {
         var client = builder().build();
-        var definition = ScheduleDefinition.of("nightly", TYPED, new Payload("p"), "0 3 * * *");
+        var definition = ScheduleDefinition.of("nightly", TYPED, new Payload("p"), "0 3 * * *", Overlap.ALLOW);
 
         var next = client.putSchedule(definition);
 
@@ -1446,11 +1446,11 @@ class TaskClientTest {
     @Test
     void registeringAScheduleAgainKeepsTheNextFireTimeForTheSameCronAndResetsItForAnother() {
         var client = builder().build();
-        var first = client.putSchedule(ScheduleDefinition.of("s", VOID, "0 3 * * *"));
+        var first = client.putSchedule(ScheduleDefinition.of("s", VOID, "0 3 * * *", Overlap.ALLOW));
         clock.advance(Duration.ofHours(1));
 
-        var same = client.putSchedule(ScheduleDefinition.of("s", VOID, "0 3 * * *"));
-        var changed = client.putSchedule(ScheduleDefinition.of("s", VOID, "0 5 * * *"));
+        var same = client.putSchedule(ScheduleDefinition.of("s", VOID, "0 3 * * *", Overlap.ALLOW));
+        var changed = client.putSchedule(ScheduleDefinition.of("s", VOID, "0 5 * * *", Overlap.ALLOW));
 
         assertThat(first).isEqualTo(Instant.parse("2030-01-01T03:00:00Z"));
         assertThat(same).isEqualTo(first);
@@ -1462,21 +1462,23 @@ class TaskClientTest {
     void invalidCronIsRejected() {
         var client = builder().build();
 
-        assertThatThrownBy(() -> client.putSchedule(ScheduleDefinition.of("bad", VOID, "not a cron")))
+        assertThatThrownBy(() -> client.putSchedule(ScheduleDefinition.of("bad", VOID, "not a cron", Overlap.ALLOW)))
                 .isInstanceOf(TaskValidationException.class);
         assertThat(client.schedules()).isEmpty();
     }
 
     @Test
     void scheduleDefinitionValidatesItsFields() {
-        assertThatThrownBy(() -> ScheduleDefinition.of(" ", VOID, "* * * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of(" ", VOID, "* * * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> ScheduleDefinition.of("x".repeat(129), VOID, "* * * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of("x".repeat(129), VOID, "* * * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> ScheduleDefinition.of("id", TYPED, null, "* * * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of("id", TYPED, null, "* * * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> ScheduleDefinition.of("id", VOID, " ")).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> ScheduleDefinition.of("id", VOID, "* * * * *").maxAttempts(0))
+        assertThatThrownBy(() -> ScheduleDefinition.of("id", VOID, " ", Overlap.ALLOW))
+                .isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ScheduleDefinition.of("id", VOID, "* * * * *", Overlap.ALLOW)
+                        .maxAttempts(0))
                 .isInstanceOf(TaskValidationException.class);
     }
 

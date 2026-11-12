@@ -629,7 +629,7 @@ public abstract class RunnerContract {
         startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {}));
         var before = Instant.now();
 
-        var next = client.putSchedule(ScheduleDefinition.of("every-minute", VOID_TYPE, "* * * * *"));
+        var next = client.putSchedule(ScheduleDefinition.of("every-minute", VOID_TYPE, "* * * * *", Overlap.ALLOW));
 
         assertThat(next)
                 .isAfter(before.minusSeconds(1))
@@ -637,7 +637,7 @@ public abstract class RunnerContract {
         assertThat(client.schedules()).containsKey("every-minute");
         assertThat(client.schedules().get("every-minute")).isAfter(before.minusSeconds(1));
 
-        var yearly = ScheduleDefinition.of("yearly", VOID_TYPE, "0 0 1 1 *");
+        var yearly = ScheduleDefinition.of("yearly", VOID_TYPE, "0 0 1 1 *", Overlap.ALLOW);
         var yearlyNext = client.putSchedule(yearly);
         assertThat(client.putSchedule(yearly)).isEqualTo(yearlyNext);
         assertThat(client.schedules().get("yearly")).isEqualTo(yearlyNext);
@@ -1375,8 +1375,7 @@ public abstract class RunnerContract {
             started.countDown();
             release.await();
         }));
-        client.putSchedule(
-                ScheduleDefinition.of("guarded", VOID_TYPE, "0 0 1 1 *").overlap(Overlap.SKIP));
+        client.putSchedule(ScheduleDefinition.of("guarded", VOID_TYPE, "0 0 1 1 *", Overlap.SKIP));
 
         assertThat(runner.admin().triggerSchedule("guarded")).isTrue();
         assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
@@ -1403,7 +1402,7 @@ public abstract class RunnerContract {
     @Test
     void scheduleZoneAndPauseAreStoredAndVisible() {
         var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {}));
-        client.putSchedule(ScheduleDefinition.of("kolkata", VOID_TYPE, "30 9 * * *")
+        client.putSchedule(ScheduleDefinition.of("kolkata", VOID_TYPE, "30 9 * * *", Overlap.ALLOW)
                 .zone(java.time.ZoneId.of("Asia/Kolkata"))
                 .misfire(Misfire.SKIP));
 

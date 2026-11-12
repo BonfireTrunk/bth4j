@@ -17,7 +17,7 @@ A recurring definition creates one task for each of its fire times, from a cron 
 
 ## Registering a definition
 
-`client.putSchedule(ScheduleDefinition.of(id, type, payload, cron))` creates or replaces a definition and returns the next fire time. The cron expression has 5 fields (Unix format). Each fire time creates one task, exactly once across all instances.
+`client.putSchedule(ScheduleDefinition.of(id, type, payload, cron, overlap))` creates or replaces a definition and returns the next fire time. The cron expression has 5 fields (Unix format). The last argument says what happens to a fire while the previous occurrence has not finished (see [Overlap](#overlap)); a cron definition has no default for it. Each fire time creates one task, exactly once across all instances.
 
 These methods refine a definition:
 
@@ -29,7 +29,7 @@ These methods refine a definition:
 | `.maxRunTime(...)` | the maximum run time |
 | `.zone(...)` | the time zone of a cron expression (see [Cron definitions and time zones](#cron-definitions-and-time-zones)) |
 | `.misfire(...)` | what happens to missed fire times (see [Misfires](#misfires)) |
-| `.overlap(...)` | whether an occurrence is skipped while the previous one has not finished (see [Overlap](#overlap)) |
+| `.overlap(...)` | changes the overlap rule; for a fixed-delay definition this is where it is set (see [Overlap](#overlap)) |
 
 `client.deleteSchedule(id)` removes a definition and `client.schedules()` lists the definitions.
 
@@ -57,7 +57,7 @@ A cron definition takes its fire times from the expression. A fixed-delay defini
 
 | | Cron definition | Fixed-delay definition |
 |---|---|---|
-| Created with | `ScheduleDefinition.of(id, type, payload, cron)` | `ScheduleDefinition.every(...)` |
+| Created with | `ScheduleDefinition.of(id, type, payload, cron, overlap)` | `ScheduleDefinition.every(...)` |
 | Fire times | given by the expression (5 fields, Unix format), in a time zone (UTC by default) | first one delay after registration (the delay is at least 1 second), then one delay after the previous occurrence succeeded |
 | While paused | keeps its stored next fire time | resuming sets the next fire one delay from now, or one delay after the task still running succeeds |
 
@@ -88,7 +88,7 @@ A cron expression runs in UTC unless you set a zone. A fire time that does not e
 ```java
 // cron in a time zone (UTC by default); a fire time that does not exist in a DST gap moves to the next valid
 // instant, a repeated hour fires once
-client.putSchedule(ScheduleDefinition.of("daily-digest", DIGEST, "0 8 * * *")
+client.putSchedule(ScheduleDefinition.of("daily-digest", DIGEST, "0 8 * * *", Overlap.ALLOW)
         .zone(ZoneId.of("Europe/Berlin")));
 ```
 
@@ -98,7 +98,7 @@ A misfire is a fire time that was missed by more than the misfire threshold. The
 
 ```java
 // misfire: what happens when a fire time was missed by more than the threshold (below)
-client.putSchedule(ScheduleDefinition.of("hourly-sync", SYNC, "0 * * * *")
+client.putSchedule(ScheduleDefinition.of("hourly-sync", SYNC, "0 * * * *", Overlap.ALLOW)
         .misfire(Misfire.catchUp(3)));          // Misfire.SKIP, Misfire.FIRE_ONCE_NOW (default), Misfire.catchUp(maxFires)
 ```
 
@@ -118,13 +118,21 @@ A misfire is recorded as an issue, except a `CATCH_UP` that creates every missed
 
 ## Overlap
 
-With `Overlap.SKIP`, an occurrence is skipped (and an issue `schedule-overlap` recorded) while the task of the previous one is not finished.
+The overlap rule says what happens to a fire while the task of the previous occurrence is not finished. A cron definition has no default: every `ScheduleDefinition.of(...)` names the rule.
+
+| Rule | A fire while the previous occurrence is not finished | Choose it when |
+|---|---|---|
+| `Overlap.ALLOW` | creates its occurrence, so both run when workers are free | runs are independent, for example one report per hour |
+| `Overlap.SKIP` | is skipped, and a `schedule-overlap` issue is recorded | two runs must never work at once, or a late run makes the next one pointless |
 
 ```java
-// overlap: no new occurrence while the previous one has not finished
-client.putSchedule(ScheduleDefinition.of("nightly-report", NIGHTLY_REPORT, "30 2 * * *")
-        .overlap(Overlap.SKIP));
+// no new occurrence while the previous one has not finished
+client.putSchedule(ScheduleDefinition.of("nightly-report", NIGHTLY_REPORT, "30 2 * * *", Overlap.SKIP));
 ```
+
+With `ALLOW`, a job that fires every minute and takes five minutes has up to five runs at once. With `SKIP`, a skipped fire is dropped, not postponed.
+
+A fixed-delay definition fires only after its previous occurrence ended, so the rule matters there only for a fire that an operator triggers while an occurrence runs. It defaults to `ALLOW`; `.overlap(Overlap.SKIP)` changes it.
 
 The overlap is decided at the fire time, not ahead of it:
 
