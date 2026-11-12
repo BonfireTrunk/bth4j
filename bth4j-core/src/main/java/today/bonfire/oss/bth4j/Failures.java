@@ -5,7 +5,6 @@ import java.io.StringWriter;
 import java.time.Instant;
 import org.apache.commons.lang3.StringUtils;
 import today.bonfire.oss.bth4j.exceptions.RedactedFailure;
-import today.bonfire.oss.bth4j.spi.FailureInfo;
 
 /** Builds every record, event payload and log text that is derived from a processor's exception. */
 final class Failures {

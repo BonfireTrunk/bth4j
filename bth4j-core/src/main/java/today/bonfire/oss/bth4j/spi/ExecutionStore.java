@@ -4,6 +4,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import today.bonfire.oss.bth4j.FailureInfo;
+import today.bonfire.oss.bth4j.StepResult;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /**

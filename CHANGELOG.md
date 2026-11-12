@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Breaking: the types an application uses no longer live in the store-author package. `TaskState`, `StateCounts`, `QueueInfo`, `CancelOutcome`, `RetryOutcome`, `DeleteOutcome`, `FailureInfo` and `StepResult` moved from `today.bonfire.oss.bth4j.spi` to `today.bonfire.oss.bth4j`; only the import changes. The JSON helper `common.Json`, which was public only for the other bth4j modules, is `internal.Json`; nothing in the package `today.bonfire.oss.bth4j.internal` is supported API.
 - Breaking: `TaskClient.putSchedule` returns `PutScheduleResult(outcome, nextFireAt)`: whether the definition was created, changed or found unchanged (`PutScheduleOutcome`), and the next fire time it has. It returned only the time, and the outcome was only logged. `TaskClient.schedules()`, the map of schedule id to next fire time, is `nextFireTimes()`; `AdminOps.schedules()` lists the definitions.
 - Breaking, store SPI: the schedule methods say "schedule" as the API does. The stored names (tables, columns, Redis keys) are unchanged.
 

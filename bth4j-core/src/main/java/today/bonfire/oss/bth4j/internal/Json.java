@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.common;
+package today.bonfire.oss.bth4j.internal;
 
 import java.time.Instant;
 import java.util.ArrayList;

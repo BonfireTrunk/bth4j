@@ -28,23 +28,23 @@ import redis.clients.jedis.RedisClient;
 import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.jedis.exceptions.JedisNoScriptException;
 import today.bonfire.oss.bth4j.EnqueueResult;
+import today.bonfire.oss.bth4j.FailureInfo;
 import today.bonfire.oss.bth4j.JsonMapperTest;
 import today.bonfire.oss.bth4j.Queues;
+import today.bonfire.oss.bth4j.RetryOutcome;
+import today.bonfire.oss.bth4j.StepResult;
 import today.bonfire.oss.bth4j.TaskClient;
 import today.bonfire.oss.bth4j.TaskRequest;
+import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.TaskType;
 import today.bonfire.oss.bth4j.exceptions.EnqueueFailedException;
 import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
-import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
-import today.bonfire.oss.bth4j.spi.RetryOutcome;
-import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
 
 /**
  * The script efficiency changes of {@link RedisTaskStore}: step and failure markers read by CLAIM, head-first

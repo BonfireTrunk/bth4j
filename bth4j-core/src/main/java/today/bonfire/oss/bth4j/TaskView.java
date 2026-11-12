@@ -4,10 +4,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-import today.bonfire.oss.bth4j.spi.FailureInfo;
-import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
 
 /** A task as applications see it: the stored record with queue and type names resolved. */
 public final class TaskView {

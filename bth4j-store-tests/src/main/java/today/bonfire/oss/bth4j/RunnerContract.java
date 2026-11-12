@@ -34,8 +34,6 @@ import today.bonfire.oss.bth4j.exceptions.TaskRescheduleException;
 import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.FullStore;
-import today.bonfire.oss.bth4j.spi.RetryOutcome;
-import today.bonfire.oss.bth4j.spi.TaskState;
 
 /**
  * Behaviour every store must give a {@link BackgroundRunner}, checked end to end through the public API. A store
@@ -830,7 +828,7 @@ public abstract class RunnerContract {
 
         var outcome = runner.admin().cancel(id, running.revision(), "operator says stop");
 
-        assertThat(outcome).isEqualTo(today.bonfire.oss.bth4j.spi.CancelOutcome.REQUESTED);
+        assertThat(outcome).isEqualTo(today.bonfire.oss.bth4j.CancelOutcome.REQUESTED);
         var done = awaitState(id, TaskState.CANCELLED);
         assertThat(done.cancelReason()).isEqualTo("operator says stop");
         assertThat(done.revision()).isEqualTo(running.revision() + 1);
@@ -849,12 +847,12 @@ public abstract class RunnerContract {
         var queued = client.task(id).orElseThrow();
 
         assertThat(runner.admin().cancel(id, queued.revision(), null))
-                .isEqualTo(today.bonfire.oss.bth4j.spi.CancelOutcome.CANCELLED);
+                .isEqualTo(today.bonfire.oss.bth4j.CancelOutcome.CANCELLED);
         var cancelled = client.task(id).orElseThrow();
         assertThat(cancelled.state()).isEqualTo(TaskState.CANCELLED);
         assertThat(cancelled.cancelReason()).isEqualTo("cancelled by operator");
         assertThat(runner.admin().cancel(id, queued.revision(), null))
-                .isEqualTo(today.bonfire.oss.bth4j.spi.CancelOutcome.STALE);
+                .isEqualTo(today.bonfire.oss.bth4j.CancelOutcome.STALE);
 
         assertThat(runner.admin().retry(id, cancelled.revision())).isEqualTo(RetryOutcome.RETRIED);
         runner.resume();
@@ -1021,7 +1019,7 @@ public abstract class RunnerContract {
             assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
             var running = awaitState(id, TaskState.LEASED);
             assertThat(runner.admin().cancel(id, running.revision(), "operator says stop"))
-                    .isEqualTo(today.bonfire.oss.bth4j.spi.CancelOutcome.REQUESTED);
+                    .isEqualTo(today.bonfire.oss.bth4j.CancelOutcome.REQUESTED);
 
             var done = awaitState(id, TaskState.CANCELLED);
 

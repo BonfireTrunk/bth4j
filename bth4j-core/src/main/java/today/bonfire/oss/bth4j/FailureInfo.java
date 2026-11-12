@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.spi;
+package today.bonfire.oss.bth4j;
 
 import java.time.Instant;
 

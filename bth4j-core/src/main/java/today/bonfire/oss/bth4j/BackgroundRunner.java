@@ -26,7 +26,6 @@ import today.bonfire.oss.bth4j.executor.BackgroundExecutor;
 import today.bonfire.oss.bth4j.executor.DefaultVtExecutor;
 import today.bonfire.oss.bth4j.executor.FixedExecutor;
 import today.bonfire.oss.bth4j.spi.FullStore;
-import today.bonfire.oss.bth4j.spi.TaskState;
 
 /**
  * Runs tasks: claims them from the store, executes them with the registered processors, moves scheduled

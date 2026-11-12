@@ -33,13 +33,13 @@ import javax.net.ssl.SSLContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.AdminOps;
+import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.TaskRequest;
-import today.bonfire.oss.bth4j.common.Json;
+import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
-import today.bonfire.oss.bth4j.spi.StateCounts;
-import today.bonfire.oss.bth4j.spi.TaskState;
+import today.bonfire.oss.bth4j.internal.Json;
 
 /**
  * JSON admin API over {@link AdminOps} on the JDK HTTP server, optionally with a static dashboard.

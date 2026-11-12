@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.spi;
+package today.bonfire.oss.bth4j;
 
 /** Result of {@link AdminStore#delete}. The store answers the first that applies, in the order listed. */
 public enum DeleteOutcome {

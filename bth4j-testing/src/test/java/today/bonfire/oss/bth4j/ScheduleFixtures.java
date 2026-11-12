@@ -4,7 +4,6 @@ import java.time.Duration;
 import java.util.Map;
 import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
 
 final class ScheduleFixtures {

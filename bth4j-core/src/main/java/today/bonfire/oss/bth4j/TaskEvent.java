@@ -62,5 +62,5 @@ public interface TaskEvent {
     record ScheduleFired(String scheduleId, long taskId, Instant fireAt) implements TaskEvent {}
 
     /** Maintenance removed finished tasks past their retention. */
-    record Purged(today.bonfire.oss.bth4j.spi.TaskState state, long count) implements TaskEvent {}
+    record Purged(today.bonfire.oss.bth4j.TaskState state, long count) implements TaskEvent {}
 }

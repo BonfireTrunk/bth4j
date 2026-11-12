@@ -14,9 +14,9 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.TaskEvent;
 import today.bonfire.oss.bth4j.TaskEvent.Outcome;
+import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.TaskView;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
 
 class MicrometerTaskObserverTest {
 

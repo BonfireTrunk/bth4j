@@ -26,8 +26,8 @@ import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.AdminOps;
 import today.bonfire.oss.bth4j.BackgroundRunner;
 import today.bonfire.oss.bth4j.RunnerHealth;
+import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
-import today.bonfire.oss.bth4j.spi.TaskState;
 
 /**
  * Gauges for one runner: running tasks, health, abandoned attempts, concurrency limit when available, and

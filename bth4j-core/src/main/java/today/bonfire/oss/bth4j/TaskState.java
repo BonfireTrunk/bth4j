@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.spi;
+package today.bonfire.oss.bth4j;
 
 /** The states a task moves through. The code is what stores persist. */
 public enum TaskState {

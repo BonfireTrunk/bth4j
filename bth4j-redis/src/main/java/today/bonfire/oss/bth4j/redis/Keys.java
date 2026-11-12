@@ -6,7 +6,7 @@ package today.bonfire.oss.bth4j.redis;
  * receive the prefix as an argument and derive every other key from it.
  * <p>
  * Keys, with {@code qid} a queue id, {@code tid} a type id and {@code state} a
- * {@link today.bonfire.oss.bth4j.spi.TaskState} code:
+ * {@link today.bonfire.oss.bth4j.TaskState} code:
  * <ul>
  * <li>{@code meta} hash (field {@code schema}); {@code seq:id}, {@code seq:worker}, {@code seq:queue},
  * {@code seq:type} counters</li>

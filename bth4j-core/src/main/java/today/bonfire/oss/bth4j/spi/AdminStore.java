@@ -2,6 +2,10 @@ package today.bonfire.oss.bth4j.spi;
 
 import java.util.List;
 import java.util.Set;
+import today.bonfire.oss.bth4j.CancelOutcome;
+import today.bonfire.oss.bth4j.DeleteOutcome;
+import today.bonfire.oss.bth4j.QueueInfo;
+import today.bonfire.oss.bth4j.RetryOutcome;
 
 /**
  * Operator changes. {@code cancel}, {@code retry} and {@code delete} decide in one atomic step and answer, in

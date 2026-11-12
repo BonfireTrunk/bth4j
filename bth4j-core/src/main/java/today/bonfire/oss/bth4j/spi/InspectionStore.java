@@ -2,6 +2,8 @@ package today.bonfire.oss.bth4j.spi;
 
 import java.util.Map;
 import java.util.Optional;
+import today.bonfire.oss.bth4j.StateCounts;
+import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 

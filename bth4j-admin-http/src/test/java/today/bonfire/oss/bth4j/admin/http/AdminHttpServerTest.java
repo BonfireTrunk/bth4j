@@ -31,14 +31,14 @@ import org.junit.jupiter.api.io.TempDir;
 import today.bonfire.oss.bth4j.Issue;
 import today.bonfire.oss.bth4j.Misfire;
 import today.bonfire.oss.bth4j.Overlap;
+import today.bonfire.oss.bth4j.QueueInfo;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.ScheduleView;
+import today.bonfire.oss.bth4j.StateCounts;
+import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.UnservedWork;
-import today.bonfire.oss.bth4j.common.Json;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
-import today.bonfire.oss.bth4j.spi.QueueInfo;
-import today.bonfire.oss.bth4j.spi.StateCounts;
-import today.bonfire.oss.bth4j.spi.TaskState;
+import today.bonfire.oss.bth4j.internal.Json;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 class AdminHttpServerTest {

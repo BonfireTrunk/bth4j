@@ -24,8 +24,8 @@ import today.bonfire.oss.bth4j.AdminOps;
 import today.bonfire.oss.bth4j.BackgroundRunner;
 import today.bonfire.oss.bth4j.Concurrency;
 import today.bonfire.oss.bth4j.RunnerHealth;
+import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
-import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
 
 class MicrometerRunnerMetricsTest {

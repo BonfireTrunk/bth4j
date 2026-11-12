@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j.spi;
 
 import java.time.Instant;
+import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /** The argument rules of the store SPI, shared by the store implementations so that every store refuses alike. */

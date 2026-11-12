@@ -1,4 +1,4 @@
-package today.bonfire.oss.bth4j.spi;
+package today.bonfire.oss.bth4j;
 
 /** Number of tasks per state in one queue. */
 public record StateCounts(

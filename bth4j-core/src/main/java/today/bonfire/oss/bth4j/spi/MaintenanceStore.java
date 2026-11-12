@@ -3,6 +3,7 @@ package today.bonfire.oss.bth4j.spi;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /**

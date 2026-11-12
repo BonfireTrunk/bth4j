@@ -8,7 +8,6 @@ import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.RetryPolicy.Decision;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
 
 class RetryPolicyTest {
 

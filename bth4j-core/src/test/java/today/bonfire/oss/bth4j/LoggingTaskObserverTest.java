@@ -10,7 +10,6 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.exceptions.RedactedFailure;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
 
 class LoggingTaskObserverTest {
 
