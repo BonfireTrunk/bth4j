@@ -31,6 +31,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
+import today.bonfire.oss.bth4j.spi.DeleteOutcome;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
@@ -1761,8 +1762,22 @@ public final class SqliteTaskStore implements FullStore {
                     == 1) {
                 return CancelOutcome.REQUESTED;
             }
-            return CancelOutcome.STALE;
+            var row = refusedRow(c, id);
+            if (row == null) return CancelOutcome.NOT_FOUND;
+            return row[0] != revision ? CancelOutcome.STALE : CancelOutcome.FINISHED;
         });
+    }
+
+    /**
+     * The revision and state code of a task a statement of the same write transaction did not change; null when
+     * there is no such task. A key-only row is not a task.
+     */
+    private int[] refusedRow(Connection c, long id) throws SQLException {
+        return queryOne(
+                c,
+                "SELECT revision, state FROM " + task + " WHERE id = ? AND state < " + KEY_ONLY,
+                rs -> new int[] {rs.getInt(1), rs.getInt(2)},
+                id);
     }
 
     /**
@@ -1774,27 +1789,32 @@ public final class SqliteTaskStore implements FullStore {
      */
     @Override
     public RetryOutcome retry(long id, int revision) {
-        return inTransaction(c -> update(
-                                c,
-                                "UPDATE " + task
-                                        + " SET state = 0, due = ?1, attempts = 0, revision = revision + 1,"
-                                        + " state_changed = ?1, worker_id = NULL, lease_until = NULL,"
-                                        + " cancel_requested_at = NULL, cancel_reason = NULL,"
-                                        + " key_keep_ms = CASE WHEN unique_key IS NULL OR key_until <= ?1 THEN NULL"
-                                        + " ELSE key_keep_ms END,"
-                                        + " unique_key = CASE WHEN key_until <= ?1 THEN NULL ELSE unique_key END,"
-                                        + " key_until = NULL, start_by = NULL"
-                                        + " WHERE id = ?2 AND revision = ?3 AND state IN (4, 5, 6)",
-                                clock.millis(),
-                                id,
-                                revision)
-                        == 1
-                ? RetryOutcome.RETRIED
-                : RetryOutcome.STALE);
+        return inTransaction(c -> {
+            if (update(
+                            c,
+                            "UPDATE " + task
+                                    + " SET state = 0, due = ?1, attempts = 0, revision = revision + 1,"
+                                    + " state_changed = ?1, worker_id = NULL, lease_until = NULL,"
+                                    + " cancel_requested_at = NULL, cancel_reason = NULL,"
+                                    + " key_keep_ms = CASE WHEN unique_key IS NULL OR key_until <= ?1 THEN NULL"
+                                    + " ELSE key_keep_ms END,"
+                                    + " unique_key = CASE WHEN key_until <= ?1 THEN NULL ELSE unique_key END,"
+                                    + " key_until = NULL, start_by = NULL"
+                                    + " WHERE id = ?2 AND revision = ?3 AND state IN (4, 5, 6)",
+                            clock.millis(),
+                            id,
+                            revision)
+                    == 1) {
+                return RetryOutcome.RETRIED;
+            }
+            var row = refusedRow(c, id);
+            if (row == null) return RetryOutcome.NOT_FOUND;
+            return row[0] != revision ? RetryOutcome.STALE : RetryOutcome.NOT_RETRYABLE;
+        });
     }
 
     @Override
-    public boolean delete(long id, int revision, ScheduleEffect effect) {
+    public DeleteOutcome delete(long id, int revision, ScheduleEffect effect) {
         return inTransaction(c -> {
             if (update(
                             c,
@@ -1803,10 +1823,12 @@ public final class SqliteTaskStore implements FullStore {
                             id,
                             revision)
                     != 1) {
-                return false;
+                var row = refusedRow(c, id);
+                if (row == null) return DeleteOutcome.NOT_FOUND;
+                return row[0] != revision ? DeleteOutcome.STALE : DeleteOutcome.LEASED;
             }
             if (effect != null) applyEffect(c, effect);
-            return true;
+            return DeleteOutcome.DELETED;
         });
     }
 

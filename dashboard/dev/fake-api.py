@@ -241,33 +241,47 @@ class Handler(BaseHTTPRequestHandler):
         if segs[1] == "by-key":
             holder = next((x for x in tasks.values() if x["uniqueKey"] == q.get("key")), None)
             if holder is None:
-                return self.send_json(404, {"error": "no task holds this key"})
+                return self.send_json(404, {"error": "no task holds this key", "code": "NOT_FOUND"})
             if len(segs) == 2 and method == "GET":
                 return self.send_json(200, holder)
             if len(segs) == 3 and segs[2] == "cancel" and method == "POST":
                 if holder["state"] in ("SUCCEEDED", "DEAD", "CANCELLED", "EXPIRED"):
-                    return self.send_json(409, {"error": "the task holding this key is already finished"})
+                    return self.send_json(409, {"error": "the task holding this key is already finished", "code": "WRONG_STATE"})
                 holder.update(state="CANCELLED", cancelReason=self.body().get("reason"), cancelRequestedAt=iso(0),
                               revision=str(int(holder["revision"]) + 1), stateChangedAt=iso(0))
                 return self.send_json(200, {"ok": True, "outcome": "CANCELLED"})
             return self.send_json(404, {"error": "not found"})
-        t = tasks[segs[1]]
+        t = tasks.get(segs[1])
+        if t is None:
+            if len(segs) == 2 and method == "GET" or len(segs) == 3 and segs[2] == "payload":
+                return self.send_json(404, {"error": "unknown task"})
+            return self.send_json(404, {"error": "there is no such task", "code": "NOT_FOUND"})
         if len(segs) == 2 and method == "GET":
             return self.send_json(200, t)
         if len(segs) == 3 and segs[2] == "payload":
             return self.send_json(200, {"payload": json.dumps({"to": "ops@example.com", "template": "welcome", "n": int(t["id"]) % 100})})
         rev = (self.body().get("revision") if method == "POST" else q.get("revision"))
         if str(rev) != t["revision"]:
-            return self.send_json(409, {"error": "stale revision"})
+            return self.send_json(409, {"error": "the task changed since it was loaded", "code": "STALE"})
         if method == "DELETE":
+            if t["state"] == "LEASED":
+                return self.send_json(409, {"error": "a task that is running cannot be deleted", "code": "WRONG_STATE"})
             del tasks[t["id"]]
-            return self.send_json(204, None)
+            return self.send_json(200, {"ok": True})
         if segs[2] == "retry":
+            if t["state"] not in ("DEAD", "CANCELLED", "EXPIRED"):
+                return self.send_json(409, {"error": "only a dead, cancelled or expired task can be retried",
+                                            "code": "WRONG_STATE"})
             t.update(state="QUEUED", attempts=0, revision=str(int(t["revision"]) + 1), stateChangedAt=iso(0))
-        elif segs[2] == "cancel":
-            t.update(state="CANCELLED", cancelReason=self.body().get("reason"), cancelRequestedAt=iso(0),
-                     revision=str(int(t["revision"]) + 1), stateChangedAt=iso(0))
-        return self.send_json(200, t)
+            return self.send_json(200, {"ok": True})
+        if t["state"] in ("SUCCEEDED", "DEAD", "CANCELLED", "EXPIRED"):
+            return self.send_json(409, {"error": "the task has finished and cannot be cancelled", "code": "WRONG_STATE"})
+        if t["state"] == "LEASED":
+            t.update(cancelReason=self.body().get("reason"), cancelRequestedAt=iso(0))
+            return self.send_json(200, {"ok": True, "outcome": "REQUESTED"})
+        t.update(state="CANCELLED", cancelReason=self.body().get("reason"), cancelRequestedAt=iso(0),
+                 revision=str(int(t["revision"]) + 1), stateChangedAt=iso(0))
+        return self.send_json(200, {"ok": True, "outcome": "CANCELLED"})
 
 
 if __name__ == "__main__":

@@ -518,7 +518,7 @@ public abstract class StoreContract {
         advance(PAST_SHORT);
 
         List<ExpiredTask> expired = store.expire(10);
-        assertThat(store.delete(deleted, get(deleted).revision(), null)).isTrue();
+        assertThat(store.delete(deleted, get(deleted).revision(), null)).isEqualTo(DeleteOutcome.DELETED);
         assertThat(store.purge(TaskState.EXPIRED, Duration.ZERO, 10)).isEqualTo(1);
 
         assertThat(store.getTask(purged)).isEmpty();
@@ -2709,11 +2709,11 @@ public abstract class StoreContract {
                     .isEmpty();
         }
         for (int revision : new int[] {t.revision(), t.revision() + 1}) {
-            assertThat(store.retry(t.id(), revision)).isEqualTo(RetryOutcome.STALE);
-            assertThat(store.cancel(t.id(), revision, "no", null)).isEqualTo(CancelOutcome.STALE);
+            assertThat(store.retry(t.id(), revision)).isEqualTo(RetryOutcome.NOT_FOUND);
+            assertThat(store.cancel(t.id(), revision, "no", null)).isEqualTo(CancelOutcome.NOT_FOUND);
             assertThat(store.delete(t.id(), revision, null))
                     .as("a delete would free the key early")
-                    .isFalse();
+                    .isEqualTo(DeleteOutcome.NOT_FOUND);
         }
         EnqueueOutcome again = store.enqueue(task().uniqueKey(key).build());
         assumeBefore(heldUntil);
@@ -2874,7 +2874,7 @@ public abstract class StoreContract {
         assertThat(retried.state()).isEqualTo(TaskState.QUEUED);
         assertThat(retried.uniqueKey()).isNull();
         assertThat(retried.keyKeep()).isNull();
-        assertThat(store.retry(t.id(), retried.revision())).isEqualTo(RetryOutcome.STALE);
+        assertThat(store.retry(t.id(), retried.revision())).isEqualTo(RetryOutcome.NOT_RETRYABLE);
     }
 
     @Test
@@ -4460,7 +4460,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void cancelWithAStaleRevisionOrFinishedTaskIsStale() {
+    void cancelWithAnotherRevisionIsStaleAndChangesNothing() {
         long id = putNew();
         int revision = get(id).revision();
         assertThat(store.cancel(id, revision + 1, "x", null)).isEqualTo(CancelOutcome.STALE);
@@ -4469,9 +4469,39 @@ public abstract class StoreContract {
         assertThat(store.cancel(id, revision, "x", null)).isEqualTo(CancelOutcome.STALE);
         assertThat(get(id).cancelRequestedAt()).isNull();
         assertThat(store.ack(t.id(), t.revision(), true, true, null)).isTrue();
-        assertThat(store.cancel(id, get(id).revision(), "x", null)).isEqualTo(CancelOutcome.STALE);
-        assertThat(store.cancel(store.allocateIds(1), 1, "x", null)).isEqualTo(CancelOutcome.STALE);
         assertThat(counts().succeeded()).isEqualTo(1);
+    }
+
+    @Test
+    void cancelOfAMissingTaskIsNotFoundWhateverTheRevision() {
+        long missing = store.allocateIds(1);
+        for (int revision : new int[] {0, 1, 7}) {
+            assertThat(store.cancel(missing, revision, "x", null))
+                    .as("revision %d", revision)
+                    .isEqualTo(CancelOutcome.NOT_FOUND);
+        }
+    }
+
+    @Test
+    void cancelOfATaskInAFinalStateIsFinishedAndChangesNothing() {
+        for (TaskState state : List.of(TaskState.SUCCEEDED, TaskState.DEAD, TaskState.CANCELLED, TaskState.EXPIRED)) {
+            long id = inState(state, task());
+            TaskRecord before = get(id);
+            assertThat(store.cancel(id, before.revision(), "x", null))
+                    .as("%s", state)
+                    .isEqualTo(CancelOutcome.FINISHED);
+            assertThat(get(id)).as("%s", state).isEqualTo(before);
+        }
+    }
+
+    @Test
+    void cancelOfATaskInAFinalStateWithAnotherRevisionIsStale() {
+        for (TaskState state : List.of(TaskState.SUCCEEDED, TaskState.DEAD, TaskState.CANCELLED, TaskState.EXPIRED)) {
+            long id = inState(state, task());
+            assertThat(store.cancel(id, get(id).revision() + 1, "x", null))
+                    .as("%s", state)
+                    .isEqualTo(CancelOutcome.STALE);
+        }
     }
 
     @Test
@@ -4517,23 +4547,42 @@ public abstract class StoreContract {
     @Test
     void retryRefusesOtherStatesAndStaleRevisions() {
         TaskRecord q = get(putNew());
-        assertThat(store.retry(q.id(), q.revision())).isEqualTo(RetryOutcome.STALE);
+        assertThat(store.retry(q.id(), q.revision())).isEqualTo(RetryOutcome.NOT_RETRYABLE);
         assertThat(get(q.id())).isEqualTo(q);
         TaskRecord scheduled = get(put(task().due(now().plus(Duration.ofHours(1)))));
-        assertThat(store.retry(scheduled.id(), scheduled.revision())).isEqualTo(RetryOutcome.STALE);
+        assertThat(store.retry(scheduled.id(), scheduled.revision())).isEqualTo(RetryOutcome.NOT_RETRYABLE);
         assertThat(get(scheduled.id())).isEqualTo(scheduled);
         TaskRecord l = claimOne();
         assertThat(l.id()).isEqualTo(q.id());
-        assertThat(store.retry(l.id(), l.revision())).isEqualTo(RetryOutcome.STALE);
+        assertThat(store.retry(l.id(), l.revision())).isEqualTo(RetryOutcome.NOT_RETRYABLE);
         assertThat(get(l.id())).isEqualTo(l);
         assertThat(store.ack(l.id(), l.revision(), true, true, null)).isTrue();
         TaskRecord s = get(l.id());
-        assertThat(store.retry(s.id(), s.revision())).isEqualTo(RetryOutcome.STALE);
+        assertThat(store.retry(s.id(), s.revision())).isEqualTo(RetryOutcome.NOT_RETRYABLE);
         assertThat(get(s.id())).isEqualTo(s);
         TaskRecord d = dead();
         assertThat(store.retry(d.id(), d.revision() - 1)).isEqualTo(RetryOutcome.STALE);
         assertThat(get(d.id())).isEqualTo(d);
-        assertThat(store.retry(store.allocateIds(1), 1)).isEqualTo(RetryOutcome.STALE);
+    }
+
+    @Test
+    void retryOfAMissingTaskIsNotFoundWhateverTheRevision() {
+        long missing = store.allocateIds(1);
+        for (int revision : new int[] {0, 1, 7}) {
+            assertThat(store.retry(missing, revision))
+                    .as("revision %d", revision)
+                    .isEqualTo(RetryOutcome.NOT_FOUND);
+        }
+    }
+
+    @Test
+    void retryOfATaskInAnotherStateWithAnotherRevisionIsStale() {
+        for (TaskState state : List.of(TaskState.QUEUED, TaskState.SCHEDULED, TaskState.LEASED, TaskState.SUCCEEDED)) {
+            long id = inState(state, task());
+            TaskRecord before = get(id);
+            assertThat(store.retry(id, before.revision() + 1)).as("%s", state).isEqualTo(RetryOutcome.STALE);
+            assertThat(get(id)).as("%s", state).isEqualTo(before);
+        }
     }
 
     @Test
@@ -4547,7 +4596,7 @@ public abstract class StoreContract {
         long queued = putNew();
         long scheduled = put(task().due(now().plus(Duration.ofHours(1))));
         for (long id : List.of(queued, scheduled, ok.id(), d.id(), c.id(), expiredId)) {
-            assertThat(store.delete(id, get(id).revision(), null)).isTrue();
+            assertThat(store.delete(id, get(id).revision(), null)).isEqualTo(DeleteOutcome.DELETED);
             assertThat(store.getTask(id)).isEmpty();
         }
         assertThat(counts()).isEqualTo(StateCounts.ZERO);
@@ -4560,21 +4609,42 @@ public abstract class StoreContract {
     @Test
     void deleteReleasesTheUniqueKey() {
         long id = put(task().uniqueKey("k"));
-        assertThat(store.delete(id, get(id).revision(), null)).isTrue();
+        assertThat(store.delete(id, get(id).revision(), null)).isEqualTo(DeleteOutcome.DELETED);
         put(task().uniqueKey("k"));
     }
 
     @Test
-    void deleteRefusesLeasedTasksAndStaleRevisions() {
+    void deleteOfALeasedTaskIsLeasedAndChangesNothing() {
         TaskRecord l = leased(task());
-        assertThat(store.delete(l.id(), l.revision(), null)).isFalse();
-        assertThat(get(l.id()).state()).isEqualTo(TaskState.LEASED);
-        long q = putNew();
-        assertThat(store.delete(q, get(q).revision() + 1, null)).isFalse();
-        assertThat(store.getTask(q)).isPresent();
-        assertThat(store.delete(store.allocateIds(1), 1, null)).isFalse();
+        assertThat(store.delete(l.id(), l.revision(), null)).isEqualTo(DeleteOutcome.LEASED);
+        assertThat(get(l.id())).isEqualTo(l);
         assertThat(counts().leased()).isEqualTo(1);
+    }
+
+    @Test
+    void deleteWithAnotherRevisionIsStaleAndChangesNothing() {
+        long q = putNew();
+        TaskRecord before = get(q);
+        assertThat(store.delete(q, before.revision() + 1, null)).isEqualTo(DeleteOutcome.STALE);
+        assertThat(get(q)).isEqualTo(before);
         assertThat(counts().queued()).isEqualTo(1);
+    }
+
+    @Test
+    void deleteOfALeasedTaskWithAnotherRevisionIsStale() {
+        TaskRecord l = leased(task());
+        assertThat(store.delete(l.id(), l.revision() + 1, null)).isEqualTo(DeleteOutcome.STALE);
+        assertThat(get(l.id())).isEqualTo(l);
+    }
+
+    @Test
+    void deleteOfAMissingTaskIsNotFoundWhateverTheRevision() {
+        long missing = store.allocateIds(1);
+        for (int revision : new int[] {0, 1, 7}) {
+            assertThat(store.delete(missing, revision, null))
+                    .as("revision %d", revision)
+                    .isEqualTo(DeleteOutcome.NOT_FOUND);
+        }
     }
 
     @Test
@@ -6005,8 +6075,8 @@ public abstract class StoreContract {
         assertThat(counts()).isEqualTo(new StateCounts(1, 1, 0, 0, 0, 2, 0));
         assertThat(store.retry(a, get(a).revision())).isEqualTo(RetryOutcome.RETRIED);
         assertThat(counts()).isEqualTo(new StateCounts(2, 1, 0, 0, 0, 1, 0));
-        assertThat(store.delete(c, get(c).revision(), null)).isTrue();
-        assertThat(store.delete(b, get(b).revision(), null)).isTrue();
+        assertThat(store.delete(c, get(c).revision(), null)).isEqualTo(DeleteOutcome.DELETED);
+        assertThat(store.delete(b, get(b).revision(), null)).isEqualTo(DeleteOutcome.DELETED);
         assertThat(counts()).isEqualTo(new StateCounts(1, 0, 0, 0, 0, 1, 0));
     }
 
@@ -6925,7 +6995,7 @@ public abstract class StoreContract {
         TaskRecord waiting = committedFixedDelayOccurrence("a");
         ScheduleEffect effect = ScheduleEffect.pause("a", waiting.id());
         assertThat(store.delete(waiting.id(), get(waiting.id()).revision(), effect))
-                .isTrue();
+                .isEqualTo(DeleteOutcome.DELETED);
         assertThat(effect.applied()).isTrue();
         assertThat(pausedOf("a")).isTrue();
 
@@ -6934,7 +7004,7 @@ public abstract class StoreContract {
         store.putRecurring(withFixedDelay(fullDefinition("b"), 120_000L), next, next);
         ScheduleEffect stale = ScheduleEffect.pause("b", second.id());
         assertThat(store.delete(second.id(), get(second.id()).revision(), stale))
-                .isTrue();
+                .isEqualTo(DeleteOutcome.DELETED);
         assertThat(stale.applied()).isFalse();
         assertThat(pausedOf("b")).isFalse();
     }
@@ -7185,7 +7255,7 @@ public abstract class StoreContract {
                 .isEqualTo(FailOutcome.DEAD);
         assertThat(store.reclaim(10)).isEmpty();
         assertThat(store.counts().get(queue).dead()).isEqualTo(1);
-        assertThat(store.delete(bad, lease.revision() + 1, null)).isTrue();
+        assertThat(store.delete(bad, lease.revision() + 1, null)).isEqualTo(DeleteOutcome.DELETED);
         assertThat(store.counts().get(queue).dead()).isZero();
     }
 

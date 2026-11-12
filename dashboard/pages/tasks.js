@@ -84,8 +84,8 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
         const res = await confirmDialog({
           title: 'Retry ' + targets.length + ' dead task' + (targets.length === 1 ? '' : 's'),
           message:
-            'Each visible task is retried with the revision shown here. Tasks that changed meanwhile are skipped. ' +
-            'Keys still inside their keep windows are retained; retries with a key held by another task are refused. ' +
+            'Each visible task is retried with the revision shown here. Tasks that changed meanwhile, or that are ' +
+            'gone, are skipped. Keys still inside their keep windows are retained. ' +
             'Released keys are not restored, so a same-key enqueue can start a second task.',
           confirmLabel: 'Retry all visible',
           danger: true,
@@ -94,7 +94,8 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
         bulkBusy.value = true;
         let ok = 0;
         let stale = 0;
-        let duplicate = 0;
+        let wrongState = 0;
+        let gone = 0;
         let failed = 0;
         for (const t of targets) {
           try {
@@ -102,17 +103,19 @@ export function makeTasksPage({ fixedState = null, title = 'Tasks', basePath = '
             ok++;
           } catch (e) {
             if (e.status === 401) break;
-            if (e.conflict) stale++;
-            else if (e.duplicate) duplicate++;
+            if (e.stale) stale++;
+            else if (e.wrongState) wrongState++;
+            else if (e.gone) gone++;
             else failed++;
           }
         }
         bulkBusy.value = false;
         let msg = ok + ' retried';
         if (stale) msg += ', ' + stale + ' changed meanwhile (skipped)';
-        if (duplicate) msg += ', ' + duplicate + ' refused: the unique key is held by another task';
+        if (wrongState) msg += ', ' + wrongState + ' no longer dead, cancelled or expired (skipped)';
+        if (gone) msg += ', ' + gone + ' no longer exist (skipped)';
         if (failed) msg += ', ' + failed + ' failed';
-        toast(msg, failed || stale || duplicate ? 'error' : 'ok');
+        toast(msg, failed || stale || wrongState || gone ? 'error' : 'ok');
         await load();
       }
 

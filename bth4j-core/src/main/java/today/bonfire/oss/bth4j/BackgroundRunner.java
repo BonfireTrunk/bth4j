@@ -98,7 +98,7 @@ public final class BackgroundRunner implements AutoCloseable {
                 .queues(queues)
                 .names(names)
                 .build();
-        this.admin = new DefaultAdminOps(store, names, queues, b.clock, this::health, status::issues);
+        this.admin = new DefaultAdminOps(store, names, b.clock, this::health, status::issues);
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread thread = new Thread(threadGroup, r, "BackgroundRunner-Monitor");
             thread.setDaemon(true);

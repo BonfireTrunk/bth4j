@@ -31,6 +31,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
+import today.bonfire.oss.bth4j.spi.DeleteOutcome;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
@@ -1080,8 +1081,8 @@ class PostgresTaskStoreIT {
         assertThat(c.encodedPayload()).isEqualTo("payload-" + queued);
         assertThat(c.uniqueKey()).isNull();
         assertThat(get(scheduled).state()).isEqualTo(TaskState.CANCELLED);
-        assertThat(store.cancel(queued, 1, "again", null)).isEqualTo(CancelOutcome.STALE);
-        assertThat(store.cancel(newId(), 0, "missing", null)).isEqualTo(CancelOutcome.STALE);
+        assertThat(store.cancel(queued, 1, "again", null)).isEqualTo(CancelOutcome.FINISHED);
+        assertThat(store.cancel(newId(), 0, "missing", null)).isEqualTo(CancelOutcome.NOT_FOUND);
 
         var leased = enqueueAndClaim(task(newId()));
         assertThat(store.cancel(leased.id(), leased.revision(), "stop", null)).isEqualTo(CancelOutcome.REQUESTED);
@@ -1163,7 +1164,7 @@ class PostgresTaskStoreIT {
         assertThat(r.failures()).hasSize(1);
         assertThat(r.steps()).isEqualTo(steps);
         assertThat(r.encodedPayload()).isEqualTo(t.encodedPayload());
-        assertThat(store.retry(t.id(), r.revision())).isEqualTo(RetryOutcome.STALE);
+        assertThat(store.retry(t.id(), r.revision())).isEqualTo(RetryOutcome.NOT_RETRYABLE);
         assertThat(claim(1)).extracting(TaskRecord::id).containsExactly(t.id());
     }
 
@@ -1194,14 +1195,14 @@ class PostgresTaskStoreIT {
         long queued = newId();
         store.enqueue(task(queued).uniqueKey("d").build());
 
-        assertThat(store.delete(queued, 1, null)).isFalse();
-        assertThat(store.delete(queued, 0, null)).isTrue();
+        assertThat(store.delete(queued, 1, null)).isEqualTo(DeleteOutcome.STALE);
+        assertThat(store.delete(queued, 0, null)).isEqualTo(DeleteOutcome.DELETED);
         assertThat(store.getTask(queued)).isEmpty();
         assertThat(store.enqueue(task(newId()).uniqueKey("d").build())).isEqualTo(EnqueueOutcome.STORED);
-        assertThat(store.delete(leased.id(), leased.revision(), null)).isFalse();
+        assertThat(store.delete(leased.id(), leased.revision(), null)).isEqualTo(DeleteOutcome.LEASED);
         assertThat(get(leased.id()).state()).isEqualTo(TaskState.LEASED);
-        assertThat(store.delete(done.id(), done.revision() + 1, null)).isTrue();
-        assertThat(store.delete(done.id(), done.revision() + 1, null)).isFalse();
+        assertThat(store.delete(done.id(), done.revision() + 1, null)).isEqualTo(DeleteOutcome.DELETED);
+        assertThat(store.delete(done.id(), done.revision() + 1, null)).isEqualTo(DeleteOutcome.NOT_FOUND);
     }
 
     @Test
@@ -1771,9 +1772,9 @@ class PostgresTaskStoreIT {
                 assertThat(rs.getString(3)).isNull();
             }
         }
-        assertThat(store.delete(t.id(), revision, null)).isFalse();
-        assertThat(store.cancel(t.id(), revision, "no", null)).isEqualTo(CancelOutcome.STALE);
-        assertThat(store.retry(t.id(), revision)).isEqualTo(RetryOutcome.STALE);
+        assertThat(store.delete(t.id(), revision, null)).isEqualTo(DeleteOutcome.NOT_FOUND);
+        assertThat(store.cancel(t.id(), revision, "no", null)).isEqualTo(CancelOutcome.NOT_FOUND);
+        assertThat(store.retry(t.id(), revision)).isEqualTo(RetryOutcome.NOT_FOUND);
         assertThat(store.enqueue(task(t.id()).build())).isEqualTo(EnqueueOutcome.EXISTS);
         assertThat(store.enqueue(task(newId()).uniqueKey("gone").build()))
                 .isEqualTo(new EnqueueOutcome.DuplicateKey(t.id()));

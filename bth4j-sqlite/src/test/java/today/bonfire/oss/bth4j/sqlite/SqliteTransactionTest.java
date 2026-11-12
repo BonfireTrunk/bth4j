@@ -25,6 +25,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
+import today.bonfire.oss.bth4j.spi.DeleteOutcome;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
@@ -717,9 +718,9 @@ class SqliteTransactionTest {
         assertThat(store.getTask(t.id())).isEmpty();
         assertThat(store.taskByKey("gone")).isEmpty();
         assertThat(store.counts().get(queue).succeeded()).isZero();
-        assertThat(store.delete(t.id(), row.revision(), null)).isFalse();
-        assertThat(store.cancel(t.id(), row.revision(), "no", null)).isEqualTo(CancelOutcome.STALE);
-        assertThat(store.retry(t.id(), row.revision())).isEqualTo(RetryOutcome.STALE);
+        assertThat(store.delete(t.id(), row.revision(), null)).isEqualTo(DeleteOutcome.NOT_FOUND);
+        assertThat(store.cancel(t.id(), row.revision(), "no", null)).isEqualTo(CancelOutcome.NOT_FOUND);
+        assertThat(store.retry(t.id(), row.revision())).isEqualTo(RetryOutcome.NOT_FOUND);
         assertThat(store.enqueue(task().id(t.id()).build())).isEqualTo(EnqueueOutcome.EXISTS);
         assertThat(store.enqueue(task().uniqueKey("gone").build())).isEqualTo(new EnqueueOutcome.DuplicateKey(t.id()));
 

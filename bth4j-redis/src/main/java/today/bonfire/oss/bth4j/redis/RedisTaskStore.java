@@ -37,6 +37,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
+import today.bonfire.oss.bth4j.spi.DeleteOutcome;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
@@ -1157,29 +1158,31 @@ public final class RedisTaskStore implements FullStore {
     public CancelOutcome cancel(long id, int revision, String reason, ScheduleEffect effect) {
         var args = new ArrayList<>(List.of(String.valueOf(id), String.valueOf(revision), optionalText(reason)));
         args.addAll(effectArgs(effect));
-        var r = (String) guard(() -> scripts.run(RedisScripts.CANCEL, args));
-        if (r.endsWith("+")) {
-            effect.markApplied();
-            r = r.substring(0, r.length() - 1);
-        }
-        return CancelOutcome.valueOf(r);
+        return CancelOutcome.valueOf(outcome(effect, (String) guard(() -> scripts.run(RedisScripts.CANCEL, args))));
+    }
+
+    /** Takes the trailing plus of a script answer, which says the schedule effect changed the definition, off. */
+    private static String outcome(ScheduleEffect effect, String answer) {
+        if (!answer.endsWith("+")) return answer;
+        effect.markApplied();
+        return answer.substring(0, answer.length() - 1);
     }
 
     @Override
     public RetryOutcome retry(long id, int revision) {
         var args = List.of(String.valueOf(id), String.valueOf(revision));
-        return switch ((int) num(guard(() -> scripts.run(RedisScripts.RETRY, args)))) {
-            case 1 -> RetryOutcome.RETRIED;
-            case 2 -> RetryOutcome.DUPLICATE;
-            default -> RetryOutcome.STALE;
-        };
+        var answer = (String) guard(() -> scripts.run(RedisScripts.RETRY, args));
+        if (answer.equals("KEY_HELD")) {
+            throw new TaskStoreException("Cannot retry task " + id + ": its unique key is held by another task");
+        }
+        return RetryOutcome.valueOf(answer);
     }
 
     @Override
-    public boolean delete(long id, int revision, ScheduleEffect effect) {
+    public DeleteOutcome delete(long id, int revision, ScheduleEffect effect) {
         var args = new ArrayList<>(List.of(String.valueOf(id), String.valueOf(revision)));
         args.addAll(effectArgs(effect));
-        return applied(effect, num(guard(() -> scripts.run(RedisScripts.DELETE, args))));
+        return DeleteOutcome.valueOf(outcome(effect, (String) guard(() -> scripts.run(RedisScripts.DELETE, args))));
     }
 
     @Override

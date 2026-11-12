@@ -38,8 +38,6 @@ import today.bonfire.oss.bth4j.common.Json;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
-import today.bonfire.oss.bth4j.spi.CancelOutcome;
-import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
 import today.bonfire.oss.bth4j.spi.TaskState;
 
@@ -388,9 +386,9 @@ public final class AdminHttpServer implements AutoCloseable {
             }
             var outcome = admin.cancelByKey(key, (String) reason);
             switch (outcome) {
-                case NOT_FOUND -> throw new HttpError(404, "no task holds this key");
-                case FINISHED -> throw new HttpError(409, "the task holding this key is already finished");
-                case STALE -> throw new HttpError(409, "the task changed meanwhile, retry");
+                case NOT_FOUND -> throw notFound("no task holds this key");
+                case FINISHED -> throw wrongState("the task holding this key is already finished");
+                case STALE -> throw stale();
                 default -> sendJson(ex, 200, Views.obj("ok", true, "outcome", outcome.name()));
             }
         }
@@ -566,9 +564,11 @@ public final class AdminHttpServer implements AutoCloseable {
             }
         }
         var queue = query.get("queue");
-        var queueName = queue == null || queue.isEmpty() ? null : queue;
         var cursor = query.get("cursor");
-        var page = admin.tasks(state, queueName, cursor == null || cursor.isEmpty() ? null : cursor, limit);
+        var cursorOrNull = cursor == null || cursor.isEmpty() ? null : cursor;
+        var page = queue == null || queue.isEmpty()
+                ? admin.tasks(state, cursorOrNull, limit)
+                : admin.tasks(state, queue, cursorOrNull, limit);
         return Views.obj("items", Views.list(page.items(), Views::task), "next", page.next());
     }
 
@@ -578,11 +578,12 @@ public final class AdminHttpServer implements AutoCloseable {
 
     private void retry(HttpExchange ex, long id) throws IOException {
         var revision = revision(readObject(ex).get("revision"));
-        var outcome = admin.retry(id, revision);
-        if (outcome == RetryOutcome.DUPLICATE) {
-            throw new HttpError(409, "the unique key is held by another task", "KEY_HELD");
+        switch (admin.retry(id, revision)) {
+            case NOT_FOUND -> throw notFound("there is no such task");
+            case STALE -> throw stale();
+            case NOT_RETRYABLE -> throw wrongState("only a dead, cancelled or expired task can be retried");
+            case RETRIED -> sendJson(ex, 200, Views.obj("ok", true));
         }
-        changeTask(ex, id, outcome == RetryOutcome.RETRIED);
     }
 
     private void cancel(HttpExchange ex, long id) throws IOException {
@@ -593,10 +594,11 @@ public final class AdminHttpServer implements AutoCloseable {
             throw new HttpError(400, "reason must be a string");
         }
         var outcome = admin.cancel(id, revision, (String) reason);
-        if (outcome == CancelOutcome.STALE) {
-            changeTask(ex, id, false);
-        } else {
-            sendJson(ex, 200, Views.obj("ok", true, "outcome", outcome.name()));
+        switch (outcome) {
+            case NOT_FOUND -> throw notFound("there is no such task");
+            case STALE -> throw stale();
+            case FINISHED -> throw wrongState("the task has finished and cannot be cancelled");
+            default -> sendJson(ex, 200, Views.obj("ok", true, "outcome", outcome.name()));
         }
     }
 
@@ -605,18 +607,24 @@ public final class AdminHttpServer implements AutoCloseable {
         if (raw == null) {
             throw new HttpError(400, "revision is required");
         }
-        changeTask(ex, id, admin.delete(id, revision(raw)));
+        switch (admin.delete(id, revision(raw))) {
+            case NOT_FOUND -> throw notFound("there is no such task");
+            case STALE -> throw stale();
+            case LEASED -> throw wrongState("a task that is running cannot be deleted");
+            case DELETED -> sendJson(ex, 200, Views.obj("ok", true));
+        }
     }
 
-    /** A false result is either a stale revision or a task that is gone; only the lookup tells which. */
-    private void changeTask(HttpExchange ex, long id, boolean changed) throws IOException {
-        if (!changed) {
-            if (admin.task(id).isEmpty()) {
-                throw new HttpError(404, "unknown task");
-            }
-            throw new HttpError(409, "the task changed since you loaded it");
-        }
-        sendJson(ex, 200, Views.obj("ok", true));
+    private static HttpError notFound(String message) {
+        return new HttpError(404, message, "NOT_FOUND");
+    }
+
+    private static HttpError stale() {
+        return new HttpError(409, "the task changed since it was loaded", "STALE");
+    }
+
+    private static HttpError wrongState(String message) {
+        return new HttpError(409, message, "WRONG_STATE");
     }
 
     private void scheduleChange(HttpExchange ex, boolean found) throws IOException {

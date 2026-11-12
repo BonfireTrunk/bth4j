@@ -68,8 +68,9 @@ export default {
         if (after) after();
         else await load();
       } catch (e) {
-        if (e.conflict) stale.value = true;
+        if (e.stale) stale.value = true;
         toastError(e);
+        if (e.gone) await load();
       } finally {
         busy.value = false;
       }

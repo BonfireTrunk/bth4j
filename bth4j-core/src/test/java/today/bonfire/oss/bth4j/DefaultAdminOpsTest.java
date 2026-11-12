@@ -19,9 +19,11 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
+import today.bonfire.oss.bth4j.spi.DeleteOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
@@ -79,11 +81,9 @@ class DefaultAdminOpsTest {
                     }
                     return handler.apply(arguments);
                 });
-        var queues = new QueuesHolder(java.util.Set.of("Q:DEF", "Q:OTHER"), List.of("Q:DEF"), "Q:DEF");
         return new DefaultAdminOps(
                 store,
                 new Names(store),
-                queues,
                 Clock.fixed(NOW, ZoneOffset.UTC),
                 () -> health == null ? null : health.get(),
                 () -> issues == null ? List.of() : issues.get());
@@ -173,12 +173,16 @@ class DefaultAdminOpsTest {
     }
 
     @Test
-    void pauseQueueWithABlankNameTargetsTheDefaultQueue() {
+    void pauseQueueNeedsAQueueName() {
         handlers.put("pauseQueue", a -> null);
 
-        ops.pauseQueue(null, true);
-
-        assertThat(calls).contains("pauseQueue[1, true]");
+        for (var queue : new String[] {null, "", "  "}) {
+            assertThatThrownBy(() -> ops.pauseQueue(queue, true))
+                    .as("queue [%s]", queue)
+                    .isInstanceOf(TaskValidationException.class)
+                    .hasMessage("queue is required");
+        }
+        assertThat(calls).noneMatch(c -> c.startsWith("pauseQueue"));
     }
 
     @Test
@@ -235,7 +239,7 @@ class DefaultAdminOpsTest {
     void tasksWithoutQueueFilterAskTheStoreForAllQueues() {
         handlers.put("tasks", a -> new TaskPage(List.of(record(1, DEFAULT_QUEUE_ID), record(2, OTHER_QUEUE_ID)), null));
 
-        var views = ops.tasks(TaskState.DEAD, null, null, 50).items();
+        var views = ops.tasks(TaskState.DEAD, null, 50).items();
 
         assertThat(calls).contains("tasks[DEAD, null, null, 50]");
         assertThat(views).extracting("queue").containsExactly("Q:DEF", "Q:OTHER");
@@ -262,28 +266,47 @@ class DefaultAdminOpsTest {
     }
 
     @Test
+    void tasksOfAQueueNeedAQueueName() {
+        for (var queue : new String[] {null, "", "  "}) {
+            assertThatThrownBy(() -> ops.tasks(TaskState.QUEUED, queue, null, 5))
+                    .as("queue [%s]", queue)
+                    .isInstanceOf(TaskValidationException.class)
+                    .hasMessage("queue is required");
+        }
+        assertThat(calls).noneMatch(c -> c.startsWith("tasks"));
+    }
+
+    @Test
     void cursorTasksRejectAQueueThatIsNotAvailable() {
         assertThatThrownBy(() -> ops.tasks(TaskState.QUEUED, "Q:MISSING", (String) null, 5))
                 .isInstanceOf(TaskValidationException.class);
     }
 
     @Test
-    void retryPassesADuplicateKeyRefusalThrough() {
-        handlers.put("retry", a -> RetryOutcome.DUPLICATE);
+    void retryPassesEachStoreOutcomeThroughAndAStoreErrorUnchanged() {
+        for (var outcome : RetryOutcome.values()) {
+            handlers.put("retry", a -> outcome);
 
-        assertThat(ops.retry(9, 3)).isEqualTo(RetryOutcome.DUPLICATE);
+            assertThat(ops.retry(9, 3)).isEqualTo(outcome);
+        }
+        var failure = new TaskStoreException("the key is held by another task");
+        handlers.put("retry", a -> {
+            throw failure;
+        });
+
+        assertThatThrownBy(() -> ops.retry(9, 3)).isSameAs(failure);
     }
 
     @Test
     void retryAndDeleteDelegateWithTheRevisionAndReturnTheStoreAnswer() {
         handlers.put("retry", a -> a[1].equals(3) ? RetryOutcome.RETRIED : RetryOutcome.STALE);
-        handlers.put("delete", a -> a[1].equals(4));
+        handlers.put("delete", a -> a[1].equals(4) ? DeleteOutcome.DELETED : DeleteOutcome.STALE);
         handlers.put("getTask", a -> Optional.empty());
 
         assertThat(ops.retry(9, 3)).isEqualTo(RetryOutcome.RETRIED);
         assertThat(ops.retry(9, 2)).isEqualTo(RetryOutcome.STALE);
-        assertThat(ops.delete(9, 4)).isTrue();
-        assertThat(ops.delete(9, 5)).isFalse();
+        assertThat(ops.delete(9, 4)).isEqualTo(DeleteOutcome.DELETED);
+        assertThat(ops.delete(9, 5)).isEqualTo(DeleteOutcome.STALE);
         assertThat(calls).contains("retry[9, 3]", "delete[9, 4, null]");
     }
 
@@ -466,7 +489,7 @@ class DefaultAdminOpsTest {
 
     @Test
     void deleteOfAFixedDelayOccurrencePassesThePauseToTheStore() {
-        handlers.put("delete", a -> true);
+        handlers.put("delete", a -> DeleteOutcome.DELETED);
         handlers.put(
                 "getTask",
                 a -> Optional.of(TaskRecord.builder()
@@ -478,7 +501,7 @@ class DefaultAdminOpsTest {
                         .headers(Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT5S"))
                         .build()));
 
-        assertThat(ops.delete(7, 1)).isTrue();
+        assertThat(ops.delete(7, 1)).isEqualTo(DeleteOutcome.DELETED);
 
         assertThat(calls).containsExactly("getTask[7]", "delete[7, 1, ScheduleEffect[poll, occurrence 7, pause]]");
     }
@@ -490,10 +513,10 @@ class DefaultAdminOpsTest {
                     (Long) a[0], "task " + a[0] + " has a stored value that cannot be read", null);
         });
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
-        handlers.put("delete", a -> true);
+        handlers.put("delete", a -> DeleteOutcome.DELETED);
 
         assertThat(ops.cancel(7, 1, "stop")).isEqualTo(CancelOutcome.CANCELLED);
-        assertThat(ops.delete(7, 2)).isTrue();
+        assertThat(ops.delete(7, 2)).isEqualTo(DeleteOutcome.DELETED);
 
         assertThat(calls).containsExactly("getTask[7]", "cancel[7, 1, stop, null]", "getTask[7]", "delete[7, 2, null]");
     }
@@ -722,13 +745,7 @@ class DefaultAdminOpsTest {
     void healthIsEmptyWhenTheOpsWereBuiltWithoutASupplier() {
         var store = (FullStore) Proxy.newProxyInstance(
                 FullStore.class.getClassLoader(), new Class<?>[] {FullStore.class}, (p, m, a) -> null);
-        var bare = new DefaultAdminOps(
-                store,
-                new Names(store),
-                new QueuesHolder(java.util.Set.of("Q:DEF"), List.of("Q:DEF"), "Q:DEF"),
-                Clock.systemUTC(),
-                null,
-                null);
+        var bare = new DefaultAdminOps(store, new Names(store), Clock.systemUTC(), null, null);
 
         assertThat(bare.health()).isEmpty();
         assertThat(bare.issues()).isEmpty();

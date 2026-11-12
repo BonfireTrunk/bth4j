@@ -12,12 +12,14 @@ import java.util.function.Supplier;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
+import today.bonfire.oss.bth4j.spi.DeleteOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.RecurringSchedule;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
+import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.WorkerInfo;
@@ -28,21 +30,14 @@ final class DefaultAdminOps implements AdminOps {
 
     private final FullStore store;
     private final Names names;
-    private final QueuesHolder queues;
     private final Clock clock;
     private final Supplier<RunnerHealth> health;
     private final Supplier<List<Issue>> issues;
 
     DefaultAdminOps(
-            FullStore store,
-            Names names,
-            QueuesHolder queues,
-            Clock clock,
-            Supplier<RunnerHealth> health,
-            Supplier<List<Issue>> issues) {
+            FullStore store, Names names, Clock clock, Supplier<RunnerHealth> health, Supplier<List<Issue>> issues) {
         this.store = store;
         this.names = names;
-        this.queues = queues;
         this.clock = clock;
         this.health = health;
         this.issues = issues;
@@ -65,10 +60,10 @@ final class DefaultAdminOps implements AdminOps {
         store.pauseQueue(adminQueueId(queue), paused);
     }
 
-    /** A blank name is the default queue; any other name must already be in the store's registry. */
+    /** The name must be given and already be in the store's registry. */
     private int adminQueueId(String queue) {
-        var name = queue == null || queue.isBlank() ? queues.defaultQueue : queue;
-        return names.knownQueueId(name).orElseThrow(() -> new TaskValidationException("Unknown queue: " + name));
+        if (queue == null || queue.isBlank()) throw new TaskValidationException("queue is required");
+        return names.knownQueueId(queue).orElseThrow(() -> new TaskValidationException("Unknown queue: " + queue));
     }
 
     @Override
@@ -83,9 +78,16 @@ final class DefaultAdminOps implements AdminOps {
     }
 
     @Override
+    public TaskViewPage tasks(TaskState state, String cursor, int limit) {
+        return view(store.tasks(state, null, cursor, limit));
+    }
+
+    @Override
     public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
-        var queueId = queue == null ? null : Integer.valueOf(adminQueueId(queue));
-        var page = store.tasks(state, queueId, cursor, limit);
+        return view(store.tasks(state, adminQueueId(queue), cursor, limit));
+    }
+
+    private TaskViewPage view(TaskPage page) {
         var result = new ArrayList<TaskView>();
         for (var r : page.items()) result.add(names.view(r));
         return new TaskViewPage(result, page.next());
@@ -117,7 +119,7 @@ final class DefaultAdminOps implements AdminOps {
     }
 
     @Override
-    public boolean delete(long id, int revision) {
+    public DeleteOutcome delete(long id, int revision) {
         var pause = RecurringTaskService.pauseEffect(readable(id));
         return store.delete(id, revision, pause);
     }

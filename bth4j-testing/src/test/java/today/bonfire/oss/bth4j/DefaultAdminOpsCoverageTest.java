@@ -34,13 +34,7 @@ class DefaultAdminOpsCoverageTest {
                     throw e.getCause();
                 }
             });
-    private final DefaultAdminOps admin = new DefaultAdminOps(
-            observed,
-            new Names(observed),
-            new QueuesHolder(Set.of("main", "other"), List.of("main"), "main"),
-            clock,
-            null,
-            null);
+    private final DefaultAdminOps admin = new DefaultAdminOps(observed, new Names(observed), clock, null, null);
 
     private void enqueue(int queueId, int typeId) {
         assertThat(store.enqueue(TaskRecord.builder()

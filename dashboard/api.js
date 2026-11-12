@@ -43,13 +43,21 @@ export function clearSession() {
 }
 
 export class ApiError extends Error {
-  constructor(status, message, duplicate = false) {
+  constructor(status, message, code = null) {
     super(message);
     this.status = status;
-    this.duplicate = duplicate;
+    this.code = code;
   }
-  get conflict() {
-    return this.status === 409 && !this.duplicate;
+  // the task changed since the page loaded it: reloading helps
+  get stale() {
+    return this.status === 409 && this.code === 'STALE';
+  }
+  // the task is in a state that does not allow the action: the message says which rule
+  get wrongState() {
+    return this.status === 409 && this.code === 'WRONG_STATE';
+  }
+  get gone() {
+    return this.status === 404 && this.code === 'NOT_FOUND';
   }
 }
 
@@ -94,13 +102,15 @@ async function request(method, path, { query, body, noRedirect } = {}) {
     }
   }
   if (!res.ok) {
-    if (res.status === 409) {
-      if (data && data.code === 'KEY_HELD') {
-        throw new ApiError(409, data.error, true);
-      }
-      throw new ApiError(409, 'This item changed meanwhile. Reload it and try again.');
+    const code = (data && data.code) || null;
+    if (res.status === 409 && code === 'STALE') {
+      throw new ApiError(409, 'This item changed meanwhile. Reload it and try again.', code);
+    }
+    if (res.status === 404 && code === 'NOT_FOUND') {
+      throw new ApiError(404, 'This task no longer exists.', code);
     }
     const detail = data && (data.error || data.message);
+    if (res.status === 409) throw new ApiError(409, detail || 'Request failed (HTTP 409)', code);
     if (res.status === 401) throw new ApiError(401, detail || 'Wrong user or password');
     if (res.status === 403) throw new ApiError(403, detail || 'Not allowed for your role');
     throw new ApiError(res.status, detail || 'Request failed (HTTP ' + res.status + ')');

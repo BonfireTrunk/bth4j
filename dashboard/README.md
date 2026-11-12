@@ -60,7 +60,9 @@ the login page.
   (retry, cancel, delete, pause/resume, trigger, retry-all) is visible but disabled.
 - **Admin**: all of the above. Every mutation asks for confirmation; cancel also requires a reason.
   Task actions send the revision shown on screen. If the task changed meanwhile the server answers `409`
-  and the dashboard shows a "changed meanwhile, reload" prompt instead of overwriting.
+  with the code `STALE` and the dashboard shows a "changed meanwhile, reload" prompt instead of overwriting.
+  A task whose state refuses the action (`WRONG_STATE`) shows the server's message, and a task that is gone
+  (`NOT_FOUND`) is reported as no longer existing.
   Trigger moves a schedule's next fire time to now, and the runner creates the task on its next scheduling
   round; it is disabled for a paused schedule, which does not fire (resume it first).
 
