@@ -46,16 +46,17 @@ public interface ScheduleStore extends TaskStore {
      * {@code nextFireAt}, unless the definition's revision or next fire time changed meanwhile. An occurrence
      * that names no schedule is stored with the id of this one. When the
      * occurrence names a unique key that another task holds, the definition is still advanced and the
-     * method still reports true, but the occurrence is not stored; this is how an overlapping occurrence is
-     * skipped. When a task with the occurrence's id exists, nothing is written and the method reports false: ids
+     * method reports {@link CommitOutcome#SKIPPED}, but the occurrence is not stored; this is how an overlapping
+     * occurrence is skipped. When a task with the occurrence's id exists, nothing is written and the method
+     * reports {@link CommitOutcome#NOT_COMMITTED}: ids
      * are handed out once, so that task is not an occurrence of this fire. For a fixed-delay definition the store records the stored occurrence as the one in flight, which
      * is what a {@link ScheduleEffect} of that occurrence is checked against; a skipped occurrence leaves the
      * recorded one alone, so the running occurrence still re-arms the definition. When none is recorded and the
      * holder of the key is an open task of this schedule, the holder is recorded.
      *
-     * @return true when committed
+     * @return whether the definition advanced, and whether the occurrence was stored with it
      */
-    boolean commitSchedule(DueSchedule due, Instant nextFireAt, TaskRecord occurrence);
+    CommitOutcome commitSchedule(DueSchedule due, Instant nextFireAt, TaskRecord occurrence);
 
     /**
      * The order of {@link #schedules()}: by the code points of the ids, which is also the byte order

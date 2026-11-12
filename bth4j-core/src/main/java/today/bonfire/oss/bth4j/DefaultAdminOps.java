@@ -72,11 +72,13 @@ final class DefaultAdminOps implements AdminOps {
 
     @Override
     public TaskViewPage tasks(TaskState state, String cursor, int limit) {
+        TaskClient.requireListedState(state);
         return view(store.tasks(state, null, cursor, limit));
     }
 
     @Override
     public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
+        TaskClient.requireListedState(state);
         return view(store.tasks(state, adminQueueId(queue), cursor, limit));
     }
 

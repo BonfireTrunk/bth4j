@@ -69,7 +69,7 @@ The existing stores meet this in these ways:
 | Engine | How |
 |---|---|
 | Redis | one Lua script per method |
-| An SQL database | one statement per method, with `FOR UPDATE SKIP LOCKED` for the claim and `UPDATE ... WHERE id = ? AND revision = ? AND state = 2` for the fenced transitions |
+| An SQL database | each method is atomic, one statement or one transaction, with `FOR UPDATE SKIP LOCKED` for the claim and `UPDATE ... WHERE id = ? AND revision = ? AND state = 2` for the fenced transitions |
 
 See [Redis](stores/redis.md), [PostgreSQL](stores/postgresql.md) and [SQLite](stores/sqlite.md) for how each store works.
 
@@ -166,12 +166,12 @@ A schedule is a definition with a next fire time. Each fire becomes one task, th
 
 | Rule | What it means |
 |---|---|
-| A commit is one compare-and-set | `commitSchedule` stores the occurrence and advances the definition in one step, and only while the definition still has the revision and the fire time the runner read with `dueSchedules`. Of several runners that read the same fire, the first commit wins and the others get `false`. |
+| A commit is one compare-and-set | `commitSchedule` stores the occurrence and advances the definition in one step, and only while the definition still has the revision and the fire time the runner read with `dueSchedules`. Of several runners that read the same fire, the first commit wins and the others get `CommitOutcome.NOT_COMMITTED`. |
 | Revisions never go back | Every put that writes takes a new revision from a counter that never goes back, also after a delete, so that a runner that still holds an old definition cannot commit against its replacement. The existing stores use a sequence or a counter per namespace. |
 | A put that writes nothing keeps the revision | Applications register their schedules at every start. Such a put answers `UNCHANGED` and must not make another runner's commit fail. A put never changes the paused flag of a definition that exists. |
 | `keepUntil` | A put keeps the stored next fire time when the timing is unchanged and either the occurrence in flight is not finished or the stored time is not later than `keepUntil`. A stored time later than that with no occurrence in flight has skipped fires, so the put replaces it. |
 | Paused | A paused definition keeps its next fire time and is left out of `dueSchedules`. `setNextFire` does nothing for it. |
-| An overlapping occurrence is skipped in the commit | When the occurrence names a unique key that another task holds, it is not stored, the definition is still advanced, and the commit answers `true`. |
+| An overlapping occurrence is skipped in the commit | When the occurrence names a unique key that another task holds, it is not stored, the definition is still advanced, and the commit answers `CommitOutcome.SKIPPED`, not `STORED`. The runner reports the skipped fire from that answer; it does not read the task back. |
 | Fixed delay | The runner commits the occurrence with the next fire time 100 years ahead, and the store records that occurrence as the one in flight. The end of the occurrence sets the real next fire time through a `ScheduleEffect`. |
 | `ScheduleEffect` | It is applied in the same atomic step as the task transition that carries it (`ack`, `fail` when the task ends DEAD, `failExpired`, `finishCancelled`, `finishCancelledExpired`, `cancel` when it cancels at once, `delete`), so that a process that dies right after cannot leave the definition parked. It applies only while the recorded occurrence is that task, and then clears the record. A re-arm of a paused definition stores the time and leaves it paused. The store calls `markApplied()` when it changed the definition. |
 | Operator writes and runner writes | `triggerSchedule`, and `resumeSchedule` with a time, assign a new revision, so a runner write that is based on the old one does nothing. `setNextFire` and a `ScheduleEffect` keep the revision and do nothing when their own check fails. A trigger also forgets the recorded occurrence, so that the end of an occurrence that is still running does not undo it. |
@@ -184,9 +184,9 @@ sequenceDiagram
     S-->>R: definition at revision 4, fire time T
     R->>S: commitSchedule(due, next fire time, occurrence)
     alt revision 4 and fire time T are still stored
-        S-->>R: true, the occurrence is stored and the definition advanced
+        S-->>R: STORED, the occurrence is stored and the definition advanced
     else another runner committed first, or the definition changed
-        S-->>R: false, nothing is written
+        S-->>R: NOT_COMMITTED, nothing is written
     end
 ```
 

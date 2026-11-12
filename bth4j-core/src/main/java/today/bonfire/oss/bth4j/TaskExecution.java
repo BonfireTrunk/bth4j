@@ -34,7 +34,7 @@ final class TaskExecution implements Runnable, TaskContext {
     private static final int MAX_PROGRESS = 4 * 1024;
     private static final int MAX_STEP_NAME = 64;
     private static final int MAX_STEP_RESULT = 8 * 1024;
-    private static final int MAX_STEPS_BYTES = 64 * 1024;
+    private static final int MAX_STEPS = 64 * 1024;
     private static final Duration DEFER = Duration.ofSeconds(5);
 
     record Settings(
@@ -604,24 +604,26 @@ final class TaskExecution implements Runnable, TaskContext {
         if (type != Void.class) s.codecs().requireMapper();
         R result = body.call();
         var encoded = StoredText.clean(s.codecs().encodeStep(result));
+        // the body ran and cannot be recorded: a retry would run it again, in every attempt
         if (encoded != null && encoded.length() > MAX_STEP_RESULT) {
-            throw new TaskValidationException("result of step " + name + " exceeds " + MAX_STEP_RESULT + " characters");
+            throw new TaskUnrecoverableException(
+                    "result of step " + name + " exceeds " + MAX_STEP_RESULT + " characters");
         }
         // one section per step so that concurrent steps of one processor never overwrite each other's record
         stepsLock.lock();
         try {
             var updated = new LinkedHashMap<>(steps);
             updated.put(name, new StepResult(s.clock().instant(), encoded));
-            long bytes = 0;
+            long length = 0;
             for (var e : updated.entrySet()) {
-                bytes += e.getKey().length()
+                length += e.getKey().length()
                         + (e.getValue().result() == null
                                 ? 0
                                 : e.getValue().result().length());
             }
-            if (bytes > MAX_STEPS_BYTES) {
-                throw new TaskValidationException(
-                        "steps of task " + record.id() + " exceed " + MAX_STEPS_BYTES + " bytes");
+            if (length > MAX_STEPS) {
+                throw new TaskUnrecoverableException(
+                        "steps of task " + record.id() + " exceed " + MAX_STEPS + " characters");
             }
             if (!s.store().saveSteps(record.id(), record.revision(), updated)) {
                 leaseLost = true;

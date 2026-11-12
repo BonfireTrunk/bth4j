@@ -859,7 +859,8 @@ final class RedisScripts {
      * SCHEDULED for the fire time and advances the definition, unless the revision or the stored fire time
      * changed or the definition is paused, or a task with the occurrence's id exists. An occurrence whose unique key
      * is held is not stored; the definition still advances. A stored occurrence of a fixed-delay definition becomes its
-     * occ field; when the unique key is held, occ is empty and the holder is an open task of the schedule, the holder becomes it. Returns 1 when committed.
+     * occ field; when the unique key is held, occ is empty and the holder is an open task of the schedule, the holder becomes it. Returns 1 when
+     * committed with the occurrence stored, 2 when committed without it, 0 when not committed.
      */
     static final String CRON_COMMIT = PRELUDE + """
             local ckey = P .. 'cron:' .. ARGV[2]
@@ -885,7 +886,7 @@ final class RedisScripts {
             redis.call('ZADD', P .. 'cron', ARGV[5], ARGV[2])
             redis.call('HSET', ckey, 'next', ARGV[5])
             redis.call('HDEL', ckey, 'trg')
-            return 1
+            return stored[1]
             """;
 
     /**

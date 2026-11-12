@@ -12,6 +12,7 @@ import today.bonfire.oss.bth4j.common.Cron;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.spi.CommitOutcome;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.InspectionStore;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
@@ -321,20 +322,16 @@ class RecurringTaskService extends CustomThread {
             builder.uniqueKey(OVERLAP_KEY_PREFIX + d.scheduleId());
         }
         var occurrence = builder.build();
-        var committed = store.commitSchedule(d, next, occurrence);
-        if (committed) {
-            if (def.overlapSkip()
-                    && inspection != null
-                    && inspection.task(occurrence.id()).isEmpty()) {
-                var detail = "schedule " + d.scheduleId() + " skipped its fire at " + d.fireAt()
-                        + ": the previous occurrence has not finished";
-                log.info(detail);
-                status.issue(Issue.Kind.SCHEDULE_OVERLAP, detail, null);
-            } else {
-                observer.emit(new TaskEvent.ScheduleFired(d.scheduleId(), occurrence.id(), d.fireAt()));
-            }
+        var outcome = store.commitSchedule(d, next, occurrence);
+        if (outcome == CommitOutcome.SKIPPED) {
+            var detail = "schedule " + d.scheduleId() + " skipped its fire at " + d.fireAt()
+                    + ": the previous occurrence has not finished";
+            log.info(detail);
+            status.issue(Issue.Kind.SCHEDULE_OVERLAP, detail, null);
+        } else if (outcome == CommitOutcome.STORED) {
+            observer.emit(new TaskEvent.ScheduleFired(d.scheduleId(), occurrence.id(), d.fireAt()));
         }
-        return committed ? Progress.QUEUED : Progress.NONE;
+        return outcome.isCommitted() ? Progress.QUEUED : Progress.NONE;
     }
 
     static class Builder {

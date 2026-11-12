@@ -67,6 +67,16 @@ The schema versions are 4 for PostgreSQL, 6 for Redis and 2 for SQLite.
 | A second `MicrometerRunnerMetrics.bind` with the same tags on one registry is refused while the first is open. | Give each runner its own tags. |
 | More settings are checked when they are set: a queue name of more than 128 characters, a null or negative argument of `RetryPolicy.exponential` or `RetryPolicy.fixed`, an interval below its shortest value, `concurrency` together with `taskExecutor`. Each throws `TaskConfigurationException`. | Correct the setting; [Configuration](configuration.md) has the limits. |
 | `AdminHttpServer.start()` on a started server does nothing (it threw), and `stop()` before `start()` stops the server for good. | Nothing, unless your code relied on either. |
+| `TaskClient.tasks`, `AdminOps.tasks` and every store listing with a `limit` below 1 returned an empty page. | They throw `TaskValidationException`. Check the limit you pass. |
+| A step whose result is too long to record ended in a `TaskValidationException` and was retried. | The task ends DEAD at once, with a `TaskUnrecoverableException` from `ctx.step`. Keep step results under 8192 characters in their stored form; store a reference when the result is larger. |
+| `TaskClient.tasks(state, "", cursor, limit)` listed the default queue. | A blank queue is refused with `TaskValidationException`. Pass the queue's name, or null for every queue. |
+| A null request, definition or listing state was a `NullPointerException`. | It is a `TaskValidationException`. |
+| `RetryPolicy.exponential` could return a delay up to 20 percent above its cap. | The cap is the longest delay. Nothing to do, unless you set the cap lower to make up for it. |
+| The admin server logged nothing about sign-ins and changes. | It writes one INFO line per sign-in, refused sign-in and POST or DELETE; see [What the server logs](admin.md#what-the-server-logs). Lower the level of its logger if you do not want them. |
+| PostgreSQL cuts the server's clock to the millisecond. It rounded, which put its clock up to half a millisecond ahead of the server's. | Nothing, unless a test relied on a task due in the next millisecond being queued at once. |
+| Redis `init` refuses a namespace that holds keys of the store but no schema version, for example one restored without its `meta` key. It wrote the current version and worked on whatever was there. | Restore the `meta` key, or use a new namespace. |
+| `TaskRequest.Builder.uniqueKey(key)` sets the key to be taken until the task is done. After `uniqueKey(key, Uniqueness.keepFor(...))` on the same builder it kept the earlier keep window. | Call the version with the keep window last when you want it. |
+| `RetryPolicy.exponential` keeps doubling up to the cap. It stopped at base x 2^20, which is 2.9 hours for a 10 ms base. | Nothing, unless you set a cap above that and relied on the stop. |
 
 ## Queues
 
@@ -152,15 +162,18 @@ ScheduleDefinition.of("nightly", type, "0 2 * * *", Overlap.ALLOW);
 
 ## Exceptions
 
-Everything bth4j throws to refuse a call or to report a failure of its own extends `Bth4jException`. [Exceptions](errors.md) lists the classes.
+Everything bth4j throws to refuse a call or to report a failure of its own extends `Bth4jException`, except the decode helpers for store authors (`TaskState.fromCode` and `RecordJson`), which throw `IllegalArgumentException`. [Exceptions](errors.md) lists the classes.
 
 | 4.x | 5.0 |
 |---|---|
-| `IllegalArgumentException` for data that is sent or stored (a `limit` below 1, a malformed cursor, `Uniqueness.keepFor`, and others) | `TaskValidationException` |
+| `IllegalArgumentException` for data that is sent or stored (a malformed cursor, `Uniqueness.keepFor`, and others) | `TaskValidationException` |
 | `IllegalStateException` or `IllegalArgumentException` for a setting of the runner, the admin server, an executor or the metrics binding | `TaskConfigurationException` |
 | `TaskStoreException`, `UnreadableTaskException` in `today.bonfire.oss.bth4j.spi` | in `today.bonfire.oss.bth4j.exceptions` |
 | `UnreadableTaskException` is a `TaskStoreException` | it is not: the store works, and the same call fails until the task is repaired or deleted |
 | a missing `jsonMapper` is a `TaskDataException` | `TaskConfigurationException` |
+| `Misfire.catchUp(0)` threw `TaskConfigurationException` | `TaskValidationException` |
+| `enqueue` with a caller id that belongs to an unreadable task threw `EnqueueFailedException` | throws `UnreadableTaskException` itself; nothing was written |
+| `enqueueAll` wrapped only `TaskStoreException` and `TaskIdReusedException` | from the first write on, every failure is an `EnqueueFailedException` with `ids`, `settled` and `notStored`, and the failure as its cause |
 
 ## Events, views and operator actions
 
@@ -210,6 +223,7 @@ The store SPI says "schedule" and "runner" as the API does, and its record types
 | `spi.PutRecurringResult`, `spi.PutRecurringOutcome` | `PutScheduleResult`, `PutScheduleOutcome` in `today.bonfire.oss.bth4j` |
 | `putRecurring`, `deleteRecurring`, `pauseRecurring`, `resumeRecurring`, `triggerRecurring` | `putSchedule`, `deleteSchedule`, `pauseSchedule`, `resumeSchedule`, `triggerSchedule` |
 | `dueRecurring`, `commitRecurring` | `dueSchedules`, `commitSchedule` |
+| `commitRecurring` returns `boolean` | `commitSchedule` returns `CommitOutcome`: `STORED`, `SKIPPED` (the definition advanced, the occurrence's unique key is held) or `NOT_COMMITTED` |
 | `recurringDefinitions()`, `recurringSchedules()` | `schedules()`, `nextFireTimes()` |
 | `setNextFire(scheduleId, nextFire)`, the operator's write | `triggerSchedule(scheduleId, fireAt)`; `DueSchedule` has `triggered` |
 | `ScheduleEffect.nextFire()`, `pauses()`, `applied()` | `nextFireAt()`, `isPause()`, `isApplied()` |

@@ -186,8 +186,9 @@ More about lease loss:
 
 ### Maximum run time
 
-`maxRunTime(duration)` uses the same path as a cancel. When an attempt has run longer, the lease renewal asks it to stop
-with the reason "max run time ... exceeded".
+`maxRunTime(duration)` uses the same path as a cancel. When an attempt has run longer, the runner asks it to stop
+with the reason "max run time ... exceeded". The runner looks about once a second, so the request comes up to a second
+after the limit.
 
 | Setting | Value |
 |---|---|

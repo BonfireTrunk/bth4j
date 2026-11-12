@@ -31,6 +31,7 @@ import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
+import today.bonfire.oss.bth4j.spi.CommitOutcome;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
@@ -801,7 +802,7 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public boolean commitSchedule(DueSchedule due, Instant nextFire, TaskRecord given) {
+    public CommitOutcome commitSchedule(DueSchedule due, Instant nextFire, TaskRecord given) {
         StoreArguments.requireKey(given.uniqueKey());
         TaskRecord occurrence = given.scheduleId() != null
                 ? given
@@ -813,11 +814,11 @@ public final class InMemoryStore implements FullStore {
                     || current.definition().paused()
                     || current.definition().revision() != due.definition().revision()
                     || !current.nextFireAt().equals(millis(due.fireAt()))) {
-                return false;
+                return CommitOutcome.NOT_COMMITTED;
             }
             EnqueueOutcome outcome = enqueueLocked(occurrence, due.fireAt());
             if (outcome == EnqueueOutcome.EXISTS) {
-                return false;
+                return CommitOutcome.NOT_COMMITTED;
             }
             Long occurrenceId = current.occurrence();
             if (current.definition().isFixedDelay()) {
@@ -833,7 +834,7 @@ public final class InMemoryStore implements FullStore {
                 }
             }
             recurring.put(due.scheduleId(), new Recurring(current.definition(), nextFire, occurrenceId));
-            return true;
+            return outcome instanceof EnqueueOutcome.Stored ? CommitOutcome.STORED : CommitOutcome.SKIPPED;
         } finally {
             lock.unlock();
         }

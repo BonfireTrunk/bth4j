@@ -40,6 +40,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.internal.Json;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
+import today.bonfire.oss.bth4j.spi.CommitOutcome;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
@@ -410,7 +411,8 @@ public final class SqliteTaskStore implements FullStore {
         }
         var version = queryOne(c, "SELECT value FROM " + meta + " WHERE key = 'schema_version'", rs -> rs.getLong(1));
         if (version == null || version != SCHEMA_VERSION) {
-            throw new TaskStoreException("schema version " + version + ", this library needs " + SCHEMA_VERSION);
+            throw new TaskStoreException("namespace " + namespace + " has schema version " + version
+                    + ", this library needs " + SCHEMA_VERSION + " and does not migrate another one");
         }
         return true;
     }
@@ -740,10 +742,13 @@ public final class SqliteTaskStore implements FullStore {
         if (queues.isEmpty()) return false;
         return queryOne(
                         c,
-                        "SELECT 1 FROM " + task + " WHERE state = 0 AND queue_id IN (SELECT value FROM json_each(?1))"
-                                + " AND (start_by IS NULL OR start_by > ?2)" + typeFilter(types, 3)
-                                + " AND NOT EXISTS (SELECT 1 FROM " + queue + " p WHERE p.id = " + task
-                                + ".queue_id AND p.paused <> 0) LIMIT 1",
+                        // paused queues leave the list before any task is looked at: checked per task, a
+                        // paused queue would have its whole backlog read on every idle poll
+                        "SELECT 1 FROM " + task
+                                + " WHERE state = 0 AND queue_id IN (SELECT j.value FROM json_each(?1) j"
+                                + " WHERE NOT EXISTS (SELECT 1 FROM " + queue
+                                + " p WHERE p.id = j.value AND p.paused <> 0))"
+                                + " AND (start_by IS NULL OR start_by > ?2)" + typeFilter(types, 3) + " LIMIT 1",
                         rs -> true,
                         types == null
                                 ? new Object[] {idsJson(queues), clock.millis()}
@@ -1232,13 +1237,15 @@ public final class SqliteTaskStore implements FullStore {
      * holder becomes it.
      */
     @Override
-    public boolean commitSchedule(DueSchedule due, Instant nextFire, TaskRecord o) {
+    public CommitOutcome commitSchedule(DueSchedule due, Instant nextFire, TaskRecord o) {
         StoreArguments.requireKey(o.uniqueKey());
         var fixedDelay = due.definition().isFixedDelay();
         return inTransaction(c -> {
             long now = clock.millis();
             if (o.uniqueKey() != null) releaseExpiredKeys(c, now, List.of(o.uniqueKey()));
-            if (queryOne(c, "SELECT 1 FROM " + task + " WHERE id = ?", rs -> true, o.id()) != null) return false;
+            if (queryOne(c, "SELECT 1 FROM " + task + " WHERE id = ?", rs -> true, o.id()) != null) {
+                return CommitOutcome.NOT_COMMITTED;
+            }
             if (update(
                             c,
                             "UPDATE " + schedule + " SET next_fire = ?, triggered = 0"
@@ -1248,32 +1255,33 @@ public final class SqliteTaskStore implements FullStore {
                             due.definition().revision(),
                             due.fireAt())
                     != 1) {
-                return false;
+                return CommitOutcome.NOT_COMMITTED;
             }
-            update(
-                    c,
-                    commitInsertSql,
-                    o.id(),
-                    o.revision(),
-                    o.queueId(),
-                    o.typeId(),
-                    o.payloadVersion(),
-                    o.maxAttempts(),
-                    o.createdAt() == null ? now : o.createdAt().toEpochMilli(),
-                    due.fireAt(),
-                    now,
-                    o.encodedPayload(),
-                    o.account(),
-                    RecordJson.encodeHeaders(o.headers()),
-                    o.retryPolicy(),
-                    o.scheduleId() == null ? due.scheduleId() : o.scheduleId(),
-                    o.uniqueKey(),
-                    o.uniqueKey() == null || o.keyKeep() == null
-                            ? null
-                            : o.keyKeep().toMillis(),
-                    o.startBy(),
-                    millisOrNull(o.maxRunTime()),
-                    o.retryOf());
+            boolean stored = update(
+                            c,
+                            commitInsertSql,
+                            o.id(),
+                            o.revision(),
+                            o.queueId(),
+                            o.typeId(),
+                            o.payloadVersion(),
+                            o.maxAttempts(),
+                            o.createdAt() == null ? now : o.createdAt().toEpochMilli(),
+                            due.fireAt(),
+                            now,
+                            o.encodedPayload(),
+                            o.account(),
+                            RecordJson.encodeHeaders(o.headers()),
+                            o.retryPolicy(),
+                            o.scheduleId() == null ? due.scheduleId() : o.scheduleId(),
+                            o.uniqueKey(),
+                            o.uniqueKey() == null || o.keyKeep() == null
+                                    ? null
+                                    : o.keyKeep().toMillis(),
+                            o.startBy(),
+                            millisOrNull(o.maxRunTime()),
+                            o.retryOf())
+                    == 1;
             if (fixedDelay) {
                 if (update(
                                 c,
@@ -1283,7 +1291,7 @@ public final class SqliteTaskStore implements FullStore {
                                 due.scheduleId(),
                                 o.id())
                         == 1) {
-                    return true;
+                    return CommitOutcome.STORED;
                 }
                 if (o.uniqueKey() != null) {
                     update(
@@ -1296,7 +1304,7 @@ public final class SqliteTaskStore implements FullStore {
                             due.scheduleId());
                 }
             }
-            return true;
+            return stored ? CommitOutcome.STORED : CommitOutcome.SKIPPED;
         });
     }
 

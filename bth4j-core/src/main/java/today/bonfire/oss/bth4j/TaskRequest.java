@@ -40,14 +40,16 @@ public final class TaskRequest<T> {
      * a shorter time would be kept as zero.
      */
     public static void requireMaxRunTime(Duration maxRunTime) {
-        if (maxRunTime != null && (maxRunTime.toMillis() < 1 || maxRunTime.compareTo(MAX_RUN_TIME) > 0)) {
+        // compared before the conversion, which overflows for a duration such as ChronoUnit.FOREVER
+        if (maxRunTime != null
+                && (maxRunTime.compareTo(MAX_RUN_TIME) > 0 || !maxRunTime.isPositive() || maxRunTime.toMillis() < 1)) {
             throw new TaskValidationException("maxRunTime must be at least 1 ms and at most " + MAX_RUN_TIME);
         }
     }
 
     /** The rule for a unique key, for enqueueing and for looking one up. */
     public static void requireUniqueKey(String key) {
-        if (key.isBlank() || key.length() > MAX_UNIQUE_KEY_LENGTH) {
+        if (key == null || key.isBlank() || key.length() > MAX_UNIQUE_KEY_LENGTH) {
             throw new TaskValidationException("uniqueKey must be 1 to " + MAX_UNIQUE_KEY_LENGTH + " characters");
         }
         StoredText.require("uniqueKey", key);
@@ -310,7 +312,10 @@ public final class TaskRequest<T> {
             return this;
         }
 
-        /** An attempt running longer than this is cancelled; the task ends CANCELLED. */
+        /**
+         * An attempt running longer than this is cancelled; the task ends CANCELLED. The runner looks about once
+         * a second, so the cancel request comes up to a second after this time.
+         */
         public Builder<T> maxRunTime(Duration maxRunTime) {
             requireMaxRunTime(maxRunTime);
             this.maxRunTime = maxRunTime;

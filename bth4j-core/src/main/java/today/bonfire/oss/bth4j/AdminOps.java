@@ -39,7 +39,7 @@ public interface AdminOps {
      * @param cursor {@link TaskViewPage#next()} of the previous page; null starts at the beginning
      * @param limit the most tasks one page holds, at least 1. There is no upper bound, and a page is read into
      *     memory as a whole; the HTTP API caps it at 200.
-     * @throws TaskValidationException if the cursor is malformed or the limit is below 1
+     * @throws TaskValidationException if the state is null, the cursor is malformed or the limit is below 1
      */
     TaskViewPage tasks(TaskState state, String cursor, int limit);
 
@@ -49,8 +49,8 @@ public interface AdminOps {
      * @param queue a known queue name; never null or blank
      * @param cursor {@link TaskViewPage#next()} of the previous page; null starts at the beginning
      * @param limit as for {@link #tasks(TaskState, String, int)}
-     * @throws TaskValidationException when the queue is null, blank or unknown, the cursor is malformed or the
-     *     limit is below 1
+     * @throws TaskValidationException when the state is null, the queue is null, blank or unknown, the cursor is
+     *     malformed or the limit is below 1
      */
     TaskViewPage tasks(TaskState state, String queue, String cursor, int limit);
 

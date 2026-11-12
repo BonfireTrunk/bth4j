@@ -21,11 +21,12 @@ public sealed interface Uniqueness {
      */
     record KeepFor(Duration duration) implements Uniqueness {
         public KeepFor {
-            if (duration == null || duration.toMillis() < 1) {
-                throw new TaskValidationException("duration must be at least 1 ms");
-            }
-            if (duration.compareTo(MAX_KEEP_FOR) > 0) {
+            // compared before the conversion, which overflows for a duration such as ChronoUnit.FOREVER
+            if (duration != null && duration.compareTo(MAX_KEEP_FOR) > 0) {
                 throw new TaskValidationException("duration must be at most " + MAX_KEEP_FOR);
+            }
+            if (duration == null || !duration.isPositive() || duration.toMillis() < 1) {
+                throw new TaskValidationException("duration must be at least 1 ms");
             }
         }
     }

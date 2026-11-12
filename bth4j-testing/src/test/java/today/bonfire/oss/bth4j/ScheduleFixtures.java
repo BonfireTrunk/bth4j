@@ -49,7 +49,8 @@ final class ScheduleFixtures {
                 .scheduleId(SCHEDULE_ID)
                 .headers(Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT1M"))
                 .build();
-        if (!store.commitSchedule(due, now.plus(Duration.ofDays(36_500)), occurrence)) {
+        if (!store.commitSchedule(due, now.plus(Duration.ofDays(36_500)), occurrence)
+                .isCommitted()) {
             throw new IllegalStateException("the occurrence was not committed");
         }
         store.promote(10);

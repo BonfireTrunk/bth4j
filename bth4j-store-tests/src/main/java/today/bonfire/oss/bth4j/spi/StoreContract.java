@@ -692,7 +692,8 @@ public abstract class StoreContract {
 
         assertThat(store.enqueue(single)).isEqualTo(EnqueueOutcome.STORED);
         assertThat(store.enqueueAll(List.of(batched))).containsExactly(EnqueueOutcome.STORED);
-        assertThat(store.commitSchedule(dueOf("nightly", fire), fire.plusSeconds(60), occurrence))
+        assertThat(store.commitSchedule(dueOf("nightly", fire), fire.plusSeconds(60), occurrence)
+                        .isCommitted())
                 .isTrue();
 
         for (TaskRecord given : List.of(single, batched, occurrence)) {
@@ -714,7 +715,8 @@ public abstract class StoreContract {
 
         assertThat(store.enqueue(single)).isEqualTo(EnqueueOutcome.STORED);
         assertThat(store.enqueueAll(List.of(batched))).containsExactly(EnqueueOutcome.STORED);
-        assertThat(store.commitSchedule(dueOf("nightly", fire), fire.plusSeconds(60), occurrence))
+        assertThat(store.commitSchedule(dueOf("nightly", fire), fire.plusSeconds(60), occurrence)
+                        .isCommitted())
                 .isTrue();
 
         for (TaskRecord given : List.of(single, batched, occurrence)) {
@@ -731,9 +733,11 @@ public abstract class StoreContract {
         TaskRecord named =
                 occurrenceOfNewSchedule("weekly", fire).scheduleId("another").build();
 
-        assertThat(store.commitSchedule(dueOf("nightly", fire), fire.plusSeconds(60), unnamed))
+        assertThat(store.commitSchedule(dueOf("nightly", fire), fire.plusSeconds(60), unnamed)
+                        .isCommitted())
                 .isTrue();
-        assertThat(store.commitSchedule(dueOf("weekly", fire), fire.plusSeconds(60), named))
+        assertThat(store.commitSchedule(dueOf("weekly", fire), fire.plusSeconds(60), named)
+                        .isCommitted())
                 .isTrue();
 
         assertThat(get(unnamed.id()).scheduleId()).isEqualTo("nightly");
@@ -752,7 +756,8 @@ public abstract class StoreContract {
 
         assertThatThrownBy(() -> store.enqueue(single)).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> store.enqueueAll(List.of(sound, batched))).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> store.commitSchedule(due, fire.plusSeconds(60), occurrence))
+        assertThatThrownBy(() -> store.commitSchedule(due, fire.plusSeconds(60), occurrence)
+                        .isCommitted())
                 .isInstanceOf(TaskValidationException.class);
 
         for (TaskRecord given : List.of(single, sound, batched, occurrence)) {
@@ -787,7 +792,8 @@ public abstract class StoreContract {
                 .state(TaskState.SCHEDULED)
                 .revision(848_484)
                 .build();
-        assertThat(store.commitSchedule(due, millis(now().plusSeconds(3600)), occurrence))
+        assertThat(store.commitSchedule(due, millis(now().plusSeconds(3600)), occurrence)
+                        .isCommitted())
                 .isTrue();
         assertStoredAsGiven(occurrence, TaskState.SCHEDULED, "commitSchedule");
     }
@@ -910,7 +916,8 @@ public abstract class StoreContract {
         store.putSchedule(definition("every", "* * * * *"), fire, fire);
         DueSchedule due = store.dueSchedules(fire, 10).get(0);
         TaskRecord occurrence = withRunFields(everyField("five").dueAt(fire)).build();
-        assertThat(store.commitSchedule(due, millis(now().plusSeconds(3600)), occurrence))
+        assertThat(store.commitSchedule(due, millis(now().plusSeconds(3600)), occurrence)
+                        .isCommitted())
                 .isTrue();
         assertStoredAsGiven(occurrence, TaskState.SCHEDULED, "commitSchedule");
     }
@@ -3804,7 +3811,7 @@ public abstract class StoreContract {
         assertThat(revisionOf("nightly")).isEqualTo(revision);
 
         TaskRecord occurrence = occurrence(fire);
-        assertThat(store.commitSchedule(due, next, occurrence)).isTrue();
+        assertThat(store.commitSchedule(due, next, occurrence).isCommitted()).isTrue();
         assertThat(get(occurrence.id()).scheduleId()).isEqualTo("nightly");
         assertThat(store.nextFireTimes()).containsOnly(Map.entry("nightly", next));
     }
@@ -4159,7 +4166,7 @@ public abstract class StoreContract {
         store.putSchedule(definition("nightly", "* * * * *"), fire, fire);
         DueSchedule due = store.dueSchedules(fire, 10).get(0);
         TaskRecord occurrence = occurrence(fire);
-        assertThat(store.commitSchedule(due, next, occurrence)).isTrue();
+        assertThat(store.commitSchedule(due, next, occurrence).isCommitted()).isTrue();
         TaskRecord stored = get(occurrence.id());
         assertThat(stored.state()).isEqualTo(TaskState.SCHEDULED);
         assertThat(stored.dueAt()).isEqualTo(fire);
@@ -4178,7 +4185,8 @@ public abstract class StoreContract {
                 .state(TaskState.SCHEDULED)
                 .revision(123_456)
                 .build();
-        assertThat(store.commitSchedule(due, millis(now().plusSeconds(3600)), occurrence))
+        assertThat(store.commitSchedule(due, millis(now().plusSeconds(3600)), occurrence)
+                        .isCommitted())
                 .isTrue();
         assertThat(get(occurrence.id()).revision()).isEqualTo(123_456);
     }
@@ -4189,9 +4197,9 @@ public abstract class StoreContract {
         Instant next = millis(now().plusSeconds(3600));
         store.putSchedule(definition("nightly", "* * * * *"), fire, fire);
         DueSchedule due = store.dueSchedules(fire, 10).get(0);
-        assertThat(store.commitSchedule(due, next, occurrence(fire))).isTrue();
+        assertThat(store.commitSchedule(due, next, occurrence(fire))).isEqualTo(CommitOutcome.STORED);
         TaskRecord again = occurrence(fire);
-        assertThat(store.commitSchedule(due, next.plusSeconds(60), again)).isFalse();
+        assertThat(store.commitSchedule(due, next.plusSeconds(60), again)).isEqualTo(CommitOutcome.NOT_COMMITTED);
         assertThat(store.task(again.id())).isEmpty();
         assertThat(store.nextFireTimes()).containsOnly(Map.entry("nightly", next));
     }
@@ -4203,11 +4211,12 @@ public abstract class StoreContract {
         DueSchedule due = store.dueSchedules(fire, 10).get(0);
         store.putSchedule(changedData("nightly", "* * * * *"), fire, fire);
         TaskRecord occurrence = occurrence(fire);
-        assertThat(store.commitSchedule(due, fire.plusSeconds(60), occurrence)).isFalse();
+        assertThat(store.commitSchedule(due, fire.plusSeconds(60), occurrence).isCommitted())
+                .isFalse();
         assertThat(store.task(occurrence.id())).isEmpty();
         DueSchedule fresh = store.dueSchedules(fire, 10).get(0);
         assertThat(store.deleteSchedule("nightly")).isTrue();
-        assertThat(store.commitSchedule(fresh, fire.plusSeconds(60), occurrence))
+        assertThat(store.commitSchedule(fresh, fire.plusSeconds(60), occurrence).isCommitted())
                 .isFalse();
     }
 
@@ -4222,7 +4231,7 @@ public abstract class StoreContract {
         AtomicInteger turn = new AtomicInteger();
         List<Boolean> results = runConcurrently(2, () -> {
             TaskRecord mine = turn.getAndIncrement() == 0 ? a : b;
-            return store.commitSchedule(due, next, mine);
+            return store.commitSchedule(due, next, mine).isCommitted();
         });
         assertThat(results).containsExactlyInAnyOrder(true, false);
         long stored = List.of(a, b).stream()
@@ -4243,7 +4252,8 @@ public abstract class StoreContract {
                 .dueAt(fire)
                 .state(TaskState.SCHEDULED)
                 .build();
-        assertThat(store.commitSchedule(due, millis(now().plusSeconds(3600)), occurrence))
+        assertThat(store.commitSchedule(due, millis(now().plusSeconds(3600)), occurrence)
+                        .isCommitted())
                 .isFalse();
         assertThat(store.nextFireTimes()).containsOnly(Map.entry("nightly", fire));
         assertThat(get(taken).state()).isEqualTo(TaskState.QUEUED);
@@ -4258,13 +4268,15 @@ public abstract class StoreContract {
         DueSchedule due = dueOf("a", fire);
         TaskRecord occurrence =
                 fixedDelayOccurrence("a", fire).toBuilder().id(taken).build();
-        assertThat(store.commitSchedule(due, parkedFire(), occurrence)).isFalse();
+        assertThat(store.commitSchedule(due, parkedFire(), occurrence).isCommitted())
+                .isFalse();
         assertThat(nextFireOf("a")).isEqualTo(fire);
         assertThat(get(taken).uniqueKey()).isNull();
 
         TaskRecord fresh = fixedDelayOccurrence("a", fire);
         Instant parked = parkedFire();
-        assertThat(store.commitSchedule(dueOf("a", fire), parked, fresh)).isTrue();
+        assertThat(store.commitSchedule(dueOf("a", fire), parked, fresh).isCommitted())
+                .isTrue();
         assertThat(get(fresh.id()).state()).isEqualTo(TaskState.SCHEDULED);
         assertThat(nextFireOf("a")).isEqualTo(parked);
     }
@@ -5207,7 +5219,8 @@ public abstract class StoreContract {
         Instant fire = millis(now().plusSeconds(1));
         for (String id : List.of("failed", "cancelled")) {
             store.putSchedule(fullDefinition(id), fire, fire);
-            assertThat(store.commitSchedule(dueOf(id, fire), parkedFire(), fixedDelayOccurrence(id, fire)))
+            assertThat(store.commitSchedule(dueOf(id, fire), parkedFire(), fixedDelayOccurrence(id, fire))
+                            .isCommitted())
                     .isTrue();
         }
         advance(Duration.ofMillis(1100));
@@ -5519,7 +5532,17 @@ public abstract class StoreContract {
         DueSchedule due = dueOf(scheduleId, now());
         assertThat(due.fireAt()).isEqualTo(expectedFire);
         TaskRecord occurrence = runnerOccurrence(due);
-        assertThat(store.commitSchedule(due, nextFire, occurrence)).isTrue();
+        assertThat(store.commitSchedule(due, nextFire, occurrence).isCommitted())
+                .isTrue();
+        return occurrence;
+    }
+
+    private TaskRecord commitRunnerFire(
+            String scheduleId, Instant expectedFire, Instant nextFire, CommitOutcome expected) {
+        DueSchedule due = dueOf(scheduleId, now());
+        assertThat(due.fireAt()).isEqualTo(expectedFire);
+        TaskRecord occurrence = runnerOccurrence(due);
+        assertThat(store.commitSchedule(due, nextFire, occurrence)).isEqualTo(expected);
         return occurrence;
     }
 
@@ -5539,7 +5562,8 @@ public abstract class StoreContract {
             List<TaskRecord> committed = new ArrayList<>();
             for (DueSchedule due : store.dueSchedules(now(), 100)) {
                 TaskRecord occurrence = runnerOccurrence(due);
-                if (store.commitSchedule(due, due.fireAt().plusSeconds(3600), occurrence)) {
+                if (store.commitSchedule(due, due.fireAt().plusSeconds(3600), occurrence)
+                        .isCommitted()) {
                     committed.add(occurrence);
                 }
             }
@@ -5589,7 +5613,7 @@ public abstract class StoreContract {
         assertThat(occurrence.state()).isEqualTo(TaskState.QUEUED);
 
         Instant before = now();
-        assertThat(store.commitSchedule(due, next, occurrence)).isTrue();
+        assertThat(store.commitSchedule(due, next, occurrence).isCommitted()).isTrue();
         Instant after = now();
 
         assertStoredAsGiven(occurrence, TaskState.SCHEDULED, "a commit for a fire in the past");
@@ -5642,7 +5666,7 @@ public abstract class StoreContract {
         assertThat(occurrence.uniqueKey()).isEqualTo("sched:fixed");
         Instant parked = neverAfter(fire);
 
-        assertThat(store.commitSchedule(due, parked, occurrence)).isTrue();
+        assertThat(store.commitSchedule(due, parked, occurrence).isCommitted()).isTrue();
 
         assertStoredAsGiven(occurrence, TaskState.SCHEDULED, "a fixed-delay commit for a fire in the past");
         assertThat(store.taskByKey("sched:fixed")).contains(get(occurrence.id()));
@@ -5691,24 +5715,27 @@ public abstract class StoreContract {
                 base);
         long revision = revisionOf("overlap");
 
-        TaskRecord holder = commitRunnerFire("overlap", base, base.plusSeconds(1));
+        TaskRecord holder = commitRunnerFire("overlap", base, base.plusSeconds(1), CommitOutcome.STORED);
         assertStoredAsGiven(holder, TaskState.SCHEDULED, "the first fire");
         assertThat(store.taskByKey("sched:overlap")).contains(get(holder.id()));
 
-        TaskRecord skippedWhileScheduled = commitRunnerFire("overlap", base.plusSeconds(1), base.plusSeconds(2));
+        TaskRecord skippedWhileScheduled =
+                commitRunnerFire("overlap", base.plusSeconds(1), base.plusSeconds(2), CommitOutcome.SKIPPED);
         assertThat(store.task(skippedWhileScheduled.id())).isEmpty();
         assertThat(nextFireOf("overlap")).isEqualTo(base.plusSeconds(2));
         assertStoredAsGiven(holder, TaskState.SCHEDULED, "a skipped fire while the holder is scheduled");
 
         assertThat(store.promote(10).moved()).isEqualTo(1);
-        TaskRecord skippedWhileQueued = commitRunnerFire("overlap", base.plusSeconds(2), base.plusSeconds(3));
+        TaskRecord skippedWhileQueued =
+                commitRunnerFire("overlap", base.plusSeconds(2), base.plusSeconds(3), CommitOutcome.SKIPPED);
         assertThat(store.task(skippedWhileQueued.id())).isEmpty();
         assertThat(nextFireOf("overlap")).isEqualTo(base.plusSeconds(3));
         assertThat(get(holder.id()).state()).isEqualTo(TaskState.QUEUED);
 
         TaskRecord running = claimOne();
         assertThat(running.id()).isEqualTo(holder.id());
-        TaskRecord skippedWhileLeased = commitRunnerFire("overlap", base.plusSeconds(3), base.plusSeconds(4));
+        TaskRecord skippedWhileLeased =
+                commitRunnerFire("overlap", base.plusSeconds(3), base.plusSeconds(4), CommitOutcome.SKIPPED);
         assertThat(store.task(skippedWhileLeased.id())).isEmpty();
         assertThat(nextFireOf("overlap")).isEqualTo(base.plusSeconds(4));
         assertThat(get(holder.id())).isEqualTo(running);
@@ -5717,7 +5744,7 @@ public abstract class StoreContract {
 
         assertThat(store.ack(running.id(), running.revision(), true, true, null))
                 .isTrue();
-        TaskRecord next = commitRunnerFire("overlap", base.plusSeconds(4), base.plusSeconds(5));
+        TaskRecord next = commitRunnerFire("overlap", base.plusSeconds(4), base.plusSeconds(5), CommitOutcome.STORED);
         assertStoredAsGiven(next, TaskState.SCHEDULED, "the fire after the holder ended");
         assertThat(store.taskByKey("sched:overlap")).contains(get(next.id()));
         assertThat(revisionOf("overlap")).isEqualTo(revision);
@@ -5860,7 +5887,8 @@ public abstract class StoreContract {
                     .containsExactly(EnqueueOutcome.STORED, EnqueueOutcome.STORED);
             store.putSchedule(definition(occurrence.scheduleId(), "* * * * *"), fire, fire);
             assertThat(store.commitSchedule(
-                            dueOf(occurrence.scheduleId(), now()), millis(now().plusSeconds(3600)), occurrence))
+                                    dueOf(occurrence.scheduleId(), now()), millis(now().plusSeconds(3600)), occurrence)
+                            .isCommitted())
                     .isTrue();
 
             assertLargestStored(single, TaskState.QUEUED, kind + " enqueue");
@@ -6121,7 +6149,7 @@ public abstract class StoreContract {
                 assertThat(occurrence.maxRunTime()).isEqualTo(Duration.ofMillis(Integer.MAX_VALUE));
                 assertThat(occurrence.payloadVersion()).isEqualTo(Integer.MAX_VALUE);
                 Instant next = fixedDelay ? neverAfter(fire) : fire.plusSeconds(300);
-                assertThat(store.commitSchedule(due, next, occurrence))
+                assertThat(store.commitSchedule(due, next, occurrence).isCommitted())
                         .as("commit of %s", path)
                         .isTrue();
                 assertLargestStored(occurrence, TaskState.SCHEDULED, path + " occurrence");
@@ -6275,7 +6303,8 @@ public abstract class StoreContract {
         DueSchedule due = store.dueSchedules(fire, 10).get(0);
         assertThat(store.pauseSchedule("nightly")).isTrue();
         TaskRecord occurrence = occurrence(fire);
-        assertThat(store.commitSchedule(due, fire.plusSeconds(60), occurrence)).isFalse();
+        assertThat(store.commitSchedule(due, fire.plusSeconds(60), occurrence).isCommitted())
+                .isFalse();
         assertThat(store.task(occurrence.id())).isEmpty();
         assertThat(store.nextFireTimes()).containsOnly(Map.entry("nightly", fire));
     }
@@ -6331,7 +6360,8 @@ public abstract class StoreContract {
         assertThat(due.fireAt()).isEqualTo(sooner);
         assertThat(store.triggerSchedule("nightly", fire)).isTrue();
         TaskRecord occurrence = occurrence(sooner);
-        assertThat(store.commitSchedule(due, fire.plusSeconds(60), occurrence)).isFalse();
+        assertThat(store.commitSchedule(due, fire.plusSeconds(60), occurrence).isCommitted())
+                .isFalse();
         assertThat(store.task(occurrence.id())).isEmpty();
         assertThat(store.dueSchedules(sooner, 10)).isEmpty();
     }
@@ -6386,7 +6416,8 @@ public abstract class StoreContract {
         Instant next = asked.plusSeconds(60);
 
         DueSchedule due = dueOf("commit", asked);
-        assertThat(store.commitSchedule(due, next, runnerOccurrence(due))).isTrue();
+        assertThat(store.commitSchedule(due, next, runnerOccurrence(due)).isCommitted())
+                .isTrue();
         assertThat(store.setNextFire("runner-write", revisionOf("runner-write"), asked, next))
                 .isTrue();
         store.putSchedule(definition("other-timing", "0 * * * *"), next, next);
@@ -6622,7 +6653,8 @@ public abstract class StoreContract {
         store.putSchedule(fullDefinition(scheduleId), fire, fire);
         DueSchedule due = dueOf(scheduleId, fire);
         TaskRecord occurrence = fixedDelayOccurrence(scheduleId, fire);
-        assertThat(store.commitSchedule(due, parkedFire(), occurrence)).isTrue();
+        assertThat(store.commitSchedule(due, parkedFire(), occurrence).isCommitted())
+                .isTrue();
         return occurrence;
     }
 
@@ -6775,7 +6807,7 @@ public abstract class StoreContract {
         DueSchedule due = dueOf("a", trigger);
         TaskRecord second = fixedDelayOccurrence("a", trigger);
         Instant parked = parkedFire();
-        assertThat(store.commitSchedule(due, parked, second)).isTrue();
+        assertThat(store.commitSchedule(due, parked, second).isCommitted()).isTrue();
         assertThat(store.task(second.id())).isEmpty();
         assertThat(nextFireOf("a")).isEqualTo(parked);
 
@@ -6793,7 +6825,8 @@ public abstract class StoreContract {
         assertThat(store.triggerSchedule("a", trigger)).isTrue();
         TaskRecord second =
                 task().scheduleId("a").dueAt(trigger).state(TaskState.SCHEDULED).build();
-        assertThat(store.commitSchedule(dueOf("a", trigger), parkedFire(), second))
+        assertThat(store.commitSchedule(dueOf("a", trigger), parkedFire(), second)
+                        .isCommitted())
                 .isTrue();
         Instant late = millis(now().plusSeconds(5000));
         assertThat(store.ack(first.id(), first.revision(), true, true, ScheduleEffect.rearm("a", first.id(), late)))
@@ -6919,7 +6952,8 @@ public abstract class StoreContract {
         advance(Duration.ofSeconds(2));
         TaskRecord second = fixedDelayOccurrence("a", next);
         Instant parked = parkedFire();
-        assertThat(store.commitSchedule(dueOf("a", next), parked, second)).isTrue();
+        assertThat(store.commitSchedule(dueOf("a", next), parked, second).isCommitted())
+                .isTrue();
         assertThat(store.task(second.id())).isEmpty();
         assertThat(nextFireOf("a")).isEqualTo(parked);
 
@@ -6938,7 +6972,8 @@ public abstract class StoreContract {
         TaskRecord first = fixedDelayOccurrence("a", fire).toBuilder()
                 .keyKeep(Duration.ofHours(1))
                 .build();
-        assertThat(store.commitSchedule(dueOf("a", fire), parkedFire(), first)).isTrue();
+        assertThat(store.commitSchedule(dueOf("a", fire), parkedFire(), first).isCommitted())
+                .isTrue();
         advance(Duration.ofSeconds(2));
         store.promote(10);
         TaskRecord running = claimOne();
@@ -6949,7 +6984,8 @@ public abstract class StoreContract {
 
         TaskRecord second = fixedDelayOccurrence("a", next);
         Instant parked = parkedFire();
-        assertThat(store.commitSchedule(dueOf("a", next), parked, second)).isTrue();
+        assertThat(store.commitSchedule(dueOf("a", next), parked, second).isCommitted())
+                .isTrue();
         assertThat(store.task(second.id())).isEmpty();
 
         assertThat(store.putSchedule(fullDefinition("a"), parked, parked).outcome())
@@ -6965,7 +7001,8 @@ public abstract class StoreContract {
         advance(Duration.ofSeconds(2));
         TaskRecord second = fixedDelayOccurrence("a", fire);
         Instant parked = parkedFire();
-        assertThat(store.commitSchedule(dueOf("a", fire), parked, second)).isTrue();
+        assertThat(store.commitSchedule(dueOf("a", fire), parked, second).isCommitted())
+                .isTrue();
         assertThat(store.task(second.id())).isEmpty();
         assertThat(nextFireOf("a")).isEqualTo(parked);
 
@@ -8118,7 +8155,8 @@ public abstract class StoreContract {
                     .uniqueKey(key)
                     .state(TaskState.SCHEDULED)
                     .build();
-            assertThat(store.commitSchedule(awkwardDueSchedule(text, fire), next, occurrence))
+            assertThat(store.commitSchedule(awkwardDueSchedule(text, fire), next, occurrence)
+                            .isCommitted())
                     .as("commit %s", text)
                     .isTrue();
             TaskRecord stored = get(occurrence.id());
@@ -8137,7 +8175,8 @@ public abstract class StoreContract {
                     .uniqueKey(key)
                     .state(TaskState.SCHEDULED)
                     .build();
-            assertThat(store.commitSchedule(awkwardDueSchedule(text, fire), next, overlapping))
+            assertThat(store.commitSchedule(awkwardDueSchedule(text, fire), next, overlapping)
+                            .isCommitted())
                     .as("overlapping commit %s", text)
                     .isTrue();
             assertThat(store.task(overlapping.id()))
@@ -8418,7 +8457,7 @@ public abstract class StoreContract {
                         .dueAt(d.fireAt())
                         .state(TaskState.SCHEDULED)
                         .build();
-                assertThat(store.commitSchedule(d, far, occurrence))
+                assertThat(store.commitSchedule(d, far, occurrence).isCommitted())
                         .as("commit %s", d.scheduleId())
                         .isTrue();
                 seen.add(d.scheduleId());

@@ -93,8 +93,11 @@ public final class AdminHttpServer implements AutoCloseable {
     private final LoginThrottle addressThrottle;
     private final LoginThrottle userThrottle;
     private final ClientAddress clientAddress;
-    /** Keys the hash the user throttle counts by, so that it holds no user names, also none that were only guessed. */
-    private final byte[] userKeySalt = randomBytes();
+    /**
+     * Keys the hashes the throttles count by, so that they hold no user names, also none that were only guessed,
+     * and no client addresses.
+     */
+    private final byte[] throttleKeySalt = randomBytes();
 
     private final AtomicBoolean forwardedHeaderIgnored = new AtomicBoolean();
     // an unknown user is checked like a known one, so the reply time does not tell which names exist
@@ -213,6 +216,7 @@ public final class AdminHttpServer implements AutoCloseable {
     }
 
     private void handle(HttpExchange ex) throws IOException {
+        var actor = new Sessions.Session[1];
         try {
             ex.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
             var origin = applyCors(ex);
@@ -221,7 +225,7 @@ public final class AdminHttpServer implements AutoCloseable {
             if ("OPTIONS".equals(method)) {
                 preflight(ex, origin);
             } else if (path.equals(API) || path.startsWith(API + "/")) {
-                api(ex, method, path.substring(API.length()));
+                api(ex, method, path.substring(API.length()), actor);
             } else if (path.startsWith("/api/")) {
                 throw new HttpError(404, "not found");
             } else if (method.equals("GET")) {
@@ -256,8 +260,37 @@ public final class AdminHttpServer implements AutoCloseable {
                 // the response may already be committed; the failure is logged above
             }
         } finally {
+            if (actor[0] != null) {
+                securityLog(
+                        "Admin action {} {} by {} ({}) answered {}",
+                        ex.getRequestMethod(),
+                        auditedRoute(ex.getRequestURI().getRawPath()),
+                        actor[0].user(),
+                        actor[0].role(),
+                        ex.getResponseCode());
+            }
             ex.close();
         }
+    }
+
+    /**
+     * The one place that writes who signed in, who was refused and who changed what. A line names the signed-in
+     * user, or the keyed hash of a name that was only tried, and where the request came from; never a password,
+     * a token, a unique key or a request body.
+     */
+    private static void securityLog(String format, Object... arguments) {
+        log.info(format, arguments);
+    }
+
+    /** {@link #routeTemplate} that keeps a task id, which is a number and says which task an action changed. */
+    static String auditedRoute(String rawPath) {
+        var template = routeTemplate(rawPath);
+        var parts = rawPath.split("/");
+        // "", "api", "v1", "tasks", id
+        if (parts.length >= 5 && parts[3].equals("tasks") && parts[4].matches("[0-9]{1,19}")) {
+            return template.replaceFirst("\\{}", parts[4]);
+        }
+        return template;
     }
 
     private String applyCors(HttpExchange ex) {
@@ -282,7 +315,8 @@ public final class AdminHttpServer implements AutoCloseable {
         ex.sendResponseHeaders(204, -1);
     }
 
-    private void api(HttpExchange ex, String method, String rest) throws IOException {
+    /** @param actor receives the session of a request that asks for a change, for the security log */
+    private void api(HttpExchange ex, String method, String rest, Sessions.Session[] actor) throws IOException {
         var segments = segments(rest);
         if (method.equals("POST") && segments.equals(List.of("session"))) {
             login(ex);
@@ -292,6 +326,7 @@ public final class AdminHttpServer implements AutoCloseable {
         var logout = method.equals("DELETE") && segments.equals(List.of("session"));
         var mutation = method.equals("POST") || method.equals("DELETE");
         if (mutation) {
+            actor[0] = session;
             var sent = ex.getRequestHeaders().getFirst(CSRF_HEADER);
             if (sent == null
                     || !MessageDigest.isEqual(
@@ -399,9 +434,11 @@ public final class AdminHttpServer implements AutoCloseable {
     }
 
     private void login(HttpExchange ex) throws IOException {
-        var address = ClientAddress.throttleKey(clientAddress(ex));
+        var client = clientAddress(ex);
+        var address = HexFormat.of().formatHex(digest(throttleKeySalt, ClientAddress.throttleKey(client)));
         var wait = addressThrottle.attempt(address);
         if (wait > 0) {
+            securityLog("Admin sign-in refused, too many attempts from {}", client.getHostAddress());
             throw tooManyLogins(ex, wait);
         }
         var body = readObject(ex);
@@ -409,21 +446,28 @@ public final class AdminHttpServer implements AutoCloseable {
             throw new HttpError(400, "user and password are required");
         }
         // counted for every name, known or not, so that a block does not tell which users exist
-        var userKey = HexFormat.of().formatHex(digest(userKeySalt, name));
+        var userKey = HexFormat.of().formatHex(digest(throttleKeySalt, name));
         wait = userThrottle.attempt(userKey);
         if (wait > 0) {
             addressThrottle.takeBack(address);
+            securityLog(
+                    "Admin sign-in refused, too many attempts for the user with key {}, from {}",
+                    userKey,
+                    client.getHostAddress());
             throw tooManyLogins(ex, wait);
         }
         var user = users.get(name);
         var checked = user == null ? dummyUser : user;
         var matches = MessageDigest.isEqual(digest(checked.salt(), password), checked.digest());
         if (user == null || !matches) {
+            // one line for an unknown user and for a wrong password, so that the log does not tell which names exist
+            securityLog("Admin sign-in refused for the user with key {}, from {}", userKey, client.getHostAddress());
             throw new HttpError(401, "invalid credentials");
         }
         addressThrottle.takeBack(address);
         userThrottle.takeBack(userKey);
         var session = sessions.create(name, user.role());
+        securityLog("Admin sign-in of {} ({}) from {}", name, user.role(), client.getHostAddress());
         ex.getResponseHeaders().add("Set-Cookie", sessionCookie(session.token(), sessionTtl.toSeconds()));
         sendJson(
                 ex,

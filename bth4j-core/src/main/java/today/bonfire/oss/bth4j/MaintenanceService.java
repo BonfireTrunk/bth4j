@@ -342,6 +342,12 @@ class MaintenanceService extends CustomThread {
         return !executor.isShutdown();
     }
 
+    /** The thread only schedules the jobs and ends at once; a job still in a store call runs on the executor. */
+    @Override
+    boolean isDone() {
+        return !isAlive() && executor.isTerminated();
+    }
+
     static class Builder {
         private ThreadGroup group;
         private String threadName;

@@ -1721,7 +1721,7 @@ class RedisTaskStoreIT {
         var due = store.dueSchedules(Instant.now(), 10).getFirst();
         var occurrence = task(50).scheduleId("s").dueAt(fire).build();
 
-        assertThat(store.commitSchedule(due, next, occurrence)).isTrue();
+        assertThat(store.commitSchedule(due, next, occurrence).isCommitted()).isTrue();
 
         var stored = store.task(50).orElseThrow();
         assertThat(stored.state()).isEqualTo(TaskState.SCHEDULED);
@@ -1729,7 +1729,8 @@ class RedisTaskStoreIT {
         assertThat(stored.scheduleId()).isEqualTo("s");
         assertThat(store.nextFireTimes()).containsEntry("s", next);
         assertThat(jedis.zscore(keys.scheduled(queue), "50")).isEqualTo((double) fire.toEpochMilli());
-        assertThat(store.commitSchedule(due, next.plusSeconds(60), task(51).build()))
+        assertThat(store.commitSchedule(due, next.plusSeconds(60), task(51).build())
+                        .isCommitted())
                 .isFalse();
         assertThat(store.task(51)).isEmpty();
         assertThat(store.promote(10).moved()).isEqualTo(1);
@@ -1742,12 +1743,14 @@ class RedisTaskStoreIT {
         var due = store.dueSchedules(Instant.now(), 10).getFirst();
         store.putSchedule(otherData("s", "* * * * *"), fire, fire);
 
-        assertThat(store.commitSchedule(due, fire.plusSeconds(60), task(60).build()))
+        assertThat(store.commitSchedule(due, fire.plusSeconds(60), task(60).build())
+                        .isCommitted())
                 .isFalse();
 
         var fresh = store.dueSchedules(Instant.now(), 10).getFirst();
         store.deleteSchedule("s");
-        assertThat(store.commitSchedule(fresh, fire.plusSeconds(60), task(61).build()))
+        assertThat(store.commitSchedule(fresh, fire.plusSeconds(60), task(61).build())
+                        .isCommitted())
                 .isFalse();
         assertThat(store.task(60)).isEmpty();
         assertThat(store.task(61)).isEmpty();

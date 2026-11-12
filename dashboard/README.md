@@ -1,7 +1,7 @@
 # bth4j dashboard
 
 A static single-page operator dashboard for the bth4j admin HTTP API. No build step, no package manager:
-`index.html`, `app.css`, `api.js`, `ui.js`, `app.js` and `pages/*.js` (plain ES modules).
+`index.html`, `config.js`, `app.css`, `api.js`, `ui.js`, `app.js`, `pages/*.js` (plain ES modules) and `vendor/` (Vue).
 
 Pages: overview, queues, tasks (filter, cursor paging, detail), dead tasks, schedules, runners, issues.
 Runners shows each runner's queues, registered types and accepting state (`accepting` from the API).
@@ -31,10 +31,10 @@ Then browse to `http://127.0.0.1:8787/`.
 
 ### Any static host
 
-Serve the directory from any static host and tell the page where the API lives, in `index.html`:
+Serve the directory from any static host and tell the page where the API lives, in `config.js`. It is a file of its own because the admin server's content security policy blocks inline scripts:
 
-```html
-<script>window.BTH4J_API = "https://host:8787";</script>
+```js
+window.BTH4J_API = "https://host:8787";
 ```
 
 The admin server must then allow the dashboard's origin (`.addCorsOrigin("https://dashboard.example.com")`).

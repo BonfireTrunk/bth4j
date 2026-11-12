@@ -306,6 +306,28 @@ class RecurringTaskServiceTest {
     }
 
     @Test
+    void anOccurrenceThatIsGoneRightAfterItsFireStillCountsAsFiredAndNotAsSkipped() throws Exception {
+        register(definition("0 * * * *", null, 0, true), T0);
+        var removed = new ArrayList<Long>();
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            var result = real.proceed();
+            if (method.equals("commitSchedule")) {
+                var occurrence = (TaskRecord) args[2];
+                assertThat(store.delete(occurrence.id(), occurrence.revision(), null))
+                        .isEqualTo(DeleteOutcome.DELETED);
+                removed.add(occurrence.id());
+            }
+            return result;
+        });
+
+        round();
+
+        assertThat(removed).hasSize(1);
+        assertThat(events).containsExactly(new TaskEvent.ScheduleFired(ID, removed.getFirst(), T0));
+        assertThat(status.issues()).isEmpty();
+    }
+
+    @Test
     void anOccurrenceSkippedBecauseThePreviousOneIsRunningRaisesAnIssueAndNoFireEvent() throws Exception {
         register(definition("0 * * * *", null, 0, true), T0);
         round();

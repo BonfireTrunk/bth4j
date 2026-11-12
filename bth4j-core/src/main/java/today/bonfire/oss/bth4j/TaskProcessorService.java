@@ -46,6 +46,7 @@ class TaskProcessorService extends CustomThread {
     private final int runnerId;
     private final Duration lease;
     private final Duration renewInterval;
+    private final Duration maxRunTimeCheckInterval;
     private final Duration defaultMaxRunTime;
     private final Duration idlePollInterval;
     private final int claimBatchSize;
@@ -62,6 +63,9 @@ class TaskProcessorService extends CustomThread {
     private volatile Thread renewer;
     private volatile boolean renewalRunning = true;
 
+    /** How often running attempts are checked against their maximum run time, when a renewal period is longer. */
+    private static final Duration MAX_RUN_TIME_CHECK_INTERVAL = Duration.ofSeconds(1);
+
     private TaskProcessorService(Builder b) {
         super(b.group, b.threadName);
         this.executor = b.executor;
@@ -76,6 +80,8 @@ class TaskProcessorService extends CustomThread {
         this.reservations = b.reservations;
         this.lease = b.lease;
         this.renewInterval = Duration.ofMillis(Math.max(100, lease.toMillis() / 3));
+        this.maxRunTimeCheckInterval =
+                renewInterval.compareTo(MAX_RUN_TIME_CHECK_INTERVAL) < 0 ? renewInterval : MAX_RUN_TIME_CHECK_INTERVAL;
         this.defaultMaxRunTime = b.defaultMaxRunTime;
         this.idlePollInterval = b.idlePollInterval;
         this.claimBatchSize = b.claimBatchSize;
@@ -392,14 +398,32 @@ class TaskProcessorService extends CustomThread {
     }
 
     private void renewLeases() {
+        long renewAt = System.nanoTime() + renewInterval.toNanos();
         while (renewalRunning) {
-            sleepQuietly(renewInterval);
+            sleepQuietly(maxRunTimeCheckInterval);
             try {
-                renewOnce();
+                if (System.nanoTime() - renewAt >= 0) {
+                    renewAt = System.nanoTime() + renewInterval.toNanos();
+                    renewOnce();
+                } else {
+                    cancelOverrunning();
+                }
             } catch (RuntimeException | Error e) {
                 // an Error ending this thread would stop every renewal while the runner reports RUNNING
                 log.error("Lease renewal round failed, retrying in {}", renewInterval, e);
             }
+        }
+    }
+
+    /**
+     * Requests cancellation of the attempts past their maximum run time, without a store call. It runs between
+     * two renewal rounds, so that a maximum run time shorter than a renewal period is not noticed a whole period
+     * late.
+     */
+    void cancelOverrunning() {
+        var now = settings.clock().instant();
+        for (var e : admission.attempts()) {
+            if (!e.reporting()) cancelIfOverrunning(e, now);
         }
     }
 

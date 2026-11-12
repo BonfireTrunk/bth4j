@@ -95,6 +95,32 @@ class TaskProcessorOverrunTest {
     }
 
     @Test
+    void anAttemptPastItsMaxRunTimeIsCancelledBetweenTwoRenewalRoundsWithoutAStoreCall() throws Exception {
+        var processor = processor(DEFAULT_MAX_RUN_TIME);
+        long id = startStuckAttempt(processor, TaskRequest.of(TYPE).build());
+        var leasedUntil = store.task(id).orElseThrow().leaseUntil();
+
+        clock.advance(DEFAULT_MAX_RUN_TIME);
+        processor.cancelOverrunning();
+        assertThat(context.get().isCancelRequested())
+                .as("at the maximum run time")
+                .isFalse();
+
+        clock.advance(Duration.ofMillis(1));
+        processor.cancelOverrunning();
+
+        assertThat(context.get().isCancelRequested()).isTrue();
+        assertThat(store.task(id).orElseThrow().leaseUntil()).as("not renewed").isEqualTo(leasedUntil);
+
+        clock.advance(RENEW_INTERVAL);
+        processor.renewOnce();
+
+        assertThat(reservations.abandoned())
+                .as("one renewal period after the cancel request")
+                .isEqualTo(1);
+    }
+
+    @Test
     void anAttemptPastTheDefaultMaxRunTimeIsCancelledThenAbandonedOnce() throws Exception {
         var processor = processor(DEFAULT_MAX_RUN_TIME);
         long id = startStuckAttempt(processor, TaskRequest.of(TYPE).build());

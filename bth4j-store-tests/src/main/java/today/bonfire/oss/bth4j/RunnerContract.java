@@ -437,6 +437,25 @@ public abstract class RunnerContract {
     }
 
     @Test
+    void aStepWhoseResultIsTooLongToRecordEndsTheTaskAndItsBodyDoesNotRunAgain() {
+        var bodies = new AtomicInteger();
+        startRunner(r -> r.register(
+                VOID_TYPE,
+                (ctx, payload) -> ctx.step("big", String.class, () -> {
+                    bodies.incrementAndGet();
+                    return "x".repeat(8193);
+                })));
+
+        long id = enqueue(TaskRequest.of(VOID_TYPE).maxAttempts(3).build());
+
+        var dead = awaitState(id, TaskState.DEAD);
+        assertThat(bodies).hasValue(1);
+        assertThat(dead.attempts()).isEqualTo(1);
+        assertThat(dead.lastFailure().message()).isEqualTo("result of step big exceeds 8192 characters");
+        assertThat(dead.steps()).isEmpty();
+    }
+
+    @Test
     void aStepWithAResultOnARunnerWithoutAMapperFailsBeforeItsBodyRuns() {
         var bodies = new AtomicInteger();
         startRunner(

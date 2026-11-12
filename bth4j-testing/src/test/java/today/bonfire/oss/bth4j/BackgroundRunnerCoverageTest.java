@@ -526,6 +526,85 @@ class BackgroundRunnerCoverageTest {
     }
 
     @Test
+    void theRunnerReportsStoppingWhileAMaintenanceJobIsStillInAStoreCall() throws Exception {
+        var release = new CountDownLatch(1);
+        var blocked = new CountDownLatch(1);
+        var observed = StoreInterceptor.around(new InMemoryStore(new MutableClock()), (method, args, real) -> {
+            if (method.equals("reclaim")) {
+                blocked.countDown();
+                awaitUninterruptibly(release);
+            }
+            return real.proceed();
+        });
+        var runner = BackgroundRunner.builder()
+                .store(observed)
+                .shutdownTimeout(Duration.ofMillis(300))
+                .maintenanceCheckInterval(Duration.ofSeconds(1))
+                .build();
+        runner.registry().register(TaskType.of("work"), (context, payload) -> {});
+        try {
+            runner.start();
+            assertThat(blocked.await(5, TimeUnit.SECONDS)).isTrue();
+
+            assertThat(runner.stop()).isFalse();
+
+            assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.STOPPING);
+        } finally {
+            release.countDown();
+        }
+        awaitStatus(runner, RunnerHealth.Status.STOPPED);
+    }
+
+    @Test
+    void aRunnerThatCannotBeBuiltLeavesNoExecutorThreadBehind() {
+        var down = StoreInterceptor.around(new InMemoryStore(new MutableClock()), (method, args, real) -> {
+            if (method.equals("init")) throw new TaskStoreException("the store is down");
+            return real.proceed();
+        });
+        long before = adaptiveExecutorThreads();
+
+        assertThatThrownBy(() -> BackgroundRunner.builder()
+                        .store(down)
+                        .concurrency(Concurrency.adaptive(1, 4))
+                        .build())
+                .isInstanceOf(TaskStoreException.class);
+
+        assertThat(adaptiveExecutorThreads()).isEqualTo(before);
+    }
+
+    private static long adaptiveExecutorThreads() {
+        return Thread.getAllStackTraces().keySet().stream()
+                .filter(t -> t.getName().equals("bth4j-vt-monitor"))
+                .count();
+    }
+
+    @Test
+    void aMaxRunTimeFarShorterThanTheLeaseIsNoticedWithinSeconds() throws Exception {
+        var store = new InMemoryStore(java.time.Clock.systemUTC());
+        var runner = BackgroundRunner.builder().store(store).build();
+        var type = TaskType.of("work");
+        var stopped = new CountDownLatch(1);
+        runner.registry().register(type, (context, payload) -> {
+            var giveUp = System.nanoTime() + Duration.ofSeconds(15).toNanos();
+            while (!context.isCancelRequested() && System.nanoTime() < giveUp) Thread.sleep(10);
+            if (context.isCancelRequested()) stopped.countDown();
+            context.checkCancelled();
+        });
+        try {
+            runner.start();
+            runner.client()
+                    .enqueue(TaskRequest.of(type)
+                            .maxRunTime(Duration.ofMillis(50))
+                            .build());
+
+            // the default lease is renewed every 20 s, which is when the limit was noticed before
+            assertThat(stopped.await(6, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            runner.stop();
+        }
+    }
+
+    @Test
     void aRunnerWithoutQueuesProcessesTheOneQueueCommon() {
         var store = new InMemoryStore(new MutableClock());
         var runner = BackgroundRunner.builder().store(store).build();

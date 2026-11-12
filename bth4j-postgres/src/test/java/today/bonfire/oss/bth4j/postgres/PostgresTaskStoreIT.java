@@ -144,7 +144,8 @@ class PostgresTaskStoreIT {
         sql("UPDATE " + prefix + "_meta SET value = '99' WHERE key = 'schema_version'");
         assertThatThrownBy(store::init)
                 .isInstanceOf(TaskStoreException.class)
-                .hasMessage("schema version 99, this library needs " + PostgresTaskStore.SCHEMA_VERSION);
+                .hasMessage("namespace " + prefix + " has schema version 99, this library needs "
+                        + PostgresTaskStore.SCHEMA_VERSION + " and does not migrate another one");
 
         var other = new PostgresTaskStore(PostgresTestSupport.dataSource(), prefix + "_other");
         sql("CREATE TABLE " + prefix + "_other_meta (key text PRIMARY KEY, value text NOT NULL)");
@@ -985,8 +986,9 @@ class PostgresTaskStoreIT {
                 .encodedPayload(d.definition().encodedPayload())
                 .maxAttempts(4)
                 .build();
-        assertThat(store.commitSchedule(d, nextFire, occurrence)).isTrue();
-        assertThat(store.commitSchedule(d, nextFire, task(newId()).build())).isFalse();
+        assertThat(store.commitSchedule(d, nextFire, occurrence).isCommitted()).isTrue();
+        assertThat(store.commitSchedule(d, nextFire, task(newId()).build()).isCommitted())
+                .isFalse();
 
         var r = get(id);
         assertThat(r.state()).isEqualTo(TaskState.SCHEDULED);
@@ -1020,7 +1022,8 @@ class PostgresTaskStoreIT {
         store.putSchedule(definition("job", "*/5 * * * *"), first.plusSeconds(600), first.plusSeconds(600));
         assertThat(store.nextFireTimes()).containsEntry("job", first.plusSeconds(600));
         assertThat(store.commitSchedule(
-                        d, first.plusSeconds(1200), task(newId()).build()))
+                                d, first.plusSeconds(1200), task(newId()).build())
+                        .isCommitted())
                 .isFalse();
     }
 
@@ -1395,7 +1398,8 @@ class PostgresTaskStoreIT {
         assertThat(store.schedules().getFirst().definition().paused()).isTrue();
         assertThat(store.schedules().getFirst().nextFireAt()).isEqualTo(fireAt);
         assertThat(store.commitSchedule(
-                        due, fireAt.plusSeconds(3600), task(newId()).build()))
+                                due, fireAt.plusSeconds(3600), task(newId()).build())
+                        .isCommitted())
                 .isFalse();
 
         assertThat(store.resumeSchedule("p", null)).isTrue();
@@ -1436,7 +1440,8 @@ class PostgresTaskStoreIT {
         assertThat(store.triggerSchedule("n", later)).isTrue();
         assertThat(store.nextFireTimes()).containsEntry("n", later);
         assertThat(store.commitSchedule(
-                        due, fireAt.plusSeconds(3600), task(newId()).build()))
+                                due, fireAt.plusSeconds(3600), task(newId()).build())
+                        .isCommitted())
                 .isFalse();
         assertThat(store.triggerSchedule("missing", later)).isFalse();
     }
@@ -1448,9 +1453,10 @@ class PostgresTaskStoreIT {
         long first = newId();
         var d1 = store.dueSchedules(Instant.now(), 10).getFirst();
         assertThat(store.commitSchedule(
-                        d1,
-                        fireAt.plusSeconds(1),
-                        task(first).uniqueKey("sched:o").build()))
+                                d1,
+                                fireAt.plusSeconds(1),
+                                task(first).uniqueKey("sched:o").build())
+                        .isCommitted())
                 .isTrue();
         assertThat(store.promote(10).moved()).isEqualTo(1);
 
@@ -1458,9 +1464,10 @@ class PostgresTaskStoreIT {
         var d2 = store.dueSchedules(Instant.now(), 10).getFirst();
         assertThat(d2.fireAt()).isEqualTo(fireAt.plusSeconds(1));
         assertThat(store.commitSchedule(
-                        d2,
-                        fireAt.plusSeconds(2),
-                        task(second).uniqueKey("sched:o").build()))
+                                d2,
+                                fireAt.plusSeconds(2),
+                                task(second).uniqueKey("sched:o").build())
+                        .isCommitted())
                 .isTrue();
 
         assertThat(store.task(second)).isEmpty();
@@ -1472,9 +1479,10 @@ class PostgresTaskStoreIT {
         long third = newId();
         var d3 = store.dueSchedules(Instant.now(), 10).getFirst();
         assertThat(store.commitSchedule(
-                        d3,
-                        fireAt.plusSeconds(3),
-                        task(third).uniqueKey("sched:o").build()))
+                                d3,
+                                fireAt.plusSeconds(3),
+                                task(third).uniqueKey("sched:o").build())
+                        .isCommitted())
                 .isTrue();
         assertThat(get(third).uniqueKey()).isEqualTo("sched:o");
         assertThat(get(third).scheduleId()).isEqualTo("o");
@@ -1597,7 +1605,8 @@ class PostgresTaskStoreIT {
         var due = store.dueSchedules(Instant.now(), 10).getFirst();
         var builder = task(newId());
         if (key != null) builder.uniqueKey(key);
-        assertThat(store.commitSchedule(due, fireAt.plusSeconds(1), builder.build()))
+        assertThat(store.commitSchedule(due, fireAt.plusSeconds(1), builder.build())
+                        .isCommitted())
                 .isTrue();
         assertThat(store.promote(10).moved()).isEqualTo(1);
         return new Occurrence(fireAt, due, claim(1).getFirst());
@@ -1668,7 +1677,8 @@ class PostgresTaskStoreIT {
                 "NEW.occurrence_id IS NOT NULL AND OLD.occurrence_id IS DISTINCT FROM NEW.occurrence_id");
         try {
             assertThatThrownBy(() -> store.commitSchedule(
-                            due, fireAt.plusSeconds(1), task(occurrence).build()))
+                                    due, fireAt.plusSeconds(1), task(occurrence).build())
+                            .isCommitted())
                     .isInstanceOf(TaskStoreException.class);
         } finally {
             healScheduleUpdates();
@@ -1680,7 +1690,8 @@ class PostgresTaskStoreIT {
         assertThat(store.dueSchedules(Instant.now(), 10)).hasSize(1);
 
         assertThat(store.commitSchedule(
-                        due, fireAt.plusSeconds(1), task(occurrence).build()))
+                                due, fireAt.plusSeconds(1), task(occurrence).build())
+                        .isCommitted())
                 .isTrue();
         assertThat(occurrenceOf("commit")).isEqualTo(occurrence);
         assertThat(get(occurrence).scheduleId()).isEqualTo("commit");
@@ -1723,9 +1734,10 @@ class PostgresTaskStoreIT {
             }
 
             var commit = pool.submit(() -> store.commitSchedule(
-                    nextDue,
-                    o.fireAt().plusSeconds(2),
-                    task(skipped).uniqueKey("sched:busy").build()));
+                            nextDue,
+                            o.fireAt().plusSeconds(2),
+                            task(skipped).uniqueKey("sched:busy").build())
+                    .isCommitted());
             awaitLockWaiters(1);
             var ack = pool.submit(() -> store.ack(o.leased().id(), o.leased().revision(), false, false, effect));
             awaitLockWaiters(2);

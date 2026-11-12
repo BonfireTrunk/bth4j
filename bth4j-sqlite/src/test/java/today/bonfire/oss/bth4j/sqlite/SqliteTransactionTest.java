@@ -355,7 +355,8 @@ class SqliteTransactionTest {
         var due = store.dueSchedules(clock.instant(), 10).getFirst();
         var builder = task();
         if (key != null) builder.uniqueKey(key);
-        assertThat(store.commitSchedule(due, fireAt.plusSeconds(1), builder.build()))
+        assertThat(store.commitSchedule(due, fireAt.plusSeconds(1), builder.build())
+                        .isCommitted())
                 .isTrue();
         assertThat(store.promote(10).moved()).isEqualTo(1);
         return new Occurrence(fireAt, due, claim(1).getFirst());
@@ -436,7 +437,8 @@ class SqliteTransactionTest {
         failWrites(
                 "UPDATE", "schedule", "NEW.occurrence_id IS NOT NULL AND OLD.occurrence_id IS NOT NEW.occurrence_id");
         try {
-            assertThatThrownBy(() -> store.commitSchedule(due, fireAt.plusSeconds(1), occurrence))
+            assertThatThrownBy(() -> store.commitSchedule(due, fireAt.plusSeconds(1), occurrence)
+                            .isCommitted())
                     .isInstanceOf(TaskStoreException.class);
         } finally {
             healWrites();
@@ -447,7 +449,8 @@ class SqliteTransactionTest {
         assertThat(store.nextFireTimes()).containsEntry("commit", fireAt);
         assertThat(store.dueSchedules(clock.instant(), 10)).hasSize(1);
 
-        assertThat(store.commitSchedule(due, fireAt.plusSeconds(1), occurrence)).isTrue();
+        assertThat(store.commitSchedule(due, fireAt.plusSeconds(1), occurrence).isCommitted())
+                .isTrue();
         assertThat(occurrenceOf("commit")).isEqualTo(occurrence.id());
         assertThat(get(occurrence.id()).scheduleId()).isEqualTo("commit");
         assertThat(get(occurrence.id()).revision()).isEqualTo(occurrence.revision());

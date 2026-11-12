@@ -60,7 +60,7 @@ unique keys, enqueueing inside your own database transaction, and how to resend 
 | Headers | 8 KiB |
 | An account | at most 128 characters (`TaskRequest.MAX_ACCOUNT_LENGTH`) |
 | A unique key | 1 to 256 characters, not blank, without U+0000, not starting with `sched:` (the keys of schedule occurrences start so) |
-| The key you pass to `taskByKey` and `cancelByKey` | without U+0000; a blank or longer key finds no task |
+| The key you pass to `taskByKey` and `cancelByKey` | not null and without U+0000, or `TaskValidationException`; a blank or longer key finds no task. Over HTTP a blank or longer key is a 400 |
 
 ### Text with U+0000
 

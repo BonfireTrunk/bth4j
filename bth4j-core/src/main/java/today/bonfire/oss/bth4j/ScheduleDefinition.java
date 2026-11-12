@@ -45,7 +45,9 @@ public record ScheduleDefinition<T>(
         StoredText.require("schedule id", id);
         TaskRequest.requireAccount(account);
         if (type == null) throw new TaskValidationException("type is required");
-        if (StringUtils.isBlank(cron) == (fixedDelay == null)) {
+        // a blank cron is no cron: stored as text it would differ from the same definition given with null
+        if (StringUtils.isBlank(cron)) cron = null;
+        if ((cron == null) == (fixedDelay == null)) {
             throw new TaskValidationException("exactly one of cron and fixedDelay is required");
         }
         if (fixedDelay != null && fixedDelay.compareTo(MIN_FIXED_DELAY) < 0) {

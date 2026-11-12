@@ -1,7 +1,7 @@
 # Exceptions
 
 This page lists what bth4j throws, when, and what to do about it. Everything bth4j throws to refuse a call or to report
-a failure of its own extends `Bth4jException`, so one `catch (Bth4jException e)` covers it. All of them are unchecked
+a failure of its own extends `Bth4jException`, so one `catch (Bth4jException e)` covers it. The exception is the two decode helpers for store authors, `TaskState.fromCode` and `RecordJson`, which throw `IllegalArgumentException` for a value they cannot read; the stores turn that into `UnreadableTaskException`. All of them are unchecked
 and live in the package `today.bonfire.oss.bth4j.exceptions`.
 
 ## On this page

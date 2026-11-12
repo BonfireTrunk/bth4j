@@ -39,6 +39,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
+import today.bonfire.oss.bth4j.spi.CommitOutcome;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
@@ -517,8 +518,8 @@ public final class PostgresTaskStore implements FullStore {
                         var rs = ps.executeQuery()) {
                     var version = rs.next() ? rs.getString(1) : null;
                     if (!String.valueOf(SCHEMA_VERSION).equals(version)) {
-                        throw new TaskStoreException(
-                                "schema version " + version + ", this library needs " + SCHEMA_VERSION);
+                        throw new TaskStoreException("namespace " + namespace + " has schema version " + version
+                                + ", this library needs " + SCHEMA_VERSION + " and does not migrate another one");
                     }
                 }
                 // the version row is written last, in the transaction that created everything else
@@ -1446,10 +1447,11 @@ public final class PostgresTaskStore implements FullStore {
      * occurrence_id is empty and the holder belongs to the schedule, the holder becomes it.
      */
     @Override
-    public boolean commitSchedule(DueSchedule due, Instant nextFire, TaskRecord o) {
+    public CommitOutcome commitSchedule(DueSchedule due, Instant nextFire, TaskRecord o) {
         StoreArguments.requireKey(o.uniqueKey());
         var fixedDelay = due.definition().isFixedDelay();
-        SqlFunction<Boolean> commit = c -> {
+        SqlFunction<CommitOutcome> commit = c -> {
+            boolean stored;
             if (o.uniqueKey() != null) {
                 // the schedule row before the key holder's row, the order every other schedule write takes
                 try (var ps = c.prepareStatement("SELECT 1 FROM " + schedule + " WHERE id = ? FOR UPDATE")) {
@@ -1486,10 +1488,11 @@ public final class PostgresTaskStore implements FullStore {
                 else ps.setLong(22, o.retryOf());
                 try (var rs = ps.executeQuery()) {
                     rs.next();
-                    if (rs.getLong(1) != 1) return false;
-                    if (rs.getLong(2) == 0 && taskExists(c, o.id())) {
+                    if (rs.getLong(1) != 1) return CommitOutcome.NOT_COMMITTED;
+                    stored = rs.getLong(2) != 0;
+                    if (!stored && taskExists(c, o.id())) {
                         c.rollback();
-                        return false;
+                        return CommitOutcome.NOT_COMMITTED;
                     }
                 }
             }
@@ -1499,7 +1502,7 @@ public final class PostgresTaskStore implements FullStore {
                     ps.setLong(1, o.id());
                     ps.setString(2, due.scheduleId());
                     ps.setLong(3, o.id());
-                    if (ps.executeUpdate() == 1) return true;
+                    if (ps.executeUpdate() == 1) return CommitOutcome.STORED;
                 }
                 if (o.uniqueKey() != null) {
                     try (var ps = c.prepareStatement("UPDATE " + schedule + " SET occurrence_id ="
@@ -1513,7 +1516,7 @@ public final class PostgresTaskStore implements FullStore {
                     }
                 }
             }
-            return true;
+            return stored ? CommitOutcome.STORED : CommitOutcome.SKIPPED;
         };
         return inTransaction(commit);
     }

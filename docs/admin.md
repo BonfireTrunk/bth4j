@@ -87,7 +87,7 @@ Inside a `keepFor` window the task retains its unique key without expiry while i
 - `taskByKey` and `cancelByKey` still reach it.
 - A same-key enqueue answers `Duplicate` with its id.
 - The `keepFor` setting is kept, so a fresh keep window starts when the retried task finishes.
-- If another task holds the retained key, which only damaged stored data can cause, retry throws `TaskStoreException` and changes nothing. It never takes the key from the other task. The admin HTTP route answers it as a store error.
+- If another task holds the retained key, which only damaged stored data can cause, retry throws `TaskStoreException` and changes nothing. It never takes the key from the other task. The admin HTTP route answers it like every unexpected failure: 500 with `"internal error"`, and the cause in the server's log.
 
 ## Unique keys after a retry
 
@@ -160,6 +160,7 @@ Every signed-in user, a viewer too, reads what the tasks carry. Give an account 
 |---|---|---|
 | Payload, headers, step results, progress, cancel reason | what the application put into the task | do not put it into the task; store a reference instead |
 | Failure message and stack of the last 20 attempts | the exceptions the processors threw. A message can quote data the processor read while it ran: a database error that names the duplicate value, a parse error that quotes its input, an HTTP error that quotes the URL | [`failureDetail(FailureDetail.CLASS_NAME_ONLY)`](configuration.md#what-failuredetail-covers) on the runner records the class name only, in the store, the logs and the events |
+| The last store error and the runner issues (`/health`, `/issues`, `/overview`) | the runner. A store error is shown with its message, which can name the store's host and port, also with `CLASS_NAME_ONLY` | nothing to set; the text comes from the store's driver, not from a task |
 
 A failure stays as long as its task does: 90 days for a dead task by default (`deadRetention`).
 
@@ -202,6 +203,20 @@ These rules apply to both counts:
 - A successful login takes back only its own attempt. It does not clear the failures counted before it.
 - Failures are forgotten when no attempt followed them for 10 minutes.
 - Someone who knows a user name can keep that user out by sending five wrong passwords every 10 seconds. Keep the server off networks where that is a concern.
+- The block does not grow with repeats. Someone who knows a user name and has many addresses can still try about five passwords every 10 seconds for it, about 43,000 a day, so give every account a long random password.
+
+#### What the server logs
+
+The server writes one INFO line per sign-in, per refused sign-in and per request that asks for a change, to the logger `today.bonfire.oss.bth4j.admin.http.AdminHttpServer`. Reads are not logged.
+
+| Event | Line | What it names |
+|---|---|---|
+| A sign-in | `Admin sign-in of alice (ADMIN) from 203.0.113.7` | the user, the role and the client address |
+| A wrong password or an unknown user | `Admin sign-in refused for the user with key 5f0c..., from 203.0.113.7` | a keyed hash of the name that was tried, never the name: the line reads the same for a user that exists and one that does not. The key is new on every start |
+| A blocked sign-in | `Admin sign-in refused, too many attempts ...` | the client address, and the keyed hash when the name is blocked |
+| A POST or DELETE with a session, also a refused one | `Admin action POST /api/v1/tasks/17/retry by alice (ADMIN) answered 200` | the user, the role, the route and the HTTP status. A task id is shown; a queue name, a schedule id and a unique key are not (`/api/v1/schedules/{}/pause`) |
+
+No line carries a password, a session or CSRF token, a unique key or a request body.
 
 #### Behind a reverse proxy
 
@@ -279,7 +294,7 @@ Viewers may read, and admins may also change (see [Roles](#roles)).
 
 | Status | When |
 |---|---|
-| 400 | A malformed `cursor`. An unknown queue name in the tasks filter. A missing or blank by-key key, or one over 256 characters. |
+| 400 | A missing or unknown `state`, or a `limit` below 1, on the tasks list. A malformed `cursor`. An unknown queue name in the tasks filter. A missing or blank by-key key, or one over 256 characters. |
 | 403 | A viewer sent a mutation. |
 | 404 | An unknown id. An unknown queue name on pause and resume. No task holds the key on a by-key read or cancel. A retry, cancel or delete of a task that does not exist answers `{"code":"NOT_FOUND", ...}`. |
 | 409 | A retry, cancel or delete the task's revision or state refuses, with a `code` that says which, as listed below. |
@@ -304,6 +319,7 @@ On the wire an empty or missing `queue` on `GET /api/v1/tasks` still lists every
 | TLS in the server | Set `https(SSLContext)`. It also marks the cookie `Secure`. |
 | A TLS-terminating proxy in front | The server itself speaks plain HTTP, so set `secureCookie(true)` to mark the cookie `Secure`. Also call `addTrustedProxy`, so that [failed logins](#failed-logins) are counted per client. |
 | A browser app on another origin calls the API | Call `addCorsOrigin("https://dashboard.example.com")`. It lets that app call the API with credentials. |
+| The server is reachable from other machines | Put a reverse proxy with request timeouts and a connection limit in front, or set the limits of the JDK's HTTP server yourself. The server runs on `com.sun.net.httpserver`, which by default waits for a request without a time limit and accepts any number of connections, so a client that sends its request very slowly on many connections can use up the file descriptors of the process, which the runner's store connections need too. The JVM options are `-Dsun.net.httpserver.maxReqTime=<ms>`, `-Dsun.net.httpserver.maxRspTime=<ms>` and `-Djdk.httpserver.maxConnections=<n>`. The JDK reads them once, when its server is first used. |
 
 ## The dashboard
 
@@ -326,6 +342,6 @@ The files come from the repository checkout. You can serve them in two ways:
 | Way | How |
 |---|---|
 | From the admin server | Point `staticDir` at the `dashboard` directory. |
-| From your own static host | Copy the directory to your static host and set `window.BTH4J_API` in `index.html`. The dashboard and API hosts must then share a registrable domain, because of the `SameSite=Strict` cookie. The admin server must also allow the dashboard's origin, for example `.addCorsOrigin("https://dashboard.example.com")` (see [Transport and cross-origin calls](#transport-and-cross-origin-calls)). |
+| From your own static host | Copy the directory to your static host and set `window.BTH4J_API` in `dashboard/config.js` (not in an inline script, which the server's content security policy blocks). The dashboard and API hosts must then share a registrable domain, because of the `SameSite=Strict` cookie. The admin server must also allow the dashboard's origin, for example `.addCorsOrigin("https://dashboard.example.com")` (see [Transport and cross-origin calls](#transport-and-cross-origin-calls)). |
 
 Details are in [dashboard/README.md](../dashboard/README.md). `dashboard/dev/fake-api.py` serves sample data without Java.

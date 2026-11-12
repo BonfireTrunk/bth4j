@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
@@ -238,6 +239,11 @@ class TaskRequestTest {
                 .isEqualTo(Duration.ofMillis(1));
         assertThatThrownBy(() -> builder.maxRunTime(TaskRequest.MAX_RUN_TIME.plusMillis(1)))
                 .isInstanceOf(TaskValidationException.class);
+        for (var unbounded : new Duration[] {ChronoUnit.FOREVER.getDuration(), Duration.ofSeconds(Long.MIN_VALUE)}) {
+            assertThatThrownBy(() -> builder.maxRunTime(unbounded))
+                    .as("a duration that has no millisecond value")
+                    .isInstanceOf(TaskValidationException.class);
+        }
         assertThat(TaskRequest.of(VOID)
                         .maxRunTime(TaskRequest.MAX_RUN_TIME)
                         .build()
@@ -300,5 +306,16 @@ class TaskRequestTest {
         assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ofSeconds(-1)))
                 .isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> Uniqueness.keepFor(null)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> Uniqueness.keepFor(ChronoUnit.FOREVER.getDuration()))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("duration must be at most " + Uniqueness.MAX_KEEP_FOR);
+        assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ofSeconds(Long.MIN_VALUE)))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("duration must be at least 1 ms");
+    }
+
+    @Test
+    void aUniqueKeyRuleRefusesNull() {
+        assertThatThrownBy(() -> TaskRequest.requireUniqueKey(null)).isInstanceOf(TaskValidationException.class);
     }
 }

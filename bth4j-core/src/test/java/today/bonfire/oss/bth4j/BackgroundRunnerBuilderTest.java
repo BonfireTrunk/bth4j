@@ -103,6 +103,13 @@ class BackgroundRunnerBuilderTest {
     }
 
     @Test
+    void aQueueListWithANullNameIsRejected() {
+        assertThatThrownBy(() -> BackgroundRunner.builder().processQueues(java.util.Arrays.asList("general", null)))
+                .isInstanceOf(TaskConfigurationException.class)
+                .hasMessage("queues to process cannot contain null");
+    }
+
+    @Test
     void aRunnerLabelOrQueueNameWithAU0000IsRejected() {
         var builder = BackgroundRunner.builder();
 

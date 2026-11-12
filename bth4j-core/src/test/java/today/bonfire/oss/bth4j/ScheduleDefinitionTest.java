@@ -181,6 +181,17 @@ class ScheduleDefinitionTest {
     }
 
     @Test
+    void aBlankCronNextToAFixedDelayIsNoCron() {
+        for (var blank : new String[] {"", "  "}) {
+            var d = new ScheduleDefinition<>(
+                    "id", NO_PAYLOAD, null, blank, Duration.ofMinutes(1), null, null, null, null, null, null, null);
+
+            assertThat(d.cron()).isNull();
+            assertThat(d).isEqualTo(ScheduleDefinition.every("id", NO_PAYLOAD, Duration.ofMinutes(1)));
+        }
+    }
+
+    @Test
     void bothCronAndFixedDelayAreRejected() {
         assertThatThrownBy(() -> new ScheduleDefinition<>(
                         "id",

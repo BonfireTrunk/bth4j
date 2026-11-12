@@ -14,7 +14,7 @@
     <packaging>jar</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>Redis TaskStore for bth4j: one hash per task, atomic Lua transitions, lease tokens. Requires Redis 7.0 or newer.</description>
+    <description>Redis TaskStore for bth4j: one hash per task, atomic Lua transitions, lease tokens. Requires Redis 7.4 or newer, or Valkey 9 or newer.</description>
 
     <properties>
         <module.name>bonfire.oss.bth4j.redis</module.name>

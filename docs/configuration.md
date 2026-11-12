@@ -69,7 +69,7 @@ How long a claimed task is leased, how often the runner polls and how often each
 |---|---|---|
 | `leaseDuration` | 60 s (1 s to 100 years) | how long a claimed task stays leased without renewal; renewed every third of its length while running. A lapsed lease cannot be renewed any more, so keep it well above the worst pause (GC, container freeze, slow store round trip); a few seconds is fragile |
 | `idlePollInterval` | 500 ms (at least 10 ms) | sleep after a claim that found nothing (cut short when a queue at its `maxConcurrent` frees a slot), and the wait for a free executor slot |
-| `claimBatchSize` | 32 | most tasks claimed in one call, bounded by free executor slots |
+| `claimBatchSize` | 32 | most tasks claimed in one call, bounded by free executor slots. There is no upper limit; one call is one Redis script or one SQLite write transaction, so a very large value makes other callers wait |
 | `shutdownTimeout` | 30 s | how long `stop()` takes at most, waiting for services and running tasks |
 | `serviceCheckInterval` | 10 s (at least 1 ms) | how often a dead service thread is restarted |
 | `maintenanceCheckInterval` | 5 s (at least 1 s) | how often expired leases are looked for, tasks past `startBy` are expired and the runner heartbeat is written |
@@ -88,7 +88,7 @@ How long finished tasks stay readable and how the purge removes them. See [Reten
 | `expiredRetention` | 48 hours (at most 100 years) | how long expired tasks are kept; zero removes them at the next purge |
 | `keepSucceededPayload` | false | keep the payload of succeeded tasks (dropped on success by default) |
 | `purgeInterval` | 1 minute (at least 1 ms) | time between purge runs |
-| `purgeBatchSize` | 500 | tasks removed per purge call; the purge loops until a call removes fewer |
+| `purgeBatchSize` | 500 | tasks removed per purge call; the purge loops until a call removes fewer. There is no upper limit; one call is one Redis script or one SQLite write transaction, so a very large value makes other callers wait |
 | `runnerStaleTimeout` | 10 minutes (at least three times `maintenanceCheckInterval`, at most 100 years) | runner registry rows without a heartbeat for this long are deleted by the purge |
 
 ## Task ids
@@ -123,8 +123,9 @@ The default `FULL` is what finding the cause of a failed task needs. An exceptio
 |---|---|
 | The stored failure | carries no message and no stack |
 | The `TaskEvent` error (a `RedactedFailure` that has the class name as `toString()`) | carries no message and no stack |
-| The runner issues | carry no message and no stack |
-| The runner's log lines | carry no message and no stack |
+| The runner issues about a task's failure | carry no message and no stack |
+| The runner's log lines about a task's failure | carry no message and no stack |
+| A store error, in the runner issues, in `RunnerHealth.lastStoreError` and in the log | not covered: recorded and logged with its message and stack. It comes from the store's driver and is what finding an outage needs; it can name the store's host and port |
 | A rethrown `VirtualMachineError` | not covered: it reaches the thread's uncaught exception handler with its message and stack |
 | The message of a `TaskCancelledException` | not stored as the cancel reason; the operator's reason or "cancel requested" is |
 | Progress text and messages that your own retry policy returns | not touched |

@@ -55,6 +55,41 @@ class TaskClientTest {
     }
 
     @Test
+    void aMissingArgumentIsRefusedAsAValidationError() {
+        var client = builder().build();
+
+        assertThatThrownBy(() -> client.enqueue(null))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("request is required");
+        assertThatThrownBy(() -> client.enqueueAll(null))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("requests are required");
+        assertThatThrownBy(() -> client.enqueueAll(
+                        java.util.Arrays.asList(TaskRequest.of(VOID).build(), null)))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("requests cannot contain null");
+        assertThatThrownBy(() -> client.putSchedule(null))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("definition is required");
+        assertThatThrownBy(() -> client.tasks(null, null, null, 10))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("state is required");
+        assertThat(store.counts().values()).allMatch(StateCounts.ZERO::equals);
+    }
+
+    @Test
+    void aTaskListingRefusesABlankQueueAndListsEveryQueueForNull() {
+        var client = builder().build();
+        client.enqueue(TaskRequest.of(VOID).queue("Q:LOW").build());
+
+        assertThatThrownBy(() -> client.tasks(TaskState.QUEUED, " ", null, 10))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("queue is required");
+        assertThat(client.tasks(TaskState.QUEUED, null, null, 10).items()).hasSize(1);
+        assertThat(client.tasks(TaskState.QUEUED, "Q:DEF", null, 10).items()).isEmpty();
+    }
+
+    @Test
     void enqueueAcceptsAndIdsIncrease() {
         var client = builder().build();
 

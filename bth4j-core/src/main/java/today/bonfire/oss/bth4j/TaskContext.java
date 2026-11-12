@@ -5,6 +5,7 @@ import java.util.Map;
 import java.util.concurrent.Callable;
 import today.bonfire.oss.bth4j.exceptions.TaskCancelledException;
 import today.bonfire.oss.bth4j.exceptions.TaskLeaseLostException;
+import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;
 
 /** What a {@link TaskProcessor} knows about the task it is running and can report back while running. */
 public interface TaskContext {
@@ -42,7 +43,7 @@ public interface TaskContext {
      * Records free-form progress for operators. Stored on the next call, not buffered; keep it small and call
      * it at meaningful points.
      *
-     * @param progress at most 4 KiB
+     * @param progress at most 4096 characters
      */
     void progress(String progress);
 
@@ -57,6 +58,10 @@ public interface TaskContext {
      *               step fails before its body runs
      * @param body   the work
      * @return the result of this or an earlier run
+     * @throws TaskUnrecoverableException when the stored form of the result is longer than 8192 characters, or
+     *                                    the names and results of the task's steps together are longer than
+     *                                    65536 characters. The body has run and cannot be recorded, so the task
+     *                                    ends DEAD without a retry, which would run the body again
      */
     <R> R step(String name, Class<R> type, Callable<R> body) throws Exception;
 

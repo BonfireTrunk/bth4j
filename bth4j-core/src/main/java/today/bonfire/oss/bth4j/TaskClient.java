@@ -87,6 +87,7 @@ public final class TaskClient {
      *                                 ids nothing was written by this call (resend the same request)
      */
     public EnqueueResult enqueue(TaskRequest<?> request) {
+        if (request == null) throw new TaskValidationException("request is required");
         List<Long> known = request.id() == null ? List.of() : List.of(request.id());
         try {
             if (request.id() != null) {
@@ -135,6 +136,10 @@ public final class TaskClient {
      *                                 carries the ids as described above and what failed as its cause
      */
     public List<EnqueueResult> enqueueAll(List<? extends TaskRequest<?>> requests) {
+        if (requests == null) throw new TaskValidationException("requests are required");
+        for (var request : requests) {
+            if (request == null) throw new TaskValidationException("requests cannot contain null");
+        }
         var notStored = new HashSet<Integer>();
         for (int i = 0; i < requests.size(); i++) {
             if (requests.get(i).id() == null) notStored.add(i);
@@ -371,6 +376,7 @@ public final class TaskClient {
      *         after the put: the stored one when it was kept
      */
     public <T> PutScheduleResult putSchedule(ScheduleDefinition<T> definition) {
+        if (definition == null) throw new TaskValidationException("definition is required");
         var now = clock.instant();
         Instant next;
         Instant keepUntil;
@@ -441,6 +447,11 @@ public final class TaskClient {
         StoredText.require("uniqueKey", key);
     }
 
+    /** The rule for the state of a task listing. */
+    static void requireListedState(TaskState state) {
+        if (state == null) throw new TaskValidationException("state is required");
+    }
+
     /**
      * @return the task that holds the unique key now, open or finished inside its keep window; empty when no task
      *         holds the key
@@ -467,9 +478,12 @@ public final class TaskClient {
      * @param queue  a queue name, or null for every queue
      * @param cursor {@link TaskViewPage#next()} of the previous page; null starts at the beginning
      * @param limit  the most tasks one page holds, at least 1
-     * @throws TaskValidationException if the cursor is malformed or the limit is below 1
+     * @throws TaskValidationException if the state is null, the queue is blank or not one of this client's, the
+     *                                 cursor is malformed or the limit is below 1
      */
     public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
+        requireListedState(state);
+        if (queue != null && queue.isBlank()) throw new TaskValidationException("queue is required");
         var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.validQueue(queue)));
         var page = store.tasks(state, queueId, cursor, limit);
         var result = new ArrayList<TaskView>();

@@ -43,11 +43,25 @@ class RetryPolicyTest {
     }
 
     @Test
-    void exponentialNeverExceedsTheCapPlusJitter() {
+    void exponentialNeverExceedsTheCapAndStaysSpreadOutAtIt() {
         var policy = RetryPolicy.exponential(Duration.ofSeconds(1), Duration.ofSeconds(10));
+        var seen = new java.util.HashSet<Long>();
 
         for (int i = 0; i < 200; i++) {
-            assertThat(delayMillis(policy, 30)).isBetween(8_000L - 1, 12_000L + 1);
+            long delay = delayMillis(policy, 30);
+            assertThat(delay).isBetween(8_000L, 10_000L);
+            seen.add(delay);
+        }
+        assertThat(seen).as("distinct delays at the cap").hasSizeGreaterThan(100);
+    }
+
+    @Test
+    void exponentialJustBelowTheCapDoesNotExceedItEither() {
+        // the fourth delay is 8 s before jitter, which could add up to 1.6 s
+        var policy = RetryPolicy.exponential(Duration.ofSeconds(1), Duration.ofSeconds(9));
+
+        for (int i = 0; i < 200; i++) {
+            assertThat(delayMillis(policy, 4)).isBetween(6_400L, 9_000L);
         }
     }
 

@@ -37,7 +37,8 @@ public interface RetryPolicy {
 
     /**
      * Exponential backoff with jitter: {@code base}, doubling per attempt up to {@code cap}, each varied by up to
-     * 20 percent. A base or cap longer than {@link TaskRequest#MAX_TIME_FROM_NOW} counts as that long.
+     * 20 percent and never longer than {@code cap}. A base or cap longer than
+     * {@link TaskRequest#MAX_TIME_FROM_NOW} counts as that long.
      *
      * @throws TaskConfigurationException when the base or the cap is null or negative
      */
@@ -49,7 +50,10 @@ public interface RetryPolicy {
             // compared before the shift, so that the doubling cannot overflow
             long ms = baseMs <= capMs >> doublings ? baseMs << doublings : capMs;
             long jitter = (long) (ms * 0.2 * ThreadLocalRandom.current().nextDouble(-1, 1));
-            return Decision.retryAfter(Duration.ofMillis(Math.max(0, ms + jitter)));
+            long delay = ms + jitter;
+            // folded back under the cap, so that delays at the cap stay spread out
+            if (delay > capMs) delay = 2 * capMs - delay;
+            return Decision.retryAfter(Duration.ofMillis(Math.max(0, delay)));
         };
     }
 

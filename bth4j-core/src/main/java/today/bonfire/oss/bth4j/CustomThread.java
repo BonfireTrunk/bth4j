@@ -33,6 +33,11 @@ abstract class CustomThread extends Thread {
         return isAlive();
     }
 
+    /** @return true when nothing of this service runs any more */
+    boolean isDone() {
+        return !isAlive();
+    }
+
     /**
      * Blocks until the service loop has exited.
      */

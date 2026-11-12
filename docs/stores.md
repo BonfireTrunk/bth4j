@@ -11,6 +11,7 @@ On this page:
 - [What a crash can lose](#what-a-crash-can-lose)
 - [Enqueue inside your own transaction](#enqueue-inside-your-own-transaction)
 - [Tasks due at the same time](#tasks-due-at-the-same-time)
+- [Unique keys after a task ended](#unique-keys-after-a-task-ended)
 - [Maintenance batches](#maintenance-batches)
 - [Behavior that belongs to one store](#behavior-that-belongs-to-one-store)
 
@@ -132,6 +133,17 @@ Enqueueing first and cancelling the task when your transaction rolls back does n
 | Redis | compares their ids as text, so of two tasks due in the same millisecond, id 1000 runs before id 999 |
 
 A listing of tasks follows the same order on each store. The runner promises no order among tasks due at the same time.
+
+## Unique keys after a task ended
+
+A unique key with a keep window (`Uniqueness.keepFor`) stays taken for that long after its task ended. Whether a key is taken, and for how long, is the same on every store. Two things around it differ:
+
+| Case | PostgreSQL and SQLite | Redis | In-memory |
+|---|---|---|---|
+| A finished task is read after its keep window ended and before the next maintenance pass | still shows `uniqueKey` and `keyUntil`; maintenance clears them | shows neither: the fields expire with the window | as PostgreSQL and SQLite |
+| A task was removed inside its keep window, and its id is enqueued again with another unique key or with none | answered `Accepted`, and nothing is stored: the row that keeps the key holds the id until the window ends | stored as a new task | as Redis |
+
+The second case needs an application that gives a task its own id and uses that id again for a different task, which is a mistake of the caller: while the first task is still there it is refused with `TaskIdReusedException`. With the same unique key, the resend is answered `Accepted` and stored once on every store.
 
 ## Maintenance batches
 

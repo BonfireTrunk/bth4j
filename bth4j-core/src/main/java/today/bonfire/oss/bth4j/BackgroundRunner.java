@@ -80,14 +80,6 @@ public final class BackgroundRunner implements AutoCloseable {
         this.observer = new Observers(b.observer);
         this.status = new RunnerStatus(b.clock);
         this.retryPolicies = new RetryPolicies(b.retryPolicy, b.namedRetryPolicies);
-        this.taskExecutor = b.taskExecutor != null
-                ? b.taskExecutor
-                : switch (b.concurrency) {
-                    case Concurrency.Fixed f -> new FixedExecutor(f.limit());
-                    case Concurrency.Adaptive a ->
-                        new DefaultVtExecutor(
-                                a, detail -> status.issue(Issue.Kind.RESOURCE_SIGNAL_UNAVAILABLE, detail, null));
-                };
         this.client = TaskClient.builder()
                 .store(store)
                 .jsonMapper(b.jsonMapper)
@@ -97,6 +89,15 @@ public final class BackgroundRunner implements AutoCloseable {
                 .queues(queues)
                 .names(names)
                 .build();
+        // after the client, whose build reaches the store and can fail: the adaptive executor starts a thread
+        this.taskExecutor = b.taskExecutor != null
+                ? b.taskExecutor
+                : switch (b.concurrency) {
+                    case Concurrency.Fixed f -> new FixedExecutor(f.limit());
+                    case Concurrency.Adaptive a ->
+                        new DefaultVtExecutor(
+                                a, detail -> status.issue(Issue.Kind.RESOURCE_SIGNAL_UNAVAILABLE, detail, null));
+                };
         this.admin = new DefaultAdminOps(store, names, b.clock, this::health, status::issues);
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread thread = new Thread(threadGroup, r, "BackgroundRunner-Monitor");
@@ -277,10 +278,11 @@ public final class BackgroundRunner implements AutoCloseable {
     /** Nothing of a stopped runner runs any more: no attempt, no claim in progress and no service thread. */
     private boolean ended() {
         if (!stopSequenceDone || !admission.idle()) return false;
-        var threads =
-                new Thread[] {taskProcessorService, scheduledTaskService, recurringTaskService, maintenanceService};
-        for (var service : threads) {
-            if (service != null && service.isAlive()) return false;
+        var services =
+                new CustomThread[] {taskProcessorService, scheduledTaskService, recurringTaskService, maintenanceService
+                };
+        for (var service : services) {
+            if (service != null && !service.isDone()) return false;
         }
         return true;
     }
@@ -846,7 +848,8 @@ public final class BackgroundRunner implements AutoCloseable {
         }
 
         /**
-         * The maximum run time of an attempt whose task or schedule sets no {@code maxRunTime}. Past it the runner
+         * The maximum run time of an attempt whose task or schedule sets no {@code maxRunTime}. Past it, checked
+         * about once a second, the runner
          * requests cancellation (and interrupts the processor when its type opted in with
          * {@code withInterruptOnCancel}); an attempt still running one renewal period later is abandoned: its lease
          * is no longer renewed, so maintenance retries or ends the task, while the stuck thread keeps its slots
@@ -949,6 +952,9 @@ public final class BackgroundRunner implements AutoCloseable {
         public Builder processQueues(List<String> queuesToProcess) {
             if (ObjectUtils.isEmpty(queuesToProcess)) {
                 throw new TaskConfigurationException("queues to process cannot be empty");
+            }
+            for (var queue : queuesToProcess) {
+                if (queue == null) throw new TaskConfigurationException("queues to process cannot contain null");
             }
             this.queuesToProcess = List.copyOf(queuesToProcess);
             return this;

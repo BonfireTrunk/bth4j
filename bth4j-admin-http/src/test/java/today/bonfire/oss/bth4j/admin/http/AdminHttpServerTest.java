@@ -1294,6 +1294,102 @@ class AdminHttpServerTest {
     }
 
     @Test
+    void signInsAndChangesAreLoggedWithTheirUserAndWithoutSecretsOrGuessedNames() throws Exception {
+        var logs = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        logs.start();
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(AdminHttpServer.class);
+        logger.addAppender(logs);
+        try {
+            start();
+            assertThat(rawLogin("alice", "wrong-pass").statusCode()).isEqualTo(401);
+            assertThat(rawLogin("mallory", "s3cret").statusCode()).isEqualTo(401);
+            var admin = admin();
+            var viewer = viewer();
+            assertThat(mutate("POST", "/api/v1/tasks/1/retry", admin, "{\"revision\":\"7\"}")
+                            .statusCode())
+                    .isEqualTo(200);
+            assertThat(mutate("POST", "/api/v1/schedules/nightly/pause", viewer, null)
+                            .statusCode())
+                    .isEqualTo(403);
+            assertThat(mutate("POST", "/api/v1/tasks/by-key/cancel?key=customer-7", admin, "{}")
+                            .statusCode())
+                    .isEqualTo(404);
+            get("/api/v1/tasks/1", admin);
+
+            var expected = List.of(
+                    "Admin sign-in of alice (ADMIN) from 127.0.0.1",
+                    "Admin sign-in of victor (VIEWER) from 127.0.0.1",
+                    "Admin action POST /api/v1/tasks/1/retry by alice (ADMIN) answered 200",
+                    "Admin action POST /api/v1/schedules/{}/pause by victor (VIEWER) answered 403",
+                    "Admin action POST /api/v1/tasks/by-key/cancel by alice (ADMIN) answered 404");
+            var deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (!messages(logs).containsAll(expected) && System.nanoTime() < deadline) Thread.sleep(10);
+            var lines = messages(logs);
+            assertThat(lines).containsAll(expected);
+            var refused = lines.stream()
+                    .filter(l -> l.startsWith("Admin sign-in refused for the user with key "))
+                    .toList();
+            assertThat(refused).hasSize(2).allMatch(l -> l.endsWith(", from 127.0.0.1"));
+            assertThat(refused.get(0))
+                    .as("a known and an unknown name read alike")
+                    .hasSameSizeAs(refused.get(1));
+            assertThat(String.join("\n", lines))
+                    .doesNotContain("mallory", "wrong-pass", "s3cret", "customer-7", "nightly", admin.csrf())
+                    .doesNotContain(admin.cookie().substring(admin.cookie().indexOf('=') + 1));
+            assertThat(lines).as("reads are not logged").noneMatch(l -> l.contains(" GET "));
+        } finally {
+            logger.detachAppender(logs);
+        }
+    }
+
+    private static List<String> messages(
+            ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> logs) {
+        return List.copyOf(logs.list).stream()
+                .map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
+                .toList();
+    }
+
+    @Test
+    void aBlockedSignInIsLoggedWithItsAddressAndNeverWithTheName() throws Exception {
+        var logs = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        logs.start();
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(AdminHttpServer.class);
+        logger.addAppender(logs);
+        try {
+            start(builder().addTrustedProxy("127.0.0.1"));
+            for (var i = 1; i <= 5; i++) {
+                assertThat(loginFrom("203.0.113." + i, "alice", "bad")).isEqualTo(401);
+                assertThat(loginFrom("198.51.100.9", "nobody" + i, "bad")).isEqualTo(401);
+            }
+            assertThat(loginFrom("203.0.113.50", "alice", "s3cret")).isEqualTo(429);
+            assertThat(loginFrom("198.51.100.9", "victor", "view")).isEqualTo(429);
+
+            var lines = messages(logs);
+            assertThat(lines).contains("Admin sign-in refused, too many attempts from 198.51.100.9");
+            assertThat(lines)
+                    .filteredOn(l -> l.startsWith("Admin sign-in refused, too many attempts for the user with key "))
+                    .singleElement()
+                    .asString()
+                    .endsWith(", from 203.0.113.50")
+                    .doesNotContain("alice");
+            assertThat(lines).noneMatch(l -> l.contains("nobody") || l.contains("alice") || l.contains("victor"));
+        } finally {
+            logger.detachAppender(logs);
+        }
+    }
+
+    @Test
+    void theRouteOfALoggedActionKeepsATaskIdAndHidesEveryOtherPathParameter() {
+        assertThat(AdminHttpServer.auditedRoute("/api/v1/tasks/7/cancel")).isEqualTo("/api/v1/tasks/7/cancel");
+        assertThat(AdminHttpServer.auditedRoute("/api/v1/tasks/7")).isEqualTo("/api/v1/tasks/7");
+        assertThat(AdminHttpServer.auditedRoute("/api/v1/tasks/7x/cancel")).isEqualTo("/api/v1/tasks/{}/cancel");
+        assertThat(AdminHttpServer.auditedRoute("/api/v1/tasks/by-key/cancel"))
+                .isEqualTo("/api/v1/tasks/by-key/cancel");
+        assertThat(AdminHttpServer.auditedRoute("/api/v1/queues/mail/pause")).isEqualTo("/api/v1/queues/{}/pause");
+        assertThat(AdminHttpServer.auditedRoute("/api/v1/schedules/7/pause")).isEqualTo("/api/v1/schedules/{}/pause");
+    }
+
+    @Test
     void theLoggedRouteHidesPathParameters() {
         assertThat(AdminHttpServer.routeTemplate("/api/v1/tasks/by-key/cancel"))
                 .isEqualTo("/api/v1/tasks/by-key/cancel");

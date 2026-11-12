@@ -771,13 +771,15 @@ class RedisWave2IT {
         var due = store.dueSchedules(Instant.now(), 10).getFirst();
         store.pauseSchedule("s");
 
-        assertThat(store.commitSchedule(due, fire.plusSeconds(60), task(80).build()))
+        assertThat(store.commitSchedule(due, fire.plusSeconds(60), task(80).build())
+                        .isCommitted())
                 .isFalse();
 
         assertThat(store.task(80)).isEmpty();
         assertThat(store.schedules().getFirst().nextFireAt()).isEqualTo(fire);
         store.resumeSchedule("s", null);
-        assertThat(store.commitSchedule(due, fire.plusSeconds(60), task(80).build()))
+        assertThat(store.commitSchedule(due, fire.plusSeconds(60), task(80).build())
+                        .isCommitted())
                 .isTrue();
     }
 
@@ -838,11 +840,13 @@ class RedisWave2IT {
         var next2 = fire.plusSeconds(120);
 
         assertThat(store.commitSchedule(
-                        first, next1, task(70).uniqueKey("sched:s").build()))
+                                first, next1, task(70).uniqueKey("sched:s").build())
+                        .isCommitted())
                 .isTrue();
         var second = new DueSchedule("s", next1, first.definition(), false);
         assertThat(store.commitSchedule(
-                        second, next2, task(71).uniqueKey("sched:s").build()))
+                                second, next2, task(71).uniqueKey("sched:s").build())
+                        .isCommitted())
                 .isTrue();
 
         assertThat(store.task(70)).isPresent();

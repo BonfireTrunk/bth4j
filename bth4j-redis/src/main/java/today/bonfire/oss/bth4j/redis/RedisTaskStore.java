@@ -46,6 +46,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.internal.Json;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
+import today.bonfire.oss.bth4j.spi.CommitOutcome;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
@@ -869,7 +870,7 @@ public final class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public boolean commitSchedule(DueSchedule due, Instant nextFire, TaskRecord given) {
+    public CommitOutcome commitSchedule(DueSchedule due, Instant nextFire, TaskRecord given) {
         StoreArguments.requireKey(given.uniqueKey());
         var occurrence = given.scheduleId() != null
                 ? given
@@ -882,7 +883,11 @@ public final class RedisTaskStore implements FullStore {
         args.add(String.valueOf(occurrence.id()));
         args.add(occurrence.uniqueKey() == null ? "" : occurrence.uniqueKey());
         args.addAll(storeArgs(occurrence));
-        return num(guard(() -> scripts.run(RedisScripts.CRON_COMMIT, args))) == 1;
+        return switch ((int) num(guard(() -> scripts.run(RedisScripts.CRON_COMMIT, args)))) {
+            case 1 -> CommitOutcome.STORED;
+            case 2 -> CommitOutcome.SKIPPED;
+            default -> CommitOutcome.NOT_COMMITTED;
+        };
     }
 
     // ---- inspection ----------------------------------------------------------------------------------
