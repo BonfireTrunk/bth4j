@@ -16,7 +16,9 @@ import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.TaskView;
 import today.bonfire.oss.bth4j.TaskViewPage;
 import today.bonfire.oss.bth4j.UnservedWork;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.CancelOutcome;
+import today.bonfire.oss.bth4j.spi.DeleteOutcome;
 import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RetryOutcome;
 import today.bonfire.oss.bth4j.spi.StateCounts;
@@ -36,7 +38,7 @@ final class FakeAdminOps implements AdminOps {
     final List<WorkerInfo> workers = new CopyOnWriteArrayList<>();
     final List<Issue> issues = new CopyOnWriteArrayList<>();
     final List<String> calls = new CopyOnWriteArrayList<>();
-    final java.util.Set<Long> heldKeys = ConcurrentHashMap.newKeySet();
+    volatile int taskLookups;
     volatile RunnerHealth health;
     volatile RuntimeException failure;
     volatile RuntimeException queueFailure;
@@ -77,6 +79,7 @@ final class FakeAdminOps implements AdminOps {
 
     @Override
     public Optional<TaskView> task(long id) {
+        taskLookups++;
         if (failure != null) {
             throw failure;
         }
@@ -101,7 +104,17 @@ final class FakeAdminOps implements AdminOps {
     }
 
     @Override
+    public TaskViewPage tasks(TaskState state, String cursor, int limit) {
+        return list(state, null, cursor, limit);
+    }
+
+    @Override
     public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
+        if (queue == null || queue.isBlank()) throw new TaskValidationException("queue is required");
+        return list(state, queue, cursor, limit);
+    }
+
+    private TaskViewPage list(TaskState state, String queue, String cursor, int limit) {
         if (queueFailure != null) {
             throw queueFailure;
         }
@@ -126,25 +139,30 @@ final class FakeAdminOps implements AdminOps {
     public RetryOutcome retry(long id, int revision) {
         calls.add("retry " + id + ' ' + revision);
         var t = tasks.get(id);
-        if (t == null || t.revision() != revision) return RetryOutcome.STALE;
+        if (t == null) return RetryOutcome.NOT_FOUND;
+        if (t.revision() != revision) return RetryOutcome.STALE;
         if (t.state() != TaskState.DEAD && t.state() != TaskState.CANCELLED && t.state() != TaskState.EXPIRED) {
-            return RetryOutcome.STALE;
+            return RetryOutcome.NOT_RETRYABLE;
         }
-        return heldKeys.contains(id) ? RetryOutcome.DUPLICATE : RetryOutcome.RETRIED;
+        return RetryOutcome.RETRIED;
     }
 
     @Override
     public CancelOutcome cancel(long id, int revision, String reason) {
         calls.add("cancel " + id + ' ' + revision + ' ' + reason);
         var t = tasks.get(id);
-        return t != null && t.revision() == revision ? CancelOutcome.REQUESTED : CancelOutcome.STALE;
+        if (t == null) return CancelOutcome.NOT_FOUND;
+        if (t.revision() != revision) return CancelOutcome.STALE;
+        return t.state().isTerminal() ? CancelOutcome.FINISHED : CancelOutcome.REQUESTED;
     }
 
     @Override
-    public boolean delete(long id, int revision) {
+    public DeleteOutcome delete(long id, int revision) {
         calls.add("delete " + id + ' ' + revision);
         var t = tasks.get(id);
-        return t != null && t.revision() == revision;
+        if (t == null) return DeleteOutcome.NOT_FOUND;
+        if (t.revision() != revision) return DeleteOutcome.STALE;
+        return t.state() == TaskState.LEASED ? DeleteOutcome.LEASED : DeleteOutcome.DELETED;
     }
 
     @Override

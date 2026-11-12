@@ -551,6 +551,8 @@ class AdminHttpServerTest {
         var max = Long.MAX_VALUE;
         ops.tasks.put(big, FakeAdminOps.task(big, 7, TaskState.DEAD, "default", "p"));
         ops.tasks.put(max, FakeAdminOps.task(max, 7, TaskState.DEAD, "default", "q"));
+        var waiting = max - 1;
+        ops.tasks.put(waiting, FakeAdminOps.task(waiting, 7, TaskState.QUEUED, "default", "w"));
         start();
         var login = admin();
 
@@ -564,14 +566,14 @@ class AdminHttpServerTest {
         assertThat(mutate("POST", "/api/v1/tasks/" + big + "/retry", login, "{\"revision\":\"7\"}")
                         .statusCode())
                 .isEqualTo(200);
-        assertThat(mutate("POST", "/api/v1/tasks/" + max + "/cancel", login, "{\"revision\":7,\"reason\":\"r\"}")
+        assertThat(mutate("POST", "/api/v1/tasks/" + waiting + "/cancel", login, "{\"revision\":7,\"reason\":\"r\"}")
                         .statusCode())
                 .isEqualTo(200);
         assertThat(mutate("DELETE", "/api/v1/tasks/" + big + "?revision=7", login, null)
                         .statusCode())
                 .isEqualTo(200);
 
-        assertThat(ops.calls).contains("retry " + big + " 7", "cancel " + max + " 7 r", "delete " + big + " 7");
+        assertThat(ops.calls).contains("retry " + big + " 7", "cancel " + waiting + " 7 r", "delete " + big + " 7");
     }
 
     @Test
@@ -646,12 +648,9 @@ class AdminHttpServerTest {
         ops.staleKeys.add("racy");
         var stale = mutate("POST", "/api/v1/tasks/by-key/cancel?key=racy", login, "{}");
 
-        assertThat(missing.statusCode()).isEqualTo(404);
-        assertThat(json(missing)).containsEntry("error", "no task holds this key");
-        assertThat(finished.statusCode()).isEqualTo(409);
-        assertThat(json(finished)).containsEntry("error", "the task holding this key is already finished");
-        assertThat(stale.statusCode()).isEqualTo(409);
-        assertThat(json(stale)).containsEntry("error", "the task changed meanwhile, retry");
+        assertRefusal(missing, 404, "NOT_FOUND", "no task holds this key");
+        assertRefusal(finished, 409, "WRONG_STATE", "the task holding this key is already finished");
+        assertRefusal(stale, 409, "STALE", "the task changed since it was loaded");
     }
 
     @Test
@@ -685,27 +684,64 @@ class AdminHttpServerTest {
     }
 
     @Test
-    void retryOfATaskWhoseUniqueKeyIsHeldIs409WithTheReason() throws Exception {
-        ops.heldKeys.add(1L);
+    void aRetryThatIsRefusedAnswersTheReasonWithAStableCode() throws Exception {
         start();
         var login = admin();
 
-        var res = mutate("POST", "/api/v1/tasks/1/retry", login, "{\"revision\":\"7\"}");
-
-        assertThat(res.statusCode()).isEqualTo(409);
-        assertThat(json(res))
-                .containsExactlyInAnyOrderEntriesOf(
-                        Map.of("error", "the unique key is held by another task", "code", "KEY_HELD"));
+        var missing = mutate("POST", "/api/v1/tasks/99/retry", login, "{\"revision\":\"1\"}");
         var stale = mutate("POST", "/api/v1/tasks/1/retry", login, "{\"revision\":\"6\"}");
-        assertThat(stale.statusCode()).isEqualTo(409);
-        assertThat(json(stale))
-                .containsEntry("error", "the task changed since you loaded it")
-                .doesNotContainKey("code");
         var queued = mutate("POST", "/api/v1/tasks/3/retry", login, "{\"revision\":\"1\"}");
-        assertThat(queued.statusCode()).isEqualTo(409);
-        assertThat(json(queued))
-                .containsEntry("error", "the task changed since you loaded it")
-                .doesNotContainKey("code");
+
+        assertRefusal(missing, 404, "NOT_FOUND", "there is no such task");
+        assertRefusal(stale, 409, "STALE", "the task changed since it was loaded");
+        assertRefusal(queued, 409, "WRONG_STATE", "only a dead, cancelled or expired task can be retried");
+        assertThat(ops.calls).containsExactly("retry 99 1", "retry 1 6", "retry 3 1");
+    }
+
+    @Test
+    void aCancelThatIsRefusedAnswersTheReasonWithAStableCode() throws Exception {
+        start();
+        var login = admin();
+
+        var missing = mutate("POST", "/api/v1/tasks/99/cancel", login, "{\"revision\":1}");
+        var stale = mutate("POST", "/api/v1/tasks/1/cancel", login, "{\"revision\":6}");
+        var finished = mutate("POST", "/api/v1/tasks/1/cancel", login, "{\"revision\":7}");
+
+        assertRefusal(missing, 404, "NOT_FOUND", "there is no such task");
+        assertRefusal(stale, 409, "STALE", "the task changed since it was loaded");
+        assertRefusal(finished, 409, "WRONG_STATE", "the task has finished and cannot be cancelled");
+    }
+
+    @Test
+    void aDeleteThatIsRefusedAnswersTheReasonWithAStableCode() throws Exception {
+        ops.tasks.put(5L, FakeAdminOps.task(5, 1, TaskState.LEASED, "default", "z"));
+        start();
+        var login = admin();
+
+        var missing = mutate("DELETE", "/api/v1/tasks/99?revision=1", login, null);
+        var stale = mutate("DELETE", "/api/v1/tasks/5?revision=2", login, null);
+        var leased = mutate("DELETE", "/api/v1/tasks/5?revision=1", login, null);
+
+        assertRefusal(missing, 404, "NOT_FOUND", "there is no such task");
+        assertRefusal(stale, 409, "STALE", "the task changed since it was loaded");
+        assertRefusal(leased, 409, "WRONG_STATE", "a task that is running cannot be deleted");
+        assertThat(ops.calls).containsExactly("delete 99 1", "delete 5 2", "delete 5 1");
+    }
+
+    @Test
+    void aRefusedActionDoesNotLookTheTaskUpAgain() throws Exception {
+        start();
+        var login = admin();
+
+        mutate("POST", "/api/v1/tasks/3/retry", login, "{\"revision\":\"1\"}");
+        mutate("DELETE", "/api/v1/tasks/99?revision=1", login, null);
+
+        assertThat(ops.taskLookups).isZero();
+    }
+
+    private static void assertRefusal(HttpResponse<String> res, int status, String code, String message) {
+        assertThat(res.statusCode()).isEqualTo(status);
+        assertThat(json(res)).containsExactlyInAnyOrderEntriesOf(Map.of("error", message, "code", code));
     }
 
     @Test
@@ -717,7 +753,7 @@ class AdminHttpServerTest {
         assertThat(mutate("POST", "/api/v1/tasks/1/retry", login, "{\"revision\":\"7\"}")
                         .statusCode())
                 .isEqualTo(200);
-        var cancel = mutate("POST", "/api/v1/tasks/1/cancel", login, "{\"revision\":7,\"reason\":\"why\"}");
+        var cancel = mutate("POST", "/api/v1/tasks/3/cancel", login, "{\"revision\":1,\"reason\":\"why\"}");
         assertThat(json(cancel)).containsEntry("outcome", "REQUESTED");
         assertThat(mutate("DELETE", "/api/v1/tasks/1?revision=7", login, null).statusCode())
                 .isEqualTo(200);
@@ -735,7 +771,7 @@ class AdminHttpServerTest {
         assertThat(ops.calls)
                 .contains(
                         "retry 1 7",
-                        "cancel 1 7 why",
+                        "cancel 3 1 why",
                         "delete 1 7",
                         "pauseQueue default true",
                         "triggerSchedule nightly",
@@ -805,6 +841,8 @@ class AdminHttpServerTest {
 
         var mail = items(json(get("/api/v1/tasks?state=DEAD&queue=mail", login)));
         assertThat(mail).extracting(t -> t.get("id")).containsExactly("2");
+        var emptyQueue = items(json(get("/api/v1/tasks?state=DEAD&queue=", login)));
+        assertThat(emptyQueue).extracting(t -> t.get("id")).containsExactly("1", "2", "4");
 
         get("/api/v1/tasks?state=DEAD", login);
         get("/api/v1/tasks?state=DEAD&limit=100000", login);
