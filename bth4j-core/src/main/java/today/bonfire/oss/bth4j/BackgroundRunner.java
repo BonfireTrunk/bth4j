@@ -553,7 +553,7 @@ public final class BackgroundRunner implements AutoCloseable {
                 .setStore(store)
                 .setClock(config.clock)
                 .setStatus(status)
-                .setPollInterval(config.scheduledTasksCheckInterval)
+                .setPollInterval(config.scheduledTaskCheckInterval)
                 .setBatchSize(serviceBatchSize())
                 .create();
         service.start();
@@ -570,7 +570,7 @@ public final class BackgroundRunner implements AutoCloseable {
                 .observer(observer)
                 .clock(config.clock)
                 .status(status)
-                .checkInterval(config.recurringTasksCheckInterval)
+                .checkInterval(config.scheduleCheckInterval)
                 .batchSize(serviceBatchSize())
                 .create();
         service.start();
@@ -582,7 +582,7 @@ public final class BackgroundRunner implements AutoCloseable {
         retention.put(TaskState.SUCCEEDED, config.succeededRetention);
         retention.put(TaskState.DEAD, config.deadRetention);
         retention.put(TaskState.CANCELLED, config.cancelledRetention);
-        retention.put(TaskState.EXPIRED, config.cancelledRetention);
+        retention.put(TaskState.EXPIRED, config.expiredRetention);
         var service = new MaintenanceService.Builder()
                 .group(threadGroup)
                 .threadName("Maintenance")
@@ -626,6 +626,7 @@ public final class BackgroundRunner implements AutoCloseable {
         private Duration succeededRetention = Duration.ofMinutes(10);
         private Duration deadRetention = Duration.ofDays(90);
         private Duration cancelledRetention = Duration.ofHours(48);
+        private Duration expiredRetention = Duration.ofHours(48);
         private boolean keepSucceededPayload;
         private FailureDetail failureDetail = FailureDetail.FULL;
         private Duration purgeInterval = Duration.ofMinutes(1);
@@ -637,8 +638,8 @@ public final class BackgroundRunner implements AutoCloseable {
         private Duration shutdownTimeout = Duration.ofSeconds(30);
         private Duration serviceCheckInterval = Duration.ofSeconds(10);
         private Duration maintenanceCheckInterval = Duration.ofSeconds(5);
-        private Duration scheduledTasksCheckInterval = Duration.ofSeconds(1);
-        private Duration recurringTasksCheckInterval = Duration.ofSeconds(10);
+        private Duration scheduledTaskCheckInterval = Duration.ofSeconds(1);
+        private Duration scheduleCheckInterval = Duration.ofSeconds(10);
         private int idBlockSize = 64;
         private int defaultMaxAttempts = 10;
         private Queues queues = Queues.of(Queues.GENERAL);
@@ -709,7 +710,7 @@ public final class BackgroundRunner implements AutoCloseable {
          * A policy requests may pick by name with {@code TaskRequest.retryPolicy(name)}. A task naming an
          * unknown policy uses the default one and the runner records an issue.
          */
-        public Builder retryPolicy(String name, RetryPolicy retryPolicy) {
+        public Builder addRetryPolicy(String name, RetryPolicy retryPolicy) {
             if (StringUtils.isBlank(name) || name.length() > TaskRequest.MAX_RETRY_POLICY_LENGTH) {
                 throw new TaskConfigurationException(
                         "retry policy name must be 1 to " + TaskRequest.MAX_RETRY_POLICY_LENGTH + " characters");
@@ -724,7 +725,7 @@ public final class BackgroundRunner implements AutoCloseable {
          * a policy get {@link QueuePolicy#DEFAULT}. Any policy other than the default makes each claim share the
          * slots between the queues by weight and cap, still in one store call.
          */
-        public Builder queue(String name, QueuePolicy policy) {
+        public Builder addQueuePolicy(String name, QueuePolicy policy) {
             if (StringUtils.isBlank(name)) throw new TaskConfigurationException("queue name cannot be blank");
             if (policy == null) throw new TaskConfigurationException("policy cannot be null");
             this.queuePolicies.put(name, policy);
@@ -783,12 +784,22 @@ public final class BackgroundRunner implements AutoCloseable {
         }
 
         /**
-         * How long cancelled and expired tasks are kept. Default 48 hours, at most
+         * How long cancelled tasks are kept. Zero removes them at the next purge. Default 48 hours, at most
          * {@link TaskRequest#MAX_TIME_FROM_NOW}.
          */
         public Builder cancelledRetention(Duration retention) {
             this.cancelledRetention =
                     requireStorable(requireNonNegative(retention, "cancelledRetention"), "cancelledRetention");
+            return this;
+        }
+
+        /**
+         * How long expired tasks, those whose {@code startBy} passed before they ran, are kept. Zero removes
+         * them at the next purge. Default 48 hours, at most {@link TaskRequest#MAX_TIME_FROM_NOW}.
+         */
+        public Builder expiredRetention(Duration retention) {
+            this.expiredRetention =
+                    requireStorable(requireNonNegative(retention, "expiredRetention"), "expiredRetention");
             return this;
         }
 
@@ -888,16 +899,15 @@ public final class BackgroundRunner implements AutoCloseable {
         }
 
         /** Upper bound of the wait between checks for due scheduled tasks. Default 1 s, at least 10 ms. */
-        public Builder scheduledTasksCheckInterval(Duration interval) {
-            this.scheduledTasksCheckInterval =
-                    requireInterval(interval, Duration.ofMillis(10), "scheduledTasksCheckInterval");
+        public Builder scheduledTaskCheckInterval(Duration interval) {
+            this.scheduledTaskCheckInterval =
+                    requireInterval(interval, Duration.ofMillis(10), "scheduledTaskCheckInterval");
             return this;
         }
 
         /** Time between checks for due recurring definitions. Default 10 s, at least 10 ms. */
-        public Builder recurringTasksCheckInterval(Duration interval) {
-            this.recurringTasksCheckInterval =
-                    requireInterval(interval, Duration.ofMillis(10), "recurringTasksCheckInterval");
+        public Builder scheduleCheckInterval(Duration interval) {
+            this.scheduleCheckInterval = requireInterval(interval, Duration.ofMillis(10), "scheduleCheckInterval");
             return this;
         }
 

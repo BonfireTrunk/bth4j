@@ -98,8 +98,8 @@ class AdminHttpServerTest {
         return AdminHttpServer.builder()
                 .admin(ops)
                 .bind("127.0.0.1", 0)
-                .user("alice", "s3cret", Role.ADMIN)
-                .user("victor", "view", Role.VIEWER)
+                .addUser("alice", "s3cret", Role.ADMIN)
+                .addUser("victor", "view", Role.VIEWER)
                 .clock(clock);
     }
 
@@ -226,7 +226,7 @@ class AdminHttpServerTest {
 
     @Test
     void failedLoginsForOneUserFromManyAddressesBlockThatUserAndNoOther() throws Exception {
-        start(builder().trustedProxies("127.0.0.1"));
+        start(builder().addTrustedProxy("127.0.0.1"));
         for (var i = 1; i <= 5; i++) {
             assertThat(loginFrom("203.0.113." + i, "alice", "bad")).isEqualTo(401);
         }
@@ -240,7 +240,7 @@ class AdminHttpServerTest {
 
     @Test
     void aBlockForAUserThatDoesNotExistLooksLikeOneForAUserThatDoes() throws Exception {
-        start(builder().trustedProxies("127.0.0.1"));
+        start(builder().addTrustedProxy("127.0.0.1"));
         for (var i = 1; i <= 5; i++) {
             assertThat(loginFrom("203.0.113." + i, "nobody", "bad")).isEqualTo(401);
             assertThat(loginFrom("198.51.100." + i, "alice", "bad")).isEqualTo(401);
@@ -270,7 +270,7 @@ class AdminHttpServerTest {
 
     @Test
     void anAttemptRefusedForItsUserIsNotCountedAgainstItsAddress() throws Exception {
-        start(builder().trustedProxies("127.0.0.1"));
+        start(builder().addTrustedProxy("127.0.0.1"));
         for (var i = 1; i <= 5; i++) {
             assertThat(loginFrom("203.0.113." + i, "alice", "bad")).isEqualTo(401);
         }
@@ -284,7 +284,7 @@ class AdminHttpServerTest {
 
     @Test
     void failedLoginsFromOneIpv6NetworkBlockTheWholeNetwork() throws Exception {
-        start(builder().trustedProxies("127.0.0.1"));
+        start(builder().addTrustedProxy("127.0.0.1"));
         for (var i = 1; i <= 5; i++) {
             assertThat(loginFrom("2001:db8:1:2::" + i, "guess" + i, "bad")).isEqualTo(401);
         }
@@ -304,12 +304,22 @@ class AdminHttpServerTest {
     }
 
     @Test
-    void aTrustedProxyThatIsNotAnAddressOrRangeIsRefusedWithoutEchoingIt() {
-        for (String bad : new String[] {"proxy.internal", "10.0.0.0/33", "10.0.0", "", "::1/129", "10.0.0.1/x", null}) {
-            assertThatThrownBy(() -> builder().trustedProxies("10.0.0.1", bad))
+    void anOriginWithoutTextIsRefused() {
+        for (String bad : new String[] {"", "  ", null}) {
+            assertThatThrownBy(() -> builder().addCorsOrigin(bad))
                     .as("%s", bad)
                     .isInstanceOf(TaskConfigurationException.class)
-                    .hasMessage("trustedProxies entry 2 is not an IP address or a range such as 10.0.0.0/8");
+                    .hasMessage("origin is required");
+        }
+    }
+
+    @Test
+    void aTrustedProxyThatIsNotAnAddressOrRangeIsRefusedWithoutEchoingIt() {
+        for (String bad : new String[] {"proxy.internal", "10.0.0.0/33", "10.0.0", "", "::1/129", "10.0.0.1/x", null}) {
+            assertThatThrownBy(() -> builder().addTrustedProxy("10.0.0.1").addTrustedProxy(bad))
+                    .as("%s", bad)
+                    .isInstanceOf(TaskConfigurationException.class)
+                    .hasMessage("trusted proxy 2 is not an IP address or a range such as 10.0.0.0/8");
         }
     }
 
@@ -1135,7 +1145,7 @@ class AdminHttpServerTest {
 
     @Test
     void corsPreflightIsAnsweredForListedOriginsOnly() throws Exception {
-        start(builder().corsOrigin("https://admin.example.com"));
+        start(builder().addCorsOrigin("https://admin.example.com"));
 
         var ok = send(
                 "OPTIONS",
@@ -1166,7 +1176,7 @@ class AdminHttpServerTest {
 
     @Test
     void corsHeadersAccompanyActualResponsesForListedOriginsOnly() throws Exception {
-        start(builder().corsOrigin("https://admin.example.com", "http://localhost:3000"));
+        start(builder().addCorsOrigin("https://admin.example.com").addCorsOrigin("http://localhost:3000"));
 
         var allowed = send("GET", "/api/v1/me", null, null, "Origin", "http://localhost:3000");
         assertThat(allowed.statusCode()).isEqualTo(401);
@@ -1181,7 +1191,7 @@ class AdminHttpServerTest {
     @Test
     void builderRequiresAdminAndAUser() {
         assertThatThrownBy(() ->
-                        AdminHttpServer.builder().user("a", "b", Role.ADMIN).build())
+                        AdminHttpServer.builder().addUser("a", "b", Role.ADMIN).build())
                 .isInstanceOf(TaskConfigurationException.class);
         assertThatThrownBy(() -> AdminHttpServer.builder().admin(ops).build())
                 .isInstanceOf(TaskConfigurationException.class);
@@ -1195,15 +1205,15 @@ class AdminHttpServerTest {
 
     @Test
     void aSecondUserWithTheSameNameIsRefusedSoThatNeitherPasswordIsDroppedUnseen() {
-        var builder = AdminHttpServer.builder().user("alice", "first", Role.ADMIN);
+        var builder = AdminHttpServer.builder().addUser("alice", "first", Role.ADMIN);
 
-        assertThatThrownBy(() -> builder.user("alice", "second", Role.VIEWER))
+        assertThatThrownBy(() -> builder.addUser("alice", "second", Role.VIEWER))
                 .isInstanceOf(TaskConfigurationException.class);
     }
 
     @Test
     void aUserWithAnEmptyPasswordIsRefused() {
-        assertThatThrownBy(() -> AdminHttpServer.builder().user("a", "", Role.ADMIN))
+        assertThatThrownBy(() -> AdminHttpServer.builder().addUser("a", "", Role.ADMIN))
                 .isInstanceOf(TaskConfigurationException.class);
     }
 

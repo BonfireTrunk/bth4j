@@ -40,7 +40,7 @@ import today.bonfire.oss.bth4j.testing.MutableClock;
 @Timeout(15)
 class TaskExecutionTest {
     private static final Duration LEASE = Duration.ofMinutes(1);
-    private static final TaskType<Void> TYPE = TaskType.of("lease-loss").interruptOnCancel();
+    private static final TaskType<Void> TYPE = TaskType.of("lease-loss").withInterruptOnCancel();
 
     private final MutableClock clock = new MutableClock();
     private final InMemoryStore store = new InMemoryStore(clock);

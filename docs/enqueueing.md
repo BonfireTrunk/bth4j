@@ -32,7 +32,7 @@ unique keys, enqueueing inside your own database transaction, and how to resend 
 | `startBy(instant)` | the task expires if it has not started by then, see [Cancelling tasks](retries-and-cancelling.md#expiring-a-task-that-did-not-start); must not be before the run time; at most 100 years from now |
 | `maxRunTime(duration)` | an attempt running longer is asked to stop, see [Cancelling tasks](retries-and-cancelling.md#maximum-run-time) |
 | `retryPolicy(name)` | a retry policy registered on the runner with that name, see [Retries](retries-and-cancelling.md#retries) |
-| `account(text)`, `header(name, value)` | application labels, stored with the task (`account` at most 128 characters, `TaskRequest.MAX_ACCOUNT_LENGTH`; 8 KiB of headers) |
+| `account(text)`, `addHeader(name, value)` | application labels, stored with the task (`account` at most 128 characters, `TaskRequest.MAX_ACCOUNT_LENGTH`; 8 KiB of headers) |
 | `id(id)` | an id the client allocated (`client.nextId()` or a retry prepared with `EnqueueFailedException.retryRequests(...)`), see [Resend with a caller-allocated id](#resend-with-a-caller-allocated-id) |
 
 `enqueueAll` stores many requests in chunks.
@@ -127,7 +127,7 @@ A processor uses its own `TaskClient` to enqueue. `TaskContext` has no enqueue m
 
 A unique key protects task records, not running bodies.
 
-- After lease loss, the old body can overlap a replacement until its next check or, for types using `interruptOnCancel()`,
+- After lease loss, the old body can overlap a replacement until its next check or, for types using `withInterruptOnCancel()`,
   an interruptible blocking call after the runner detects the loss.
 - Interrupts are cooperative too.
 - Fence side effects with the task revision or an idempotent target.

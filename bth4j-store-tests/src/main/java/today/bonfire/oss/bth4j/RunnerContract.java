@@ -101,8 +101,8 @@ public abstract class RunnerContract {
                 .leaseDuration(Duration.ofSeconds(1))
                 .idlePollInterval(Duration.ofMillis(20))
                 .maintenanceCheckInterval(Duration.ofSeconds(1))
-                .scheduledTasksCheckInterval(Duration.ofMillis(50))
-                .recurringTasksCheckInterval(Duration.ofMillis(200))
+                .scheduledTaskCheckInterval(Duration.ofMillis(50))
+                .scheduleCheckInterval(Duration.ofMillis(200))
                 .purgeInterval(Duration.ofSeconds(1))
                 .shutdownTimeout(Duration.ofSeconds(5))
                 .threadGroupName("rc-" + NAMESPACES.get())
@@ -180,7 +180,7 @@ public abstract class RunnerContract {
         }));
 
         long id = enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("alpha", 7))
-                .header("trace", "t-1")
+                .addHeader("trace", "t-1")
                 .build());
 
         var done = awaitState(id, TaskState.SUCCEEDED);
@@ -407,7 +407,7 @@ public abstract class RunnerContract {
 
         long failing = enqueue(TaskRequest.of(VOID_TYPE).maxAttempts(1).build());
         long cancelling =
-                enqueue(TaskRequest.of(VOID_TYPE).header("cancel", "yes").build());
+                enqueue(TaskRequest.of(VOID_TYPE).addHeader("cancel", "yes").build());
 
         var dead = awaitState(failing, TaskState.DEAD);
         assertThat(dead.progress()).isEqualTo("half" + REPLACEMENT + "way");
@@ -878,7 +878,7 @@ public abstract class RunnerContract {
 
     @Test
     void interruptOnCancelWakesABlockedProcessor() throws Exception {
-        var interruptible = TaskType.of("rc-interruptible").interruptOnCancel();
+        var interruptible = TaskType.of("rc-interruptible").withInterruptOnCancel();
         var started = new CountDownLatch(1);
         var runner = startRunner(r -> r.register(interruptible, (ctx, payload) -> {
             started.countDown();
@@ -896,7 +896,7 @@ public abstract class RunnerContract {
 
     @Test
     void lostLeaseInterruptsAnOptedInProcessorWithoutFinishingTheTask() throws Exception {
-        var type = TaskType.of("rc-lost-lease").interruptOnCancel();
+        var type = TaskType.of("rc-lost-lease").withInterruptOnCancel();
         var started = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var interrupted = new CountDownLatch(1);
@@ -1110,7 +1110,7 @@ public abstract class RunnerContract {
     void aRetryOrRescheduleDelayLongerThanOneHundredYearsWaitsOneHundredYears() {
         var forever = ChronoUnit.FOREVER.getDuration();
         startRunner(
-                b -> b.retryPolicy("forever", RetryPolicy.fixed(forever)),
+                b -> b.addRetryPolicy("forever", RetryPolicy.fixed(forever)),
                 r -> r.register(VOID_TYPE, (ctx, payload) -> {
                     if (ctx.headers().containsKey("reschedule")) throw new TaskRescheduleException(forever);
                     throw new IllegalStateException("boom");
@@ -1119,7 +1119,7 @@ public abstract class RunnerContract {
 
         long retried = enqueue(TaskRequest.of(VOID_TYPE).retryPolicy("forever").build());
         long rescheduled =
-                enqueue(TaskRequest.of(VOID_TYPE).header("reschedule", "yes").build());
+                enqueue(TaskRequest.of(VOID_TYPE).addHeader("reschedule", "yes").build());
 
         for (long id : new long[] {retried, rescheduled}) {
             var waiting = awaitState(id, TaskState.SCHEDULED);
@@ -1136,7 +1136,7 @@ public abstract class RunnerContract {
     void namedRetryPolicyDecidesAndAnUnknownNameFallsBackToTheDefault() {
         var calls = new AtomicInteger();
         var runner = startRunner(
-                b -> b.retryPolicy("never", (task, error) -> RetryPolicy.Decision.dead("policy says no")),
+                b -> b.addRetryPolicy("never", (task, error) -> RetryPolicy.Decision.dead("policy says no")),
                 r -> r.register(VOID_TYPE, (ctx, payload) -> {
                     calls.incrementAndGet();
                     throw new IllegalStateException("boom");
@@ -1272,7 +1272,7 @@ public abstract class RunnerContract {
         }));
 
         client.putSchedule(ScheduleDefinition.every("slow", VOID_TYPE, Duration.ofSeconds(1))
-                .maxRunTime(Duration.ofMillis(300)));
+                .withMaxRunTime(Duration.ofMillis(300)));
 
         await(
                 "the overrunning occurrence to pause its schedule",
@@ -1429,8 +1429,8 @@ public abstract class RunnerContract {
     void scheduleZoneAndPauseAreStoredAndVisible() {
         var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {}));
         client.putSchedule(ScheduleDefinition.of("kolkata", VOID_TYPE, "30 9 * * *", Overlap.ALLOW)
-                .zone(java.time.ZoneId.of("Asia/Kolkata"))
-                .misfire(Misfire.SKIP));
+                .withZone(java.time.ZoneId.of("Asia/Kolkata"))
+                .withMisfire(Misfire.SKIP));
 
         var view = runner.admin().schedules().stream()
                 .filter(s -> s.id().equals("kolkata"))

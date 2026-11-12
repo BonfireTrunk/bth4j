@@ -52,7 +52,7 @@ final class ClientAddress {
             var range = proxy == null ? null : range(proxy.strip());
             if (range == null) {
                 throw new TaskConfigurationException(
-                        "trustedProxies entry " + position + " is not an IP address or a range such as 10.0.0.0/8");
+                        "trusted proxy " + position + " is not an IP address or a range such as 10.0.0.0/8");
             }
             ranges.add(range);
         }

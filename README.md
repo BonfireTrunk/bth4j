@@ -174,7 +174,7 @@ if (result instanceof EnqueueResult.Duplicate d) {
     log.info("already queued as task {}", d.existingId());
 }
 
-client.putSchedule(ScheduleDefinition.of("nightly-report", NIGHTLY_REPORT, "30 2 * * *", Overlap.ALLOW).queue("reports"));
+client.putSchedule(ScheduleDefinition.of("nightly-report", NIGHTLY_REPORT, "30 2 * * *", Overlap.ALLOW).withQueue("reports"));
 
 // on shutdown
 runner.stop();                                         // waits for running tasks, up to the shutdown timeout
@@ -220,7 +220,7 @@ jedis.close();
 | Area | Limitation |
 |---|---|
 | Cron | Cron expressions use the 5 field Unix format. |
-| Cancelling | Cancelling a running task is cooperative: the processor has to call `checkCancelled()` or be declared with `interruptOnCancel()`, and it is noticed on the next lease renewal. |
+| Cancelling | Cancelling a running task is cooperative: the processor has to call `checkCancelled()` or be declared with `withInterruptOnCancel()`, and it is noticed on the next lease renewal. |
 | Queue limits | `QueuePolicy` limits apply to one runner, not to the fleet. There are no fleet-wide concurrency limits, rate limits or priority bands. |
 | Issues | Issues are kept in the memory of the runner that recorded them (the last 100) and are lost on restart. |
 | Admin server | Admin sessions of `AdminHttpServer` are in memory, and the server has no user store beyond the users given to the builder. Put TLS (`https`) or a TLS-terminating proxy in front of it when it is not on the loopback interface. |

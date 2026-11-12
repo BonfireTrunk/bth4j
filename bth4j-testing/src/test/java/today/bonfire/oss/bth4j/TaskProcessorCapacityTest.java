@@ -137,7 +137,7 @@ class TaskProcessorCapacityTest {
     @Test
     void theQueueCapHoldsWhenTheExecutorHasMoreCapacityAndTheClaimBatchIsLarger() throws Exception {
         var executor = new ManualExecutor(10);
-        var processor = processor(executor, 5, Map.of(queueId, QueuePolicy.maxConcurrent(2)));
+        var processor = processor(executor, 5, Map.of(queueId, QueuePolicy.ofMaxConcurrent(2)));
         var ids = enqueue(5, "Q:DEF");
 
         processOnce(processor);
@@ -151,7 +151,7 @@ class TaskProcessorCapacityTest {
     @Test
     void aQuietProcessorReservesNoSlotAndClaimsNothingUntilItIsResumed() throws Exception {
         var executor = new ManualExecutor(10);
-        var processor = processor(executor, 5, Map.of(queueId, QueuePolicy.maxConcurrent(5)));
+        var processor = processor(executor, 5, Map.of(queueId, QueuePolicy.ofMaxConcurrent(5)));
         var ids = enqueue(3, "Q:DEF");
         admission.quiet(true);
 
@@ -173,7 +173,7 @@ class TaskProcessorCapacityTest {
     @Test
     void anotherIterationWhileTheAttemptsStayBlockedClaimsNothingUntilOneFinishes() throws Exception {
         var executor = new ManualExecutor(10);
-        var processor = processor(executor, 5, Map.of(queueId, QueuePolicy.maxConcurrent(2)));
+        var processor = processor(executor, 5, Map.of(queueId, QueuePolicy.ofMaxConcurrent(2)));
         var ids = enqueue(5, "Q:DEF");
         processOnce(processor);
 
@@ -199,7 +199,10 @@ class TaskProcessorCapacityTest {
         int light = names.queueId("Q:LIGHT");
         var executor = new ManualExecutor(4);
         var processor = processor(
-                executor, 4, List.of(heavy, light), Map.of(heavy, QueuePolicy.weight(3), light, QueuePolicy.weight(1)));
+                executor,
+                4,
+                List.of(heavy, light),
+                Map.of(heavy, QueuePolicy.ofWeight(3), light, QueuePolicy.ofWeight(1)));
         var heavyIds = enqueue(6, "Q:HEAVY");
         var lightIds = enqueue(6, "Q:LIGHT");
 
@@ -218,7 +221,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 4,
                 List.of(heavy, light),
-                Map.of(heavy, QueuePolicy.weight(3 << 29), light, QueuePolicy.weight(1 << 29)));
+                Map.of(heavy, QueuePolicy.ofWeight(3 << 29), light, QueuePolicy.ofWeight(1 << 29)));
         var heavyIds = enqueue(6, "Q:HEAVY");
         var lightIds = enqueue(6, "Q:LIGHT");
 
@@ -237,7 +240,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 4,
                 List.of(capped, open),
-                Map.of(capped, QueuePolicy.maxConcurrent(1), open, QueuePolicy.DEFAULT));
+                Map.of(capped, QueuePolicy.ofMaxConcurrent(1), open, QueuePolicy.DEFAULT));
         var cappedIds = enqueue(6, "Q:CAPPED");
         var openIds = enqueue(6, "Q:OPEN");
 
@@ -258,7 +261,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 4,
                 List.of(empty, busy),
-                Map.of(empty, QueuePolicy.maxConcurrent(5), busy, QueuePolicy.maxConcurrent(5)));
+                Map.of(empty, QueuePolicy.ofMaxConcurrent(5), busy, QueuePolicy.ofMaxConcurrent(5)));
         var busyIds = enqueue(10, "Q:BUSY");
 
         processOnce(processor);
@@ -277,7 +280,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 1,
                 List.of(empty, busy),
-                Map.of(empty, QueuePolicy.maxConcurrent(5), busy, QueuePolicy.maxConcurrent(5)));
+                Map.of(empty, QueuePolicy.ofMaxConcurrent(5), busy, QueuePolicy.ofMaxConcurrent(5)));
         var busyIds = enqueue(10, "Q:BUSY");
 
         processOnce(processor);
@@ -295,7 +298,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 4,
                 List.of(heavy, light),
-                Map.of(heavy, QueuePolicy.weight(100), light, QueuePolicy.weight(1)));
+                Map.of(heavy, QueuePolicy.ofWeight(100), light, QueuePolicy.ofWeight(1)));
         var lightIds = enqueue(10, "Q:LIGHT");
 
         processOnce(processor);
@@ -321,9 +324,9 @@ class TaskProcessorCapacityTest {
                 2,
                 List.of(first, empty, busy),
                 Map.of(
-                        first, QueuePolicy.maxConcurrent(5),
-                        empty, QueuePolicy.maxConcurrent(5),
-                        busy, QueuePolicy.maxConcurrent(5)));
+                        first, QueuePolicy.ofMaxConcurrent(5),
+                        empty, QueuePolicy.ofMaxConcurrent(5),
+                        busy, QueuePolicy.ofMaxConcurrent(5)));
         var firstIds = enqueue(1, "Q:FIRST");
         var busyIds = enqueue(3, "Q:BUSY");
 
@@ -346,7 +349,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 4,
                 List.of(paused, busy),
-                Map.of(paused, QueuePolicy.maxConcurrent(5), busy, QueuePolicy.maxConcurrent(5)));
+                Map.of(paused, QueuePolicy.ofMaxConcurrent(5), busy, QueuePolicy.ofMaxConcurrent(5)));
         var pausedIds = enqueue(3, "Q:PAUSED");
         var busyIds = enqueue(10, "Q:BUSY");
         store.pauseQueue(paused, true);
@@ -509,7 +512,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 4,
                 List.of(first, second),
-                Map.of(first, QueuePolicy.maxConcurrent(5), second, QueuePolicy.maxConcurrent(5)));
+                Map.of(first, QueuePolicy.ofMaxConcurrent(5), second, QueuePolicy.ofMaxConcurrent(5)));
         var firstIds = enqueue(3, "Q:FIRST");
         var secondIds = enqueue(3, "Q:SECOND");
 
@@ -663,7 +666,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 5,
                 List.of(queueId),
-                Map.of(queueId, QueuePolicy.maxConcurrent(1)),
+                Map.of(queueId, QueuePolicy.ofMaxConcurrent(1)),
                 IDLE_LONGER_THAN_THE_TEST);
         var ids = enqueue(2, "Q:DEF");
         processOnce(processor);
@@ -675,7 +678,7 @@ class TaskProcessorCapacityTest {
                         executor,
                         5,
                         List.of(queueId),
-                        Map.of(queueId, QueuePolicy.maxConcurrent(1)),
+                        Map.of(queueId, QueuePolicy.ofMaxConcurrent(1)),
                         IDLE_LONGER_THAN_THE_TEST)
                 : processor;
         var waiting = Thread.ofPlatform().start(() -> {
@@ -708,7 +711,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 5,
                 List.of(queueId),
-                Map.of(queueId, QueuePolicy.maxConcurrent(2)),
+                Map.of(queueId, QueuePolicy.ofMaxConcurrent(2)),
                 IDLE_LONGER_THAN_THE_TEST);
         enqueue(1, "Q:DEF");
         processOnce(processor);
@@ -989,7 +992,7 @@ class TaskProcessorCapacityTest {
     }
 
     private TaskProcessorService processor(BackgroundExecutor executor, int maxConcurrent) {
-        return processor(executor, maxConcurrent, Map.of(queueId, QueuePolicy.maxConcurrent(maxConcurrent)));
+        return processor(executor, maxConcurrent, Map.of(queueId, QueuePolicy.ofMaxConcurrent(maxConcurrent)));
     }
 
     private TaskProcessorService processor(
@@ -1011,7 +1014,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 maxConcurrent,
                 List.of(queueId),
-                Map.of(queueId, QueuePolicy.maxConcurrent(maxConcurrent)));
+                Map.of(queueId, QueuePolicy.ofMaxConcurrent(maxConcurrent)));
     }
 
     private TaskProcessorService processorOn(

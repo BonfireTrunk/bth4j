@@ -1183,11 +1183,11 @@ class TaskClientTest {
         var client = builder().build();
         var fits = "x".repeat(TaskRequest.MAX_HEADERS_BYTES - 1);
 
-        var accepted = client.enqueue(TaskRequest.of(VOID).header("h", fits).build());
+        var accepted = client.enqueue(TaskRequest.of(VOID).addHeader("h", fits).build());
 
         assertThat(client.task(accepted.id()).orElseThrow().headers()).containsEntry("h", fits);
         assertThatThrownBy(() -> client.enqueue(
-                        TaskRequest.of(VOID).header("h", fits + "x").build()))
+                        TaskRequest.of(VOID).addHeader("h", fits + "x").build()))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("headers");
     }
@@ -1197,9 +1197,9 @@ class TaskClientTest {
         var client = builder().build();
         var twoBytes = "é".repeat(TaskRequest.MAX_HEADERS_BYTES / 4);
         var request = TaskRequest.of(VOID)
-                .header("a", twoBytes)
-                .header("b", twoBytes)
-                .header("c", "x")
+                .addHeader("a", twoBytes)
+                .addHeader("b", twoBytes)
+                .addHeader("c", "x")
                 .build();
 
         assertThatThrownBy(() -> client.enqueue(request)).isInstanceOf(TaskValidationException.class);
@@ -1567,7 +1567,7 @@ class TaskClientTest {
         assertThatThrownBy(() -> ScheduleDefinition.of("id", VOID, " ", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> ScheduleDefinition.of("id", VOID, "* * * * *", Overlap.ALLOW)
-                        .maxAttempts(0))
+                        .withMaxAttempts(0))
                 .isInstanceOf(TaskValidationException.class);
     }
 

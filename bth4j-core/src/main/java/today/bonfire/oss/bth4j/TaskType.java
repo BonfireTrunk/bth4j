@@ -58,7 +58,7 @@ public final class TaskType<T> {
         return new TaskType<>(name, Void.class, null, 1);
     }
 
-    public TaskType<T> payloadVersion(int version) {
+    public TaskType<T> withPayloadVersion(int version) {
         return new TaskType<>(name, payloadClass, codec, version, interruptOnCancel);
     }
 
@@ -70,7 +70,7 @@ public final class TaskType<T> {
      * interruptible. Opt in only when the processor can handle this; otherwise poll
      * {@link TaskContext#checkCancelled()}. An interrupt does not guarantee the body stops.
      */
-    public TaskType<T> interruptOnCancel() {
+    public TaskType<T> withInterruptOnCancel() {
         return new TaskType<>(name, payloadClass, codec, payloadVersion, true);
     }
 

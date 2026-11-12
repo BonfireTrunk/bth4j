@@ -77,9 +77,9 @@ The code shows three ways to build a policy:
 ```java
 BackgroundRunner.builder()
         .queues(Queues.of("default", "mail", "reports"))
-        .queue("mail", QueuePolicy.weight(3))                   // three times the share of the others
-        .queue("reports", QueuePolicy.maxConcurrent(2))         // never more than two reports at once here
-        .queue("default", new QueuePolicy(2, 0))
+        .addQueuePolicy("mail", QueuePolicy.ofWeight(3))        // three times the share of the others
+        .addQueuePolicy("reports", QueuePolicy.ofMaxConcurrent(2))   // never more than two reports at once here
+        .addQueuePolicy("default", new QueuePolicy(2, 0))
 ```
 
 ### Pausing a queue

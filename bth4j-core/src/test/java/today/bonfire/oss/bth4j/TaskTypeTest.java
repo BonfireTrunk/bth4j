@@ -53,7 +53,7 @@ class TaskTypeTest {
     @Test
     void payloadVersionReturnsACopyWithTheNewVersion() {
         var v1 = TaskType.of("send-mail", Payload.class);
-        var v2 = v1.payloadVersion(2);
+        var v2 = v1.withPayloadVersion(2);
 
         assertThat(v1.payloadVersion()).isEqualTo(1);
         assertThat(v2.payloadVersion()).isEqualTo(2);
@@ -65,7 +65,7 @@ class TaskTypeTest {
     void payloadVersionBelowOneIsRejected() {
         var type = TaskType.of("send-mail", Payload.class);
 
-        assertThatThrownBy(() -> type.payloadVersion(0)).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> type.withPayloadVersion(0)).isInstanceOf(TaskConfigurationException.class);
     }
 
     @Test
@@ -84,7 +84,7 @@ class TaskTypeTest {
     @Test
     void equalityIsByNameOnly() {
         var a = TaskType.of("same", Payload.class);
-        var b = TaskType.of("same", Payload.class).payloadVersion(3);
+        var b = TaskType.of("same", Payload.class).withPayloadVersion(3);
 
         assertThat(a).isEqualTo(b).hasSameHashCodeAs(b);
         assertThat(a).isNotEqualTo(TaskType.of("other", Payload.class));

@@ -17,7 +17,6 @@ import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -50,7 +49,7 @@ import today.bonfire.oss.bth4j.internal.Json;
  * <p>
  * Failed logins are counted by where they come from and by the user they name: the fifth failure blocks that
  * address, or that user name, for 10 seconds (HTTP 429 with {@code Retry-After}). Behind a reverse proxy every
- * client shares the proxy's address unless {@link Builder#trustedProxies(String...)} names the proxy.
+ * client shares the proxy's address unless {@link Builder#addTrustedProxy(String)} names the proxy.
  * <p>
  * The server speaks plain HTTP unless an {@link SSLContext} is given; without one, put it behind TLS or keep it on
  * the loopback interface. The session cookie is marked Secure when an {@link SSLContext} is given; behind a
@@ -449,7 +448,7 @@ public final class AdminHttpServer implements AutoCloseable {
         if (forwardedFor != null && !clientAddress.trusts(peer) && forwardedHeaderIgnored.compareAndSet(false, true)) {
             log.warn(
                     "A login from {} carried X-Forwarded-For and the header was ignored, because that address is"
-                            + " not a trusted proxy. When the server is behind a proxy, name it with trustedProxies,"
+                            + " not a trusted proxy. When the server is behind a proxy, name it with addTrustedProxy,"
                             + " or all clients are counted as one. This is logged once.",
                     peer.getHostAddress());
         }
@@ -801,7 +800,7 @@ public final class AdminHttpServer implements AutoCloseable {
          *
          * @throws TaskConfigurationException when a part is missing or a user with that name was added before
          */
-        public Builder user(String name, String password, Role role) {
+        public Builder addUser(String name, String password, Role role) {
             if (name == null || name.isEmpty() || password == null || password.isEmpty() || role == null) {
                 throw new TaskConfigurationException("name, password and role are required");
             }
@@ -826,9 +825,10 @@ public final class AdminHttpServer implements AutoCloseable {
             return this;
         }
 
-        /** Origins, such as {@code https://admin.example.com}, that may call the API from a browser. */
-        public Builder corsOrigin(String... origins) {
-            corsOrigins.addAll(List.of(origins));
+        /** Adds an origin, such as {@code https://admin.example.com}, that may call the API from a browser. */
+        public Builder addCorsOrigin(String origin) {
+            if (origin == null || origin.isBlank()) throw new TaskConfigurationException("origin is required");
+            corsOrigins.add(origin);
             return this;
         }
 
@@ -848,19 +848,20 @@ public final class AdminHttpServer implements AutoCloseable {
         }
 
         /**
-         * Names the reverse proxies in front of the server, as addresses ({@code 10.0.0.5}, {@code ::1}) or
-         * ranges ({@code 10.0.0.0/8}). For a request that arrives from one of them the login throttle counts by
+         * Adds a reverse proxy in front of the server, as an address ({@code 10.0.0.5}, {@code ::1}) or a
+         * range ({@code 10.0.0.0/8}). For a request that arrives from one of them the login throttle counts by
          * the last address in {@code X-Forwarded-For} that is not a trusted proxy, so the proxy must set or
          * append that header itself. Without this setting the header is ignored and every client behind a proxy
          * counts as the proxy's address. Name only proxies: a request from any address named here can state the
          * address it is counted by.
          *
-         * @throws TaskConfigurationException when an entry is not an IP address or range
+         * @throws TaskConfigurationException when it is not an IP address or range
          */
-        public Builder trustedProxies(String... proxies) {
-            var all = Arrays.asList(proxies);
+        public Builder addTrustedProxy(String proxy) {
+            var all = new ArrayList<>(trustedProxies);
+            all.add(proxy);
             ClientAddress.trusting(all);
-            trustedProxies.addAll(all);
+            trustedProxies.add(proxy);
             return this;
         }
 

@@ -27,7 +27,7 @@ public interface TaskContext {
 
     /**
      * Checks for cancellation or a known lost lease. After lease loss the old body can keep running until
-     * it checks, or responds to an interrupt when its type opted into {@link TaskType#interruptOnCancel()}.
+     * it checks, or responds to an interrupt when its type opted into {@link TaskType#withInterruptOnCancel()}.
      * A unique key protects the task record only; fence side effects with the revision or an idempotent
      * target, and use steps to checkpoint completed work.
      * Only an attempt actually interrupted for lease loss has its outcome discarded; otherwise a returned

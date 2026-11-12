@@ -35,6 +35,7 @@ class BackgroundRunnerBuilderTest {
                 builder::succeededRetention,
                 builder::deadRetention,
                 builder::cancelledRetention,
+                builder::expiredRetention,
                 builder::runnerStaleTimeout);
 
         for (var setting : settings) {
@@ -53,8 +54,8 @@ class BackgroundRunnerBuilderTest {
                 Duration.ofMillis(10),
                         List.of(
                                 builder::idlePollInterval,
-                                builder::scheduledTasksCheckInterval,
-                                builder::recurringTasksCheckInterval),
+                                builder::scheduledTaskCheckInterval,
+                                builder::scheduleCheckInterval),
                 Duration.ofSeconds(1), List.of(builder::maintenanceCheckInterval));
 
         settingsByShortest.forEach((shortest, settings) -> {

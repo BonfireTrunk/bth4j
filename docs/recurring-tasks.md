@@ -19,17 +19,17 @@ A recurring definition creates one task for each of its fire times, from a cron 
 
 `client.putSchedule(ScheduleDefinition.of(id, type, payload, cron, overlap))` creates or replaces a definition. It returns a `PutScheduleResult`: `outcome()` says whether the definition was `CREATED`, `CHANGED` or found `UNCHANGED`, and `nextFireAt()` is the next fire time it has. The cron expression has 5 fields (Unix format). The last argument says what happens to a fire while the previous occurrence has not finished (see [Overlap](#overlap)); a cron definition has no default for it. Each fire time creates one task, exactly once across all instances.
 
-These methods refine a definition:
+These methods return a copy of the definition with one setting changed:
 
 | Method | What it sets |
 |---|---|
-| `.queue(...)` | the queue |
-| `.account(...)` | the account, at most 128 characters, as for a task |
-| `.maxAttempts(...)` | the maximum attempts |
-| `.maxRunTime(...)` | the maximum run time |
-| `.zone(...)` | the time zone of a cron expression (see [Cron definitions and time zones](#cron-definitions-and-time-zones)) |
-| `.misfire(...)` | what happens to missed fire times (see [Misfires](#misfires)) |
-| `.overlap(...)` | changes the overlap rule; for a fixed-delay definition this is where it is set (see [Overlap](#overlap)) |
+| `.withQueue(...)` | the queue |
+| `.withAccount(...)` | the account, at most 128 characters, as for a task |
+| `.withMaxAttempts(...)` | the maximum attempts |
+| `.withMaxRunTime(...)` | the maximum run time |
+| `.withZone(...)` | the time zone of a cron expression (see [Cron definitions and time zones](#cron-definitions-and-time-zones)) |
+| `.withMisfire(...)` | what happens to missed fire times (see [Misfires](#misfires)) |
+| `.withOverlap(...)` | changes the overlap rule; for a fixed-delay definition this is where it is set (see [Overlap](#overlap)) |
 
 `client.deleteSchedule(id)` removes a definition. `client.nextFireTimes()` gives the next fire time of every definition by id, and `admin.schedules()` lists the definitions in full (see [Admin API](admin.md#admin-api)). A definition is not a task and has no state: `tasks(TaskState.SCHEDULED, ...)` lists tasks that wait for their due time, occurrences created ahead of their fire time among them, not definitions.
 
@@ -89,17 +89,17 @@ A cron expression runs in UTC unless you set a zone. A fire time that does not e
 // cron in a time zone (UTC by default); a fire time that does not exist in a DST gap moves to the next valid
 // instant, a repeated hour fires once
 client.putSchedule(ScheduleDefinition.of("daily-digest", DIGEST, "0 8 * * *", Overlap.ALLOW)
-        .zone(ZoneId.of("Europe/Berlin")));
+        .withZone(ZoneId.of("Europe/Berlin")));
 ```
 
 ## Misfires
 
-A misfire is a fire time that was missed by more than the misfire threshold. The threshold is twice `recurringTasksCheckInterval`, at least one minute. The misfire policy decides what happens then.
+A misfire is a fire time that was missed by more than the misfire threshold. The threshold is twice `scheduleCheckInterval`, at least one minute. The misfire policy decides what happens then.
 
 ```java
 // misfire: what happens when a fire time was missed by more than the threshold (below)
 client.putSchedule(ScheduleDefinition.of("hourly-sync", SYNC, "0 * * * *", Overlap.ALLOW)
-        .misfire(Misfire.catchUp(3)));          // Misfire.SKIP, Misfire.FIRE_ONCE_NOW (default), Misfire.catchUp(maxFires)
+        .withMisfire(Misfire.catchUp(3)));          // Misfire.SKIP, Misfire.FIRE_ONCE_NOW (default), Misfire.catchUp(maxFires)
 ```
 
 | Policy | What it does |
@@ -138,8 +138,8 @@ The overlap is decided at the fire time, not ahead of it:
 
 | When the check sees the fire | Previous occurrence | What happens |
 |---|---|---|
-| up to one `recurringTasksCheckInterval` before its time | finished | the occurrence is created and starts on time |
-| up to one `recurringTasksCheckInterval` before its time | not finished | nothing yet, the next check looks again |
+| up to one `scheduleCheckInterval` before its time | finished | the occurrence is created and starts on time |
+| up to one `scheduleCheckInterval` before its time | not finished | nothing yet, the next check looks again |
 | at or after its time | finished | the occurrence is created and starts at once, up to one check interval after the fire time |
 | at or after its time | not finished | the fire is skipped with a `schedule-overlap` issue |
 
@@ -190,6 +190,6 @@ See [Issues](monitoring.md#issues) for how to read issues.
 
 ## Related pages
 
-- [Configuration](configuration.md#leases-and-timing) for `recurringTasksCheckInterval`.
+- [Configuration](configuration.md#leases-and-timing) for `scheduleCheckInterval`.
 - [Enqueueing](enqueueing.md#unique-keys) for unique keys, which the overlap protection uses.
 - [Retries and cancelling](retries-and-cancelling.md) for how an occurrence ends DEAD or CANCELLED.

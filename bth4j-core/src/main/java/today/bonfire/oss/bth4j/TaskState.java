@@ -19,7 +19,7 @@ public enum TaskState {
     DEAD(4),
     /** ended by a cancel request; kept for the cancelled retention */
     CANCELLED(5),
-    /** its start-by deadline passed before it ran; kept for the cancelled retention */
+    /** its start-by deadline passed before it ran; kept for the expired retention */
     EXPIRED(6);
 
     private static final TaskState[] BY_CODE = values();

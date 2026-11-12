@@ -48,7 +48,7 @@ Which queues exist, which ones this instance processes and how it shares its slo
 |---|---|---|
 | `queues(Queues)` | the one queue `general` | the queues tasks can be enqueued to and the default queue; the same value goes to every runner and `TaskClient` |
 | `processQueues(list)` | all queues of `queues` | the queues this instance processes (round robin) |
-| `queue(name, QueuePolicy)` | `QueuePolicy.DEFAULT` (weight 1, no limit) | share of free slots and concurrency limit of a queue on this runner |
+| `addQueuePolicy(name, QueuePolicy)` | `QueuePolicy.DEFAULT` (weight 1, no limit) | share of free slots and concurrency limit of a queue on this runner |
 
 ## Retries and attempts
 
@@ -57,12 +57,12 @@ How long a task waits after a failed attempt and how many attempts it gets. See 
 | Setting | Default | Meaning |
 |---|---|---|
 | `retryPolicy` | exponential, 1 s doubling, capped at 1 h, 20 % jitter | delay after a failed attempt |
-| `retryPolicy(name, policy)` | none | adds a named policy that requests choose with `TaskRequest.retryPolicy(name)`; name 1 to 64 characters; may be called several times |
+| `addRetryPolicy(name, policy)` | none | adds a named policy that requests choose with `TaskRequest.retryPolicy(name)`; name 1 to 64 characters; may be called several times |
 | `defaultMaxAttempts` | 10 (1 to 32767) | attempts for requests that do not set `maxAttempts` |
 
 ## Leases and timing
 
-How long a claimed task is leased, how often the runner polls and how often each service runs. Every interval is at most 100 years. See [How it works](how-it-works.md) for the services, [Recurring tasks](recurring-tasks.md) for `recurringTasksCheckInterval` and the misfire threshold, and [Cancelling tasks](retries-and-cancelling.md#cancelling-tasks) for how a cancel request reaches a running task through lease renewal.
+How long a claimed task is leased, how often the runner polls and how often each service runs. Every interval is at most 100 years. See [How it works](how-it-works.md) for the services, [Recurring tasks](recurring-tasks.md) for `scheduleCheckInterval` and the misfire threshold, and [Cancelling tasks](retries-and-cancelling.md#cancelling-tasks) for how a cancel request reaches a running task through lease renewal.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -72,8 +72,8 @@ How long a claimed task is leased, how often the runner polls and how often each
 | `shutdownTimeout` | 30 s | how long `stop()` takes at most, waiting for services and running tasks |
 | `serviceCheckInterval` | 10 s (at least 1 ms) | how often a dead service thread is restarted |
 | `maintenanceCheckInterval` | 5 s (at least 1 s) | how often expired leases are looked for, tasks past `startBy` are expired and the runner heartbeat is written |
-| `scheduledTasksCheckInterval` | 1 s (at least 10 ms) | upper bound of the wait between promotions of due scheduled tasks; it wakes earlier for the next due task |
-| `recurringTasksCheckInterval` | 10 s (at least 10 ms) | how often recurring definitions are checked; twice this value (at least 1 minute) is the misfire threshold |
+| `scheduledTaskCheckInterval` | 1 s (at least 10 ms) | upper bound of the wait between promotions of due scheduled tasks; it wakes earlier for the next due task |
+| `scheduleCheckInterval` | 10 s (at least 10 ms) | how often recurring definitions are checked; twice this value (at least 1 minute) is the misfire threshold |
 
 ## Retention and purge
 
@@ -83,7 +83,8 @@ How long finished tasks stay readable and how the purge removes them. See [Reten
 |---|---|---|
 | `succeededRetention` | 10 minutes (at most 100 years) | how long succeeded tasks are kept; zero removes them at once |
 | `deadRetention` | 90 days (at most 100 years) | how long dead tasks are kept; zero removes them at once |
-| `cancelledRetention` | 48 hours (at most 100 years) | how long cancelled and expired tasks are kept |
+| `cancelledRetention` | 48 hours (at most 100 years) | how long cancelled tasks are kept; zero removes them at the next purge |
+| `expiredRetention` | 48 hours (at most 100 years) | how long expired tasks are kept; zero removes them at the next purge |
 | `keepSucceededPayload` | false | keep the payload of succeeded tasks (dropped on success by default) |
 | `purgeInterval` | 1 minute (at least 1 ms) | time between purge runs |
 | `purgeBatchSize` | 500 | tasks removed per purge call; the purge loops until a call removes fewer |

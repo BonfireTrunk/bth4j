@@ -209,8 +209,8 @@ A runner is made of four services. A monitor restarts a service whose thread die
 | Service | What it does | How often |
 |---|---|---|
 | Task processor | Claims tasks in batches, runs them and renews their leases. | Claims at most `claimBatchSize` tasks (32) per call, bounded by the free executor slots. After a claim that found nothing it sleeps `idlePollInterval` (500 ms). Renews leases every third of `leaseDuration`. |
-| Scheduled task service | Promotes due SCHEDULED tasks to QUEUED. | At most `scheduledTasksCheckInterval` (1 second) between promotions. It wakes earlier for the next due task. |
-| Recurring task service | Creates the occurrences of recurring definitions. See [Recurring tasks](recurring-tasks.md). | Every `recurringTasksCheckInterval` (10 seconds). |
+| Scheduled task service | Promotes due SCHEDULED tasks to QUEUED. | At most `scheduledTaskCheckInterval` (1 second) between promotions. It wakes earlier for the next due task. |
+| Recurring task service | Creates the occurrences of recurring definitions. See [Recurring tasks](recurring-tasks.md). | Every `scheduleCheckInterval` (10 seconds). |
 | Maintenance service | Retries expired leases, expires tasks past their `startBy` and writes the runner heartbeat. | Every `maintenanceCheckInterval` (5 seconds). |
 | Maintenance service, purge | Purges finished tasks, releases unique keys and removes stale runners. | Every `purgeInterval` (1 minute). Runners without a heartbeat for `runnerStaleTimeout` (10 minutes) are removed. |
 
@@ -222,9 +222,10 @@ Finished tasks are kept for inspection, then purged by the maintenance service.
 |---|---|---|
 | SUCCEEDED | 10 minutes. The payload is dropped unless you set `keepSucceededPayload(true)`. | `succeededRetention` |
 | DEAD | 90 days | `deadRetention` |
-| CANCELLED and EXPIRED | 48 hours | `cancelledRetention` |
+| CANCELLED | 48 hours | `cancelledRetention` |
+| EXPIRED | 48 hours | `expiredRetention` |
 
-A retention of `Duration.ZERO` removes a SUCCEEDED or DEAD task at the transition instead. A CANCELLED or EXPIRED task with a zero `cancelledRetention` is removed at the next purge run (`purgeInterval`).
+A retention of `Duration.ZERO` removes a SUCCEEDED or DEAD task at the transition instead. A CANCELLED or EXPIRED task with a zero `cancelledRetention` or `expiredRetention` is removed at the next purge run (`purgeInterval`).
 
 Retention and the key window are independent:
 

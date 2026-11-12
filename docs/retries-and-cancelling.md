@@ -80,7 +80,7 @@ Register policies under a name and let a request choose one:
 
 ```java
 BackgroundRunner.builder()
-        .retryPolicy("slow-api", RetryPolicy.exponential(Duration.ofMinutes(1), Duration.ofHours(6)))
+        .addRetryPolicy("slow-api", RetryPolicy.exponential(Duration.ofMinutes(1), Duration.ofHours(6)))
         ...
 
 client.enqueue(TaskRequest.of(SEND_MAIL, mail).retryPolicy("slow-api").build());
@@ -142,12 +142,12 @@ The processor decides how to stop:
 |---|---|
 | `ctx.cancelRequested()` | shows the request |
 | `ctx.checkCancelled()` | throws `TaskCancelledException`, which ends the task CANCELLED |
-| A task type declared with `interruptOnCancel()` | its thread is also interrupted once per attempt, so sleeps and blocking calls wake up; the exception that follows is treated as the cancellation |
+| A task type declared with `withInterruptOnCancel()` | its thread is also interrupted once per attempt, so sleeps and blocking calls wake up; the exception that follows is treated as the cancellation |
 
 Starting a new `ctx.step` also checks for a cancel request, like `checkCancelled()`.
 
 ```java
-static final TaskType<Export> EXPORT = TaskType.of("export", Export.class).interruptOnCancel();
+static final TaskType<Export> EXPORT = TaskType.of("export", Export.class).withInterruptOnCancel();
 
 runner.registry().register(EXPORT, (ctx, export) -> {
     for (var part : export.parts()) {
@@ -168,7 +168,7 @@ runner.registry().register(EXPORT, (ctx, export) -> {
 
 ### Lease loss
 
-`interruptOnCancel()` also interrupts the body when lease renewal reports a lost lease. What happens to the attempt's
+`withInterruptOnCancel()` also interrupts the body when lease renewal reports a lost lease. What happens to the attempt's
 outcome depends on that interrupt:
 
 | Attempt | What happens to its outcome |

@@ -20,8 +20,8 @@ Point the admin HTTP server at this directory and open the server's address. The
 ```java
 AdminHttpServer.builder()
         .admin(adminOps)
-        .user("ops", "change-me", Role.ADMIN)
-        .user("support", "change-me-too", Role.VIEWER)
+        .addUser("ops", "change-me", Role.ADMIN)
+        .addUser("support", "change-me-too", Role.VIEWER)
         .staticDir(Path.of("dashboard"))
         .build()
         .start();
@@ -37,7 +37,7 @@ Serve the directory from any static host and tell the page where the API lives, 
 <script>window.BTH4J_API = "https://host:8787";</script>
 ```
 
-The admin server must then allow the dashboard's origin (`.corsOrigin("https://dashboard.example.com")`).
+The admin server must then allow the dashboard's origin (`.addCorsOrigin("https://dashboard.example.com")`).
 Requests use `credentials: 'include'`. Note the session cookie is `SameSite=Strict`, so the dashboard host
 and the API host must be the same site (same registrable domain), otherwise the browser will not send it.
 

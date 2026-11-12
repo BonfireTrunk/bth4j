@@ -283,7 +283,7 @@ public final class TaskRequest<T> {
             return this;
         }
 
-        public Builder<T> header(String name, String value) {
+        public Builder<T> addHeader(String name, String value) {
             if (name == null || name.isBlank() || value == null) {
                 throw new TaskValidationException("header name and value are required");
             }
@@ -294,8 +294,8 @@ public final class TaskRequest<T> {
             return this;
         }
 
-        public Builder<T> headers(Map<String, String> headers) {
-            if (headers != null) headers.forEach(this::header);
+        public Builder<T> addHeaders(Map<String, String> headers) {
+            if (headers != null) headers.forEach(this::addHeader);
             return this;
         }
 
@@ -315,7 +315,7 @@ public final class TaskRequest<T> {
             return this;
         }
 
-        /** Name of a retry policy registered with {@code BackgroundRunner.Builder#retryPolicy(String, RetryPolicy)}; an unknown name falls back to the default policy. */
+        /** Name of a retry policy registered with {@code BackgroundRunner.Builder#addRetryPolicy(String, RetryPolicy)}; an unknown name falls back to the default policy. */
         public Builder<T> retryPolicy(String name) {
             if (name != null && (name.isBlank() || name.length() > MAX_RETRY_POLICY_LENGTH)) {
                 throw new TaskValidationException(

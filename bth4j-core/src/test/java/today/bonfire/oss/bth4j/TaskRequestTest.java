@@ -150,9 +150,9 @@ class TaskRequestTest {
     @Test
     void headersAreCollectedAndImmutable() {
         var request = TaskRequest.of(VOID)
-                .header("a", "1")
-                .headers(Map.of("b", "2"))
-                .header("a", "3")
+                .addHeader("a", "1")
+                .addHeaders(Map.of("b", "2"))
+                .addHeader("a", "3")
                 .build();
 
         assertThat(request.headers()).containsOnly(Map.entry("a", "3"), Map.entry("b", "2"));
@@ -163,15 +163,15 @@ class TaskRequestTest {
     void headerNameMustNotBeBlankAndValueMustNotBeNull() {
         var builder = TaskRequest.of(VOID);
 
-        assertThatThrownBy(() -> builder.header(null, "v")).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> builder.header(" ", "v")).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> builder.header("n", null)).isInstanceOf(TaskValidationException.class);
-        assertThat(TaskRequest.of(VOID).header("n", "").build().headers()).containsEntry("n", "");
+        assertThatThrownBy(() -> builder.addHeader(null, "v")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> builder.addHeader(" ", "v")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> builder.addHeader("n", null)).isInstanceOf(TaskValidationException.class);
+        assertThat(TaskRequest.of(VOID).addHeader("n", "").build().headers()).containsEntry("n", "");
     }
 
     @Test
     void nullHeaderMapIsIgnored() {
-        assertThat(TaskRequest.of(VOID).headers(null).build().headers()).isEmpty();
+        assertThat(TaskRequest.of(VOID).addHeaders(null).build().headers()).isEmpty();
     }
 
     @Test
@@ -180,8 +180,8 @@ class TaskRequestTest {
 
         assertThatThrownBy(() -> builder.account("a\u0000b")).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> builder.uniqueKey("k\u0000")).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> builder.header("n\u0000", "v")).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> builder.header("n", "v\u0000")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> builder.addHeader("n\u0000", "v")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> builder.addHeader("n", "v\u0000")).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> builder.retryPolicy("p\u0000")).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> builder.retryPolicy(" ")).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> builder.retryPolicy("p".repeat(TaskRequest.MAX_RETRY_POLICY_LENGTH + 1)))
@@ -262,7 +262,7 @@ class TaskRequestTest {
                 .at(Instant.parse("2031-01-01T00:00:00Z"))
                 .uniqueKey("key", Uniqueness.keepFor(Duration.ofMinutes(5)))
                 .maxAttempts(7)
-                .header("a", "b")
+                .addHeader("a", "b")
                 .startBy(Instant.parse("2031-01-02T00:00:00Z"))
                 .maxRunTime(Duration.ofSeconds(3))
                 .retryPolicy("policy")

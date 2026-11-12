@@ -15,7 +15,7 @@ Use `TaskType.of` to declare a type. It has three forms:
 | `TaskType.of(name, codec)` | takes a `PayloadCodec`, for another format |
 | `TaskType.of(name)` | a type without payload |
 
-`payloadVersion(n)` is stored with each task. A processor can use it to read old tasks differently after the payload
+The payload version, set with `withPayloadVersion(n)`, is stored with each task. A processor can use it to read old tasks differently after the payload
 shape changed.
 
 ### What a processor does

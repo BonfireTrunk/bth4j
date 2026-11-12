@@ -16,11 +16,11 @@ public record QueuePolicy(int weight, int maxConcurrent) {
         if (maxConcurrent < 0) throw new TaskConfigurationException("maxConcurrent cannot be negative");
     }
 
-    public static QueuePolicy weight(int weight) {
+    public static QueuePolicy ofWeight(int weight) {
         return new QueuePolicy(weight, 0);
     }
 
-    public static QueuePolicy maxConcurrent(int maxConcurrent) {
+    public static QueuePolicy ofMaxConcurrent(int maxConcurrent) {
         return new QueuePolicy(1, maxConcurrent);
     }
 }

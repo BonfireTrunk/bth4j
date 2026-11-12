@@ -121,8 +121,8 @@ flowchart LR
 var server = AdminHttpServer.builder()
         .admin(runner.admin())
         .bind("127.0.0.1", 8787)                          // the default
-        .user("ops", System.getenv("BTH4J_OPS_PASSWORD"), Role.ADMIN)
-        .user("support", System.getenv("BTH4J_SUPPORT_PASSWORD"), Role.VIEWER)
+        .addUser("ops", System.getenv("BTH4J_OPS_PASSWORD"), Role.ADMIN)
+        .addUser("support", System.getenv("BTH4J_SUPPORT_PASSWORD"), Role.VIEWER)
         .staticDir(Path.of("dashboard"))                  // serves the dashboard at http://127.0.0.1:8787/
         .build();
 server.start();
@@ -144,8 +144,8 @@ At least one user is required. A server runs once: `start()` after `stop()` thro
 | `sessionTtl` | How long a session lasts, counted from the sign-in. The default is 12 hours. |
 | `https(SSLContext)` | Makes the server speak HTTPS and marks the cookie `Secure`. |
 | `secureCookie(true)` | Marks the cookie `Secure` when the server itself speaks plain HTTP. |
-| `trustedProxies(addresses)` | Names the reverse proxies in front of the server, so that failed logins are counted per client and not per proxy. See [Failed logins](#failed-logins). |
-| `corsOrigin(origin)` | Lets a browser app on another origin call the API with credentials. |
+| `addTrustedProxy(address)` | Names a reverse proxy in front of the server, as an address or a range, so that failed logins are counted per client and not per proxy. Call it once per proxy. See [Failed logins](#failed-logins). |
+| `addCorsOrigin(origin)` | Lets a browser app on another origin call the API with credentials. Call it once per origin. |
 
 ### Roles
 
@@ -205,11 +205,11 @@ These rules apply to both counts:
 
 #### Behind a reverse proxy
 
-The server sees the proxy's address on every request. Name the proxy with `trustedProxies`, and the server counts by the client address the proxy reports in `X-Forwarded-For`:
+The server sees the proxy's address on every request. Name the proxy with `addTrustedProxy`, and the server counts by the client address the proxy reports in `X-Forwarded-For`:
 
 ```java
 AdminHttpServer.builder()
-        .trustedProxies("10.0.0.5")            // one address, or a range such as "10.0.0.0/8"
+        .addTrustedProxy("10.0.0.5")           // one address, or a range such as "10.0.0.0/8"
         .secureCookie(true)
         // ...
 ```
@@ -227,7 +227,7 @@ flowchart TD
 
 | Point | What to know |
 |---|---|
-| Without `trustedProxies` | The header is ignored and all clients behind the proxy count as one address: five failures from anyone block every login for 10 seconds. The server logs one warning when a login carries the header from an address that is not trusted. |
+| Without `addTrustedProxy` | The header is ignored and all clients behind the proxy count as one address: five failures from anyone block every login for 10 seconds. The server logs one warning when a login carries the header from an address that is not trusted. |
 | What the proxy must do | Set `X-Forwarded-For` itself, or append the address it saw to the header it received. A proxy that passes a client's header on unchanged lets the client choose the address it is counted by. |
 | What to name | Only proxies. A request from a trusted address can state any client address, so a range must not include clients. |
 | An entry that is not an IP address | It ends the search, and the login counts by the proxy that reported it. An entry may carry a port. |
@@ -302,8 +302,8 @@ On the wire an empty or missing `queue` on `GET /api/v1/tasks` still lists every
 |---|---|
 | Default | The server speaks plain HTTP unless `https(SSLContext)` is set. Keep it on the loopback interface or behind TLS. |
 | TLS in the server | Set `https(SSLContext)`. It also marks the cookie `Secure`. |
-| A TLS-terminating proxy in front | The server itself speaks plain HTTP, so set `secureCookie(true)` to mark the cookie `Secure`. Also set `trustedProxies`, so that [failed logins](#failed-logins) are counted per client. |
-| A browser app on another origin calls the API | Set `corsOrigin("https://dashboard.example.com")`. It lets that app call the API with credentials. |
+| A TLS-terminating proxy in front | The server itself speaks plain HTTP, so set `secureCookie(true)` to mark the cookie `Secure`. Also call `addTrustedProxy`, so that [failed logins](#failed-logins) are counted per client. |
+| A browser app on another origin calls the API | Call `addCorsOrigin("https://dashboard.example.com")`. It lets that app call the API with credentials. |
 
 ## The dashboard
 
@@ -326,6 +326,6 @@ The files come from the repository checkout. You can serve them in two ways:
 | Way | How |
 |---|---|
 | From the admin server | Point `staticDir` at the `dashboard` directory. |
-| From your own static host | Copy the directory to your static host and set `window.BTH4J_API` in `index.html`. The dashboard and API hosts must then share a registrable domain, because of the `SameSite=Strict` cookie. The admin server must also allow the dashboard's origin, for example `.corsOrigin("https://dashboard.example.com")` (see [Transport and cross-origin calls](#transport-and-cross-origin-calls)). |
+| From your own static host | Copy the directory to your static host and set `window.BTH4J_API` in `index.html`. The dashboard and API hosts must then share a registrable domain, because of the `SameSite=Strict` cookie. The admin server must also allow the dashboard's origin, for example `.addCorsOrigin("https://dashboard.example.com")` (see [Transport and cross-origin calls](#transport-and-cross-origin-calls)). |
 
 Details are in [dashboard/README.md](../dashboard/README.md). `dashboard/dev/fake-api.py` serves sample data without Java.

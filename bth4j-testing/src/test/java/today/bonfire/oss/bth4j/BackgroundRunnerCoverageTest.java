@@ -245,10 +245,12 @@ class BackgroundRunnerCoverageTest {
         var builder = BackgroundRunner.builder()
                 .store(store)
                 .queues(Queues.of("main", "mail"))
-                .queue("main", QueuePolicy.weight(1))
+                .addQueuePolicy("main", QueuePolicy.ofWeight(1))
                 .runnerLabel("first");
         var first = builder.build();
-        builder.runnerLabel("second").queue("mail", QueuePolicy.weight(5)).queues(Queues.of("other"));
+        builder.runnerLabel("second")
+                .addQueuePolicy("mail", QueuePolicy.ofWeight(5))
+                .queues(Queues.of("other"));
         first.registry().register(TaskType.of("work"), (context, payload) -> {});
         try {
             first.start();
@@ -292,6 +294,42 @@ class BackgroundRunnerCoverageTest {
                         .runnerStaleTimeout(Duration.ofSeconds(30))
                         .build())
                 .doesNotThrowAnyException();
+    }
+
+    @Test
+    void eachFinishedStateIsPurgedWithItsOwnRetention() throws Exception {
+        var retentions = new java.util.concurrent.ConcurrentHashMap<TaskState, Duration>();
+        var allSeen = new CountDownLatch(1);
+        var observed = StoreInterceptor.around(new InMemoryStore(new MutableClock()), (method, args, real) -> {
+            if (method.equals("purge")) {
+                retentions.put((TaskState) args[0], (Duration) args[1]);
+                if (retentions.size() == 4) allSeen.countDown();
+            }
+            return real.proceed();
+        });
+        var runner = BackgroundRunner.builder()
+                .store(observed)
+                .succeededRetention(Duration.ofMinutes(1))
+                .deadRetention(Duration.ofMinutes(2))
+                .cancelledRetention(Duration.ofMinutes(3))
+                .expiredRetention(Duration.ofMinutes(4))
+                .maintenanceCheckInterval(Duration.ofSeconds(1))
+                .purgeInterval(Duration.ofMillis(20))
+                .build();
+        runner.registry().register(TaskType.of("work"), (context, payload) -> {});
+        try {
+            runner.start();
+
+            assertThat(allSeen.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(retentions)
+                    .containsOnly(
+                            java.util.Map.entry(TaskState.SUCCEEDED, Duration.ofMinutes(1)),
+                            java.util.Map.entry(TaskState.DEAD, Duration.ofMinutes(2)),
+                            java.util.Map.entry(TaskState.CANCELLED, Duration.ofMinutes(3)),
+                            java.util.Map.entry(TaskState.EXPIRED, Duration.ofMinutes(4)));
+        } finally {
+            runner.stop();
+        }
     }
 
     @Test
@@ -404,8 +442,8 @@ class BackgroundRunnerCoverageTest {
         var runner = BackgroundRunner.builder()
                 .store(observed)
                 .shutdownTimeout(timeout)
-                .scheduledTasksCheckInterval(Duration.ofMillis(10))
-                .recurringTasksCheckInterval(Duration.ofMillis(10))
+                .scheduledTaskCheckInterval(Duration.ofMillis(10))
+                .scheduleCheckInterval(Duration.ofMillis(10))
                 .build();
         runner.registry().register(TaskType.of("work"), (context, payload) -> {});
         try {
@@ -470,7 +508,7 @@ class BackgroundRunnerCoverageTest {
         var runner = BackgroundRunner.builder()
                 .store(observed)
                 .shutdownTimeout(Duration.ofMillis(300))
-                .recurringTasksCheckInterval(Duration.ofMillis(10))
+                .scheduleCheckInterval(Duration.ofMillis(10))
                 .build();
         runner.registry().register(TaskType.of("work"), (context, payload) -> {});
         try {
@@ -545,7 +583,7 @@ class BackgroundRunnerCoverageTest {
                         .store(store)
                         .queues(queues)
                         .processQueues(List.of("mail"))
-                        .queue("main", QueuePolicy.weight(2))
+                        .addQueuePolicy("main", QueuePolicy.ofWeight(2))
                         .build())
                 .isInstanceOf(TaskConfigurationException.class)
                 .hasMessageContaining("does not process");
