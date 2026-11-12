@@ -1223,7 +1223,14 @@ public abstract class StoreContract {
             t.cancelRequestedAt()
         };
         String[] names = {
-            "createdAt", "due", "stateChangedAt", "leaseUntil", "claimedAt", "keyUntil", "startBy", "cancelRequestedAt"
+            "createdAt",
+            "dueAt",
+            "stateChangedAt",
+            "leaseUntil",
+            "claimedAt",
+            "keyUntil",
+            "startBy",
+            "cancelRequestedAt"
         };
         for (int i = 0; i < times.length; i++) {
             if (times[i] != null) {
@@ -1376,7 +1383,7 @@ public abstract class StoreContract {
         if (retry) {
             expected.dueAt(retryAt).runnerId(null).uniqueKey(claimed.uniqueKey());
         } else {
-            notChecked.add("due");
+            notChecked.add("dueAt");
         }
         if (ending == FailEnding.DEAD_AFTER_CANCEL_REQUEST) {
             notChecked.addAll(List.of("cancelRequestedAt", "cancelReason"));
@@ -3731,7 +3738,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringStoresTheDefinitionAndNextFire() {
+    void putScheduleStoresTheDefinitionAndNextFire() {
         Instant fire = millis(now().plus(Duration.ofHours(1)));
         store.putSchedule(definition("nightly", "0 0 * * *"), fire, fire);
         assertThat(store.nextFireTimes()).containsOnly(Map.entry("nightly", fire));
@@ -3749,7 +3756,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringAssignsANewRevisionToEveryChange() {
+    void putScheduleAssignsANewRevisionToEveryChange() {
         Instant fire = millis(now().plusSeconds(60));
         assertThat(store.putSchedule(definition("a", "* * * * *"), fire, fire))
                 .extracting(PutScheduleResult::outcome)
@@ -3765,7 +3772,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringOfTheStoredDefinitionIsUnchangedAndKeepsTheRevision() {
+    void putScheduleOfTheStoredDefinitionIsUnchangedAndKeepsTheRevision() {
         Instant fire = millis(now().plusSeconds(60));
         store.putSchedule(fullDefinition("a"), fire, fire);
         long revision = store.dueSchedules(fire, 10).get(0).definition().revision();
@@ -3803,7 +3810,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringThatResetsTheNextFireIsAChange() {
+    void putScheduleThatResetsTheNextFireIsAChange() {
         Instant fire = millis(now().plusSeconds(600));
         Instant sooner = millis(now().plusSeconds(60));
         store.putSchedule(fullDefinition("a"), fire, fire);
@@ -3819,7 +3826,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringWithAKeepBoundBeforeTheStoredFireIsAChangeEvenWhenTheNewFireIsTheSame() {
+    void putScheduleWithAKeepBoundBeforeTheStoredFireIsAChangeEvenWhenTheNewFireIsTheSame() {
         Instant fire = millis(now().plusSeconds(60));
         store.putSchedule(fullDefinition("a"), fire, fire);
         long revision = store.dueSchedules(fire, 10).get(0).definition().revision();
@@ -3831,7 +3838,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringComparesTheMaxRunTime() {
+    void putScheduleComparesTheMaxRunTime() {
         Instant fire = millis(now().plusSeconds(60));
         var base = fullDefinition("a");
         store.putSchedule(base, fire, fire);
@@ -3981,30 +3988,30 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringReportsAChangeOfTheType() {
+    void putScheduleReportsAChangeOfTheType() {
         int other = store.typeId("other-type");
         assertEveryChangeIsReported(cronBase(), f -> f.typeId = other);
     }
 
     @Test
-    void putRecurringReportsAChangeOfThePayloadVersion() {
+    void putScheduleReportsAChangeOfThePayloadVersion() {
         assertEveryChangeIsReported(cronBase(), f -> f.payloadVersion = 2);
     }
 
     @Test
-    void putRecurringReportsAChangeOfTheQueue() {
+    void putScheduleReportsAChangeOfTheQueue() {
         int other = store.queueId("other-queue");
         assertEveryChangeIsReported(cronBase(), f -> f.queueId = other);
     }
 
     @Test
-    void putRecurringReportsAChangeOfTheAccountIncludingNullTransitions() {
+    void putScheduleReportsAChangeOfTheAccountIncludingNullTransitions() {
         assertEveryChangeIsReported(cronBase(), f -> f.account = "other", f -> f.account = null);
         assertEveryChangeIsReported(edited(cronBase(), f -> f.account = null), f -> f.account = "acme");
     }
 
     @Test
-    void putRecurringReportsAChangeOfTheCronExpressionAndOfSwitchingToAFixedDelay() {
+    void putScheduleReportsAChangeOfTheCronExpressionAndOfSwitchingToAFixedDelay() {
         assertEveryChangeIsReported(cronBase(), f -> f.cron = "0 4 * * *", f -> {
             f.cron = null;
             f.fixedDelay = Duration.ofSeconds(60);
@@ -4012,24 +4019,24 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringReportsAChangeOfTheZoneIncludingNullTransitions() {
+    void putScheduleReportsAChangeOfTheZoneIncludingNullTransitions() {
         assertEveryChangeIsReported(cronBase(), f -> f.zone = "Asia/Kolkata", f -> f.zone = null);
         assertEveryChangeIsReported(edited(cronBase(), f -> f.zone = null), f -> f.zone = "UTC");
     }
 
     @Test
-    void putRecurringReportsAChangeOfTheMisfirePolicyIncludingNullTransitions() {
+    void putScheduleReportsAChangeOfTheMisfirePolicyIncludingNullTransitions() {
         assertEveryChangeIsReported(cronBase(), f -> f.misfire = "CATCH_UP", f -> f.misfire = null);
         assertEveryChangeIsReported(edited(cronBase(), f -> f.misfire = null), f -> f.misfire = "SKIP");
     }
 
     @Test
-    void putRecurringReportsAChangeOfTheCatchUpLimit() {
+    void putScheduleReportsAChangeOfTheCatchUpLimit() {
         assertEveryChangeIsReported(cronBase(), f -> f.catchUpMaxFires = 4);
     }
 
     @Test
-    void putRecurringReportsAChangeOfTheFixedDelayIncludingNullTransitions() {
+    void putScheduleReportsAChangeOfTheFixedDelayIncludingNullTransitions() {
         assertEveryChangeIsReported(fullDefinition("a"), f -> f.fixedDelay = Duration.ofSeconds(60), f -> {
             f.fixedDelay = null;
             f.cron = "0 3 * * *";
@@ -4037,30 +4044,30 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringReportsAChangeOfTheOverlapFlag() {
+    void putScheduleReportsAChangeOfTheOverlapFlag() {
         assertEveryChangeIsReported(cronBase(), f -> f.overlapSkip = false);
     }
 
     @Test
-    void putRecurringReportsAChangeOfThePayloadIncludingNullTransitions() {
+    void putScheduleReportsAChangeOfThePayloadIncludingNullTransitions() {
         assertEveryChangeIsReported(cronBase(), f -> f.encodedPayload = "{\"x\":1}", f -> f.encodedPayload = null);
         assertEveryChangeIsReported(edited(cronBase(), f -> f.encodedPayload = null), f -> f.encodedPayload = "{}");
     }
 
     @Test
-    void putRecurringReportsAChangeOfTheMaxAttempts() {
+    void putScheduleReportsAChangeOfTheMaxAttempts() {
         assertEveryChangeIsReported(cronBase(), f -> f.maxAttempts = 4);
     }
 
     @Test
-    void putRecurringReportsAChangeOfTheMaxRunTimeIncludingNullTransitions() {
+    void putScheduleReportsAChangeOfTheMaxRunTimeIncludingNullTransitions() {
         assertEveryChangeIsReported(cronBase(), f -> f.maxRunTime = Duration.ofSeconds(6), f -> f.maxRunTime = null);
         assertEveryChangeIsReported(
                 edited(cronBase(), f -> f.maxRunTime = null), f -> f.maxRunTime = Duration.ofSeconds(5));
     }
 
     @Test
-    void putRecurringKeepsTheNextFireWhenTheCronIsUnchanged() {
+    void putScheduleKeepsTheNextFireWhenTheCronIsUnchanged() {
         Instant first = millis(now().plusSeconds(60));
         Instant other = millis(now().plusSeconds(600));
         store.putSchedule(definition("a", "* * * * *"), first, first);
@@ -4071,7 +4078,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringResetsTheNextFireWhenTheZoneOrFixedDelayChanges() {
+    void putScheduleResetsTheNextFireWhenTheZoneOrFixedDelayChanges() {
         Instant first = millis(now().plusSeconds(60));
         Instant second = millis(now().plusSeconds(600));
         Instant third = millis(now().plusSeconds(1200));
@@ -4122,7 +4129,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void deleteRecurringReportsWhetherItExisted() {
+    void deleteScheduleReportsWhetherItExisted() {
         store.putSchedule(definition("a", "* * * * *"), millis(now().plusSeconds(60)), millis(now().plusSeconds(60)));
         assertThat(store.deleteSchedule("a")).isTrue();
         assertThat(store.deleteSchedule("a")).isFalse();
@@ -4130,7 +4137,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void dueRecurringReturnsOnlyDueDefinitionsUpToTheLimit() {
+    void dueSchedulesReturnsOnlyDueDefinitionsUpToTheLimit() {
         Instant base = millis(now());
         store.putSchedule(definition("a", "* * * * *"), base.plusSeconds(10), base.plusSeconds(10));
         store.putSchedule(definition("b", "* * * * *"), base.plusSeconds(20), base.plusSeconds(20));
@@ -4146,7 +4153,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void commitRecurringStoresTheOccurrenceAndAdvancesTheDefinition() {
+    void commitScheduleStoresTheOccurrenceAndAdvancesTheDefinition() {
         Instant fire = millis(now().plusSeconds(1));
         Instant next = millis(now().plusSeconds(3600));
         store.putSchedule(definition("nightly", "* * * * *"), fire, fire);
@@ -4162,7 +4169,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void commitRecurringStoresTheOccurrenceAtTheRevisionItWasGiven() {
+    void commitScheduleStoresTheOccurrenceAtTheRevisionItWasGiven() {
         Instant fire = millis(now().plusSeconds(1));
         store.putSchedule(definition("nightly", "* * * * *"), fire, fire);
         DueSchedule due = store.dueSchedules(fire, 10).get(0);
@@ -4177,7 +4184,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void commitRecurringWithAStaleDueDoesNothing() {
+    void commitScheduleWithAStaleDueDoesNothing() {
         Instant fire = millis(now().plusSeconds(1));
         Instant next = millis(now().plusSeconds(3600));
         store.putSchedule(definition("nightly", "* * * * *"), fire, fire);
@@ -4190,7 +4197,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void commitRecurringIsRejectedAfterTheDefinitionWasReplacedOrDeleted() {
+    void commitScheduleIsRejectedAfterTheDefinitionWasReplacedOrDeleted() {
         Instant fire = millis(now().plusSeconds(1));
         store.putSchedule(definition("nightly", "* * * * *"), fire, fire);
         DueSchedule due = store.dueSchedules(fire, 10).get(0);
@@ -4226,7 +4233,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void commitRecurringWithATakenOccurrenceIdWritesNothing() {
+    void commitScheduleWithATakenOccurrenceIdWritesNothing() {
         long taken = putNew();
         Instant fire = millis(now().plusSeconds(1));
         store.putSchedule(definition("nightly", "* * * * *"), fire, fire);
@@ -4244,7 +4251,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void commitRecurringOfAFixedDelayWithATakenOccurrenceIdLeavesItUnparked() {
+    void commitScheduleOfAFixedDelayWithATakenOccurrenceIdLeavesItUnparked() {
         long taken = putNew();
         Instant fire = millis(now().plusSeconds(1));
         store.putSchedule(fullDefinition("a"), fire, fire);
@@ -5552,7 +5559,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void commitRecurringOfALateFireStoresTheRunnersOccurrenceAsScheduledForTheFireAndPromoteQueuesIt() {
+    void commitScheduleOfALateFireStoresTheRunnersOccurrenceAsScheduledForTheFireAndPromoteQueuesIt() {
         Instant fire = millis(now().minusSeconds(90));
         Instant next = millis(now().plusSeconds(3600));
         store.putSchedule(
@@ -5624,7 +5631,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void commitRecurringOfALateFixedDelayFireStoresTheRunnersOccurrenceParksTheDefinitionAndTheEndRearmsIt() {
+    void commitScheduleOfALateFixedDelayFireStoresTheRunnersOccurrenceParksTheDefinitionAndTheEndRearmsIt() {
         Instant fire = millis(now().minusSeconds(90));
         store.putSchedule(fullDefinition("fixed"), fire, fire);
         long revision = revisionOf("fixed");
@@ -6234,7 +6241,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringStoresTheGivenPausedFlagOnlyForANewDefinitionAndReplacesEveryOtherField() {
+    void putScheduleStoresTheGivenPausedFlagOnlyForANewDefinitionAndReplacesEveryOtherField() {
         Instant fire = millis(now().plusSeconds(60));
         store.putSchedule(fullDefinition("a").withPaused(true), fire, fire);
         assertThat(store.schedules().get(0).definition().paused()).isTrue();
@@ -6248,7 +6255,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringKeepsAnOperatorsPauseAndAnUnpauseSurvivesToo() {
+    void putScheduleKeepsAnOperatorsPauseAndAnUnpauseSurvivesToo() {
         Instant fire = millis(now().plusSeconds(1));
         store.putSchedule(definition("a", "* * * * *"), fire, fire);
         assertThat(store.pauseSchedule("a")).isTrue();
@@ -6262,7 +6269,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void commitRecurringIsRefusedWhileTheDefinitionIsPaused() {
+    void commitScheduleIsRefusedWhileTheDefinitionIsPaused() {
         Instant fire = millis(now().plusSeconds(1));
         store.putSchedule(definition("nightly", "* * * * *"), fire, fire);
         DueSchedule due = store.dueSchedules(fire, 10).get(0);
@@ -6305,7 +6312,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void pauseRecurringAndSetNextFireReportUnknownDefinitions() {
+    void pauseScheduleAndSetNextFireReportUnknownDefinitions() {
         assertThat(store.pauseSchedule("missing")).isFalse();
         assertThat(store.resumeSchedule("missing", null)).isFalse();
         assertThat(store.resumeSchedule("missing", millis(now()))).isFalse();
@@ -6314,7 +6321,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void triggerRecurringReplacesTheNextFireAndInvalidatesAStaleCommit() {
+    void triggerScheduleReplacesTheNextFireAndInvalidatesAStaleCommit() {
         Instant fire = millis(now().plusSeconds(3600));
         store.putSchedule(definition("nightly", "* * * * *"), fire, fire);
         Instant sooner = millis(now().plusSeconds(1));
@@ -6330,7 +6337,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void triggerRecurringAssignsANewRevisionAndPausingKeepsIt() {
+    void triggerScheduleAssignsANewRevisionAndPausingKeepsIt() {
         Instant fire = millis(now().plusSeconds(60));
         store.putSchedule(definition("a", "* * * * *"), fire, fire);
         long revision = revisionOf("a");
@@ -6516,7 +6523,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringReportsTheNextFireItStores() {
+    void putScheduleReportsTheNextFireItStores() {
         Instant fire = millis(now().plusSeconds(60));
         assertThat(store.putSchedule(definition("a", "* * * * *"), fire, fire))
                 .isEqualTo(new PutScheduleResult(PutScheduleOutcome.CREATED, fire));
@@ -7074,7 +7081,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringWithUnchangedTimingKeepsTheParkWhileTheOccurrenceRunsAndRecoversAfterIt() {
+    void putScheduleWithUnchangedTimingKeepsTheParkWhileTheOccurrenceRunsAndRecoversAfterIt() {
         TaskRecord running = runningFixedDelayOccurrence("a");
         Instant parked = nextFireOf("a");
         long revision = revisionOf("a");
@@ -7093,7 +7100,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringRecoversAParkedDefinitionOnceItsOccurrenceIsGone() {
+    void putScheduleRecoversAParkedDefinitionOnceItsOccurrenceIsGone() {
         TaskRecord running = runningFixedDelayOccurrence("a");
         assertThat(store.ack(running.id(), running.revision(), true, true, null))
                 .isTrue();
@@ -7102,7 +7109,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringRecoversAParkedDefinitionWhoseOccurrenceWasRemoved() {
+    void putScheduleRecoversAParkedDefinitionWhoseOccurrenceWasRemoved() {
         TaskRecord running = runningFixedDelayOccurrence("a");
         assertThat(store.ack(running.id(), running.revision(), false, false, null))
                 .isTrue();
@@ -7133,7 +7140,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringKeepsAHealthyFixedDelayDefinition() {
+    void putScheduleKeepsAHealthyFixedDelayDefinition() {
         Instant soon = millis(now().plusSeconds(30));
         store.putSchedule(fullDefinition("a"), soon, soon);
         Instant next = millis(now().plusSeconds(90));
@@ -7142,7 +7149,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringWithChangedTimingForgetsTheOccurrenceInFlight() {
+    void putScheduleWithChangedTimingForgetsTheOccurrenceInFlight() {
         TaskRecord running = runningFixedDelayOccurrence("a");
         Instant next = millis(now().plusSeconds(90));
         store.putSchedule(definition("a", "* * * * *"), next, next);
@@ -7158,7 +7165,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void putRecurringResetsACronDefinitionPushedBeyondTheKeepBound() {
+    void putScheduleResetsACronDefinitionPushedBeyondTheKeepBound() {
         Instant first = millis(now().plusSeconds(60));
         Instant second = first.plusSeconds(60);
         store.putSchedule(definition("a", "* * * * *"), first, second);
@@ -8372,7 +8379,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void dueRecurringWithALimitReturnsOnlyDueDefinitionsAndCommittingEachReachesThemAll() {
+    void dueSchedulesWithALimitReturnsOnlyDueDefinitionsAndCommittingEachReachesThemAll() {
         Instant base = millis(now().plusSeconds(1));
         Instant upTo = base.plusSeconds(10);
         Set<String> dueIds = new HashSet<>();

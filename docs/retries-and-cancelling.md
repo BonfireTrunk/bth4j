@@ -193,6 +193,7 @@ with the reason "max run time ... exceeded".
 |---|---|
 | The runner's `defaultMaxRunTime(duration)` | applies to a task without its own `maxRunTime`; one hour unless the builder sets another |
 | `TaskRequest.MAX_RUN_TIME` | the most a task's own `maxRunTime` can be: about 24.8 days |
+| The least a task's own `maxRunTime` can be | one millisecond, the finest a store keeps |
 
 A task that legitimately runs longer needs its own `maxRunTime`.
 

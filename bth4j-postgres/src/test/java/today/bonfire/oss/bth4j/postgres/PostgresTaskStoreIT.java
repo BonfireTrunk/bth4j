@@ -998,7 +998,7 @@ class PostgresTaskStoreIT {
     }
 
     @Test
-    void putRecurringKeepsTheFireTimeForAnUnchangedCronAndTheRevisionForAnUnchangedDefinition() {
+    void putScheduleKeepsTheFireTimeForAnUnchangedCronAndTheRevisionForAnUnchangedDefinition() {
         var first = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
         assertThat(store.putSchedule(definition("job", "0 * * * *"), first, first))
                 .isEqualTo(new PutScheduleResult(PutScheduleOutcome.CREATED, first));
@@ -1427,7 +1427,7 @@ class PostgresTaskStoreIT {
     }
 
     @Test
-    void triggerRecurringReplacesTheFireTimeAndFencesAnOlderCommit() {
+    void triggerScheduleReplacesTheFireTimeAndFencesAnOlderCommit() {
         var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MILLIS);
         store.putSchedule(definition("n", "0 * * * *"), fireAt, fireAt);
         var due = store.dueSchedules(Instant.now(), 10).getFirst();

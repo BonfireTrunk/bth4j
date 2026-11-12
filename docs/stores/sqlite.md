@@ -122,7 +122,7 @@ The queued partial index ends with `type_id`, and a claim walks the queued tasks
 
 | Item | Detail |
 |---|---|
-| Tables | `<namespace>_task`, `<namespace>_queue`, `<namespace>_type`, `<namespace>_worker`, `<namespace>_schedule`, `<namespace>_meta` |
+| Tables | `<namespace>_task`, `<namespace>_queue`, `<namespace>_type`, `<namespace>_worker` (the runners; the table kept its name), `<namespace>_schedule`, `<namespace>_meta` |
 | Table mode | all tables are `STRICT` |
 | Foreign keys | none |
 | Times | epoch milliseconds, taken from the store's `java.time.Clock` |

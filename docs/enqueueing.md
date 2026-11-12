@@ -89,7 +89,7 @@ A unique key makes sure at most one task holds it. How long the task holds it de
 | Situation | What happens to the key |
 |---|---|
 | `uniqueKey(key)` | It is held until the task finishes, and free as soon as the task finishes. |
-| `uniqueKey(key, Uniqueness.keepFor(d))` | It is held until `d` (at most 100 years) after the task finishes, also when the task itself was removed sooner (see [Retention](how-it-works.md#retention)). An operator retry within `d` keeps it. |
+| `uniqueKey(key, Uniqueness.keepFor(d))` | It is held until `d` (at least one millisecond, at most 100 years) after the task finishes, also when the task itself was removed sooner (see [Retention](how-it-works.md#retention)). An operator retry within `d` keeps it. |
 | A later enqueue with the same key and a shorter `keepFor` | It does not shorten the holder's window. |
 | `AdminOps.cancel` on a DEAD task | It answers `FINISHED` and leaves the key held for the window. |
 | A successful `AdminOps.delete` | It frees the key at once and removes the task and its failure history. |

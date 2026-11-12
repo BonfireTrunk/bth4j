@@ -59,6 +59,7 @@ How long a task waits after a failed attempt and how many attempts it gets. See 
 | `retryPolicy` | exponential, 1 s doubling, capped at 1 h, 20 % jitter | delay after a failed attempt |
 | `addRetryPolicy(name, policy)` | none | adds a named policy that requests choose with `TaskRequest.retryPolicy(name)`; name 1 to 64 characters; may be called several times |
 | `defaultMaxAttempts` | 10 (1 to 32767) | attempts for requests that do not set `maxAttempts` |
+| `defaultMaxRunTime` | 1 hour (at most `TaskRequest.MAX_RUN_TIME`, about 24.8 days) | the longest one attempt may run when its task or schedule sets no `maxRunTime`; see [Maximum run time](retries-and-cancelling.md#maximum-run-time) |
 
 ## Leases and timing
 

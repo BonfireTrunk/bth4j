@@ -8,11 +8,11 @@ package today.bonfire.oss.bth4j.redis;
  * Keys, with {@code qid} a queue id, {@code tid} a type id and {@code state} a
  * {@link today.bonfire.oss.bth4j.TaskState} code:
  * <ul>
- * <li>{@code meta} hash (field {@code schema}); {@code seq:id}, {@code seq:runner}, {@code seq:queue},
+ * <li>{@code meta} hash (field {@code schema}); {@code seq:id}, {@code seq:worker}, {@code seq:queue},
  * {@code seq:type} counters</li>
  * <li>{@code reg:queue} and {@code reg:type} hashes, name to id; listings invert them with one HGETALL and
  * purge walks the queue ids with HVALS</li>
- * <li>{@code w:<id>} hash (label, started, seen, running, accepting, queues, types); {@code runners} zset of
+ * <li>{@code w:<id>} hash (label, started, seen, running, accepting, queues, types); {@code workers} zset of
  * runner ids scored by the last heartbeat ms, which {@code purgeRunners} walks</li>
  * <li>{@code paused} set of queue ids that CLAIM skips</li>
  * <li>{@code startby} zset of QUEUED and SCHEDULED ids that have a {@code sb}, scored by it, so that expiry finds

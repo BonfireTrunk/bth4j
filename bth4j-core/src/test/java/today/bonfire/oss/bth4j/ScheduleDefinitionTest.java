@@ -223,6 +223,8 @@ class ScheduleDefinitionTest {
 
         assertThat(d.maxRunTime()).isNull();
         assertThatThrownBy(() -> d.withMaxRunTime(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> d.withMaxRunTime(Duration.ofNanos(999_999)))
+                .isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> d.withMaxRunTime(TaskRequest.MAX_RUN_TIME.plusMillis(1)))
                 .isInstanceOf(TaskValidationException.class);
         assertThat(d.withMaxRunTime(Duration.ofMinutes(5)).maxRunTime()).isEqualTo(Duration.ofMinutes(5));

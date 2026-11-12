@@ -17,12 +17,12 @@ public sealed interface Uniqueness {
     /**
      * The key stays taken for this long after the task reaches a terminal state.
      *
-     * @param duration positive and at most {@link #MAX_KEEP_FOR}
+     * @param duration at least one millisecond, which is the finest a store keeps, and at most {@link #MAX_KEEP_FOR}
      */
     record KeepFor(Duration duration) implements Uniqueness {
         public KeepFor {
-            if (duration == null || duration.isNegative() || duration.isZero()) {
-                throw new TaskValidationException("duration must be positive");
+            if (duration == null || duration.toMillis() < 1) {
+                throw new TaskValidationException("duration must be at least 1 ms");
             }
             if (duration.compareTo(MAX_KEEP_FOR) > 0) {
                 throw new TaskValidationException("duration must be at most " + MAX_KEEP_FOR);

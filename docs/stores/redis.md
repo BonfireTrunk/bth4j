@@ -96,12 +96,29 @@ Schema version 6 uses these keys:
 
 | Key | Type | What it holds |
 |---|---|---|
+| `meta` | hash | the schema version, in the field `schema` |
+| `seq:id`, `seq:worker`, `seq:queue`, `seq:type`, `cronrev` | counters | the last task id, runner id, queue id, type id and schedule revision handed out |
+| `reg:queue`, `reg:type` | hash | queue and type names with their ids |
+| `paused` | set | the ids of the paused queues |
+| `t:<id>` | hash | a task, with only the fields that are set |
+| `d:<id>` | string | the payload of a task |
+| `st:<id>` | string | the steps of a task, as JSON |
+| `f:<id>` | list | the failures of a task, the last 20 |
 | `q:<queue-id>:<type-id>` | zset | queued tasks of one type in one queue, scored by due milliseconds |
 | `active:<queue-id>` | set | the types whose zset in that queue is not empty |
+| `sched:<queue-id>` | zset | scheduled tasks of one queue, scored by due milliseconds |
+| `leased` | zset | leased tasks, scored by the end of the lease |
+| `startby` | zset | queued and scheduled tasks that have a start-by time, scored by it |
 | `ts:<digest>` | set | a runner's known types, named by a digest of the sorted type ids and shared by runners with the same types |
-| `idx:<state>:<queue-id>` | zset | the finished tasks of one state in one queue, listed and purged from here |
-| `k:<key>` | string | what a task removed while its unique key window is open leaves behind; it expires at the end of the window |
-| `reg:type`, `seq:type` | | type names |
+| `idx:<state>:<queue-id>` | zset | the leased and the finished tasks of one state in one queue, scored by the time of the state change; listed and purged from here |
+| `k:<key>` | string | the id of the task that holds a unique key. With a keep window it expires at the end of the window, also when the task was removed sooner. |
+| `w:<runner-id>` | hash | a runner: label, start time, last heartbeat, running count, accepting flag, queues and types |
+| `workers` | zset | runner ids, scored by the last heartbeat |
+| `cron:<schedule-id>` | hash | a schedule |
+| `cron` | zset | the next fire time of every schedule that is not paused |
+| `crondefs` | set | the ids of all schedules |
+
+Every key starts with `{<namespace>}:`. The keys of runners kept the word "worker" from earlier releases.
 
 Other details:
 

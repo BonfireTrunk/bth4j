@@ -798,7 +798,7 @@ class RedisWave2IT {
     }
 
     @Test
-    void triggerRecurringReArmsAndRefusesUnknownDefinitions() {
+    void triggerScheduleReArmsAndRefusesUnknownDefinitions() {
         var fire = Instant.now().plusSeconds(3600).truncatedTo(ChronoUnit.MILLIS);
         store.putSchedule(cron("s"), fire, fire);
         var now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
@@ -817,7 +817,7 @@ class RedisWave2IT {
     }
 
     @Test
-    void deleteRecurringRemovesItFromTheListing() {
+    void deleteScheduleRemovesItFromTheListing() {
         store.putSchedule(
                 cron("s"), Instant.now().plusSeconds(60), Instant.now().plusSeconds(60));
 

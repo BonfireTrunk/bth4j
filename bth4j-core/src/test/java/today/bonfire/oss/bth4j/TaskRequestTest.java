@@ -225,12 +225,17 @@ class TaskRequestTest {
     }
 
     @Test
-    void maxRunTimeMustBePositiveAndAtMostMaxRunTime() {
+    void maxRunTimeMustBeAtLeastOneMillisecondAndAtMostMaxRunTime() {
         var builder = TaskRequest.of(VOID);
 
         assertThatThrownBy(() -> builder.maxRunTime(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> builder.maxRunTime(Duration.ofSeconds(-1)))
                 .isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> builder.maxRunTime(Duration.ofNanos(999_999)))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("maxRunTime must be at least 1 ms and at most " + TaskRequest.MAX_RUN_TIME);
+        assertThat(TaskRequest.of(VOID).maxRunTime(Duration.ofMillis(1)).build().maxRunTime())
+                .isEqualTo(Duration.ofMillis(1));
         assertThatThrownBy(() -> builder.maxRunTime(TaskRequest.MAX_RUN_TIME.plusMillis(1)))
                 .isInstanceOf(TaskValidationException.class);
         assertThat(TaskRequest.of(VOID)
@@ -286,8 +291,12 @@ class TaskRequestTest {
     }
 
     @Test
-    void uniquenessKeepForMustBePositive() {
+    void uniquenessKeepForMustBeAtLeastOneMillisecond() {
         assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ofNanos(999_999)))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("duration must be at least 1 ms");
+        assertThat(Uniqueness.keepFor(Duration.ofMillis(1))).isEqualTo(new Uniqueness.KeepFor(Duration.ofMillis(1)));
         assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ofSeconds(-1)))
                 .isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> Uniqueness.keepFor(null)).isInstanceOf(TaskValidationException.class);

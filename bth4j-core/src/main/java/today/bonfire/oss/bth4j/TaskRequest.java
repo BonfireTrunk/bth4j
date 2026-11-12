@@ -35,11 +35,13 @@ public final class TaskRequest<T> {
      */
     public static final Duration MAX_TIME_FROM_NOW = Duration.ofDays(36_525);
 
-    /** The rule for a maximum run time of a task or schedule; null means none. */
+    /**
+     * The rule for a maximum run time of a task or schedule; null means none. Stores keep whole milliseconds, so
+     * a shorter time would be kept as zero.
+     */
     public static void requireMaxRunTime(Duration maxRunTime) {
-        if (maxRunTime != null
-                && (maxRunTime.isNegative() || maxRunTime.isZero() || maxRunTime.compareTo(MAX_RUN_TIME) > 0)) {
-            throw new TaskValidationException("maxRunTime must be positive and at most " + MAX_RUN_TIME);
+        if (maxRunTime != null && (maxRunTime.toMillis() < 1 || maxRunTime.compareTo(MAX_RUN_TIME) > 0)) {
+            throw new TaskValidationException("maxRunTime must be at least 1 ms and at most " + MAX_RUN_TIME);
         }
     }
 

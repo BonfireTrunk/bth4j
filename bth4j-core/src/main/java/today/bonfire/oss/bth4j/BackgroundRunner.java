@@ -848,7 +848,7 @@ public final class BackgroundRunner implements AutoCloseable {
         /**
          * The maximum run time of an attempt whose task or schedule sets no {@code maxRunTime}. Past it the runner
          * requests cancellation (and interrupts the processor when its type opted in with
-         * {@code interruptOnCancel}); an attempt still running one renewal period later is abandoned: its lease
+         * {@code withInterruptOnCancel}); an attempt still running one renewal period later is abandoned: its lease
          * is no longer renewed, so maintenance retries or ends the task, while the stuck thread keeps its slots
          * until it returns and is reported as the issue {@code attempt-abandoned}. Default one hour, at most
          * {@link TaskRequest#MAX_RUN_TIME}.

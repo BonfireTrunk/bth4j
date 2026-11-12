@@ -635,7 +635,7 @@ class SqliteTransactionTest {
     }
 
     @Test
-    void putRecurringReturnsTheNextFireTimeAsStoredInWholeMilliseconds() {
+    void putScheduleReturnsTheNextFireTimeAsStoredInWholeMilliseconds() {
         var created = store.putSchedule(
                 fixedDelay("sub-ms", 60_000), Instant.parse("2100-06-15T12:01:00.123456789Z"), clock.instant());
 

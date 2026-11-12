@@ -139,7 +139,7 @@ At least one user is required. A server runs once: `start()` after `stop()` thro
 |---|---|
 | `admin(AdminOps)` | The `AdminOps` the server exposes. |
 | `bind(host, port)` | Where the server listens. The default is `127.0.0.1` and `8787`. |
-| `user(name, password, role)` | Adds a user with a [role](#roles). At least one user is required. |
+| `addUser(name, password, role)` | Adds a user with a [role](#roles). At least one user is required. |
 | `staticDir(path)` | Serves the dashboard from that directory at the server's address. |
 | `sessionTtl` | How long a session lasts, counted from the sign-in. The default is 12 hours. |
 | `https(SSLContext)` | Makes the server speak HTTPS and marks the cookie `Secure`. |
@@ -175,7 +175,7 @@ sequenceDiagram
     S-->>C: bth4j_session cookie and a CSRF token in the reply
     C->>S: GET requests with the cookie
     C->>S: POST and DELETE requests with the cookie and X-CSRF-Token
-    S-->>C: Cookie Max-Age renewed on every authenticated response
+    Note over C,S: The session ends sessionTtl after the sign-in, also while it is used
 ```
 
 | What | How it works |
@@ -240,11 +240,11 @@ Task ids and revisions are JSON strings.
 | Endpoint | What it offers |
 |---|---|
 | `me` | The signed-in user, the role and the session's CSRF token. |
-| `session` | Sign-in. |
-| `health` | The runner's health. |
+| `session` | Sign-in with `POST`, sign-out with `DELETE`. |
+| `health` | The runner's health, or 204 without a body when the server has no runner (`client.admin()`). |
 | `overview` | The overview. |
 | `queues` | The queues, with `pause` and `resume`. |
-| `tasks` | A list with `state`, `queue`, `cursor` and `limit` (up to 200). One task, its `payload`, `retry`, `cancel` and delete. |
+| `tasks` | A list with `state`, `queue`, `cursor` and `limit` (up to 200). One task, its `payload`, `retry`, `cancel` and delete. Retry and cancel take the `revision` in the JSON body, delete takes it as the query value `revision=`. |
 | `tasks/by-key?key=` | Reads the task that holds a unique key. |
 | `tasks/by-key/cancel?key=` | Cancels the task that holds the key, with a body of `{"reason"}` and no revision. |
 | `schedules` | The schedules, with `pause`, `resume`, `trigger` and delete. |

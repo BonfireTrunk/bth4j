@@ -199,5 +199,5 @@ Limit changes are logged at DEBUG and holds at TRACE under `Loggers.EXECUTOR`.
 
 ## Related pages
 
-- [Configuration](configuration.md) lists the settings with their defaults: `concurrency` and `taskExecutor` under [Executor and concurrency](configuration.md#executor-and-concurrency), `queues`, `processQueues` and `queue(name, QueuePolicy)` under [Queues](configuration.md#queues), and `idlePollInterval` under [Leases and timing](configuration.md#leases-and-timing).
+- [Configuration](configuration.md) lists the settings with their defaults: `concurrency` and `taskExecutor` under [Executor and concurrency](configuration.md#executor-and-concurrency), `queues`, `processQueues` and `addQueuePolicy(name, QueuePolicy)` under [Queues](configuration.md#queues), and `idlePollInterval` under [Leases and timing](configuration.md#leases-and-timing).
 - [Monitoring](monitoring.md#issues) shows how to read issues such as `resource-signal-unavailable`.

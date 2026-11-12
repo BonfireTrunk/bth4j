@@ -83,7 +83,7 @@ A claim walks the queued tasks of a queue in due order past those of types it do
 
 | Item | Detail |
 |---|---|
-| Tables | `<namespace>_task`, `<namespace>_queue`, `<namespace>_type`, `<namespace>_worker`, `<namespace>_schedule`, `<namespace>_meta` |
+| Tables | `<namespace>_task`, `<namespace>_queue`, `<namespace>_type`, `<namespace>_worker` (the runners; the table kept its name), `<namespace>_schedule`, `<namespace>_meta` |
 | Foreign keys | none |
 | Schema version | 4 |
 | Times | `timestamptz(3)` columns: whole milliseconds |

@@ -63,6 +63,10 @@ The schema versions are 4 for PostgreSQL, 6 for Redis and 2 for SQLite.
 | Log lines say "runner" where they said "worker", and the message of a `TaskConfigurationException` no longer starts with `ERR11_Error in configuration `. | Change log filters and alerts that match those texts. |
 | A unique key that starts with `sched:` is refused, as are a step name with U+0000 and a `startBy` in the past for a task that runs at once. Each throws `TaskValidationException`. | Rename such keys and steps. |
 | `bth4j-micrometer` needs `micrometer-core` 1.17 or newer. | Raise the version when yours is older. |
+| Metrics: the counter `bth4j.tasks` carries the real `type` and `queue` tags for expired tasks and lost leases, where it had `unknown`, and `bth4j.deferred` has a `queue` tag. | Change dashboards and alerts that sum or filter by those tags. |
+| A second `MicrometerRunnerMetrics.bind` with the same tags on one registry is refused while the first is open. | Give each runner its own tags. |
+| More settings are checked when they are set: a queue name of more than 128 characters, a null or negative argument of `RetryPolicy.exponential` or `RetryPolicy.fixed`, an interval below its shortest value, `concurrency` together with `taskExecutor`. Each throws `TaskConfigurationException`. | Correct the setting; [Configuration](configuration.md) has the limits. |
+| `AdminHttpServer.start()` on a started server does nothing (it threw), and `stop()` before `start()` stops the server for good. | Nothing, unless your code relied on either. |
 
 ## Queues
 
@@ -120,7 +124,8 @@ The process that runs tasks is a runner everywhere. 4.x also called it a worker.
 | `TaskView.due()` | `dueAt()` |
 | `TaskView.type()` | `typeName()` |
 | `TaskView.record()`, `new TaskView(record, queue, type)` | gone; `TaskView.builder()` makes a view for a test |
-| `TaskState`, `StateCounts`, `QueueInfo`, `CancelOutcome`, `RetryOutcome`, `DeleteOutcome`, `FailureInfo`, `StepResult` in `today.bonfire.oss.bth4j.spi` | the same names in `today.bonfire.oss.bth4j` |
+| `TaskState`, `StateCounts`, `QueueInfo`, `CancelOutcome`, `RetryOutcome`, `FailureInfo`, `StepResult` in `today.bonfire.oss.bth4j.spi` | the same names in `today.bonfire.oss.bth4j` |
+| a `maxRunTime` or a `Uniqueness.keepFor` below one millisecond | refused with `TaskValidationException` |
 
 ## Schedules
 
@@ -212,10 +217,13 @@ The store SPI says "schedule" and "runner" as the API does, and its record types
 | `allocateWorkerId`, `purgeWorkers`, `AdminStore.workers()` | `allocateRunnerId`, `purgeRunners`, `runners()` |
 | `TaskRecord.workerId`, `ClaimRequest.workerId` | `runnerId` |
 | `TaskRecord.due` | `dueAt` |
+| `ClaimRequest` and `QueueGrant` throw `IllegalArgumentException` | `TaskValidationException` |
 | `InspectionStore.getTask(id)` | `task(id)` |
 | `MaintenanceStore.expire` returning ids | returning `List<ExpiredTask>`; `ExpiredLease` has `queueId` |
 | `AdminStore.delete` returning a boolean | returning `DeleteOutcome` |
 | no such method | `InspectionStore.holdsKey(id, key)` |
 | argument checks throw `IllegalArgumentException` | `TaskValidationException` (`StoreArguments`) |
 
-[Writing a store](writing-a-store.md) has the rules a store follows.
+The stores also behave alike in more places than before, each pinned by a contract test; the "Store SPI" entries of [CHANGELOG.md](../CHANGELOG.md) list them. [Writing a store](writing-a-store.md) has the rules a store follows.
+
+The JSON helper `today.bonfire.oss.bth4j.common.Json` is `internal.Json`. Nothing in the package `today.bonfire.oss.bth4j.internal` is supported API.

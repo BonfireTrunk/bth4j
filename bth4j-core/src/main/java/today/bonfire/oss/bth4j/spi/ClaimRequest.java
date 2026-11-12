@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /**
  * What a runner asks for in {@link ExecutionStore#claim}.
@@ -18,10 +19,10 @@ public record ClaimRequest(
         List<QueueGrant> grants, int count, Duration lease, int runnerId, Set<Integer> knownTypeIds) {
     public ClaimRequest {
         grants = List.copyOf(grants);
-        if (grants.isEmpty()) throw new IllegalArgumentException("grants must not be empty");
+        if (grants.isEmpty()) throw new TaskValidationException("grants must not be empty");
         var queues = new HashSet<Integer>();
         for (var grant : grants) {
-            if (!queues.add(grant.queueId())) throw new IllegalArgumentException("duplicate queue grant");
+            if (!queues.add(grant.queueId())) throw new TaskValidationException("duplicate queue grant");
         }
         if (knownTypeIds != null) knownTypeIds = Set.copyOf(knownTypeIds);
     }

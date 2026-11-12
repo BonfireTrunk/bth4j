@@ -68,7 +68,7 @@ def counts():
 
 
 schedules = {
-    "nightly-report": {"id": "nightly-report", "type": "build-report", "queue": "reports", "account": None, "cron": "0 0 2 * * *", "zone": "Europe/Berlin",
+    "nightly-report": {"id": "nightly-report", "type": "build-report", "queue": "reports", "account": None, "cron": "0 2 * * *", "zone": "Europe/Berlin",
                        "misfire": "CATCH_UP", "catchUpMaxFires": 3, "fixedDelay": None, "overlap": "SKIP", "paused": False, "nextFireAt": iso(7200), "maxAttempts": 3},
     "mail-pump": {"id": "mail-pump", "type": "send-mail", "queue": "mail", "account": None, "cron": None, "zone": None,
                   "misfire": "SKIP", "fixedDelay": "PT30S", "overlap": "ALLOW", "paused": True, "nextFireAt": iso(25), "maxAttempts": 5},
@@ -198,7 +198,9 @@ class Handler(BaseHTTPRequestHandler):
         if head == "health":
             return self.send_json(200, health)
         if head == "overview":
-            return self.send_json(200, {"counts": counts(), "runners": len(runners), "issues": len(issues), "health": health})
+            c = counts()
+            totals = {s: sum(q[s] for q in c.values()) for s in STATES}
+            return self.send_json(200, {"counts": c, "totals": totals, "runners": len(runners), "issues": len(issues), "health": health})
         if head == "queues":
             if len(segs) == 1:
                 c = counts()

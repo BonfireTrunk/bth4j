@@ -45,7 +45,7 @@ import today.bonfire.oss.bth4j.internal.Json;
  * <p>
  * Sign in with {@code POST /api/v1/session}; the reply sets the {@code bth4j_session} cookie and carries a CSRF
  * token that every later POST and DELETE must send as {@code X-CSRF-Token}. Sessions live in memory, so they end
- * when the server stops. Sessions are sliding: every request pushes the expiry out by the session TTL.
+ * when the server stops. A session ends its lifetime after the sign-in; requests do not extend it.
  * <p>
  * Failed logins are counted by where they come from and by the user they name: the fifth failure blocks that
  * address, or that user name, for 10 seconds (HTTP 429 with {@code Retry-After}). Behind a reverse proxy every

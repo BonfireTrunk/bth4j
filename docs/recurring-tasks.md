@@ -132,7 +132,7 @@ client.putSchedule(ScheduleDefinition.of("nightly-report", NIGHTLY_REPORT, "30 2
 
 With `ALLOW`, a job that fires every minute and takes five minutes has up to five runs at once. With `SKIP`, a skipped fire is dropped, not postponed.
 
-A fixed-delay definition fires only after its previous occurrence ended, so the rule matters there only for a fire that an operator triggers while an occurrence runs. It defaults to `ALLOW`; `.overlap(Overlap.SKIP)` changes it.
+A fixed-delay definition fires only after its previous occurrence ended, so the rule matters there only for a fire that an operator triggers while an occurrence runs. It defaults to `ALLOW`; `.withOverlap(Overlap.SKIP)` changes it.
 
 The overlap is decided at the fire time, not ahead of it:
 
