@@ -33,13 +33,13 @@ import today.bonfire.oss.bth4j.Misfire;
 import today.bonfire.oss.bth4j.Overlap;
 import today.bonfire.oss.bth4j.QueueInfo;
 import today.bonfire.oss.bth4j.RunnerHealth;
+import today.bonfire.oss.bth4j.RunnerView;
 import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.UnservedWork;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.internal.Json;
-import today.bonfire.oss.bth4j.spi.RunnerRecord;
 
 class AdminHttpServerTest {
 
@@ -930,7 +930,7 @@ class AdminHttpServerTest {
 
     @Test
     void overviewHasCountsPerQueueTotalsRunnersIssuesAndHealth() throws Exception {
-        ops.runners.add(new RunnerRecord(1, "w", Instant.EPOCH, Instant.EPOCH, 0, true, Set.of(), Set.of()));
+        ops.runners.add(new RunnerView(1, "w", Instant.EPOCH, Instant.EPOCH, 0, true, Set.of(), Set.of()));
         ops.issues.add(new Issue(Instant.EPOCH, Issue.Kind.STORE_ERROR, "boom", 5L));
         ops.issues.add(new Issue(Instant.EPOCH, Issue.Kind.LEASE_LOST, "x", null));
         ops.health = new RunnerHealth(RunnerHealth.Status.RUNNING, 1, 2, 0, null, null, null, null, 2);
@@ -981,7 +981,7 @@ class AdminHttpServerTest {
     @Test
     void queuesSchedulesRunnersAndIssuesAreListed() throws Exception {
         ops.schedules.add(schedule("nightly"));
-        ops.runners.add(new RunnerRecord(2, "w2", Instant.EPOCH, Instant.EPOCH, 1, true, Set.of(), Set.of()));
+        ops.runners.add(new RunnerView(2, "w2", Instant.EPOCH, Instant.EPOCH, 1, true, Set.of(), Set.of()));
         ops.issues.add(new Issue(Instant.EPOCH, Issue.Kind.STORE_ERROR, "boom", 5L));
         start();
         var login = viewer();
@@ -1037,9 +1037,16 @@ class AdminHttpServerTest {
 
     @Test
     void runnersViewIncludesCoverageNamesAndEmptyCoverage() throws Exception {
-        ops.runners.add(
-                new RunnerRecord(1, "known", Instant.EPOCH, Instant.EPOCH, 2, true, Set.of(2, 1), Set.of(2, 1)));
-        ops.runners.add(new RunnerRecord(3, "empty", Instant.EPOCH, Instant.EPOCH, 0, false, Set.of(), Set.of()));
+        ops.runners.add(new RunnerView(
+                1,
+                "known",
+                Instant.EPOCH,
+                Instant.parse("2026-02-01T00:00:00Z"),
+                2,
+                true,
+                Set.of("mail", "default"),
+                Set.of("send-mail", "export")));
+        ops.runners.add(new RunnerView(3, "empty", Instant.EPOCH, Instant.EPOCH, 0, false, Set.of(), Set.of()));
         start();
 
         var runners = jsonList(get("/api/v1/runners", viewer()));
@@ -1047,6 +1054,7 @@ class AdminHttpServerTest {
         assertThat(runners.getFirst())
                 .containsOnlyKeys("id", "label", "startedAt", "lastSeen", "running", "accepting", "queues", "types")
                 .containsEntry("accepting", true)
+                .containsEntry("lastSeen", "2026-02-01T00:00:00Z")
                 .containsEntry("queues", List.of("default", "mail"))
                 .containsEntry("types", List.of("export", "send-mail"));
         assertThat(runners.get(1))

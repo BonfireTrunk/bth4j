@@ -12,7 +12,6 @@ import java.util.function.Supplier;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.FullStore;
-import today.bonfire.oss.bth4j.spi.RunnerRecord;
 import today.bonfire.oss.bth4j.spi.ScheduleEntry;
 import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskPage;
@@ -132,8 +131,17 @@ final class DefaultAdminOps implements AdminOps {
     }
 
     @Override
-    public List<RunnerRecord> runners() {
-        return store.runners();
+    public List<RunnerView> runners() {
+        var views = new ArrayList<RunnerView>();
+        for (var r : store.runners()) {
+            var queues = new HashSet<String>();
+            for (int id : r.queueIds()) queues.add(names.queueName(id));
+            var types = new HashSet<String>();
+            for (int id : r.typeIds()) types.add(names.typeName(id));
+            views.add(new RunnerView(
+                    r.id(), r.label(), r.startedAt(), r.lastSeen(), r.running(), r.accepting(), queues, types));
+        }
+        return views;
     }
 
     @Override

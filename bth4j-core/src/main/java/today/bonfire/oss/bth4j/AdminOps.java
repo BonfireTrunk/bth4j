@@ -6,7 +6,6 @@ import java.util.Map;
 import java.util.Optional;
 import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
-import today.bonfire.oss.bth4j.spi.RunnerRecord;
 
 /**
  * Operator view and operations over one store. {@link TaskClient#admin()} gives one without runner health and
@@ -99,7 +98,8 @@ public interface AdminOps {
      */
     DeleteOutcome delete(long id, int revision);
 
-    List<RunnerRecord> runners();
+    /** @return the registered runners in the order of their ids, with the queues and types each processes */
+    List<RunnerView> runners();
 
     /**
      * Uses a one-minute heartbeat window to find unserved waiting work. A runner writes its heartbeat every

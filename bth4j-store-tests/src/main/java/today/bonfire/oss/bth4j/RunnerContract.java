@@ -1227,7 +1227,7 @@ public abstract class RunnerContract {
         await(
                 "the runner heartbeat",
                 () -> runner.admin().runners().stream()
-                        .anyMatch(w -> w.id() == runner.runnerId() && w.lastSeen() != null));
+                        .anyMatch(w -> w.id() == runner.runnerId() && w.lastSeenAt() != null));
         assertThat(runner.admin().health()).isPresent();
     }
 

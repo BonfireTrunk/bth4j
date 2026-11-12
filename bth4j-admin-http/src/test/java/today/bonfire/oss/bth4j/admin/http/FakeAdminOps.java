@@ -16,6 +16,7 @@ import today.bonfire.oss.bth4j.Issue;
 import today.bonfire.oss.bth4j.QueueInfo;
 import today.bonfire.oss.bth4j.RetryOutcome;
 import today.bonfire.oss.bth4j.RunnerHealth;
+import today.bonfire.oss.bth4j.RunnerView;
 import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.TaskState;
@@ -23,8 +24,6 @@ import today.bonfire.oss.bth4j.TaskView;
 import today.bonfire.oss.bth4j.TaskViewPage;
 import today.bonfire.oss.bth4j.UnservedWork;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
-import today.bonfire.oss.bth4j.spi.RunnerRecord;
-import today.bonfire.oss.bth4j.spi.TaskRecord;
 
 final class FakeAdminOps implements AdminOps {
 
@@ -35,7 +34,7 @@ final class FakeAdminOps implements AdminOps {
     final List<QueueInfo> queues = new CopyOnWriteArrayList<>();
     final List<ScheduleView> schedules = new CopyOnWriteArrayList<>();
     final List<UnservedWork> unserved = new CopyOnWriteArrayList<>();
-    final List<RunnerRecord> runners = new CopyOnWriteArrayList<>();
+    final List<RunnerView> runners = new CopyOnWriteArrayList<>();
     final List<Issue> issues = new CopyOnWriteArrayList<>();
     final List<String> calls = new CopyOnWriteArrayList<>();
     volatile int taskLookups;
@@ -44,7 +43,7 @@ final class FakeAdminOps implements AdminOps {
     volatile RuntimeException queueFailure;
 
     static TaskView task(long id, int revision, TaskState state, String queue, String encodedPayload) {
-        var record = TaskRecord.builder()
+        return TaskView.builder()
                 .id(id)
                 .revision(revision)
                 .state(state)
@@ -55,8 +54,9 @@ final class FakeAdminOps implements AdminOps {
                 .stateChangedAt(Instant.parse("2026-01-01T00:00:02Z"))
                 .encodedPayload(encodedPayload)
                 .maxRunTime(Duration.ofMinutes(5))
+                .queue(queue)
+                .type("send-mail")
                 .build();
-        return new TaskView(record, queue, "send-mail");
     }
 
     @Override
@@ -166,7 +166,7 @@ final class FakeAdminOps implements AdminOps {
     }
 
     @Override
-    public List<RunnerRecord> runners() {
+    public List<RunnerView> runners() {
         return runners;
     }
 

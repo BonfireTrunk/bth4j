@@ -46,7 +46,7 @@ package today.bonfire.oss.bth4j.redis;
  * {@code cronrev} counter</li>
  * </ul>
  */
-public final class Keys {
+final class Keys {
     public static final String SCHEMA = "schema";
 
     public static final String F_REVISION = "rev";

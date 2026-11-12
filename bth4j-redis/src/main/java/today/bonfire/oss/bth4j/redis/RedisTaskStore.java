@@ -127,7 +127,7 @@ public final class RedisTaskStore implements FullStore {
         this.scripts = new ScriptRunner(jedis, keys.meta, keys.prefix);
     }
 
-    public Keys keys() {
+    Keys keys() {
         return keys;
     }
 

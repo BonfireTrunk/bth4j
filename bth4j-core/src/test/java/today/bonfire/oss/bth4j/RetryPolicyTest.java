@@ -7,20 +7,20 @@ import java.time.Duration;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.RetryPolicy.Decision;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
-import today.bonfire.oss.bth4j.spi.TaskRecord;
 
 class RetryPolicyTest {
 
     private static final Throwable ERROR = new IllegalStateException("boom");
 
     private static TaskView failedTask(int attempts) {
-        var record = TaskRecord.builder()
+        return TaskView.builder()
                 .id(1)
                 .state(TaskState.LEASED)
                 .attempts(attempts)
                 .maxAttempts(100)
+                .queue("Q:DEF")
+                .type("event")
                 .build();
-        return new TaskView(record, "Q:DEF", "event");
     }
 
     private static long delayMillis(RetryPolicy policy, int attempts) {

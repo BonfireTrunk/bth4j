@@ -140,14 +140,46 @@ class DefaultAdminOpsTest {
     }
 
     @Test
-    void queuesAndRunnersAreReturnedAsTheStoreHasThem() {
+    void queuesAreReturnedAsTheStoreHasThem() {
         var queueInfos = List.of(new QueueInfo(1, "Q:DEF", false), new QueueInfo(2, "Q:OTHER", true));
-        var runnerInfos = List.of(new RunnerRecord(4, "w", NOW, NOW, 2, true, Set.of(), Set.of()));
         handlers.put("queues", a -> queueInfos);
-        handlers.put("runners", a -> runnerInfos);
 
         assertThat(ops.queues()).isEqualTo(queueInfos);
-        assertThat(ops.runners()).isEqualTo(runnerInfos);
+    }
+
+    @Test
+    void runnersAreListedWithTheNamesOfTheirQueuesAndTypes() {
+        var started = NOW.minusSeconds(600);
+        handlers.put(
+                "runners",
+                a -> List.of(
+                        new RunnerRecord(
+                                4,
+                                "w",
+                                started,
+                                NOW,
+                                2,
+                                true,
+                                Set.of(OTHER_QUEUE_ID, DEFAULT_QUEUE_ID, 99),
+                                Set.of(TYPE_ID, 98)),
+                        new RunnerRecord(5, "idle", started, started, 0, false, Set.of(), Set.of())));
+
+        var runners = ops.runners();
+
+        assertThat(runners)
+                .containsExactly(
+                        new RunnerView(
+                                4,
+                                "w",
+                                started,
+                                NOW,
+                                2,
+                                true,
+                                Set.of("#99", "Q:DEF", "Q:OTHER"),
+                                Set.of("#98", "send-mail")),
+                        new RunnerView(5, "idle", started, started, 0, false, Set.of(), Set.of()));
+        assertThat(runners.getFirst().queues()).containsExactly("#99", "Q:DEF", "Q:OTHER");
+        assertThat(runners.getFirst().types()).containsExactly("#98", "send-mail");
     }
 
     @Test

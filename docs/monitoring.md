@@ -178,7 +178,7 @@ Each runner writes a heartbeat to the runner registry every `maintenanceCheckInt
 `quiet()` and `resume()` request an immediate heartbeat on the maintenance thread. They do not block the caller on the store.
 
 - Maintenance deletes runners that were silent for `runnerStaleTimeout` (10 minutes by default).
-- `admin.runners()` lists the runners. It includes `accepting`, the queue ids they process and their registered task type ids, recorded at startup.
+- `admin.runners()` lists the runners as `RunnerView`: id, label, start time, `lastSeenAt`, running tasks, `accepting`, and the names of the queues they process and of their registered task types, recorded at startup.
 - A runner that is still alive writes its row again with its next heartbeat. An example is a runner that could not reach the store for longer than `runnerStaleTimeout`. The row has the same id and the runner's label, queues and types. Its start time is then the time it was written again.
 
 ## Unserved work

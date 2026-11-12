@@ -5,17 +5,16 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.function.Function;
 import today.bonfire.oss.bth4j.Issue;
 import today.bonfire.oss.bth4j.Misfire;
 import today.bonfire.oss.bth4j.QueueInfo;
 import today.bonfire.oss.bth4j.RunnerHealth;
+import today.bonfire.oss.bth4j.RunnerView;
 import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.TaskView;
 import today.bonfire.oss.bth4j.UnservedWork;
-import today.bonfire.oss.bth4j.spi.RunnerRecord;
 import today.bonfire.oss.bth4j.spi.StoredSchedule;
 
 /** Maps core types to the JSON structures of the API: ids and revisions as strings, times and durations as ISO-8601. */
@@ -143,20 +142,16 @@ final class Views {
         return view;
     }
 
-    static Map<String, Object> runner(RunnerRecord w, Map<Integer, String> queues, Map<Integer, String> types) {
+    static Map<String, Object> runner(RunnerView r) {
         return obj(
-                "id", w.id(),
-                "label", w.label(),
-                "startedAt", w.startedAt(),
-                "lastSeen", w.lastSeen(),
-                "running", w.running(),
-                "accepting", w.accepting(),
-                "queues", names(w.queueIds(), queues),
-                "types", names(w.typeIds(), types));
-    }
-
-    private static List<String> names(Set<Integer> ids, Map<Integer, String> names) {
-        return ids.stream().map(id -> names.getOrDefault(id, "#" + id)).sorted().toList();
+                "id", r.id(),
+                "label", r.label(),
+                "startedAt", r.startedAt(),
+                "lastSeen", r.lastSeenAt(),
+                "running", r.running(),
+                "accepting", r.accepting(),
+                "queues", List.copyOf(r.queues()),
+                "types", List.copyOf(r.types()));
     }
 
     static Map<String, Object> unserved(UnservedWork work) {

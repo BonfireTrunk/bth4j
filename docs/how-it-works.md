@@ -7,6 +7,7 @@ long finished tasks are kept.
 ## On this page
 
 - [The pieces](#the-pieces)
+- [The packages](#the-packages)
 - [Task states and transitions](#task-states-and-transitions)
 - [One attempt](#one-attempt)
 - [The four runner services](#the-four-runner-services)
@@ -43,6 +44,24 @@ flowchart LR
 | `TaskClient` | Your application uses it to enqueue tasks. A process that only produces tasks can use a client without a runner. |
 | Store | Holds every task and decides every state change. The stores are Redis, PostgreSQL and SQLite. `InMemoryStore` from `bth4j-testing` is for tests. See [Stores](stores.md). |
 | `BackgroundRunner` | Runs the tasks. It is made of four services, described in [The four runner services](#the-four-runner-services). |
+
+## The packages
+
+Every package starts with `today.bonfire.oss.bth4j`.
+
+| Package | Who uses it | What is in it |
+|---|---|---|
+| (the root) | applications | `BackgroundRunner`, `TaskClient`, requests, task types, views (`TaskView`, `ScheduleView`, `RunnerView`), events, `AdminOps` |
+| `.exceptions` | applications | everything the library throws; see [Errors](errors.md) |
+| `.executor` | applications | the executors a runner runs task bodies on |
+| `.common` | applications | `JsonMapper`, the JSON interface a runner and a client are given, and `Cron` |
+| `.redis`, `.postgres`, `.sqlite` | applications | the stores; see [Stores](stores.md) |
+| `.micrometer`, `.admin.http` | applications | metrics and the admin HTTP server |
+| `.testing` | tests | `InMemoryStore` and `MutableClock`; see [Testing](testing.md) |
+| `.spi` | store authors | the store interfaces and their records; see [Writing a store](writing-a-store.md) |
+| `.internal` | nobody outside bth4j | code the bth4j modules share; not supported API, it can change in any release |
+
+An application imports from `.spi` in one case only, the transactional enqueue of the PostgreSQL and SQLite stores: `TaskClient.prepare()` returns the `TaskRecord` that `enqueue(Connection, TaskRecord)` takes, and that call answers with the store's `EnqueueOutcome`. See [Enqueueing](enqueueing.md).
 
 ## Task states and transitions
 

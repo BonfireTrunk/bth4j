@@ -16,7 +16,6 @@ import today.bonfire.oss.bth4j.TaskEvent;
 import today.bonfire.oss.bth4j.TaskEvent.Outcome;
 import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.TaskView;
-import today.bonfire.oss.bth4j.spi.TaskRecord;
 
 class MicrometerTaskObserverTest {
 
@@ -24,8 +23,12 @@ class MicrometerTaskObserverTest {
     private final MicrometerTaskObserver observer = new MicrometerTaskObserver(registry);
 
     private static TaskView task() {
-        var record = TaskRecord.builder().id(7).state(TaskState.LEASED).build();
-        return new TaskView(record, "emails", "send");
+        return TaskView.builder()
+                .id(7)
+                .state(TaskState.LEASED)
+                .queue("emails")
+                .type("send")
+                .build();
     }
 
     private double count(String result, String outcome) {

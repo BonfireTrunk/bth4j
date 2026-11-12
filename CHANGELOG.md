@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Breaking: an application no longer needs a store-author type to read or list anything.
+  - `TaskView` has no `record()` and no public constructor from a `TaskRecord`. `TaskView.builder()` makes a view by hand, for a test of an observer, a retry policy or an `AdminOps` fake.
+  - `AdminOps.runners()` returns `RunnerView`: the runner's id, label, times, running count and accepting state, with the queues and task types it processes by name (`queues()`, `types()`). It returned the store's record with numeric queue and type ids.
+  - Redis: the class `Keys` and `RedisTaskStore.keys()` are not public. Key names are an internal of the store; [the Redis store page](docs/stores/redis.md#inside-the-redis-store) lists the keys of the layout.
 - Breaking: one word for the process that runs tasks. It was a "runner" in `BackgroundRunner` and `RunnerHealth` and a "worker" in the registry, the settings, the admin API and the dashboard; it is a runner everywhere. Stored names (the tables `<prefix>_worker`, the column `worker_id`, the Redis keys) are unchanged, so no data moves.
 
   | Before | Now |
