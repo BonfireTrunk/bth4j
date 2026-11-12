@@ -13,6 +13,9 @@ import today.bonfire.oss.bth4j.spi.TaskStore;
  */
 final class Names {
 
+    /** What an event says for a queue or type it cannot name. */
+    static final String UNKNOWN = "unknown";
+
     private final TaskStore store;
     private final Map<String, Integer> queueIds = new ConcurrentHashMap<>();
     private final Map<String, Integer> typeIds = new ConcurrentHashMap<>();
@@ -53,27 +56,49 @@ final class Names {
     }
 
     String queueName(int id) {
+        var name = knownQueueName(id);
+        return name == null ? "#" + id : name;
+    }
+
+    String typeName(int id) {
+        var name = knownTypeName(id);
+        return name == null ? "#" + id : name;
+    }
+
+    /** The queue name for an event, or {@link #UNKNOWN} when the id is 0 (a store could not read it) or unregistered. */
+    String queueNameOrUnknown(int id) {
+        var name = knownQueueName(id);
+        return name == null ? UNKNOWN : name;
+    }
+
+    /** The type name for an event, or {@link #UNKNOWN} when the id is 0 (a store could not read it) or unregistered. */
+    String typeNameOrUnknown(int id) {
+        var name = knownTypeName(id);
+        return name == null ? UNKNOWN : name;
+    }
+
+    private String knownQueueName(int id) {
         var name = queueNames.get(id);
-        if (name == null) {
+        if (name == null && id > 0) {
             store.queueNames().forEach((i, n) -> {
                 queueNames.put(i, n);
                 queueIds.put(n, i);
             });
             name = queueNames.get(id);
         }
-        return name == null ? "#" + id : name;
+        return name;
     }
 
-    String typeName(int id) {
+    private String knownTypeName(int id) {
         var name = typeNames.get(id);
-        if (name == null) {
+        if (name == null && id > 0) {
             store.typeNames().forEach((i, n) -> {
                 typeNames.put(i, n);
                 typeIds.put(n, i);
             });
             name = typeNames.get(id);
         }
-        return name == null ? "#" + id : name;
+        return name;
     }
 
     TaskView view(TaskRecord record) {

@@ -46,6 +46,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
+import today.bonfire.oss.bth4j.spi.ExpiredTask;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
@@ -628,6 +629,30 @@ class RedisTaskStoreIT {
     }
 
     @Test
+    void reclaimAndExpireReportZeroForAQueueOrTypeIdThatCannotBeRead() {
+        var startBy = Instant.now().minusSeconds(1);
+        for (var id = 1L; id <= 2; id++) {
+            store.enqueue(task(id).build());
+        }
+        claim(2);
+        for (var id = 1L; id <= 2; id++) {
+            expireLease(id);
+        }
+        store.enqueue(task(3).startBy(startBy).build());
+        store.enqueue(task(4).startBy(startBy).build());
+        jedis.hset(keys.task(1), "q", "x");
+        jedis.hset(keys.task(2), "ty", "y");
+        jedis.hset(keys.task(3), "q", "x");
+        jedis.hset(keys.task(4), "ty", "y");
+
+        assertThat(store.reclaim(10))
+                .extracting(ExpiredLease::id, ExpiredLease::queueId, ExpiredLease::typeId)
+                .containsExactlyInAnyOrder(tuple(1L, 0, type), tuple(2L, queue, 0));
+        assertThat(store.expire(10))
+                .containsExactlyInAnyOrder(new ExpiredTask(3, 0, type), new ExpiredTask(4, queue, 0));
+    }
+
+    @Test
     void promoteMovesATaskWithAnUnreadableDueOrRevisionAndStillPromotesTheOthers() {
         for (var id = 1L; id <= 3; id++) {
             store.enqueue(task(id).due(Instant.now().plusSeconds(3600)).build());
@@ -661,7 +686,7 @@ class RedisTaskStoreIT {
         jedis.hset(keys.task(2), "kk", "y");
         jedis.hset(keys.task(3), "state", "z");
 
-        assertThat(store.expire(10)).containsExactlyInAnyOrder(1L, 2L);
+        assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactlyInAnyOrder(1L, 2L);
         assertThat(jedis.zscore(keys.index(6, queue), "1")).isNotNull();
         assertThat(jedis.zscore(keys.index(6, queue), "2")).isNotNull();
         assertThat(jedis.pttl(keys.uniqueKey("k1"))).isPositive();

@@ -292,8 +292,8 @@ final class TaskExecution implements Runnable, TaskContext {
         log.error("Task {} cannot run on this worker ({}), deferring it by {}", record.id(), reason, DEFER);
         apply(() -> s.store()
                 .reschedule(record.id(), record.revision(), s.clock().instant().plus(DEFER)));
-        s.status().issue("unknown-type", reason, record.id());
-        emit(new TaskEvent.Deferred(record.id(), view.type(), reason));
+        s.status().issue(Issue.Kind.UNKNOWN_TYPE, reason, record.id());
+        emit(new TaskEvent.Deferred(record.id(), view.queue(), view.type(), reason));
     }
 
     private void succeed(Instant started) {
@@ -317,7 +317,7 @@ final class TaskExecution implements Runnable, TaskContext {
         } catch (RuntimeException e) {
             var detail = "schedule " + record.scheduleId() + " not re-armed: unreadable "
                     + RecurringTaskService.FIXED_DELAY_HEADER + " header";
-            s.status().issue("schedule-rearm", detail, record.id());
+            s.status().issue(Issue.Kind.SCHEDULE_REARM, detail, record.id());
             log.error("Task {}: {}", record.id(), detail);
             return null;
         }
@@ -390,7 +390,7 @@ final class TaskExecution implements Runnable, TaskContext {
     private RetryPolicy.Decision decide(Throwable e) {
         var policy = s.retryPolicies().named(record.retryPolicy());
         if (policy == null) {
-            s.status().issue("retry-policy", "unknown retry policy " + record.retryPolicy(), record.id());
+            s.status().issue(Issue.Kind.RETRY_POLICY, "unknown retry policy " + record.retryPolicy(), record.id());
             log.warn("Task {} names unknown retry policy {}, using the default", record.id(), record.retryPolicy());
             policy = s.retryPolicies().defaultPolicy();
         }
@@ -407,7 +407,7 @@ final class TaskExecution implements Runnable, TaskContext {
                         record.id(),
                         Failures.describe(detail(), policyError));
             }
-            s.status().issue("retry-policy", Failures.describe(detail(), policyError), record.id());
+            s.status().issue(Issue.Kind.RETRY_POLICY, Failures.describe(detail(), policyError), record.id());
             return RetryPolicy.Decision.retryAfter(Duration.ZERO);
         }
     }
@@ -464,7 +464,7 @@ final class TaskExecution implements Runnable, TaskContext {
     private void afterTerminal(TaskState state, Outcome outcome, ScheduleEffect pause) {
         if (outcome != Outcome.APPLIED || pause == null || !pause.applied()) return;
         var detail = "schedule " + record.scheduleId() + " paused: occurrence ended " + state;
-        s.status().issue("schedule-paused", detail, record.id());
+        s.status().issue(Issue.Kind.SCHEDULE_PAUSED, detail, record.id());
         log.warn(detail);
     }
 
@@ -484,7 +484,7 @@ final class TaskExecution implements Runnable, TaskContext {
     private Outcome apply(java.util.function.BooleanSupplier transition) {
         try {
             if (transition.getAsBoolean()) return Outcome.APPLIED;
-            s.status().issue("lease-lost", "transition rejected, the lease was taken over", record.id());
+            s.status().issue(Issue.Kind.LEASE_LOST, "transition rejected, the lease was taken over", record.id());
             return Outcome.LOST;
         } catch (RuntimeException | Error storeError) {
             remember(storeError);

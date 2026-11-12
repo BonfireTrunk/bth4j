@@ -264,7 +264,7 @@ class FailureDetailTest {
 
         assertThat(((TaskEvent.Retrying) events.get(1)).retryAt()).isEqualTo(NOW);
         assertThat(stored.get().type()).isEqualTo(IllegalStateException.class.getName());
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("retry-policy"));
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.RETRY_POLICY);
         assertThat(finishedCalls).isEqualTo(1);
     }
 
@@ -303,7 +303,7 @@ class FailureDetailTest {
         run(FailureDetail.FULL, new IllegalStateException("x"));
 
         assertThat(stored.get()).isNull();
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
         assertThat(logText()).contains("Unable to update the state of task 9");
         assertThat(finishedCalls).isEqualTo(1);
     }
@@ -317,7 +317,7 @@ class FailureDetailTest {
         assertThat(events.getLast())
                 .isInstanceOfSatisfying(
                         TaskEvent.Retrying.class, e -> assertThat(e.outcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN));
-        assertThat(status.issues()).noneMatch(i -> i.kind().equals("lease-lost"));
+        assertThat(status.issues()).noneMatch(i -> i.kind() == Issue.Kind.LEASE_LOST);
         assertThat(logText()).contains("the outcome is unknown");
     }
 
@@ -342,7 +342,7 @@ class FailureDetailTest {
         assertThat(events.getLast())
                 .isInstanceOfSatisfying(
                         TaskEvent.Succeeded.class, e -> assertThat(e.outcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN));
-        assertThat(status.issues()).noneMatch(i -> i.kind().equals("lease-lost"));
+        assertThat(status.issues()).noneMatch(i -> i.kind() == Issue.Kind.LEASE_LOST);
     }
 
     @Test
@@ -432,7 +432,7 @@ class FailureDetailTest {
         assertThat(acked).isTrue();
         assertThat(nextFire.get()).isNull();
         assertThat(events.get(1)).isInstanceOf(TaskEvent.Succeeded.class);
-        assertThat(status.issues()).noneMatch(i -> i.kind().equals("schedule-rearm"));
+        assertThat(status.issues()).noneMatch(i -> i.kind() == Issue.Kind.SCHEDULE_REARM);
     }
 
     @Test
@@ -445,7 +445,7 @@ class FailureDetailTest {
         assertThat(acked).isTrue();
         assertThat(nextFire.get()).isNull();
         assertThat(events.get(1)).isInstanceOf(TaskEvent.Succeeded.class);
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("schedule-rearm"));
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.SCHEDULE_REARM);
         assertThat(logText()).contains("not re-armed");
     }
 
@@ -459,7 +459,7 @@ class FailureDetailTest {
         assertThat(events.get(1))
                 .isInstanceOfSatisfying(
                         TaskEvent.Succeeded.class, e -> assertThat(e.outcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN));
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
         assertThat(finishedCalls).isEqualTo(1);
     }
 

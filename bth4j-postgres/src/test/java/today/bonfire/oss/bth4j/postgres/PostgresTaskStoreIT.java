@@ -31,6 +31,7 @@ import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
+import today.bonfire.oss.bth4j.spi.ExpiredTask;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
@@ -501,7 +502,7 @@ class PostgresTaskStoreIT {
                 .extracting(TaskRecord::id)
                 .containsExactly(first, refill);
         assertThat(List.of(get(expired), get(unknownId))).isEqualTo(untouched);
-        assertThat(store.expire(10)).containsExactly(expired);
+        assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactly(expired);
     }
 
     @Test
@@ -1111,7 +1112,7 @@ class PostgresTaskStoreIT {
         sql("UPDATE " + prefix + "_task SET start_by = now() - interval '1 second' WHERE id = " + leased.id());
 
         assertThat(claim(10)).extracting(TaskRecord::id).containsExactly(fine);
-        assertThat(store.expire(10)).containsExactlyInAnyOrder(late, lateScheduled);
+        assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactlyInAnyOrder(late, lateScheduled);
 
         var r = get(late);
         assertThat(r.state()).isEqualTo(TaskState.EXPIRED);
@@ -1132,8 +1133,8 @@ class PostgresTaskStoreIT {
         store.enqueue(task(base + 2).startBy(now.plusMillis(40)).build());
         Thread.sleep(100);
 
-        assertThat(store.expire(2)).containsExactlyInAnyOrder(base + 1, base + 2);
-        assertThat(store.expire(2)).containsExactly(base);
+        assertThat(store.expire(2)).extracting(ExpiredTask::id).containsExactlyInAnyOrder(base + 1, base + 2);
+        assertThat(store.expire(2)).extracting(ExpiredTask::id).containsExactly(base);
     }
 
     // ---- wave 2: admin -------------------------------------------------------------------------------

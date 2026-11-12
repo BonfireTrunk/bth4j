@@ -589,6 +589,21 @@ class TaskExecutionTest {
         assertThat(store.getTask(record.id()).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
     }
 
+    @Test
+    void aDeferredTaskSaysWhichQueueAndTypeItHas() {
+        client.enqueue(TaskRequest.of(TaskType.of("unregistered")).build());
+        var record = store.claim(
+                        new ClaimRequest(List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)), 1, LEASE, 1, null))
+                .getFirst();
+
+        new TaskExecution(record, settings(), e -> {}).run(() -> {});
+
+        assertThat(events)
+                .last()
+                .isEqualTo(new TaskEvent.Deferred(
+                        record.id(), "Q:DEF", "unregistered", "no processor registered for unregistered"));
+    }
+
     private TaskEvent.Outcome lastOutcome() {
         return switch (events.getLast()) {
             case TaskEvent.Succeeded e -> e.outcome();

@@ -31,6 +31,7 @@ import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
+import today.bonfire.oss.bth4j.spi.ExpiredTask;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
@@ -230,8 +231,9 @@ public final class SqliteTaskStore implements FullStore {
         saveStepsSql = "UPDATE " + task + " SET steps = ?1" + FENCE;
         progressSql = "UPDATE " + task + " SET progress = ?1" + FENCE;
         nextDueSql = "SELECT min(due) FROM " + task + " WHERE state = 1";
-        reclaimSql = "SELECT id, revision, attempts, max_attempts, type_id, cancel_requested_at IS NOT NULL FROM "
-                + task + " WHERE state = 2 AND lease_until <= ? ORDER BY lease_until, id LIMIT ?";
+        reclaimSql =
+                "SELECT id, revision, attempts, max_attempts, queue_id, type_id, cancel_requested_at IS NOT NULL FROM "
+                        + task + " WHERE state = 2 AND lease_until <= ? ORDER BY lease_until, id LIMIT ?";
         endLeasesSql = "UPDATE " + task + " SET lease_until = claimed_at"
                 + " WHERE id IN (SELECT value FROM json_each(?)) AND state = 2 AND worker_id = ?";
     }
@@ -1015,7 +1017,13 @@ public final class SqliteTaskStore implements FullStore {
                     c,
                     reclaimSql,
                     rs -> result.add(new ExpiredLease(
-                            rs.getLong(1), rs.getInt(2), rs.getInt(3), rs.getInt(4), rs.getInt(5), rs.getInt(6) == 1)),
+                            rs.getLong(1),
+                            rs.getInt(2),
+                            rs.getInt(3),
+                            rs.getInt(4),
+                            rs.getInt(5),
+                            rs.getInt(6),
+                            rs.getInt(7) == 1)),
                     clock.millis(),
                     limit);
             return result;
@@ -1684,23 +1692,29 @@ public final class SqliteTaskStore implements FullStore {
 
     /** Oldest deadline first, through the {@code _start_by} partial index. */
     @Override
-    public List<Long> expire(int limit) {
+    public List<ExpiredTask> expire(int limit) {
         StoreArguments.requireLimit(limit);
-        var select = "SELECT id FROM " + task + " WHERE start_by <= ? AND state < 2 ORDER BY start_by, id LIMIT ?";
+        var select = "SELECT id, queue_id, type_id FROM " + task
+                + " WHERE start_by <= ? AND state < 2 ORDER BY start_by, id LIMIT ?";
         if (!withConnection(c -> queryOne(c, select, rs -> true, clock.millis(), limit) != null)) return List.of();
         return inTransaction(c -> {
             long now = clock.millis();
-            var ids = new ArrayList<Long>();
-            queryEach(c, select, rs -> ids.add(rs.getLong(1)), now, limit);
-            if (!ids.isEmpty()) {
+            var expired = new ArrayList<ExpiredTask>();
+            queryEach(
+                    c,
+                    select,
+                    rs -> expired.add(new ExpiredTask(rs.getLong(1), rs.getInt(2), rs.getInt(3))),
+                    now,
+                    limit);
+            if (!expired.isEmpty()) {
                 update(
                         c,
                         "UPDATE " + task + " SET state = 6, revision = revision + 1, state_changed = ?1," + KEY_RELEASE
                                 + " WHERE id IN (SELECT value FROM json_each(?2))",
                         now,
-                        idsJson(ids));
+                        idsJson(expired.stream().map(ExpiredTask::id).toList()));
             }
-            return ids;
+            return expired;
         });
     }
 

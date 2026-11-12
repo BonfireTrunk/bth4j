@@ -4,12 +4,15 @@ import java.time.Duration;
 import java.time.Instant;
 
 /**
- * What a runner reports to its {@link TaskObserver}. The vocabulary is fixed; new event kinds are added, not
- * changed. {@code outcome} tells whether the store applied the transition ({@link Outcome#APPLIED}), rejected
- * it because the lease was lost meanwhile ({@link Outcome#LOST}), or failed so that the result is not known
- * ({@link Outcome#UNKNOWN}).
+ * What a runner reports to its {@link TaskObserver}. Event kinds may be added in a minor release, so a
+ * {@code switch} over events needs a {@code default} branch that ignores a kind it does not know. The event
+ * records and the view records are for reading: a component may be added to one in a minor release, which breaks
+ * only code that constructs it or takes it apart. {@code outcome} tells whether the store applied the transition
+ * ({@link Outcome#APPLIED}), rejected it because the lease was lost meanwhile ({@link Outcome#LOST}), or failed
+ * so that the result is not known ({@link Outcome#UNKNOWN}). A {@code queue} or {@code type} that could not be
+ * resolved to a name is the text {@code unknown}.
  */
-public sealed interface TaskEvent {
+public interface TaskEvent {
 
     enum Outcome {
         APPLIED,
@@ -22,7 +25,7 @@ public sealed interface TaskEvent {
     }
 
     /** A task passed its {@link TaskView#startBy()} before it could run and was moved to EXPIRED. */
-    record Expired(long id) implements TaskEvent {}
+    record Expired(long id, String queue, String type) implements TaskEvent {}
 
     /** A task was claimed and its processor is about to run. */
     record Started(TaskView task, int workerId) implements TaskEvent {}
@@ -49,10 +52,11 @@ public sealed interface TaskEvent {
     record Cancelled(TaskView task, String reason, Outcome outcome) implements TaskEvent {}
 
     /** Maintenance found an expired lease; the task was retried or died. */
-    record LeaseExpired(long id, int attempts, int maxAttempts, boolean dead) implements TaskEvent {}
+    record LeaseExpired(long id, String queue, String type, int attempts, int maxAttempts, boolean dead)
+            implements TaskEvent {}
 
     /** A claimed task could not be run because this runner has no processor for its type, and was put back. */
-    record Deferred(long id, String type, String reason) implements TaskEvent {}
+    record Deferred(long id, String queue, String type, String reason) implements TaskEvent {}
 
     /** An occurrence of a recurring definition was created. */
     record ScheduleFired(String scheduleId, long taskId, Instant fireAt) implements TaskEvent {}

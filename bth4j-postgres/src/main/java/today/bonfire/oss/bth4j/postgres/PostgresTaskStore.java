@@ -30,6 +30,7 @@ import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
+import today.bonfire.oss.bth4j.spi.ExpiredTask;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
@@ -258,7 +259,8 @@ public final class PostgresTaskStore implements FullStore {
         nextDueSql = "SELECT min(due) FROM " + task + " WHERE state = 1";
         endLeasesSql =
                 "UPDATE " + task + " SET lease_until = claimed_at WHERE id = ANY(?) AND state = 2 AND worker_id = ?";
-        reclaimSql = "SELECT id, revision, attempts, max_attempts, type_id, cancel_requested_at IS NOT NULL" + " FROM "
+        reclaimSql = "SELECT id, revision, attempts, max_attempts, queue_id, type_id, cancel_requested_at IS NOT NULL"
+                + " FROM "
                 + task
                 + " WHERE state = 2 AND lease_until <= date_trunc('milliseconds', statement_timestamp()) ORDER BY lease_until LIMIT ?";
         releaseKeysSql = releaseKeysSql(
@@ -1251,7 +1253,8 @@ public final class PostgresTaskStore implements FullStore {
                                 rs.getInt(3),
                                 rs.getInt(4),
                                 rs.getInt(5),
-                                rs.getBoolean(6)));
+                                rs.getInt(6),
+                                rs.getBoolean(7)));
                     }
                 }
                 return result;
@@ -1898,20 +1901,20 @@ public final class PostgresTaskStore implements FullStore {
 
     /** Oldest deadline first, through the {@code _start_by} partial index. */
     @Override
-    public List<Long> expire(int limit) {
+    public List<ExpiredTask> expire(int limit) {
         StoreArguments.requireLimit(limit);
         return withConnection(c -> {
             try (var ps = c.prepareStatement("WITH x AS (SELECT id FROM " + task
                     + "   WHERE start_by <= date_trunc('milliseconds', statement_timestamp()) AND state < 2 ORDER BY start_by, id LIMIT ? FOR UPDATE SKIP LOCKED)"
                     + " UPDATE " + task
                     + " t SET state = 6, revision = t.revision + 1, state_changed = date_trunc('milliseconds', statement_timestamp()),"
-                    + KEY_RELEASE + " FROM x WHERE t.id = x.id RETURNING t.id")) {
+                    + KEY_RELEASE + " FROM x WHERE t.id = x.id RETURNING t.id, t.queue_id, t.type_id")) {
                 ps.setInt(1, limit);
-                var ids = new ArrayList<Long>();
+                var expired = new ArrayList<ExpiredTask>();
                 try (var rs = ps.executeQuery()) {
-                    while (rs.next()) ids.add(rs.getLong(1));
+                    while (rs.next()) expired.add(new ExpiredTask(rs.getLong(1), rs.getInt(2), rs.getInt(3)));
                 }
-                return ids;
+                return expired;
             }
         });
     }

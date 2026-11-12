@@ -87,23 +87,23 @@ class MicrometerTaskObserverTest {
     }
 
     @Test
-    void leaseExpiredHasUnknownTypeAndQueue() {
-        observer.onEvent(new TaskEvent.LeaseExpired(9, 1, 3, false));
+    void leaseExpiredIsCountedWithItsTypeAndQueue() {
+        observer.onEvent(new TaskEvent.LeaseExpired(9, "emails", "send", 1, 3, false));
 
         var counter = registry.get(MicrometerTaskObserver.TASKS)
-                .tags("type", "unknown", "queue", "unknown", "result", "lease_lost", "outcome", "applied")
+                .tags("type", "send", "queue", "emails", "result", "lease_lost", "outcome", "applied")
                 .counter();
         assertThat(counter.count()).isEqualTo(1);
     }
 
     @Test
     void deferredScheduleFiredAndPurged() {
-        observer.onEvent(new TaskEvent.Deferred(1, "send", "no processor"));
+        observer.onEvent(new TaskEvent.Deferred(1, "emails", "send", "no processor"));
         observer.onEvent(new TaskEvent.ScheduleFired("nightly", 2, Instant.now()));
         observer.onEvent(new TaskEvent.Purged(TaskState.SUCCEEDED, 5));
 
         assertThat(registry.get(MicrometerTaskObserver.DEFERRED)
-                        .tag("type", "send")
+                        .tags("type", "send", "queue", "emails")
                         .counter()
                         .count())
                 .isEqualTo(1);
@@ -147,14 +147,23 @@ class MicrometerTaskObserverTest {
     }
 
     @Test
-    void expiredHasUnknownTypeAndQueue() {
-        observer.onEvent(new TaskEvent.Expired(9));
+    void expiredIsCountedWithItsTypeAndQueue() {
+        observer.onEvent(new TaskEvent.Expired(9, "emails", "send"));
 
         var counter = registry.get(MicrometerTaskObserver.TASKS)
-                .tags("type", "unknown", "queue", "unknown", "result", "expired", "outcome", "applied")
+                .tags("type", "send", "queue", "emails", "result", "expired", "outcome", "applied")
                 .counter();
         assertThat(counter.count()).isEqualTo(1);
     }
+
+    @Test
+    void aKindOfEventItDoesNotKnowIsIgnored() {
+        observer.onEvent(new AnEventKindFromALaterRelease());
+
+        assertThat(registry.getMeters()).isEmpty();
+    }
+
+    private record AnEventKindFromALaterRelease() implements TaskEvent {}
 
     @Test
     void everyResultKindIsTaggedWithEveryOutcome() {

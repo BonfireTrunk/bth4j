@@ -25,6 +25,7 @@ import today.bonfire.oss.bth4j.spi.CancelOutcome;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
+import today.bonfire.oss.bth4j.spi.ExpiredTask;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
@@ -219,7 +220,7 @@ class RedisWave2IT {
 
         var moved = store.expire(10);
 
-        assertThat(moved).containsExactlyInAnyOrder(1L, 2L);
+        assertThat(moved).extracting(ExpiredTask::id).containsExactlyInAnyOrder(1L, 2L);
         var t = store.getTask(1).orElseThrow();
         assertThat(t.state()).isEqualTo(TaskState.EXPIRED);
         assertThat(t.revision()).isEqualTo(1);
@@ -281,7 +282,7 @@ class RedisWave2IT {
         assertThat(c.leased()).isEqualTo(1);
         assertThat(c.expired()).isZero();
 
-        assertThat(store.expire(10)).containsExactly(1L);
+        assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactly(1L);
         assertThat(store.getTask(1).orElseThrow().state()).isEqualTo(TaskState.EXPIRED);
         assertThat(jedis.exists(keys.uniqueKey("k"))).isFalse();
     }
@@ -537,7 +538,8 @@ class RedisWave2IT {
                     assertThat(store.cancel(id, t.revision(), "stop", null)).isEqualTo(CancelOutcome.CANCELLED);
                 case "delete" ->
                     assertThat(store.delete(id, t.revision(), null)).isTrue();
-                case "expire" -> assertThat(store.expire(10)).containsExactly(id);
+                case "expire" ->
+                    assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactly(id);
                 default -> throw new AssertionError(action);
             }
             assertThat(jedis.exists(keys.queue(queue, type))).as(action).isFalse();

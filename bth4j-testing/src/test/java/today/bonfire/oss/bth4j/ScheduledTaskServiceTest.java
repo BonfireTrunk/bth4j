@@ -141,6 +141,6 @@ class ScheduledTaskServiceTest {
         service.run();
 
         assertThat(promotes).hasValue(2);
-        assertThat(status.issues()).extracting(Issue::kind).containsExactly("store-error");
+        assertThat(status.issues()).extracting(Issue::kind).containsExactly(Issue.Kind.STORE_ERROR);
     }
 }

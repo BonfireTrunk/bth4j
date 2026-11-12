@@ -164,7 +164,7 @@ final class Views {
     }
 
     static Map<String, Object> issue(Issue i) {
-        return obj("at", i.at(), "kind", i.kind(), "detail", i.detail(), "taskId", text(i.taskId()));
+        return obj("at", i.at(), "kind", i.kind().text(), "detail", i.detail(), "taskId", text(i.taskId()));
     }
 
     static <T> List<Object> list(List<T> items, Function<T, Map<String, Object>> mapper) {

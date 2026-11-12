@@ -927,7 +927,7 @@ public abstract class RunnerContract {
                     });
             await(
                     "the lease-lost issue",
-                    () -> runner.issues().stream().anyMatch(i -> i.kind().equals("lease-lost")));
+                    () -> runner.issues().stream().anyMatch(i -> i.kind() == Issue.Kind.LEASE_LOST));
         } finally {
             release.countDown();
         }
@@ -954,7 +954,7 @@ public abstract class RunnerContract {
             assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
             await(
                     "the abandoned attempt",
-                    () -> runner.issues().stream().anyMatch(i -> i.kind().equals("attempt-abandoned")));
+                    () -> runner.issues().stream().anyMatch(i -> i.kind() == Issue.Kind.ATTEMPT_ABANDONED));
             assertThat(runner.abandonedAttempts()).isEqualTo(1);
 
             var done = awaitState(id, TaskState.SUCCEEDED);
@@ -973,6 +973,8 @@ public abstract class RunnerContract {
                     .findFirst()
                     .orElseThrow();
             assertThat(expired.dead()).isFalse();
+            assertThat(expired.queue()).isEqualTo(done.queue());
+            assertThat(expired.type()).isEqualTo(VOID_TYPE.name());
 
             release.countDown();
             await("the abandoned attempt to return", () -> runner.abandonedAttempts() == 0);
@@ -1015,7 +1017,7 @@ public abstract class RunnerContract {
             assertThat(done.attempts()).isEqualTo(1);
             assertThat(runs).hasValue(1);
             await("the cancelled event", () -> eventNames(events, id).contains("Cancelled"));
-            assertThat(runner.issues()).anyMatch(i -> i.kind().equals("attempt-abandoned"));
+            assertThat(runner.issues()).anyMatch(i -> i.kind() == Issue.Kind.ATTEMPT_ABANDONED);
 
             release.countDown();
             await("the abandoned attempt to return", () -> runner.runningTasks() == 0);
@@ -1051,7 +1053,7 @@ public abstract class RunnerContract {
             assertThat(store.unclaim(id, running.revision())).isTrue();
             await(
                     "the lease-lost issue",
-                    () -> runner.issues().stream().anyMatch(i -> i.kind().equals("lease-lost")));
+                    () -> runner.issues().stream().anyMatch(i -> i.kind() == Issue.Kind.LEASE_LOST));
             assertThat(stopped.get()).isNull();
             assertThat(runner.runningTasks()).isEqualTo(1);
 
@@ -1084,6 +1086,14 @@ public abstract class RunnerContract {
         pause(300);
         assertThat(ran.getCount()).isEqualTo(1);
         await("the expired event", () -> eventNames(events, id).contains("Expired"));
+        var event = events.stream()
+                .filter(TaskEvent.Expired.class::isInstance)
+                .map(TaskEvent.Expired.class::cast)
+                .filter(e -> e.id() == id)
+                .findFirst()
+                .orElseThrow();
+        assertThat(event.queue()).isEqualTo(expired.queue());
+        assertThat(event.type()).isEqualTo(VOID_TYPE.name());
     }
 
     @Test
@@ -1134,7 +1144,7 @@ public abstract class RunnerContract {
         assertThat(retried.attempts()).isEqualTo(2);
         await(
                 "the retry-policy issue",
-                () -> runner.issues().stream().anyMatch(i -> i.kind().equals("retry-policy")));
+                () -> runner.issues().stream().anyMatch(i -> i.kind() == Issue.Kind.RETRY_POLICY));
     }
 
     @Test
@@ -1231,7 +1241,7 @@ public abstract class RunnerContract {
                 .findFirst()
                 .orElseThrow();
         assertThat(broken.fixedDelay()).isEqualTo(Duration.ofSeconds(1));
-        assertThat(runner.issues()).anyMatch(i -> i.kind().equals("schedule-paused"));
+        assertThat(runner.issues()).anyMatch(i -> i.kind() == Issue.Kind.SCHEDULE_PAUSED);
         var tick = runner.admin().schedules().stream()
                 .filter(s -> s.id().equals("tick"))
                 .findFirst()
@@ -1323,7 +1333,7 @@ public abstract class RunnerContract {
         pause(300);
         assertThat(dues).containsExactly(missed);
         assertThat(client.schedules().get("late-once")).isEqualTo(latest.plus(Duration.ofHours(1)));
-        assertThat(runner.issues()).anyMatch(i -> i.kind().equals("schedule-misfire"));
+        assertThat(runner.issues()).anyMatch(i -> i.kind() == Issue.Kind.SCHEDULE_MISFIRE);
     }
 
     @Test
@@ -1341,7 +1351,7 @@ public abstract class RunnerContract {
         pause(300);
         assertThat(runs.get()).isZero();
         assertThat(client.tasks(TaskState.QUEUED, null, null, 10).items()).isEmpty();
-        assertThat(runner.issues()).anyMatch(i -> i.kind().equals("schedule-misfire"));
+        assertThat(runner.issues()).anyMatch(i -> i.kind() == Issue.Kind.SCHEDULE_MISFIRE);
     }
 
     @Test
@@ -1382,7 +1392,7 @@ public abstract class RunnerContract {
         assertThat(runner.admin().triggerSchedule("guarded")).isTrue();
         await(
                 "the overlap issue",
-                () -> runner.issues().stream().anyMatch(i -> i.kind().equals("schedule-overlap")));
+                () -> runner.issues().stream().anyMatch(i -> i.kind() == Issue.Kind.SCHEDULE_OVERLAP));
         assertThat(runs.get()).isEqualTo(1);
         var guarded = runner.admin().schedules().stream()
                 .filter(s -> s.id().equals("guarded"))
@@ -1498,6 +1508,7 @@ public abstract class RunnerContract {
             case TaskEvent.Expired e -> e.id();
             case TaskEvent.ScheduleFired e -> e.taskId();
             case TaskEvent.Purged e -> -1L;
+            default -> -1L;
         };
     }
 }

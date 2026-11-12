@@ -224,7 +224,7 @@ class RecurringTaskService extends CustomThread {
         }
         var detail = "schedule " + d.scheduleId() + " cannot be evaluated ("
                 + cause.getClass().getSimpleName() + "), its next fire moved from " + d.fireAt() + " to " + next;
-        status.issue("schedule-broken", detail, null);
+        status.issue(Issue.Kind.SCHEDULE_BROKEN, detail, null);
         return Progress.ADVANCED;
     }
 
@@ -286,7 +286,7 @@ class RecurringTaskService extends CustomThread {
     private void misfireIssue(DueSchedule d, Duration late, String action) {
         var detail = "schedule " + d.scheduleId() + " missed its fire at " + d.fireAt() + " by " + late + ": " + action;
         log.warn(detail);
-        status.issue("schedule-misfire", detail, null);
+        status.issue(Issue.Kind.SCHEDULE_MISFIRE, detail, null);
     }
 
     /**
@@ -332,7 +332,7 @@ class RecurringTaskService extends CustomThread {
                 var detail = "schedule " + d.scheduleId() + " skipped its fire at " + d.fireAt()
                         + ": the previous occurrence has not finished";
                 log.info(detail);
-                status.issue("schedule-overlap", detail, null);
+                status.issue(Issue.Kind.SCHEDULE_OVERLAP, detail, null);
             } else {
                 observer.emit(new TaskEvent.ScheduleFired(d.scheduleId(), occurrence.id(), d.fireAt()));
             }

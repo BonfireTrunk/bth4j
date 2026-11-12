@@ -17,6 +17,8 @@ This page shows how to watch a running system. It covers task events, logging, t
 
 A `TaskObserver` receives `TaskEvent`s. It runs on the thread that produced the event, after the outcome was applied. An exception in an observer never changes a task.
 
+`TaskEvent` is an open interface. A later minor release may add an event kind, so a `switch` over events needs a `default` branch that ignores a kind it does not know. The event and view records are for reading: a minor release may add a component to one, which breaks only code that constructs a record or takes it apart.
+
 ### Events
 
 | Event | When the runner sends it | Carries an `outcome` |
@@ -27,11 +29,13 @@ A `TaskObserver` receives `TaskEvent`s. It runs on the thread that produced the 
 | `Died` | The task ended as dead: attempts used up, an unrecoverable error, or the retry policy said so. | Yes |
 | `Rescheduled` | The processor asked to run again later without counting the attempt. | Yes |
 | `Cancelled` | The task ended as cancelled. | Yes |
-| `Expired` | A task passed its `startBy` before it could run and was moved to EXPIRED. | No |
-| `LeaseExpired` | Maintenance found an expired lease, and the task was retried or died. | No |
-| `Deferred` | A claimed task could not be run because this runner has no processor for its type, and was put back. | No |
+| `Expired` | A task passed its `startBy` before it could run and was moved to EXPIRED. Carries the `queue` and `type` names. | No |
+| `LeaseExpired` | Maintenance found an expired lease, and the task was retried or died. Carries the `queue` and `type` names. | No |
+| `Deferred` | A claimed task could not be run because this runner has no processor for its type, and was put back. Carries the `queue` and `type` names. | No |
 | `ScheduleFired` | An occurrence of a recurring definition was created. | No |
 | `Purged` | Maintenance removed finished tasks that were past their retention. | No |
+
+The store reports the queue and type of an `Expired` or `LeaseExpired` task in the same step that expires the task or lists the lease, so the names are right even when the task is purged or deleted a moment later. A queue or type that cannot be named, because the store could not read it from a damaged record or no process registered it, is the text `unknown`.
 
 ### Event outcomes
 
@@ -127,7 +131,7 @@ boolean drained = runner.drain(Duration.ofSeconds(30));   // quiet, then wait fo
 
 ## Issues
 
-An `Issue` has a time, a kind, a detail and the task id when there is one. Issues live in the memory of the runner that saw them.
+An `Issue` has a time, a kind (the enum `Issue.Kind`), a detail and the task id when there is one. Issues live in the memory of the runner that saw them. Later minor releases may add kinds, so a `switch` over `Issue.Kind` needs a `default` branch. The table shows `Issue.Kind.text()`, which is also what the [admin API](admin.md) sends in `kind`: `unknown-type` is `Issue.Kind.UNKNOWN_TYPE`, `store-error` is `Issue.Kind.STORE_ERROR`, and so on.
 
 | Kind | What it records | More |
 |---|---|---|
@@ -213,7 +217,7 @@ MicrometerRunnerMetrics metrics = MicrometerRunnerMetrics.bind(runner, registry,
 |---|---|---|
 | `bth4j.tasks` | counter | `type`, `queue`, `result`, `outcome` |
 | `bth4j.task.duration` | timer | `type`, `queue` |
-| `bth4j.deferred` | counter | `type` |
+| `bth4j.deferred` | counter | `type`, `queue` |
 | `bth4j.schedule.fired` | counter | none |
 | `bth4j.purged` | counter | `state` |
 
@@ -222,7 +226,7 @@ MicrometerRunnerMetrics metrics = MicrometerRunnerMetrics.bind(runner, registry,
 | `result` | `succeeded`, `retried`, `died`, `rescheduled`, `cancelled`, `expired`, `lease_lost` |
 | `outcome` | `applied`, `lost`, `unknown` |
 
-`expired` and `lease_lost` are counted with `type` and `queue` set to `unknown`.
+`expired` and `lease_lost` carry the `type` and `queue` of the task. When the observer's event could not name one of them, the tag is `unknown`.
 
 The observer's tags are only names and results, never ids or messages, so the number of meters stays bounded.
 

@@ -336,7 +336,7 @@ class TaskProcessorCapacityTest {
         assertThat(claims).hasValue(2);
         assertThat(leased(firstIds)).isEqualTo(1);
         assertThat(leased(busyIds)).isZero();
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
         executor.runNext();
         assertThat(state(firstIds.getFirst())).isEqualTo(TaskState.SUCCEEDED);
     }
@@ -419,7 +419,7 @@ class TaskProcessorCapacityTest {
         assertThat(executor.available()).isEqualTo(2);
         assertThat(reservations.running(queueId)).isZero();
         assertThat(admission.attempts()).isEmpty();
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
 
         processOnce(processor);
 
@@ -455,8 +455,8 @@ class TaskProcessorCapacityTest {
         assertThat(ids.stream().filter(id -> state(id) == TaskState.LEASED)).hasSize(1);
         assertThat(ids.stream().filter(id -> state(id) == TaskState.QUEUED)).hasSize(2);
         assertThat(status.issues())
-                .anyMatch(i ->
-                        i.kind().equals("store-error") && i.detail().equals("store returned 3 tasks for a claim of 1"));
+                .anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR
+                        && i.detail().equals("store returned 3 tasks for a claim of 1"));
     }
 
     @Test
@@ -550,7 +550,7 @@ class TaskProcessorCapacityTest {
 
         assertThat(attempt(id)).isNotNull();
         assertThat(store.getTask(id).orElseThrow().leaseUntil()).isEqualTo(leaseBefore);
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
         assertThat(reservations.running(queueId)).isEqualTo(1);
 
         processor.renewOnce();
@@ -582,7 +582,7 @@ class TaskProcessorCapacityTest {
         processor.renewOnce();
 
         assertThat(status.issues())
-                .filteredOn(i -> i.kind().equals("lease-lost"))
+                .filteredOn(i -> i.kind() == Issue.Kind.LEASE_LOST)
                 .singleElement()
                 .satisfies(i -> assertThat(i.taskId()).isEqualTo(id));
         assertThat(renewed).hasValue(1);
@@ -606,7 +606,7 @@ class TaskProcessorCapacityTest {
         executor.runNext();
 
         assertThat(state(id)).isEqualTo(TaskState.SUCCEEDED);
-        assertThat(status.issues()).noneMatch(i -> i.kind().equals("lease-lost"));
+        assertThat(status.issues()).noneMatch(i -> i.kind() == Issue.Kind.LEASE_LOST);
         assertThat(admission.attempts()).isEmpty();
     }
 
@@ -629,8 +629,8 @@ class TaskProcessorCapacityTest {
         assertThat(admission.attempts()).isEmpty();
         assertThat(executor.available()).isEqualTo(1);
         assertThat(reservations.running(queueId)).isZero();
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("executor-rejected"));
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.EXECUTOR_REJECTED);
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
 
         clock.advance(LEASE.plusMillis(1));
         assertThat(store.reclaim(10))
