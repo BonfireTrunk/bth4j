@@ -17,6 +17,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import today.bonfire.oss.bth4j.spi.FullStore;
+import today.bonfire.oss.bth4j.spi.InspectionStore;
 import today.bonfire.oss.bth4j.spi.RecurringDefinition;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 import today.bonfire.oss.bth4j.spi.TaskState;
@@ -41,6 +42,7 @@ class RecurringTaskServiceTest {
     private final int typeId = store.typeId(TYPE.name());
     private final int queueId = store.queueId("Q:DEF");
     private FullStore serviceStore = store;
+    private InspectionStore inspection = store;
     private Duration checkInterval = Duration.ofSeconds(10);
     private int batchSize = 100;
     private Observers observers = new Observers(events::add);
@@ -319,6 +321,69 @@ class RecurringTaskServiceTest {
                 .singleElement()
                 .satisfies(i -> assertThat(i.kind()).isEqualTo("schedule-overlap"));
         assertThat(store.recurringSchedules()).containsEntry(ID, T0.plus(Duration.ofHours(2)));
+    }
+
+    @Test
+    void aProtectedFireThatIsStillAheadIsLeftAloneWhileTheEarlierOccurrenceIsOpen() throws Exception {
+        register(definition("0 * * * *", null, 0, true), T0);
+        round();
+        events.clear();
+        var nextFire = T0.plus(Duration.ofHours(1));
+        clock.set(nextFire.minusMillis(1));
+
+        round();
+
+        assertThat(occurrences()).hasSize(1);
+        assertThat(events).isEmpty();
+        assertThat(status.issues()).isEmpty();
+        assertThat(store.recurringSchedules()).containsEntry(ID, nextFire);
+    }
+
+    @Test
+    void aProtectedFireIsCreatedAheadOfItsTimeOnceTheEarlierOccurrenceHasEnded() throws Exception {
+        register(definition("0 * * * *", null, 0, true), T0);
+        round();
+        var first = occurrences().getFirst();
+        events.clear();
+        var nextFire = T0.plus(Duration.ofHours(1));
+        clock.set(nextFire.minusSeconds(5));
+        round();
+        assertThat(store.delete(first.id(), first.revision(), null)).isTrue();
+
+        round();
+
+        var second = occurrences().getLast();
+        assertThat(second.id()).isNotEqualTo(first.id());
+        assertThat(second.due()).isEqualTo(nextFire);
+        assertThat(second.state()).isEqualTo(TaskState.SCHEDULED);
+        assertThat(events).containsExactly(new TaskEvent.ScheduleFired(ID, second.id(), nextFire));
+        assertThat(status.issues()).isEmpty();
+        assertThat(store.recurringSchedules()).containsEntry(ID, T0.plus(Duration.ofHours(2)));
+    }
+
+    @Test
+    void aFireWithoutProtectionIsCreatedAheadOfItsTimeWhileTheEarlierOccurrenceIsOpen() throws Exception {
+        register(definition("0 * * * *", null, 0, false), T0);
+        round();
+        clock.set(T0.plus(Duration.ofHours(1)).minusSeconds(5));
+
+        round();
+
+        assertThat(occurrences()).hasSize(2);
+    }
+
+    @Test
+    void withoutAnInspectionStoreAProtectedFireWaitsForItsTime() throws Exception {
+        inspection = null;
+        var first = T0.plusSeconds(5);
+        register(definition("0 * * * *", null, 0, true), first);
+
+        round();
+        assertThat(occurrences()).isEmpty();
+        clock.set(first);
+        round();
+
+        assertThat(occurrences()).hasSize(1);
     }
 
     @Test
@@ -625,7 +690,7 @@ class RecurringTaskServiceTest {
                 .group(new ThreadGroup("recurring-test"))
                 .threadName("recurring-test")
                 .store(serviceStore)
-                .inspection(store)
+                .inspection(inspection)
                 .ids(new IdAllocator(store, 10))
                 .observer(observers)
                 .clock(clock)

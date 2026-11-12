@@ -126,7 +126,16 @@ client.putSchedule(ScheduleDefinition.of("nightly-report", NIGHTLY_REPORT, "30 2
         .overlap(Overlap.SKIP));
 ```
 
-The check creates an occurrence up to one `recurringTasksCheckInterval` before its fire time and decides the overlap then.
+The overlap is decided at the fire time, not ahead of it:
+
+| When the check sees the fire | Previous occurrence | What happens |
+|---|---|---|
+| up to one `recurringTasksCheckInterval` before its time | finished | the occurrence is created and starts on time |
+| up to one `recurringTasksCheckInterval` before its time | not finished | nothing yet, the next check looks again |
+| at or after its time | finished | the occurrence is created and starts at once, up to one check interval after the fire time |
+| at or after its time | not finished | the fire is skipped with a `schedule-overlap` issue |
+
+So a job that fires every minute and takes 55 seconds runs every minute. A queued occurrence, or one that waits for a retry, counts as not finished.
 
 Overlap protection keys only the occurrence (`sched:<id>`). Tasks its processor enqueues are unique only if the application gives them keys.
 

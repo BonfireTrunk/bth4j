@@ -29,6 +29,10 @@ import today.bonfire.oss.bth4j.spi.TaskStoreException;
  * is handled by the definition's misfire policy. A fixed-delay definition fires once and is parked; the
  * occurrence re-arms it when it ends (see {@link TaskExecution}). An occurrence of a definition with overlap
  * protection carries the unique key {@code sched:<id>}, so the store skips it while the previous one runs.
+ * <p>
+ * An occurrence is created up to one check interval before its fire time. A fire with overlap protection is
+ * created that early only while no earlier occurrence is open; otherwise it waits for its fire time, and is
+ * skipped only when the earlier one is still open then.
  */
 class RecurringTaskService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(Loggers.RECURRING);
@@ -182,7 +186,11 @@ class RecurringTaskService extends CustomThread {
             // threshold; the other policies continue from now
             var catchesUp =
                     RecurringDefinition.misfire(def.misfire(), def.catchUpMaxFires()) instanceof Misfire.CatchUp;
-            var after = d.fireAt().isAfter(now) || catchesUp ? d.fireAt() : now;
+            var ahead = d.fireAt().isAfter(now);
+            if (ahead && def.overlapSkip() && earlierOccurrenceMayBeOpen(d)) {
+                return Progress.NONE;
+            }
+            var after = ahead || catchesUp ? d.fireAt() : now;
             return commitOccurrence(d, nextOrPark(def, after, zone, d.fireAt()));
         } catch (TaskStoreException e) {
             throw e;
@@ -193,6 +201,12 @@ class RecurringTaskService extends CustomThread {
             log.error("Recurring task {} cannot be evaluated", d.scheduleId(), e);
             return pushAhead(d, e);
         }
+    }
+
+    /** Without an inspection store the service cannot tell, so the fire waits for its time. */
+    private boolean earlierOccurrenceMayBeOpen(DueSchedule d) {
+        return inspection == null
+                || inspection.taskByKey(OVERLAP_KEY_PREFIX + d.scheduleId()).isPresent();
     }
 
     private Progress pushAhead(DueSchedule d, Exception cause) {
