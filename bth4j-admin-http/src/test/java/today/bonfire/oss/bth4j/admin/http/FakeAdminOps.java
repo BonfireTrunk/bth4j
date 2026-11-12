@@ -23,8 +23,8 @@ import today.bonfire.oss.bth4j.TaskView;
 import today.bonfire.oss.bth4j.TaskViewPage;
 import today.bonfire.oss.bth4j.UnservedWork;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.spi.RunnerRecord;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 final class FakeAdminOps implements AdminOps {
 
@@ -35,7 +35,7 @@ final class FakeAdminOps implements AdminOps {
     final List<QueueInfo> queues = new CopyOnWriteArrayList<>();
     final List<ScheduleView> schedules = new CopyOnWriteArrayList<>();
     final List<UnservedWork> unserved = new CopyOnWriteArrayList<>();
-    final List<WorkerInfo> workers = new CopyOnWriteArrayList<>();
+    final List<RunnerRecord> runners = new CopyOnWriteArrayList<>();
     final List<Issue> issues = new CopyOnWriteArrayList<>();
     final List<String> calls = new CopyOnWriteArrayList<>();
     volatile int taskLookups;
@@ -166,8 +166,8 @@ final class FakeAdminOps implements AdminOps {
     }
 
     @Override
-    public List<WorkerInfo> workers() {
-        return workers;
+    public List<RunnerRecord> runners() {
+        return runners;
     }
 
     @Override
@@ -177,7 +177,7 @@ final class FakeAdminOps implements AdminOps {
     }
 
     @Override
-    public int purgeStaleWorkers(Duration staleAfter) {
+    public int purgeStaleRunners(Duration staleAfter) {
         return 0;
     }
 

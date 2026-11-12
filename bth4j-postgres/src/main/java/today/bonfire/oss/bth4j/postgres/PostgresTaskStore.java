@@ -50,6 +50,7 @@ import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.RecordJson;
+import today.bonfire.oss.bth4j.spi.RunnerRecord;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.ScheduleEntry;
 import today.bonfire.oss.bth4j.spi.StoreArguments;
@@ -57,12 +58,11 @@ import today.bonfire.oss.bth4j.spi.StoreInfo;
 import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /**
  * {@link FullStore} on PostgreSQL (16 or newer, 17 or newer recommended, tested on 18): one row per task in
  * {@code <prefix>_task} with a state column, name registries in
- * {@code <prefix>_queue} and {@code <prefix>_type}, workers in {@code <prefix>_worker}, recurring
+ * {@code <prefix>_queue} and {@code <prefix>_type}, runners in {@code <prefix>_runner}, recurring
  * definitions in {@code <prefix>_schedule}. Each transition's check and writes commit together: claims use
  * {@code FOR UPDATE SKIP LOCKED}, the fenced transitions are {@code UPDATE ... WHERE id = ? AND revision = ?
  * AND state = 2}, and {@link #fail} locks the row before it reads the failures it appends to. Runners that
@@ -122,7 +122,7 @@ public final class PostgresTaskStore implements FullStore {
     private final String meta;
     private final String queue;
     private final String type;
-    private final String worker;
+    private final String runner;
     private final String task;
     private final String schedule;
     private final String taskIdSeq;
@@ -172,7 +172,7 @@ public final class PostgresTaskStore implements FullStore {
         this.meta = prefix + "_meta";
         this.queue = prefix + "_queue";
         this.type = prefix + "_type";
-        this.worker = prefix + "_worker";
+        this.runner = prefix + "_worker";
         this.task = prefix + "_task";
         this.schedule = prefix + "_schedule";
         this.taskIdSeq = prefix + "_task_id";
@@ -202,7 +202,7 @@ public final class PostgresTaskStore implements FullStore {
                 + " ON CONFLICT DO NOTHING RETURNING id";
         claimSql = claimSql(false);
         claimKnownTypesSql = claimSql(true);
-        // renew and ackAll lock their rows in id order, so a renewal and a batch of the same worker's acks that
+        // renew and ackAll lock their rows in id order, so a renewal and a batch of the same runner's acks that
         // overlap wait for each other instead of deadlocking
         renewSql = "WITH l AS (SELECT t.id FROM " + task + " t JOIN unnest(?::bigint[], ?::int[]) AS u(id, revision)"
                 + "   ON t.id = u.id AND t.revision = u.revision WHERE t.state = 2 AND t.lease_until > date_trunc('milliseconds', statement_timestamp())"
@@ -350,7 +350,7 @@ public final class PostgresTaskStore implements FullStore {
      * grant's share; pass 2 (p2) lets the grants that took their share in full take up to their cap, skipping
      * what pass 1 took. Each pass is one bounded, index-ordered scan per queue, then orders by grant, due and id
      * and stops at the count left; a single ORDER BY array_position(...) would sort every queued row on each claim.
-     * Parameters: [types], queue ids, shares, caps, count, count, count, worker, lease ms.
+     * Parameters: [types], queue ids, shares, caps, count, count, count, runner, lease ms.
      */
     private String claimSql(boolean filterTypes) {
         var eligible =
@@ -400,7 +400,7 @@ public final class PostgresTaskStore implements FullStore {
                         + " name text NOT NULL UNIQUE,"
                         + " paused boolean NOT NULL DEFAULT false)",
                 "CREATE TABLE IF NOT EXISTS " + type + " (id smallserial PRIMARY KEY, name text NOT NULL UNIQUE)",
-                "CREATE TABLE IF NOT EXISTS " + worker + " ("
+                "CREATE TABLE IF NOT EXISTS " + runner + " ("
                         + " id serial PRIMARY KEY,"
                         + " label text NOT NULL,"
                         + " started_at timestamptz(3) NOT NULL,"
@@ -573,11 +573,11 @@ public final class PostgresTaskStore implements FullStore {
     }
 
     @Override
-    public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
+    public int allocateRunnerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
         StoreArguments.requireLabel(label);
-        return withConnection(c -> withWorkerArrays(c, queueIds, typeIds, (queues, types) -> {
+        return withConnection(c -> withRunnerArrays(c, queueIds, typeIds, (queues, types) -> {
             try (var ps = c.prepareStatement(
-                    "INSERT INTO " + worker
+                    "INSERT INTO " + runner
                             + " (label, started_at, last_seen, accepting, queue_ids, type_ids)"
                             + " VALUES (?, date_trunc('milliseconds', statement_timestamp()), date_trunc('milliseconds', statement_timestamp()), true, ?, ?) RETURNING id")) {
                 ps.setString(1, label);
@@ -588,8 +588,8 @@ public final class PostgresTaskStore implements FullStore {
         }));
     }
 
-    private static <T> T withWorkerArrays(
-            Connection c, Set<Integer> queueIds, Set<Integer> typeIds, WorkerArraysFunction<T> fn) throws SQLException {
+    private static <T> T withRunnerArrays(
+            Connection c, Set<Integer> queueIds, Set<Integer> typeIds, RunnerArraysFunction<T> fn) throws SQLException {
         Array queues = c.createArrayOf("int2", queueIds.toArray(Integer[]::new));
         try {
             Array types = c.createArrayOf("int2", typeIds.toArray(Integer[]::new));
@@ -693,7 +693,7 @@ public final class PostgresTaskStore implements FullStore {
 
     /**
      * Stores a task on the caller's connection, inside the caller's transaction: the task becomes visible to
-     * workers only when the caller commits, and disappears with a rollback. The connection is neither
+     * runners only when the caller commits, and disappears with a rollback. The connection is neither
      * committed nor closed. The task should come from {@code TaskClient.prepare}.
      *
      * @throws TaskStoreException when a statement fails; the caller's transaction is then aborted
@@ -894,7 +894,7 @@ public final class PostgresTaskStore implements FullStore {
         return retry;
     }
 
-    // ---- workers -------------------------------------------------------------------------------------
+    // ---- runners -------------------------------------------------------------------------------------
 
     @Override
     public List<TaskRecord> claim(ClaimRequest r) {
@@ -916,9 +916,9 @@ public final class PostgresTaskStore implements FullStore {
                 ps.setInt(i++, r.count());
                 ps.setInt(i++, r.count());
                 ps.setInt(i++, r.count());
-                ps.setInt(i++, r.workerId());
+                ps.setInt(i++, r.runnerId());
                 ps.setLong(i, r.lease().toMillis());
-                return readClaimed(c, ps, r.workerId());
+                return readClaimed(c, ps, r.runnerId());
             } finally {
                 for (var array : arrays) array.free();
             }
@@ -929,7 +929,7 @@ public final class PostgresTaskStore implements FullStore {
      * The claimed tasks, without those it cannot read: their leases end at once, so maintenance takes them over.
      * A failure of that statement fails the claim, since it may have ended the transaction that holds the claim.
      */
-    private List<TaskRecord> readClaimed(Connection c, PreparedStatement ps, int workerId) throws SQLException {
+    private List<TaskRecord> readClaimed(Connection c, PreparedStatement ps, int runnerId) throws SQLException {
         var result = new ArrayList<TaskRecord>();
         List<Long> unreadable = null;
         try (var rs = ps.executeQuery()) {
@@ -946,7 +946,7 @@ public final class PostgresTaskStore implements FullStore {
             var ids = c.createArrayOf("int8", unreadable.toArray());
             try (var end = c.prepareStatement(endLeasesSql)) {
                 end.setArray(1, ids);
-                end.setInt(2, workerId);
+                end.setInt(2, runnerId);
                 end.executeUpdate();
             } finally {
                 ids.free();
@@ -1696,7 +1696,7 @@ public final class PostgresTaskStore implements FullStore {
     }
 
     @FunctionalInterface
-    private interface WorkerArraysFunction<T> {
+    private interface RunnerArraysFunction<T> {
         T apply(Array queues, Array types) throws SQLException;
     }
 
@@ -1803,7 +1803,7 @@ public final class PostgresTaskStore implements FullStore {
                 .due(getInstant(rs, "due"))
                 .stateChangedAt(getInstant(rs, "state_changed"))
                 .encodedPayload(rs.getString("data"))
-                .workerId(getInteger(rs, "worker_id"))
+                .runnerId(getInteger(rs, "worker_id"))
                 .leaseUntil(getInstant(rs, "lease_until"))
                 .claimedAt(getInstant(rs, "claimed_at"))
                 .account(rs.getString("account"))
@@ -1871,7 +1871,7 @@ public final class PostgresTaskStore implements FullStore {
         return "PostgresTaskStore[" + prefix + "]";
     }
 
-    // ---- wave 2: cancellation, expiry, admin, workers, schedule controls -------------------------------
+    // ---- wave 2: cancellation, expiry, admin, runners, schedule controls -------------------------------
 
     @Override
     public boolean finishCancelled(long id, int revision, String reason, boolean keepPayload, ScheduleEffect effect) {
@@ -1921,10 +1921,10 @@ public final class PostgresTaskStore implements FullStore {
     }
 
     @Override
-    public int purgeWorkers(Duration staleAfter) {
+    public int purgeRunners(Duration staleAfter) {
         return withConnection(c -> {
             try (var ps = c.prepareStatement(
-                    "DELETE FROM " + worker
+                    "DELETE FROM " + runner
                             + " WHERE last_seen < date_trunc('milliseconds', statement_timestamp()) - ? * interval '1 millisecond'")) {
                 ps.setLong(1, staleAfter.toMillis());
                 return ps.executeUpdate();
@@ -2063,15 +2063,15 @@ public final class PostgresTaskStore implements FullStore {
 
     @Override
     public void heartbeat(
-            int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
+            int runnerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
         StoreArguments.requireLabel(label);
-        withConnection(c -> withWorkerArrays(c, queueIds, typeIds, (queues, types) -> {
-            try (var ps = c.prepareStatement("INSERT INTO " + worker
+        withConnection(c -> withRunnerArrays(c, queueIds, typeIds, (queues, types) -> {
+            try (var ps = c.prepareStatement("INSERT INTO " + runner
                     + " (id, label, started_at, last_seen, running, accepting, queue_ids, type_ids)"
                     + " VALUES (?, ?, date_trunc('milliseconds', statement_timestamp()), date_trunc('milliseconds', statement_timestamp()), ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE"
                     + " SET last_seen = excluded.last_seen, running = excluded.running,"
                     + " accepting = excluded.accepting")) {
-                ps.setInt(1, workerId);
+                ps.setInt(1, runnerId);
                 ps.setString(2, label);
                 ps.setInt(3, running);
                 ps.setBoolean(4, accepting);
@@ -2098,30 +2098,30 @@ public final class PostgresTaskStore implements FullStore {
     }
 
     @Override
-    public List<WorkerInfo> workers() {
+    public List<RunnerRecord> runners() {
         return withConnection(c -> {
-            var result = new ArrayList<WorkerInfo>();
+            var result = new ArrayList<RunnerRecord>();
             try (var ps = c.prepareStatement(
                             "SELECT id, label, started_at, last_seen, running, accepting, queue_ids, type_ids FROM "
-                                    + worker + " ORDER BY id");
+                                    + runner + " ORDER BY id");
                     var rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    result.add(new WorkerInfo(
+                    result.add(new RunnerRecord(
                             rs.getInt(1),
                             rs.getString(2),
                             getInstant(rs, 3),
                             getInstant(rs, 4),
                             rs.getInt(5),
                             rs.getBoolean(6),
-                            workerIds(rs, 7),
-                            workerIds(rs, 8)));
+                            runnerIds(rs, 7),
+                            runnerIds(rs, 8)));
                 }
             }
             return result;
         });
     }
 
-    private static Set<Integer> workerIds(ResultSet rs, int column) throws SQLException {
+    private static Set<Integer> runnerIds(ResultSet rs, int column) throws SQLException {
         var array = rs.getArray(column);
         try {
             var ids = new HashSet<Integer>();

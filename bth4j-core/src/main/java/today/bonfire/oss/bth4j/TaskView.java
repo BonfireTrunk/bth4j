@@ -73,8 +73,8 @@ public final class TaskView {
         return record.encodedPayload();
     }
 
-    public Integer workerId() {
-        return record.workerId();
+    public Integer runnerId() {
+        return record.runnerId();
     }
 
     public Instant leaseUntil() {

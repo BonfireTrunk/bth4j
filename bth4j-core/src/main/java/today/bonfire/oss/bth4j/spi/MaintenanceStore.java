@@ -54,9 +54,9 @@ public interface MaintenanceStore extends TaskStore {
     List<ExpiredTask> expire(int limit);
 
     /**
-     * Deletes worker rows whose last heartbeat is older than {@code staleAfter}.
+     * Deletes runner rows whose last heartbeat is older than {@code staleAfter}.
      *
      * @return how many were deleted
      */
-    int purgeWorkers(Duration staleAfter);
+    int purgeRunners(Duration staleAfter);
 }

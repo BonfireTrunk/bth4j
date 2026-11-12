@@ -7,7 +7,7 @@ import Tasks from './pages/tasks.js';
 import Task from './pages/task.js';
 import Dead from './pages/dead.js';
 import Schedules from './pages/schedules.js';
-import Workers from './pages/workers.js';
+import Runners from './pages/runners.js';
 import Issues from './pages/issues.js';
 
 const { createApp, ref, computed, watch, onMounted, onUnmounted, nextTick } = Vue;
@@ -19,7 +19,7 @@ const PAGES = {
   task: Task,
   dead: Dead,
   schedules: Schedules,
-  workers: Workers,
+  runners: Runners,
   issues: Issues,
 };
 
@@ -29,7 +29,7 @@ const NAV = [
   ['tasks', 'Tasks'],
   ['dead', 'Dead'],
   ['schedules', 'Schedules'],
-  ['workers', 'Workers'],
+  ['runners', 'Runners'],
   ['issues', 'Issues'],
 ];
 
@@ -160,8 +160,8 @@ const App = {
       <span class="brand">bth4j<small>DASHBOARD</small></span>
       <station-clock></station-clock>
       <span class="spacer"></span>
-      <span class="health" :class="healthClass" :title="health ? 'worker ' + health.workerId + ', running ' + health.runningTasks : ''">
-        <i class="dot" aria-hidden="true"></i>{{ healthLabel }}<span v-if="health" class="sub">worker {{ health.workerId }} &middot; {{ health.runningTasks }} tasks</span>
+      <span class="health" :class="healthClass" :title="health ? 'runner ' + health.runnerId + ', running ' + health.runningTasks : ''">
+        <i class="dot" aria-hidden="true"></i>{{ healthLabel }}<span v-if="health" class="sub">runner {{ health.runnerId }} &middot; {{ health.runningTasks }} tasks</span>
       </span>
       <span class="who">{{ session.user }} <span class="role">{{ session.role }}</span></span>
       <button type="button" @click="logout">Log out</button>

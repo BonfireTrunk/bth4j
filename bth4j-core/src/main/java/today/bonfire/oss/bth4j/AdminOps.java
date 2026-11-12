@@ -6,7 +6,7 @@ import java.util.Map;
 import java.util.Optional;
 import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
-import today.bonfire.oss.bth4j.spi.WorkerInfo;
+import today.bonfire.oss.bth4j.spi.RunnerRecord;
 
 /**
  * Operator view and operations over one store. {@link TaskClient#admin()} gives one without runner health and
@@ -69,7 +69,7 @@ public interface AdminOps {
     RetryOutcome retry(long id, int revision);
 
     /**
-     * Cancels a QUEUED or SCHEDULED task at once and asks the worker of a LEASED one to stop.
+     * Cancels a QUEUED or SCHEDULED task at once and asks the runner of a LEASED one to stop.
      *
      * @return {@link CancelOutcome#CANCELLED} or {@link CancelOutcome#REQUESTED} on success, else
      *         {@link CancelOutcome#NOT_FOUND}, {@link CancelOutcome#STALE} (another revision) or
@@ -99,12 +99,12 @@ public interface AdminOps {
      */
     DeleteOutcome delete(long id, int revision);
 
-    List<WorkerInfo> workers();
+    List<RunnerRecord> runners();
 
     /**
      * Uses a one-minute heartbeat window to find unserved waiting work. A runner writes its heartbeat every
      * {@code maintenanceCheckInterval} (5 seconds unless set); where runners use an interval above about 20
-     * seconds, pass a window of at least three intervals to {@link #unservedWork(Duration)}, or live workers
+     * seconds, pass a window of at least three intervals to {@link #unservedWork(Duration)}, or live runners
      * count as absent between two heartbeats.
      */
     default List<UnservedWork> unservedWork() {
@@ -112,7 +112,7 @@ public interface AdminOps {
     }
 
     /**
-     * Finds queued work on unpaused queues without a live accepting worker. Queue and type counts are exact.
+     * Finds queued work on unpaused queues without a live accepting runner. Queue and type counts are exact.
      *
      * @param liveWithin maximum heartbeat age, measured against the admin clock; not negative and at most
      *     {@link TaskRequest#MAX_TIME_FROM_NOW}
@@ -121,12 +121,12 @@ public interface AdminOps {
     List<UnservedWork> unservedWork(Duration liveWithin);
 
     /**
-     * Deletes worker rows whose last heartbeat is older than {@code staleAfter}.
+     * Deletes runner rows whose last heartbeat is older than {@code staleAfter}.
      *
      * @param staleAfter positive and at most {@link TaskRequest#MAX_TIME_FROM_NOW}
      * @return how many were deleted
      */
-    int purgeStaleWorkers(Duration staleAfter);
+    int purgeStaleRunners(Duration staleAfter);
 
     List<ScheduleView> schedules();
 

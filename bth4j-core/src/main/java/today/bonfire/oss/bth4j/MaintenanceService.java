@@ -24,9 +24,9 @@ import today.bonfire.oss.bth4j.spi.TaskRecord;
 
 /**
  * Housekeeping, every check interval: ends tasks whose lease expired (retried, dead, or cancelled when a
- * cancel request was pending), expires tasks that missed their start-by time and records this worker's
+ * cancel request was pending), expires tasks that missed their start-by time and records this runner's
  * heartbeat. Every purge interval: purges finished tasks past their retention, releases unique keys whose
- * window passed and deletes stale worker rows. Jobs run on the scheduler thread itself; {@link #stopThread()}
+ * window passed and deletes stale runner rows. Jobs run on the scheduler thread itself; {@link #stopThread()}
  * returns at once and {@link #waitTillDone(Duration)} waits for a job in progress.
  */
 class MaintenanceService extends CustomThread {
@@ -46,13 +46,13 @@ class MaintenanceService extends CustomThread {
     private final FailureDetail failureDetail;
     private final int batchSize;
     private final int purgeBatchSize;
-    private final int workerId;
-    private final String workerLabel;
-    private final Set<Integer> workerQueueIds;
-    private final Set<Integer> workerTypeIds;
+    private final int runnerId;
+    private final String runnerLabel;
+    private final Set<Integer> runnerQueueIds;
+    private final Set<Integer> runnerTypeIds;
     private final IntSupplier running;
     private final BooleanSupplier accepting;
-    private final Duration workerStaleAfter;
+    private final Duration runnerStaleTimeout;
 
     MaintenanceService(Builder b) {
         super(b.group, b.threadName);
@@ -69,13 +69,13 @@ class MaintenanceService extends CustomThread {
         this.failureDetail = b.failureDetail;
         this.batchSize = b.batchSize;
         this.purgeBatchSize = b.purgeBatchSize;
-        this.workerId = b.workerId;
-        this.workerLabel = b.workerLabel;
-        this.workerQueueIds = b.workerQueueIds;
-        this.workerTypeIds = b.workerTypeIds;
+        this.runnerId = b.runnerId;
+        this.runnerLabel = b.runnerLabel;
+        this.runnerQueueIds = b.runnerQueueIds;
+        this.runnerTypeIds = b.runnerTypeIds;
         this.running = b.running;
         this.accepting = b.accepting;
-        this.workerStaleAfter = b.workerStaleAfter;
+        this.runnerStaleTimeout = b.runnerStaleTimeout;
         this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
             var thread = new Thread(b.group, r, b.threadName + "-scheduler");
             thread.setDaemon(true);
@@ -108,7 +108,7 @@ class MaintenanceService extends CustomThread {
     }
 
     void cycle() {
-        // first, so that a long backlog of expired leases cannot make this worker look gone
+        // first, so that a long backlog of expired leases cannot make this runner look gone
         boolean seen = heartbeat();
         reclaimExpiredLeases();
         expireMissedStarts();
@@ -203,7 +203,7 @@ class MaintenanceService extends CustomThread {
         observer.emit(leaseExpired(e, true));
     }
 
-    /** A cancelled task whose worker died must not run again. */
+    /** A cancelled task whose runner died must not run again. */
     private void cancelExpired(ExpiredLease e, TaskRecord record) {
         var reason = record != null && record.cancelReason() != null ? record.cancelReason() : "cancel requested";
         var pause = RecurringTaskService.pauseEffect(record);
@@ -272,19 +272,19 @@ class MaintenanceService extends CustomThread {
     /** @return false when the store call failed */
     private boolean heartbeat() {
         try {
-            if (workerId > 0) {
+            if (runnerId > 0) {
                 store.heartbeat(
-                        workerId,
-                        workerLabel,
-                        workerQueueIds,
-                        workerTypeIds,
+                        runnerId,
+                        runnerLabel,
+                        runnerQueueIds,
+                        runnerTypeIds,
                         running.getAsInt(),
                         accepting.getAsBoolean());
             }
             return true;
         } catch (Exception e) {
             status.storeError(e);
-            log.error("Heartbeat of worker {} failed", workerId, e);
+            log.error("Heartbeat of runner {} failed", runnerId, e);
             return false;
         }
     }
@@ -307,8 +307,8 @@ class MaintenanceService extends CustomThread {
             do {
                 released = store.releaseKeys(purgeBatchSize);
             } while (released == purgeBatchSize && canContinueProcessing);
-            int workers = store.purgeWorkers(workerStaleAfter);
-            if (workers > 0) log.info("Removed {} workers without a heartbeat for {}", workers, workerStaleAfter);
+            int runners = store.purgeRunners(runnerStaleTimeout);
+            if (runners > 0) log.info("Removed {} runners without a heartbeat for {}", runners, runnerStaleTimeout);
         } catch (Exception e) {
             status.storeError(e);
             log.error("Error in purging finished tasks", e);
@@ -358,13 +358,13 @@ class MaintenanceService extends CustomThread {
         private FailureDetail failureDetail = FailureDetail.FULL;
         private int batchSize = 100;
         private int purgeBatchSize = 500;
-        private int workerId;
-        private String workerLabel;
-        private Set<Integer> workerQueueIds = Set.of();
-        private Set<Integer> workerTypeIds = Set.of();
+        private int runnerId;
+        private String runnerLabel;
+        private Set<Integer> runnerQueueIds = Set.of();
+        private Set<Integer> runnerTypeIds = Set.of();
         private IntSupplier running = () -> 0;
         private BooleanSupplier accepting = () -> true;
-        private Duration workerStaleAfter = Duration.ofMinutes(10);
+        private Duration runnerStaleTimeout = Duration.ofMinutes(10);
 
         Builder group(ThreadGroup group) {
             this.group = group;
@@ -443,14 +443,14 @@ class MaintenanceService extends CustomThread {
         }
 
         /**
-         * The worker whose heartbeat this service records, with what it registered so that the heartbeat can
+         * The runner whose heartbeat this service records, with what it registered so that the heartbeat can
          * restore a purged row; 0 records none.
          */
-        Builder worker(int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, IntSupplier running) {
-            this.workerId = workerId;
-            this.workerLabel = label;
-            this.workerQueueIds = queueIds;
-            this.workerTypeIds = typeIds;
+        Builder runner(int runnerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, IntSupplier running) {
+            this.runnerId = runnerId;
+            this.runnerLabel = label;
+            this.runnerQueueIds = queueIds;
+            this.runnerTypeIds = typeIds;
             this.running = running;
             return this;
         }
@@ -460,8 +460,8 @@ class MaintenanceService extends CustomThread {
             return this;
         }
 
-        Builder workerStaleAfter(Duration workerStaleAfter) {
-            this.workerStaleAfter = workerStaleAfter;
+        Builder runnerStaleTimeout(Duration runnerStaleTimeout) {
+            this.runnerStaleTimeout = runnerStaleTimeout;
             return this;
         }
 

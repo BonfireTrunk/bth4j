@@ -15,8 +15,8 @@ import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.TaskView;
 import today.bonfire.oss.bth4j.UnservedWork;
+import today.bonfire.oss.bth4j.spi.RunnerRecord;
 import today.bonfire.oss.bth4j.spi.StoredSchedule;
-import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /** Maps core types to the JSON structures of the API: ids and revisions as strings, times and durations as ISO-8601. */
 final class Views {
@@ -70,7 +70,7 @@ final class Views {
                 "stateChangedAt", t.stateChangedAt(),
                 "claimedAt", t.claimedAt(),
                 "leaseUntil", t.leaseUntil(),
-                "workerId", t.workerId(),
+                "runnerId", t.runnerId(),
                 "account", t.account(),
                 "headers", t.headers(),
                 "uniqueKey", t.uniqueKey(),
@@ -114,7 +114,7 @@ final class Views {
     static Map<String, Object> health(RunnerHealth h) {
         return obj(
                 "status", h.status().name(),
-                "workerId", h.workerId(),
+                "runnerId", h.runnerId(),
                 "runningTasks", h.runningTasks(),
                 "abandonedAttempts", h.abandonedAttempts(),
                 "lastClaimAt", h.lastClaimAt(),
@@ -143,7 +143,7 @@ final class Views {
         return view;
     }
 
-    static Map<String, Object> worker(WorkerInfo w, Map<Integer, String> queues, Map<Integer, String> types) {
+    static Map<String, Object> runner(RunnerRecord w, Map<Integer, String> queues, Map<Integer, String> types) {
         return obj(
                 "id", w.id(),
                 "label", w.label(),

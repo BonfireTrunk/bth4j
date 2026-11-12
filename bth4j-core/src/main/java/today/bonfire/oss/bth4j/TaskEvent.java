@@ -28,16 +28,16 @@ public interface TaskEvent {
     record Expired(long id, String queue, String type) implements TaskEvent {}
 
     /** A task was claimed and its processor is about to run. */
-    record Started(TaskView task, int workerId) implements TaskEvent {}
+    record Started(TaskView task, int runnerId) implements TaskEvent {}
 
     /** The processor returned normally. */
     record Succeeded(TaskView task, Duration runTime, Outcome outcome) implements TaskEvent {}
 
     /**
      * The processor failed and the task will run again at {@code retryAt}. With {@link Outcome#LOST} this
-     * worker's lease was gone and nothing was written; with {@link Outcome#UNKNOWN} the store call failed and
+     * runner's lease was gone and nothing was written; with {@link Outcome#UNKNOWN} the store call failed and
      * the failure may not have been written. Either way the store's maintenance decides whether and when the
-     * task runs again, and {@code retryAt} is not that time: it is the time this worker asked for after a
+     * task runs again, and {@code retryAt} is not that time: it is the time this runner asked for after a
      * failed attempt, or the time the lost lease was noticed when the processor was stopped for it.
      */
     record Retrying(TaskView task, Throwable error, Instant retryAt, Outcome outcome) implements TaskEvent {}

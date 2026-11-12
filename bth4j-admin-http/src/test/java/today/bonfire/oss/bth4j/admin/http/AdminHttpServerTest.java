@@ -39,7 +39,7 @@ import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.UnservedWork;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.internal.Json;
-import today.bonfire.oss.bth4j.spi.WorkerInfo;
+import today.bonfire.oss.bth4j.spi.RunnerRecord;
 
 class AdminHttpServerTest {
 
@@ -902,7 +902,7 @@ class AdminHttpServerTest {
                         "stateChangedAt",
                         "claimedAt",
                         "leaseUntil",
-                        "workerId",
+                        "runnerId",
                         "account",
                         "headers",
                         "uniqueKey",
@@ -929,8 +929,8 @@ class AdminHttpServerTest {
     }
 
     @Test
-    void overviewHasCountsPerQueueTotalsWorkersIssuesAndHealth() throws Exception {
-        ops.workers.add(new WorkerInfo(1, "w", Instant.EPOCH, Instant.EPOCH, 0, true, Set.of(), Set.of()));
+    void overviewHasCountsPerQueueTotalsRunnersIssuesAndHealth() throws Exception {
+        ops.runners.add(new RunnerRecord(1, "w", Instant.EPOCH, Instant.EPOCH, 0, true, Set.of(), Set.of()));
         ops.issues.add(new Issue(Instant.EPOCH, Issue.Kind.STORE_ERROR, "boom", 5L));
         ops.issues.add(new Issue(Instant.EPOCH, Issue.Kind.LEASE_LOST, "x", null));
         ops.health = new RunnerHealth(RunnerHealth.Status.RUNNING, 1, 2, 0, null, null, null, null, 2);
@@ -938,7 +938,7 @@ class AdminHttpServerTest {
 
         var overview = json(get("/api/v1/overview", viewer()));
 
-        assertThat(overview).containsOnlyKeys("counts", "totals", "workers", "issues", "health");
+        assertThat(overview).containsOnlyKeys("counts", "totals", "runners", "issues", "health");
         @SuppressWarnings("unchecked")
         var counts = (Map<String, Map<String, Object>>) overview.get("counts");
         assertThat(counts).containsOnlyKeys("default", "mail");
@@ -952,7 +952,7 @@ class AdminHttpServerTest {
                 .containsEntry("QUEUED", 4L)
                 .containsEntry("SUCCEEDED", 15L)
                 .containsEntry("CANCELLED", 2L);
-        assertThat(overview).containsEntry("workers", 1L).containsEntry("issues", 2L);
+        assertThat(overview).containsEntry("runners", 1L).containsEntry("issues", 2L);
         @SuppressWarnings("unchecked")
         var health = (Map<String, Object>) overview.get("health");
         assertThat(health).containsEntry("status", "RUNNING").containsEntry("runningTasks", 2L);
@@ -975,13 +975,13 @@ class AdminHttpServerTest {
         var res = get("/api/v1/health", viewer());
 
         assertThat(res.statusCode()).isEqualTo(200);
-        assertThat(json(res)).containsEntry("status", "QUIET").containsEntry("workerId", 3L);
+        assertThat(json(res)).containsEntry("status", "QUIET").containsEntry("runnerId", 3L);
     }
 
     @Test
-    void queuesSchedulesWorkersAndIssuesAreListed() throws Exception {
+    void queuesSchedulesRunnersAndIssuesAreListed() throws Exception {
         ops.schedules.add(schedule("nightly"));
-        ops.workers.add(new WorkerInfo(2, "w2", Instant.EPOCH, Instant.EPOCH, 1, true, Set.of(), Set.of()));
+        ops.runners.add(new RunnerRecord(2, "w2", Instant.EPOCH, Instant.EPOCH, 1, true, Set.of(), Set.of()));
         ops.issues.add(new Issue(Instant.EPOCH, Issue.Kind.STORE_ERROR, "boom", 5L));
         start();
         var login = viewer();
@@ -1002,7 +1002,7 @@ class AdminHttpServerTest {
                 .doesNotContainKey("catchUpMaxFires")
                 .containsEntry("maxRunTime", "PT10M")
                 .containsEntry("nextFire", "2026-02-01T00:00:00Z");
-        assertThat(jsonList(get("/api/v1/workers", login)).get(0))
+        assertThat(jsonList(get("/api/v1/runners", login)).get(0))
                 .containsEntry("id", 2L)
                 .containsEntry("label", "w2");
         assertThat(jsonList(get("/api/v1/issues", login)).get(0))
@@ -1036,19 +1036,20 @@ class AdminHttpServerTest {
     }
 
     @Test
-    void workersViewIncludesCoverageNamesAndEmptyCoverage() throws Exception {
-        ops.workers.add(new WorkerInfo(1, "known", Instant.EPOCH, Instant.EPOCH, 2, true, Set.of(2, 1), Set.of(2, 1)));
-        ops.workers.add(new WorkerInfo(3, "empty", Instant.EPOCH, Instant.EPOCH, 0, false, Set.of(), Set.of()));
+    void runnersViewIncludesCoverageNamesAndEmptyCoverage() throws Exception {
+        ops.runners.add(
+                new RunnerRecord(1, "known", Instant.EPOCH, Instant.EPOCH, 2, true, Set.of(2, 1), Set.of(2, 1)));
+        ops.runners.add(new RunnerRecord(3, "empty", Instant.EPOCH, Instant.EPOCH, 0, false, Set.of(), Set.of()));
         start();
 
-        var workers = jsonList(get("/api/v1/workers", viewer()));
-        assertThat(workers).hasSize(2);
-        assertThat(workers.getFirst())
+        var runners = jsonList(get("/api/v1/runners", viewer()));
+        assertThat(runners).hasSize(2);
+        assertThat(runners.getFirst())
                 .containsOnlyKeys("id", "label", "startedAt", "lastSeen", "running", "accepting", "queues", "types")
                 .containsEntry("accepting", true)
                 .containsEntry("queues", List.of("default", "mail"))
                 .containsEntry("types", List.of("export", "send-mail"));
-        assertThat(workers.get(1))
+        assertThat(runners.get(1))
                 .containsEntry("accepting", false)
                 .containsEntry("queues", List.of())
                 .containsEntry("types", List.of());

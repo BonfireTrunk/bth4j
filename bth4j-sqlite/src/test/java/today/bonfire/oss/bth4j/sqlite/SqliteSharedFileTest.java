@@ -89,10 +89,10 @@ class SqliteSharedFileTest {
         return tasks;
     }
 
-    private List<Long> claimUntilEmpty(SqliteTaskStore store, int workerId) {
+    private List<Long> claimUntilEmpty(SqliteTaskStore store, int runnerId) {
         var claimed = new ArrayList<Long>();
         while (true) {
-            var batch = store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, workerId, null));
+            var batch = store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, runnerId, null));
             if (batch.isEmpty()) return claimed;
             batch.forEach(t -> claimed.add(t.id()));
         }
@@ -108,8 +108,8 @@ class SqliteSharedFileTest {
             var futures = new ArrayList<Future<?>>();
             for (var store : List.of(first, second)) {
                 for (int i = 0; i < CLAIMERS_PER_STORE; i++) {
-                    int workerId = store.allocateWorkerId("claimer-" + futures.size(), Set.of(queue), Set.of(type));
-                    futures.add(executor.submit(() -> claimedBy.addAll(claimUntilEmpty(store, workerId))));
+                    int runnerId = store.allocateRunnerId("claimer-" + futures.size(), Set.of(queue), Set.of(type));
+                    futures.add(executor.submit(() -> claimedBy.addAll(claimUntilEmpty(store, runnerId))));
                 }
             }
             for (var future : futures) future.get(60, TimeUnit.SECONDS);
@@ -154,17 +154,17 @@ class SqliteSharedFileTest {
 
     @Test
     void whatOneInstanceWritesTheOtherReadsAndFences() {
-        int workerA = first.allocateWorkerId("a", Set.of(queue), Set.of(type));
-        int workerB = second.allocateWorkerId("b", Set.of(queue), Set.of(type));
+        int runnerA = first.allocateRunnerId("a", Set.of(queue), Set.of(type));
+        int runnerB = second.allocateRunnerId("b", Set.of(queue), Set.of(type));
         var task = enqueueThrough(first, 1).getFirst();
 
-        assertThat(workerB).isNotEqualTo(workerA);
+        assertThat(runnerB).isNotEqualTo(runnerA);
         assertThat(second.queueId("default")).isEqualTo(queue);
         assertThat(second.typeId("send-mail")).isEqualTo(type);
         assertThat(second.getTask(task.id())).isPresent();
-        var claimed = first.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, workerA, null))
+        var claimed = first.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, runnerA, null))
                 .getFirst();
-        assertThat(second.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, workerB, null)))
+        assertThat(second.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, runnerB, null)))
                 .isEmpty();
         assertThat(second.getTask(task.id()).orElseThrow().state()).isEqualTo(TaskState.LEASED);
 
@@ -175,14 +175,14 @@ class SqliteSharedFileTest {
         assertThat(first.ack(claimed.id(), claimed.revision(), true, true, null))
                 .isFalse();
         assertThat(first.getTask(task.id()).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
-        assertThat(first.workers()).extracting(w -> w.id()).containsExactlyInAnyOrder(workerA, workerB);
+        assertThat(first.runners()).extracting(w -> w.id()).containsExactlyInAnyOrder(runnerA, runnerB);
     }
 
     @Test
     void anExpiredLeaseOfOneInstanceIsEndedByTheOther() {
-        int workerA = first.allocateWorkerId("a", Set.of(queue), Set.of(type));
+        int runnerA = first.allocateRunnerId("a", Set.of(queue), Set.of(type));
         var task = enqueueThrough(first, 1).getFirst();
-        var claimed = first.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, workerA, null))
+        var claimed = first.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, runnerA, null))
                 .getFirst();
         assertThat(second.reclaim(10)).isEmpty();
 

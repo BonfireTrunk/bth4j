@@ -48,7 +48,7 @@ import today.bonfire.oss.bth4j.spi.TaskRecord;
 
 /**
  * The script efficiency changes of {@link RedisTaskStore}: step and failure markers read by CLAIM, head-first
- * PROMOTE, chunked renew, paged purgeWorkers and pipelines after SCRIPT FLUSH. Needs Docker.
+ * PROMOTE, chunked renew, paged purgeRunners and pipelines after SCRIPT FLUSH. Needs Docker.
  */
 @Testcontainers
 class RedisScriptsIT {
@@ -171,19 +171,19 @@ class RedisScriptsIT {
     }
 
     @Test
-    void heartbeatUsesOneScriptAndKeepsTheWorkerIndexAndHashTimeEqual() {
-        var worker = store.allocateWorkerId("worker", Set.of(queue), Set.of(type));
-        spied.heartbeat(worker, "worker", Set.of(queue), Set.of(type), 0, true);
+    void heartbeatUsesOneScriptAndKeepsTheRunnerIndexAndHashTimeEqual() {
+        var runner = store.allocateRunnerId("worker", Set.of(queue), Set.of(type));
+        spied.heartbeat(runner, "worker", Set.of(queue), Set.of(type), 0, true);
         spy.clearEvents();
 
-        spied.heartbeat(worker, "worker", Set.of(queue), Set.of(type), 4, false);
+        spied.heartbeat(runner, "worker", Set.of(queue), Set.of(type), 4, false);
 
         assertThat(spy.events()).containsExactly("evalsha");
-        assertThat(jedis.hget(keys.worker(worker), Keys.F_SEEN))
+        assertThat(jedis.hget(keys.runner(runner), Keys.F_SEEN))
                 .isEqualTo(String.valueOf(
-                        jedis.zscore(keys.workers, String.valueOf(worker)).longValue()));
-        assertThat(jedis.hget(keys.worker(worker), Keys.F_RUNNING)).isEqualTo("4");
-        assertThat(jedis.hget(keys.worker(worker), Keys.F_ACCEPTING)).isEqualTo("0");
+                        jedis.zscore(keys.runners, String.valueOf(runner)).longValue()));
+        assertThat(jedis.hget(keys.runner(runner), Keys.F_RUNNING)).isEqualTo("4");
+        assertThat(jedis.hget(keys.runner(runner), Keys.F_ACCEPTING)).isEqualTo("0");
     }
 
     // ---- markers for steps and failures --------------------------------------------------------------
@@ -306,43 +306,43 @@ class RedisScriptsIT {
                 .isGreaterThan((double) Instant.now().plusSeconds(200).toEpochMilli());
     }
 
-    // ---- purgeWorkers --------------------------------------------------------------------------------
+    // ---- purgeRunners --------------------------------------------------------------------------------
 
     @Test
-    void purgeWorkersRemovesMoreStaleWorkersThanOnePageAndReturnsTheTotal() {
+    void purgeRunnersRemovesMoreStaleRunnersThanOnePageAndReturnsTheTotal() {
         var stale = 1250;
         var old = (double) Instant.now().minusSeconds(3600).toEpochMilli();
         var scores = new HashMap<String, Double>();
         var ids = new ArrayList<Integer>();
         for (var i = 0; i < stale; i++) {
-            var id = store.allocateWorkerId("w" + i, Set.of(), Set.of());
+            var id = store.allocateRunnerId("w" + i, Set.of(), Set.of());
             ids.add(id);
             scores.put(String.valueOf(id), old);
         }
-        var fresh = store.allocateWorkerId("fresh", Set.of(), Set.of());
-        jedis.zadd(keys.workers, scores);
+        var fresh = store.allocateRunnerId("fresh", Set.of(), Set.of());
+        jedis.zadd(keys.runners, scores);
 
-        assertThat(store.purgeWorkers(Duration.ofMinutes(10))).isEqualTo(stale);
+        assertThat(store.purgeRunners(Duration.ofMinutes(10))).isEqualTo(stale);
 
-        assertThat(jedis.zcard(keys.workers)).isEqualTo(1);
-        assertThat(jedis.exists(keys.worker(fresh))).isTrue();
+        assertThat(jedis.zcard(keys.runners)).isEqualTo(1);
+        assertThat(jedis.exists(keys.runner(fresh))).isTrue();
         for (var id : ids) {
-            assertThat(jedis.exists(keys.worker(id))).as("worker %d", id).isFalse();
+            assertThat(jedis.exists(keys.runner(id))).as("worker %d", id).isFalse();
         }
-        assertThat(store.purgeWorkers(Duration.ofMinutes(10))).isZero();
+        assertThat(store.purgeRunners(Duration.ofMinutes(10))).isZero();
     }
 
     @Test
-    void purgeWorkersWithExactlyOnePageEndsAfterAnEmptyPage() {
+    void purgeRunnersWithExactlyOnePageEndsAfterAnEmptyPage() {
         var old = (double) Instant.now().minusSeconds(3600).toEpochMilli();
         var scores = new HashMap<String, Double>();
-        for (var i = 0; i < RedisScripts.PURGE_WORKERS_PAGE; i++) {
-            scores.put(String.valueOf(store.allocateWorkerId("w" + i, Set.of(), Set.of())), old);
+        for (var i = 0; i < RedisScripts.PURGE_RUNNERS_PAGE; i++) {
+            scores.put(String.valueOf(store.allocateRunnerId("w" + i, Set.of(), Set.of())), old);
         }
-        jedis.zadd(keys.workers, scores);
+        jedis.zadd(keys.runners, scores);
 
-        assertThat(store.purgeWorkers(Duration.ofMinutes(10))).isEqualTo(RedisScripts.PURGE_WORKERS_PAGE);
-        assertThat(jedis.zcard(keys.workers)).isZero();
+        assertThat(store.purgeRunners(Duration.ofMinutes(10))).isEqualTo(RedisScripts.PURGE_RUNNERS_PAGE);
+        assertThat(jedis.zcard(keys.runners)).isZero();
     }
 
     // ---- script cache --------------------------------------------------------------------------------

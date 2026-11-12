@@ -23,11 +23,11 @@ import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.FullStore;
+import today.bonfire.oss.bth4j.spi.RunnerRecord;
 import today.bonfire.oss.bth4j.spi.ScheduleEntry;
 import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 class DefaultAdminOpsTest {
 
@@ -140,14 +140,14 @@ class DefaultAdminOpsTest {
     }
 
     @Test
-    void queuesAndWorkersAreReturnedAsTheStoreHasThem() {
+    void queuesAndRunnersAreReturnedAsTheStoreHasThem() {
         var queueInfos = List.of(new QueueInfo(1, "Q:DEF", false), new QueueInfo(2, "Q:OTHER", true));
-        var workerInfos = List.of(new WorkerInfo(4, "w", NOW, NOW, 2, true, Set.of(), Set.of()));
+        var runnerInfos = List.of(new RunnerRecord(4, "w", NOW, NOW, 2, true, Set.of(), Set.of()));
         handlers.put("queues", a -> queueInfos);
-        handlers.put("workers", a -> workerInfos);
+        handlers.put("runners", a -> runnerInfos);
 
         assertThat(ops.queues()).isEqualTo(queueInfos);
-        assertThat(ops.workers()).isEqualTo(workerInfos);
+        assertThat(ops.runners()).isEqualTo(runnerInfos);
     }
 
     @Test
@@ -546,27 +546,27 @@ class DefaultAdminOpsTest {
     }
 
     @Test
-    void purgeStaleWorkersDelegatesAndReturnsTheCount() {
-        handlers.put("purgeWorkers", a -> 3);
+    void purgeStaleRunnersDelegatesAndReturnsTheCount() {
+        handlers.put("purgeRunners", a -> 3);
 
-        assertThat(ops.purgeStaleWorkers(Duration.ofMinutes(5))).isEqualTo(3);
-        assertThat(calls).contains("purgeWorkers[PT5M]");
+        assertThat(ops.purgeStaleRunners(Duration.ofMinutes(5))).isEqualTo(3);
+        assertThat(calls).contains("purgeRunners[PT5M]");
     }
 
     @Test
-    void purgeStaleWorkersNeedsAPositiveAgeOfAtMostOneHundredYears() {
-        handlers.put("purgeWorkers", a -> 0);
+    void purgeStaleRunnersNeedsAPositiveAgeOfAtMostOneHundredYears() {
+        handlers.put("purgeRunners", a -> 0);
 
         for (Duration bad :
                 new Duration[] {null, Duration.ZERO, Duration.ofSeconds(-1), TaskRequest.MAX_TIME_FROM_NOW.plusMillis(1)
                 }) {
-            assertThatThrownBy(() -> ops.purgeStaleWorkers(bad))
+            assertThatThrownBy(() -> ops.purgeStaleRunners(bad))
                     .as("%s", bad)
                     .isInstanceOf(TaskValidationException.class);
         }
-        assertThat(calls).noneMatch(c -> c.startsWith("purgeWorkers"));
+        assertThat(calls).noneMatch(c -> c.startsWith("purgeRunners"));
 
-        assertThat(ops.purgeStaleWorkers(TaskRequest.MAX_TIME_FROM_NOW)).isZero();
+        assertThat(ops.purgeStaleRunners(TaskRequest.MAX_TIME_FROM_NOW)).isZero();
     }
 
     @Test

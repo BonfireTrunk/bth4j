@@ -87,7 +87,7 @@ A claim walks the queued tasks of a queue in due order past those of types it do
 | Schema version | 4 |
 | Times | `timestamptz(3)` columns: whole milliseconds |
 | Task types | stored in `<prefix>_type`, and as `type_id` columns in the task and schedule tables |
-| Worker coverage | `queue_ids` and `type_ids` as `smallint[] NOT NULL` |
+| Runner coverage | `queue_ids` and `type_ids` as `smallint[] NOT NULL` |
 | `accepting` | a required boolean, true on registration and updated by the heartbeat |
 | `payload_version`, `catch_up_max` | `integer`, so every positive Java `int` is stored |
 | Key-only row | state code 7, content columns empty |

@@ -50,12 +50,12 @@ class MaintenanceServiceTest {
     private boolean keepDead = true;
     private int batchSize = 100;
     private int purgeBatchSize = 500;
-    private int workerId;
-    private Set<Integer> workerQueueIds = Set.of();
-    private Set<Integer> workerTypeIds = Set.of();
+    private int runnerId;
+    private Set<Integer> runnerQueueIds = Set.of();
+    private Set<Integer> runnerTypeIds = Set.of();
     private int runningTasks;
     private boolean accepting = true;
-    private Duration workerStaleAfter = Duration.ofMinutes(10);
+    private Duration runnerStaleTimeout = Duration.ofMinutes(10);
     private Duration checkInterval = Duration.ofSeconds(5);
 
     private TaskEvent.LeaseExpired leaseExpired(long id, int attempts, int maxAttempts, boolean dead) {
@@ -675,11 +675,11 @@ class MaintenanceServiceTest {
         assertThat(store.getTask(id).orElseThrow().uniqueKey()).isNull();
     }
 
-    // ---- worker heartbeat -----------------------------------------------------------------------------
+    // ---- runner heartbeat -----------------------------------------------------------------------------
 
     @Test
     void theHeartbeatIsRecordedBeforeTheExpiredLeasesAreWorkedOff() throws Exception {
-        workerId = store.allocateWorkerId("worker-a", Set.of(), Set.of());
+        runnerId = store.allocateRunnerId("runner-a", Set.of(), Set.of());
         var order = new ArrayList<String>();
         serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
             if (method.equals("heartbeat") || method.equals("reclaim") || method.equals("expire")) order.add(method);
@@ -702,17 +702,17 @@ class MaintenanceServiceTest {
     }
 
     @Test
-    void aCycleRecordsTheWorkersHeartbeatWithItsRunningCount() throws Exception {
-        workerId = store.allocateWorkerId("worker-a", Set.of(), Set.of());
+    void aCycleRecordsTheRunnersHeartbeatWithItsRunningCount() throws Exception {
+        runnerId = store.allocateRunnerId("runner-a", Set.of(), Set.of());
         var startedAt = clock.instant();
         runningTasks = 3;
         clock.advance(Duration.ofMinutes(5));
 
         cycle();
 
-        assertThat(store.workers()).singleElement().satisfies(w -> {
-            assertThat(w.id()).isEqualTo(workerId);
-            assertThat(w.label()).isEqualTo("worker-a");
+        assertThat(store.runners()).singleElement().satisfies(w -> {
+            assertThat(w.id()).isEqualTo(runnerId);
+            assertThat(w.label()).isEqualTo("runner-a");
             assertThat(w.startedAt()).isEqualTo(startedAt);
             assertThat(w.lastSeen()).isEqualTo(clock.instant());
             assertThat(w.running()).isEqualTo(3);
@@ -723,7 +723,7 @@ class MaintenanceServiceTest {
 
     @Test
     void eachCycleReportsTheRunningCountAtThatMoment() throws Exception {
-        workerId = store.allocateWorkerId("worker-a", Set.of(), Set.of());
+        runnerId = store.allocateRunnerId("runner-a", Set.of(), Set.of());
         runningTasks = 3;
         cycle();
         clock.advance(Duration.ofSeconds(5));
@@ -731,7 +731,7 @@ class MaintenanceServiceTest {
 
         cycle();
 
-        assertThat(store.workers()).singleElement().satisfies(w -> {
+        assertThat(store.runners()).singleElement().satisfies(w -> {
             assertThat(w.lastSeen()).isEqualTo(clock.instant());
             assertThat(w.running()).isEqualTo(1);
         });
@@ -739,30 +739,30 @@ class MaintenanceServiceTest {
 
     @Test
     void eachCycleReportsWhetherTheRunnerAcceptsWork() throws Exception {
-        workerId = store.allocateWorkerId("worker-a", Set.of(), Set.of());
+        runnerId = store.allocateRunnerId("runner-a", Set.of(), Set.of());
         accepting = false;
         cycle();
-        assertThat(store.workers().getFirst().accepting()).isFalse();
+        assertThat(store.runners().getFirst().accepting()).isFalse();
         accepting = true;
         cycle();
-        assertThat(store.workers().getFirst().accepting()).isTrue();
+        assertThat(store.runners().getFirst().accepting()).isTrue();
     }
 
     @Test
-    void aServiceWithoutAWorkerRecordsNoHeartbeatButStillMarksMaintenance() throws Exception {
-        store.allocateWorkerId("other", Set.of(), Set.of());
-        var before = store.workers();
+    void aServiceWithoutARunnerRecordsNoHeartbeatButStillMarksMaintenance() throws Exception {
+        store.allocateRunnerId("other", Set.of(), Set.of());
+        var before = store.runners();
         clock.advance(Duration.ofMinutes(5));
 
         cycle();
 
-        assertThat(store.workers()).isEqualTo(before);
+        assertThat(store.runners()).isEqualTo(before);
         assertThat(status.lastMaintenanceAt()).isEqualTo(clock.instant());
     }
 
     @Test
     void aFailedHeartbeatIsRecordedWithoutMarkingMaintenanceAndTheNextCycleRecovers() throws Exception {
-        workerId = store.allocateWorkerId("worker-a", Set.of(), Set.of());
+        runnerId = store.allocateRunnerId("runner-a", Set.of(), Set.of());
         runningTasks = 2;
         clock.advance(Duration.ofSeconds(5));
         var failing = new AtomicInteger(1);
@@ -773,7 +773,7 @@ class MaintenanceServiceTest {
 
         cycle();
 
-        assertThat(store.workers().getFirst().running()).isZero();
+        assertThat(store.runners().getFirst().running()).isZero();
         assertThat(status.lastMaintenanceAt()).isNull();
         assertThat(status.lastStoreErrorAt()).isEqualTo(clock.instant());
         assertThat(status.lastStoreError()).isEqualTo(new TaskStoreException("store down").toString());
@@ -785,28 +785,28 @@ class MaintenanceServiceTest {
         clock.advance(Duration.ofSeconds(5));
         cycle();
 
-        assertThat(store.workers().getFirst().running()).isEqualTo(2);
-        assertThat(store.workers().getFirst().lastSeen()).isEqualTo(clock.instant());
+        assertThat(store.runners().getFirst().running()).isEqualTo(2);
+        assertThat(store.runners().getFirst().lastSeen()).isEqualTo(clock.instant());
         assertThat(status.lastMaintenanceAt()).isEqualTo(clock.instant());
         assertThat(status.issues()).hasSize(1);
     }
 
     @Test
-    void aCycleRestoresTheWorkersRowAfterAnotherRunnerPurgedItUnderTheSameId() throws Exception {
+    void aCycleRestoresTheRunnersRowAfterAnotherRunnerPurgedItUnderTheSameId() throws Exception {
         int typeId = store.typeId("work");
-        workerQueueIds = Set.of(queueId);
-        workerTypeIds = Set.of(typeId);
-        workerId = store.allocateWorkerId("worker-a", workerQueueIds, workerTypeIds);
-        clock.advance(workerStaleAfter.plusSeconds(1));
+        runnerQueueIds = Set.of(queueId);
+        runnerTypeIds = Set.of(typeId);
+        runnerId = store.allocateRunnerId("runner-a", runnerQueueIds, runnerTypeIds);
+        clock.advance(runnerStaleTimeout.plusSeconds(1));
         purge();
-        assertThat(store.workers()).isEmpty();
+        assertThat(store.runners()).isEmpty();
         runningTasks = 2;
 
         cycle();
 
-        assertThat(store.workers()).singleElement().satisfies(w -> {
-            assertThat(w.id()).isEqualTo(workerId);
-            assertThat(w.label()).isEqualTo("worker-a");
+        assertThat(store.runners()).singleElement().satisfies(w -> {
+            assertThat(w.id()).isEqualTo(runnerId);
+            assertThat(w.label()).isEqualTo("runner-a");
             assertThat(w.queueIds()).containsExactly(queueId);
             assertThat(w.typeIds()).containsExactly(typeId);
             assertThat(w.startedAt()).isEqualTo(clock.instant());
@@ -816,66 +816,66 @@ class MaintenanceServiceTest {
         });
     }
 
-    // ---- stale workers --------------------------------------------------------------------------------
+    // ---- stale runners --------------------------------------------------------------------------------
 
     @Test
-    void aWorkerSilentForLongerThanTheThresholdIsRemovedAndAFreshOneIsKept() throws Exception {
-        int stale = store.allocateWorkerId("stale", Set.of(), Set.of());
+    void aRunnerSilentForLongerThanTheThresholdIsRemovedAndAFreshOneIsKept() throws Exception {
+        int stale = store.allocateRunnerId("stale", Set.of(), Set.of());
         clock.advance(Duration.ofMinutes(6));
-        int fresh = store.allocateWorkerId("fresh", Set.of(), Set.of());
+        int fresh = store.allocateRunnerId("fresh", Set.of(), Set.of());
         clock.advance(Duration.ofMinutes(5));
 
         purge();
 
-        assertThat(store.workers()).extracting(w -> w.id()).containsExactly(fresh);
-        assertThat(store.workers()).extracting(w -> w.id()).doesNotContain(stale);
+        assertThat(store.runners()).extracting(w -> w.id()).containsExactly(fresh);
+        assertThat(store.runners()).extracting(w -> w.id()).doesNotContain(stale);
     }
 
     @Test
-    void aWorkerExactlyAtTheThresholdIsKeptAndOneMillisecondOlderIsRemoved() throws Exception {
-        int id = store.allocateWorkerId("edge", Set.of(), Set.of());
-        clock.advance(workerStaleAfter);
+    void aRunnerExactlyAtTheThresholdIsKeptAndOneMillisecondOlderIsRemoved() throws Exception {
+        int id = store.allocateRunnerId("edge", Set.of(), Set.of());
+        clock.advance(runnerStaleTimeout);
 
         purge();
 
-        assertThat(store.workers()).extracting(w -> w.id()).containsExactly(id);
+        assertThat(store.runners()).extracting(w -> w.id()).containsExactly(id);
 
         clock.advance(Duration.ofMillis(1));
         purge();
 
-        assertThat(store.workers()).isEmpty();
+        assertThat(store.runners()).isEmpty();
     }
 
     @Test
-    void aHeartbeatKeepsAWorkerFromBeingPurged() throws Exception {
-        workerId = store.allocateWorkerId("beating", Set.of(), Set.of());
+    void aHeartbeatKeepsARunnerFromBeingPurged() throws Exception {
+        runnerId = store.allocateRunnerId("beating", Set.of(), Set.of());
         clock.advance(Duration.ofMinutes(9));
         cycle();
         clock.advance(Duration.ofMinutes(9));
 
         purge();
 
-        assertThat(store.workers()).extracting(w -> w.id()).containsExactly(workerId);
+        assertThat(store.runners()).extracting(w -> w.id()).containsExactly(runnerId);
     }
 
     @Test
     void theStaleThresholdIsTheConfiguredOne() throws Exception {
-        workerStaleAfter = Duration.ofSeconds(30);
-        store.allocateWorkerId("short", Set.of(), Set.of());
+        runnerStaleTimeout = Duration.ofSeconds(30);
+        store.allocateRunnerId("short", Set.of(), Set.of());
         clock.advance(Duration.ofSeconds(31));
 
         purge();
 
-        assertThat(store.workers()).isEmpty();
+        assertThat(store.runners()).isEmpty();
     }
 
     @Test
-    void aFailedWorkerPurgeIsRecordedAndTheNextPurgeRemovesTheStaleWorker() throws Exception {
-        store.allocateWorkerId("stale", Set.of(), Set.of());
-        clock.advance(workerStaleAfter.plusSeconds(1));
+    void aFailedRunnerPurgeIsRecordedAndTheNextPurgeRemovesTheStaleRunner() throws Exception {
+        store.allocateRunnerId("stale", Set.of(), Set.of());
+        clock.advance(runnerStaleTimeout.plusSeconds(1));
         var failing = new AtomicInteger(1);
         serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
-            if (method.equals("purgeWorkers") && failing.getAndDecrement() > 0) {
+            if (method.equals("purgeRunners") && failing.getAndDecrement() > 0) {
                 throw new TaskStoreException("store down");
             }
             return real.proceed();
@@ -883,7 +883,7 @@ class MaintenanceServiceTest {
 
         purge();
 
-        assertThat(store.workers()).hasSize(1);
+        assertThat(store.runners()).hasSize(1);
         assertThat(status.issues()).singleElement().satisfies(i -> {
             assertThat(i.kind()).isEqualTo(Issue.Kind.STORE_ERROR);
             assertThat(i.detail()).isEqualTo(new TaskStoreException("store down").toString());
@@ -891,7 +891,7 @@ class MaintenanceServiceTest {
 
         purge();
 
-        assertThat(store.workers()).isEmpty();
+        assertThat(store.runners()).isEmpty();
         assertThat(status.issues()).hasSize(1);
     }
 
@@ -970,7 +970,7 @@ class MaintenanceServiceTest {
         });
     }
 
-    /** Another worker takes the tasks back after the sweeper listed them, before it can transition them. */
+    /** Another runner takes the tasks back after the sweeper listed them, before it can transition them. */
     private FullStore takenOverAfterReclaim() {
         return StoreInterceptor.around(store, (method, args, real) -> {
             var result = real.proceed();
@@ -1013,9 +1013,9 @@ class MaintenanceServiceTest {
                 .keepDead(keepDead)
                 .batchSize(batchSize)
                 .purgeBatchSize(purgeBatchSize)
-                .worker(workerId, "worker-a", workerQueueIds, workerTypeIds, () -> runningTasks)
+                .runner(runnerId, "runner-a", runnerQueueIds, runnerTypeIds, () -> runningTasks)
                 .accepting(() -> accepting)
-                .workerStaleAfter(workerStaleAfter)
+                .runnerStaleTimeout(runnerStaleTimeout)
                 .checkInterval(checkInterval)
                 .create();
     }

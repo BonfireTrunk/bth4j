@@ -306,13 +306,13 @@ class RedisTaskStoreIT {
     }
 
     @Test
-    void workersGetDistinctIdsAndAreRecorded() {
-        var a = store.allocateWorkerId("host-a:1", Set.of(), Set.of());
-        var b = store.allocateWorkerId("host-b:2", Set.of(), Set.of());
+    void runnersGetDistinctIdsAndAreRecorded() {
+        var a = store.allocateRunnerId("host-a:1", Set.of(), Set.of());
+        var b = store.allocateRunnerId("host-b:2", Set.of(), Set.of());
 
         assertThat(a).isNotEqualTo(b);
-        assertThat(jedis.hget(keys.worker(a), "label")).isEqualTo("host-a:1");
-        assertThat(jedis.hget(keys.worker(a), "started")).isNotNull();
+        assertThat(jedis.hget(keys.runner(a), "label")).isEqualTo("host-a:1");
+        assertThat(jedis.hget(keys.runner(a), "started")).isNotNull();
     }
 
     @Test
@@ -550,7 +550,7 @@ class RedisTaskStoreIT {
         assertThat(first.state()).isEqualTo(TaskState.LEASED);
         assertThat(first.revision()).isEqualTo(before.revision() + 1);
         assertThat(first.attempts()).isEqualTo(1);
-        assertThat(first.workerId()).isEqualTo(1);
+        assertThat(first.runnerId()).isEqualTo(1);
         assertThat(first.claimedAt()).isNotNull();
         assertThat(first.leaseUntil()).isAfter(Instant.now().plusSeconds(25));
         assertThat(first.due()).isEqualTo(before.due());
@@ -971,13 +971,13 @@ class RedisTaskStoreIT {
         try {
             var calls = new ArrayList<Callable<List<TaskRecord>>>();
             for (var w = 0; w < 8; w++) {
-                var worker = w;
+                var runner = w;
                 calls.add(() -> {
                     var mine = new ArrayList<TaskRecord>();
                     List<TaskRecord> got;
                     do {
                         got = store.claim(
-                                new ClaimRequest(List.of(new QueueGrant(queue, 7, 7)), 7, LEASE, worker, null));
+                                new ClaimRequest(List.of(new QueueGrant(queue, 7, 7)), 7, LEASE, runner, null));
                         mine.addAll(got);
                     } while (!got.isEmpty());
                     return mine;
@@ -1113,7 +1113,7 @@ class RedisTaskStoreIT {
         assertThat(dropped.encodedPayload()).isNull();
         assertThat(dropped.steps()).containsKey("s");
         assertThat(dropped.leaseUntil()).isNull();
-        assertThat(dropped.workerId()).isEqualTo(1);
+        assertThat(dropped.runnerId()).isEqualTo(1);
         assertThat(dropped.revision()).isEqualTo(claimed.get(0).revision() + 1);
         assertThat(store.getTask(2).orElseThrow().encodedPayload()).isEqualTo("payload");
         assertThat(jedis.zscore(keys.index(3, queue), "1"))
@@ -1136,7 +1136,7 @@ class RedisTaskStoreIT {
         assertThat(back.due()).isEqualTo(retryAt);
         assertThat(back.revision()).isEqualTo(t.revision() + 1);
         assertThat(back.leaseUntil()).isNull();
-        assertThat(back.workerId()).isNull();
+        assertThat(back.runnerId()).isNull();
         assertThat(back.failures()).hasSize(1);
         assertThat(back.lastFailure().message()).isEqualTo("boom 1");
         assertThat(jedis.zscore(keys.scheduled(queue), "1")).isEqualTo((double) retryAt.toEpochMilli());
@@ -1286,7 +1286,7 @@ class RedisTaskStoreIT {
         assertThat(back.state()).isEqualTo(TaskState.SCHEDULED);
         assertThat(back.attempts()).isZero();
         assertThat(back.due()).isEqualTo(due);
-        assertThat(back.workerId()).isNull();
+        assertThat(back.runnerId()).isNull();
         assertThat(back.leaseUntil()).isNull();
         assertThat(back.revision()).isEqualTo(t.revision() + 1);
         assertThat(jedis.zscore(keys.scheduled(queue), "1")).isEqualTo((double) due.toEpochMilli());
@@ -1305,7 +1305,7 @@ class RedisTaskStoreIT {
         assertThat(back.state()).isEqualTo(TaskState.QUEUED);
         assertThat(back.attempts()).isZero();
         assertThat(back.due()).isEqualTo(original.due());
-        assertThat(back.workerId()).isNull();
+        assertThat(back.runnerId()).isNull();
         assertThat(back.leaseUntil()).isNull();
         assertThat(back.revision()).isEqualTo(t.revision() + 1);
         assertThat(jedis.zscore(keys.queue(queue, type), "1"))

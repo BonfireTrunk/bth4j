@@ -79,7 +79,7 @@ Times follow one rule, `TaskRequest.MAX_TIME_FROM_NOW` (100 years), so that ever
 | What | Rule |
 |---|---|
 | `at` or `startBy` | The library refuses a value further than 100 years from now, either way. |
-| `delay`, `keepFor`, fixed delay, lease, retention or worker stale-after | The library refuses a longer value. |
+| `delay`, `keepFor`, fixed delay, lease, retention or runner stale timeout | The library refuses a longer value. |
 | A retry policy or a `TaskRescheduleException` that asks for a longer wait | It gets 100 years. |
 
 ## Unique keys

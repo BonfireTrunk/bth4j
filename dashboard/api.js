@@ -141,7 +141,7 @@ export const api = {
   resumeSchedule: (id) => request('POST', '/schedules/' + enc(id) + '/resume', { body: {} }),
   triggerSchedule: (id) => request('POST', '/schedules/' + enc(id) + '/trigger', { body: {} }),
   deleteSchedule: (id) => request('DELETE', '/schedules/' + enc(id)),
-  workers: () => request('GET', '/workers'),
+  runners: () => request('GET', '/runners'),
   unserved: () => request('GET', '/unserved'),
   issues: () => request('GET', '/issues'),
 };

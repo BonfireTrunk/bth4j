@@ -5,7 +5,7 @@ import java.util.stream.Collectors;
 
 /**
  * The Lua scripts that implement every store operation. Each script is atomic and checks the task's
- * revision and state before it moves a task, so a call from a worker that lost its lease does nothing.
+ * revision and state before it moves a task, so a call from a runner that lost its lease does nothing.
  * <p>
  * ARGV[1] of every script is the namespace prefix {@code {ns}:}; the scripts build all other key names from it
  * and the single declared key only routes the call. This is valid because every key shares the hash tag, so
@@ -34,8 +34,8 @@ final class RedisScripts {
      */
     static final long TYPE_SET_TTL_MS = 86_400_000;
 
-    /** Workers removed per PURGE_WORKERS call; below the Lua unpack limit and short enough to block Redis for about a millisecond. */
-    static final int PURGE_WORKERS_PAGE = 500;
+    /** Runners removed per PURGE_RUNNERS call; below the Lua unpack limit and short enough to block Redis for about a millisecond. */
+    static final int PURGE_RUNNERS_PAGE = 500;
 
     private static final String PRELUDE = """
             local P = ARGV[1]
@@ -296,7 +296,7 @@ final class RedisScripts {
     };
 
     /**
-     * ARGV: count, lease ms, worker id, the digest naming the {@code ts:<digest>} set of known type ids ('' for
+     * ARGV: count, lease ms, runner id, the digest naming the {@code ts:<digest>} set of known type ids ('' for
      * every type), then queue/share/cap triples. Returns {-1} when that set is missing, so that the caller writes
      * it and calls again; each call extends its life by {@link #TYPE_SET_TTL_MS}. A queue's eligible types are
      * the intersection of {@code active:<qid>} and that set, which Redis computes from the smaller one, so types
@@ -480,8 +480,8 @@ final class RedisScripts {
             """;
 
     /**
-     * ARGV: claim time ms, worker id, then task ids. Ends the lease of each task that is still LEASED by the claim
-     * of that worker at that time, so reclaim returns it at once.
+     * ARGV: claim time ms, runner id, then task ids. Ends the lease of each task that is still LEASED by the claim
+     * of that runner at that time, so reclaim returns it at once.
      */
     static final String END_LEASES = PRELUDE + """
             local at = ARGV[2]
@@ -890,7 +890,7 @@ final class RedisScripts {
 
     /**
      * ARGV: ids. Sets the revision of a LEASED task to 0 when it is not a 32-bit integer, so that reclaim can fence
-     * it again; the lease has expired, so no worker holds a revision that 0 could wrongly match. Returns the count.
+     * it again; the lease has expired, so no runner holds a revision that 0 could wrongly match. Returns the count.
      */
     static final String REPAIR_REVISION = PRELUDE + """
             local n = 0
@@ -965,7 +965,7 @@ final class RedisScripts {
 
     /**
      * ARGV: id, revision, reason ('' for none, else the text after a one-character prefix), keep payload (1/0),
-     * expired only (1/0), then the schedule effect as for ACK. LEASED to CANCELLED; the worker id stays, the
+     * expired only (1/0), then the schedule effect as for ACK. LEASED to CANCELLED; the runner id stays, the
      * cancel request time is kept when there is one, and the reason is the one given (none removes an earlier one). Returns 1 (2 when the effect changed the definition), or 0
      * when the fence fails or, with expired only, when the stored lease is after now.
      */
@@ -1086,8 +1086,8 @@ final class RedisScripts {
             return fx == 1 and 'DELETED+' or 'DELETED'
             """;
 
-    /** ARGV: label, queue ids JSON, type ids JSON. Records coverage and start time; returns the worker id. */
-    static final String WORKER_REGISTER = PRELUDE + """
+    /** ARGV: label, queue ids JSON, type ids JSON. Records coverage and start time; returns the runner id. */
+    static final String RUNNER_REGISTER = PRELUDE + """
             local id = redis.call('INCR', P .. 'seq:worker')
             local at = now()
             redis.call('HSET', P .. 'w:' .. id, 'label', ARGV[2], 'started', at, 'seen', at, 'running', 0, 'accepting', 1,
@@ -1097,7 +1097,7 @@ final class RedisScripts {
             """;
 
     /**
-     * ARGV: worker id, running, accepting (1/0), label, queue ids JSON, type ids JSON. A removed worker's hash is
+     * ARGV: runner id, running, accepting (1/0), label, queue ids JSON, type ids JSON. A removed runner's hash is
      * created again with the given label, queues and types; an existing one keeps its own. Returns 1.
      */
     static final String HEARTBEAT = PRELUDE + """
@@ -1113,11 +1113,11 @@ final class RedisScripts {
             """;
 
     /**
-     * ARGV: stale after ms, page limit. Removes up to limit workers last seen strictly before now - stale, oldest
-     * first, with one UNLINK and one ZREM. Returns how many worker hashes were removed; a full page means more
+     * ARGV: stale after ms, page limit. Removes up to limit runners last seen strictly before now - stale, oldest
+     * first, with one UNLINK and one ZREM. Returns how many runner hashes were removed; a full page means more
      * may be left.
      */
-    static final String PURGE_WORKERS = PRELUDE + """
+    static final String PURGE_RUNNERS = PRELUDE + """
             local ids = redis.call('ZRANGE', P .. 'workers', '-inf', '(' .. (now() - tonumber(ARGV[2])), 'BYSCORE',
               'LIMIT', 0, tonumber(ARGV[3]))
             if #ids > 0 then

@@ -348,10 +348,10 @@ public final class AdminHttpServer implements AutoCloseable {
             case "POST schedules/{}/resume" -> scheduleChange(ex, admin.pauseSchedule(param, false));
             case "POST schedules/{}/trigger" -> scheduleChange(ex, admin.triggerSchedule(param));
             case "DELETE schedules/{}" -> scheduleChange(ex, admin.deleteSchedule(param));
-            case "GET workers" -> {
+            case "GET runners" -> {
                 var queues = admin.queueNames();
                 var types = admin.typeNames();
-                sendJson(ex, 200, Views.list(admin.workers(), w -> Views.worker(w, queues, types)));
+                sendJson(ex, 200, Views.list(admin.runners(), w -> Views.runner(w, queues, types)));
             }
             case "GET unserved" -> sendJson(ex, 200, Views.list(admin.unservedWork(), Views::unserved));
             case "GET issues" -> sendJson(ex, 200, Views.list(admin.issues(), Views::issue));
@@ -522,7 +522,7 @@ public final class AdminHttpServer implements AutoCloseable {
         return Views.obj(
                 "counts", counts,
                 "totals", Views.counts(total),
-                "workers", admin.workers().size(),
+                "runners", admin.runners().size(),
                 "issues", admin.issues().size(),
                 "health", admin.health().map(Views::health).orElse(null));
     }

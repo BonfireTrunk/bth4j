@@ -4,7 +4,7 @@ package today.bonfire.oss.bth4j;
 public enum CancelOutcome {
     /** the task was QUEUED or SCHEDULED and is CANCELLED now */
     CANCELLED,
-    /** the task is LEASED; the request is stored and its worker will finish it */
+    /** the task is LEASED; the request is stored and its runner will finish it */
     REQUESTED,
     /** no task has this id, or (only {@code AdminOps.cancelByKey}) no task holds the key */
     NOT_FOUND,

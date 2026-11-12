@@ -13,7 +13,7 @@ final class RunnerServices {
     private final List<Integer> queueIds;
     private final Map<Integer, QueuePolicy> queuePolicies;
     private final Set<Integer> knownTypeIds;
-    private final int workerId;
+    private final int runnerId;
 
     RunnerServices(
             FullStore store,
@@ -32,7 +32,7 @@ final class RunnerServices {
             List<Integer> queueIds,
             Map<Integer, QueuePolicy> queuePolicies,
             Set<Integer> knownTypeIds,
-            int workerId) {
+            int runnerId) {
         this.settings = new TaskExecution.Settings(
                 store,
                 store,
@@ -50,7 +50,7 @@ final class RunnerServices {
         this.queueIds = queueIds;
         this.queuePolicies = Map.copyOf(queuePolicies);
         this.knownTypeIds = knownTypeIds;
-        this.workerId = workerId;
+        this.runnerId = runnerId;
     }
 
     TaskProcessorService.Builder processorBuilder() {
@@ -59,6 +59,6 @@ final class RunnerServices {
                 .queueIds(queueIds)
                 .queuePolicies(queuePolicies)
                 .knownTypeIds(knownTypeIds)
-                .workerId(workerId);
+                .runnerId(runnerId);
     }
 }

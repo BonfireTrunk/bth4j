@@ -4,8 +4,8 @@ import java.time.Instant;
 import java.util.Objects;
 import java.util.Set;
 
-/** A registered worker with the queues and task types it processes. */
-public record WorkerInfo(
+/** A registered runner with the queues and task types it processes. */
+public record RunnerRecord(
         int id,
         String label,
         Instant startedAt,
@@ -14,7 +14,7 @@ public record WorkerInfo(
         boolean accepting,
         Set<Integer> queueIds,
         Set<Integer> typeIds) {
-    public WorkerInfo {
+    public RunnerRecord {
         queueIds = Set.copyOf(Objects.requireNonNull(queueIds, "queueIds"));
         typeIds = Set.copyOf(Objects.requireNonNull(typeIds, "typeIds"));
     }

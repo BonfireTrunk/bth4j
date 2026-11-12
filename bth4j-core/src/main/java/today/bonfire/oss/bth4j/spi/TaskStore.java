@@ -46,13 +46,13 @@ public interface TaskStore {
     long allocateIds(int count);
 
     /**
-     * Registers an accepting worker and returns its id. Ids are never reused.
+     * Registers an accepting runner and returns its id. Ids are never reused.
      *
      * @param label free text that identifies the process, for example host and pid; not null
-     * @param queueIds queues this worker processes
-     * @param typeIds task types this worker processes
+     * @param queueIds queues this runner processes
+     * @param typeIds task types this runner processes
      */
-    int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds);
+    int allocateRunnerId(String label, Set<Integer> queueIds, Set<Integer> typeIds);
 
     /**
      * Resolves a queue name to its id, registering the name when it is new. Ids are permanent, so callers

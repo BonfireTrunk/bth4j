@@ -12,7 +12,7 @@ import java.time.Instant;
  */
 public record RunnerHealth(
         Status status,
-        int workerId,
+        int runnerId,
         int runningTasks,
         int abandonedAttempts,
         Instant lastClaimAt,

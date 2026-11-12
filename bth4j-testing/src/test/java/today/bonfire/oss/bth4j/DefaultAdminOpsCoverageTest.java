@@ -62,20 +62,20 @@ class DefaultAdminOpsCoverageTest {
     }
 
     @Test
-    void staleWorkerIsIgnoredAndHeartbeatRestoresCoverage() {
+    void staleRunnerIsIgnoredAndHeartbeatRestoresCoverage() {
         enqueue(queue, type);
-        int worker = store.allocateWorkerId("worker", Set.of(queue), Set.of(type));
+        int runner = store.allocateRunnerId("runner", Set.of(queue), Set.of(type));
         clock.advance(Duration.ofSeconds(61));
 
         assertThat(admin.unservedWork()).containsExactly(new UnservedWork("main", null, 1));
-        store.heartbeat(worker, "worker", Set.of(queue), Set.of(type), 0, true);
+        store.heartbeat(runner, "runner", Set.of(queue), Set.of(type), 0, true);
         assertThat(admin.unservedWork()).isEmpty();
     }
 
     @Test
     void heartbeatAtTheCutoffIsLiveAndCustomWindowUsesAdminClock() {
         enqueue(queue, type);
-        store.allocateWorkerId("worker", Set.of(queue), Set.of(type));
+        store.allocateRunnerId("runner", Set.of(queue), Set.of(type));
         clock.advance(Duration.ofMinutes(1));
 
         assertThat(admin.unservedWork()).isEmpty();
@@ -96,12 +96,12 @@ class DefaultAdminOpsCoverageTest {
     }
 
     @Test
-    void reportsTypesOnlyAgainstWorkersOfThatQueue() {
+    void reportsTypesOnlyAgainstRunnersOfThatQueue() {
         enqueue(queue, otherType);
         enqueue(queue, otherType);
         enqueue(queue, type);
-        store.allocateWorkerId("main", Set.of(queue), Set.of(type));
-        store.allocateWorkerId("other", Set.of(otherQueue), Set.of(otherType));
+        store.allocateRunnerId("main", Set.of(queue), Set.of(type));
+        store.allocateRunnerId("other", Set.of(otherQueue), Set.of(otherType));
 
         assertThat(admin.unservedWork()).containsExactly(new UnservedWork("main", "export", 2));
         assertThat(samples).isEmpty();
@@ -109,7 +109,7 @@ class DefaultAdminOpsCoverageTest {
 
     @Test
     void reportsExactCountsIncludingTypesBeyondTheFirst100Tasks() {
-        store.allocateWorkerId("worker", Set.of(queue, otherQueue), Set.of());
+        store.allocateRunnerId("runner", Set.of(queue, otherQueue), Set.of());
         for (int i = 0; i < 105; i++) enqueue(queue, type);
         enqueue(queue, otherType);
         enqueue(otherQueue, otherType);
@@ -123,32 +123,32 @@ class DefaultAdminOpsCoverageTest {
     }
 
     @Test
-    void combinesCoverageOfLiveWorkersAndReportsNothingWhenServed() {
+    void combinesCoverageOfLiveRunnersAndReportsNothingWhenServed() {
         enqueue(queue, type);
         enqueue(queue, otherType);
-        store.allocateWorkerId("mail", Set.of(queue), Set.of(type));
-        store.allocateWorkerId("export", Set.of(queue), Set.of(otherType));
+        store.allocateRunnerId("mail", Set.of(queue), Set.of(type));
+        store.allocateRunnerId("export", Set.of(queue), Set.of(otherType));
 
         assertThat(admin.unservedWork()).isEmpty();
     }
 
     @Test
-    void aWorkerWithEmptyCoverageServesNoQueue() {
+    void aRunnerWithEmptyCoverageServesNoQueue() {
         enqueue(queue, type);
-        store.allocateWorkerId("empty", Set.of(), Set.of());
+        store.allocateRunnerId("empty", Set.of(), Set.of());
 
         assertThat(admin.unservedWork()).containsExactly(new UnservedWork("main", null, 1));
     }
 
     @Test
-    void quietWorkersDoNotServeQueuesOrContributeTypeCoverage() {
+    void quietRunnersDoNotServeQueuesOrContributeTypeCoverage() {
         enqueue(queue, type);
         enqueue(queue, otherType);
-        int quiet = store.allocateWorkerId("quiet", Set.of(queue), Set.of(type, otherType));
+        int quiet = store.allocateRunnerId("quiet", Set.of(queue), Set.of(type, otherType));
         store.heartbeat(quiet, "quiet", Set.of(queue), Set.of(type, otherType), 1, false);
         assertThat(admin.unservedWork()).containsExactly(new UnservedWork("main", null, 2));
 
-        store.allocateWorkerId("accepting", Set.of(queue), Set.of(type));
+        store.allocateRunnerId("accepting", Set.of(queue), Set.of(type));
         assertThat(admin.unservedWork()).containsExactly(new UnservedWork("main", "export", 1));
         store.heartbeat(quiet, "quiet", Set.of(queue), Set.of(type, otherType), 0, true);
         assertThat(admin.unservedWork()).isEmpty();

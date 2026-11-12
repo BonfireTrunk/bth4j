@@ -774,7 +774,7 @@ public abstract class RunnerContract {
         var untouched = client.task(unknown).orElseThrow();
         assertThat(untouched.attempts()).isZero();
         assertThat(untouched.state()).isIn(TaskState.QUEUED, TaskState.SCHEDULED);
-        assertThat(untouched.workerId()).isNull();
+        assertThat(untouched.runnerId()).isNull();
     }
 
     @Test
@@ -1188,7 +1188,7 @@ public abstract class RunnerContract {
             release.await();
         }));
         assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.RUNNING);
-        assertThat(runner.health().workerId()).isPositive();
+        assertThat(runner.health().runnerId()).isPositive();
 
         long id = enqueue(TaskRequest.of(VOID_TYPE).build());
         assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
@@ -1225,9 +1225,9 @@ public abstract class RunnerContract {
         assertThat(health.status()).isEqualTo(RunnerHealth.Status.QUIET);
         assertThat(health.lastClaimAt()).isNotNull();
         await(
-                "the worker heartbeat",
-                () -> runner.admin().workers().stream()
-                        .anyMatch(w -> w.id() == runner.workerId() && w.lastSeen() != null));
+                "the runner heartbeat",
+                () -> runner.admin().runners().stream()
+                        .anyMatch(w -> w.id() == runner.runnerId() && w.lastSeen() != null));
         assertThat(runner.admin().health()).isPresent();
     }
 

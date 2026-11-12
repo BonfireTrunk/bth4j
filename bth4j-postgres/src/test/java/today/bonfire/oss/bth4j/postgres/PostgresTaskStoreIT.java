@@ -60,7 +60,7 @@ class PostgresTaskStoreIT {
     private String prefix;
     private int queue;
     private int type;
-    private int worker;
+    private int runner;
 
     @BeforeEach
     void setUp() {
@@ -69,7 +69,7 @@ class PostgresTaskStoreIT {
         store = PostgresTestSupport.store(namespace);
         queue = store.queueId("default");
         type = store.typeId("send-mail");
-        worker = store.allocateWorkerId("host:1", Set.of(), Set.of());
+        runner = store.allocateRunnerId("host:1", Set.of(), Set.of());
     }
 
     private TaskRecord.Builder task(long id) {
@@ -95,7 +95,7 @@ class PostgresTaskStoreIT {
     }
 
     private List<TaskRecord> claim(int count) {
-        return store.claim(new ClaimRequest(List.of(new QueueGrant(queue, count, count)), count, LEASE, worker, null));
+        return store.claim(new ClaimRequest(List.of(new QueueGrant(queue, count, count)), count, LEASE, runner, null));
     }
 
     private TaskRecord get(long id) {
@@ -245,9 +245,9 @@ class PostgresTaskStoreIT {
     }
 
     @Test
-    void workerIdsAreNeverReused() {
-        int second = store.allocateWorkerId("host:2", Set.of(), Set.of());
-        assertThat(second).isGreaterThan(worker);
+    void runnerIdsAreNeverReused() {
+        int second = store.allocateRunnerId("host:2", Set.of(), Set.of());
+        assertThat(second).isGreaterThan(runner);
     }
 
     @Test
@@ -313,7 +313,7 @@ class PostgresTaskStoreIT {
         assertThat(r.maxRunTime()).isEqualTo(Duration.ofSeconds(9));
         assertThat(r.progress()).as("a new task starts without progress").isNull();
         assertThat(r.steps()).as("a new task starts without steps").isNull();
-        assertThat(r.workerId()).isNull();
+        assertThat(r.runnerId()).isNull();
         assertThat(r.leaseUntil()).isNull();
         assertThat(r.failures()).isNull();
     }
@@ -400,7 +400,7 @@ class PostgresTaskStoreIT {
     // ---- claim ---------------------------------------------------------------------------------------
 
     @Test
-    void claimLeasesByDueThenIdAndRecordsTheWorker() {
+    void claimLeasesByDueThenIdAndRecordsTheRunner() {
         long base = store.allocateIds(3);
         var now = Instant.now();
         store.enqueue(task(base).due(now.minusSeconds(10)).build());
@@ -414,7 +414,7 @@ class PostgresTaskStoreIT {
         assertThat(t.state()).isEqualTo(TaskState.LEASED);
         assertThat(t.revision()).isEqualTo(1);
         assertThat(t.attempts()).isEqualTo(1);
-        assertThat(t.workerId()).isEqualTo(worker);
+        assertThat(t.runnerId()).isEqualTo(runner);
         assertThat(t.claimedAt()).isNotNull().isEqualTo(t.stateChangedAt());
         assertThat(t.leaseUntil()).isAfter(t.claimedAt().plus(LEASE).minusSeconds(1));
         assertThat(t.due()).isEqualTo(now.minusSeconds(30).truncatedTo(ChronoUnit.MILLIS));
@@ -456,10 +456,10 @@ class PostgresTaskStoreIT {
         store.enqueue(task(base + 2).queueId(urgent).build());
 
         var claimed = store.claim(new ClaimRequest(
-                List.of(new QueueGrant(urgent, 2, 2), new QueueGrant(queue, 2, 2)), 2, LEASE, worker, null));
+                List.of(new QueueGrant(urgent, 2, 2), new QueueGrant(queue, 2, 2)), 2, LEASE, runner, null));
         assertThat(claimed).extracting(TaskRecord::id).containsExactly(base + 1, base + 2);
         claimed = store.claim(new ClaimRequest(
-                List.of(new QueueGrant(urgent, 2, 2), new QueueGrant(queue, 2, 2)), 2, LEASE, worker, null));
+                List.of(new QueueGrant(urgent, 2, 2), new QueueGrant(queue, 2, 2)), 2, LEASE, runner, null));
         assertThat(claimed).extracting(TaskRecord::id).containsExactly(base);
     }
 
@@ -476,7 +476,7 @@ class PostgresTaskStoreIT {
         var before = List.of(get(first), get(overflow), get(second));
         var grants = List.of(new QueueGrant(queue, 1, 2), new QueueGrant(other, 1, 1));
 
-        assertThatThrownBy(() -> store.claim(new ClaimRequest(grants, 3, LEASE, worker, null)))
+        assertThatThrownBy(() -> store.claim(new ClaimRequest(grants, 3, LEASE, runner, null)))
                 .isInstanceOf(TaskStoreException.class)
                 .hasCauseInstanceOf(SQLException.class)
                 .satisfies(e ->
@@ -500,7 +500,7 @@ class PostgresTaskStoreIT {
         store.enqueue(task(refill).build());
         var untouched = List.of(get(expired), get(unknownId));
 
-        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 3)), 3, LEASE, worker, Set.of(type))))
+        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 3)), 3, LEASE, runner, Set.of(type))))
                 .extracting(TaskRecord::id)
                 .containsExactly(first, refill);
         assertThat(List.of(get(expired), get(unknownId))).isEqualTo(untouched);
@@ -521,7 +521,7 @@ class PostgresTaskStoreIT {
                 assertThat(rs.next()).isTrue();
             }
             try {
-                assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 3)), 3, LEASE, worker, null)))
+                assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 3)), 3, LEASE, runner, null)))
                         .extracting(TaskRecord::id)
                         .containsExactly(base + 1, base + 3);
                 assertThat(get(base).state()).isEqualTo(TaskState.QUEUED);
@@ -541,14 +541,14 @@ class PostgresTaskStoreIT {
                 task(other).typeId(unknown).due(Instant.now().minusSeconds(60)).build());
         store.enqueue(task(known).build());
 
-        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, worker, Set.of())))
+        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, runner, Set.of())))
                 .isEmpty();
-        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, worker, Set.of(type))))
+        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, runner, Set.of(type))))
                 .extracting(TaskRecord::id)
                 .containsExactly(known);
         assertThat(get(other).state()).isEqualTo(TaskState.QUEUED);
         assertThat(get(other).attempts()).isZero();
-        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, worker, null)))
+        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, runner, null)))
                 .extracting(TaskRecord::id)
                 .containsExactly(other);
     }
@@ -650,7 +650,7 @@ class PostgresTaskStoreIT {
         assertThat(a.revision()).isEqualTo(kept.revision() + 1);
         assertThat(a.encodedPayload()).isEqualTo(kept.encodedPayload());
         assertThat(a.leaseUntil()).isNull();
-        assertThat(a.workerId()).isEqualTo(worker);
+        assertThat(a.runnerId()).isEqualTo(runner);
         var b = get(dropped.id());
         assertThat(b.encodedPayload()).isNull();
         assertThat(b.steps()).isEqualTo(steps);
@@ -685,7 +685,7 @@ class PostgresTaskStoreIT {
         assertThat(r.revision()).isEqualTo(t.revision() + 1);
         assertThat(r.due()).isEqualTo(retryAt);
         assertThat(r.attempts()).isEqualTo(1);
-        assertThat(r.workerId()).isNull();
+        assertThat(r.runnerId()).isNull();
         assertThat(r.leaseUntil()).isNull();
         assertThat(r.failures()).containsExactly(f);
         assertThat(store.nextDue()).isEqualTo(retryAt);
@@ -699,7 +699,7 @@ class PostgresTaskStoreIT {
         var dead = get(exhausted.id());
         assertThat(dead.state()).isEqualTo(TaskState.DEAD);
         assertThat(dead.encodedPayload()).isEqualTo(exhausted.encodedPayload());
-        assertThat(dead.workerId()).isEqualTo(worker);
+        assertThat(dead.runnerId()).isEqualTo(runner);
 
         var refused = enqueueAndClaim(task(newId()));
         assertThat(store.fail(refused.id(), refused.revision(), failure(1), null, false, null))
@@ -712,7 +712,7 @@ class PostgresTaskStoreIT {
         long id = newId();
         store.enqueue(task(id).build());
         var t = store.claim(
-                        new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, Duration.ofMillis(1), worker, null))
+                        new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, Duration.ofMillis(1), runner, null))
                 .getFirst();
         Thread.sleep(20);
 
@@ -744,7 +744,7 @@ class PostgresTaskStoreIT {
         assertThat(r.attempts()).isZero();
         assertThat(r.due()).isEqualTo(due);
         assertThat(r.revision()).isEqualTo(t.revision() + 1);
-        assertThat(r.workerId()).isNull();
+        assertThat(r.runnerId()).isNull();
         assertThat(r.leaseUntil()).isNull();
     }
 
@@ -763,7 +763,7 @@ class PostgresTaskStoreIT {
         assertThat(r.attempts()).isZero();
         assertThat(r.due()).isEqualTo(t.due());
         assertThat(r.revision()).isEqualTo(t.revision() + 1);
-        assertThat(r.workerId()).isNull();
+        assertThat(r.runnerId()).isNull();
         assertThat(claim(1)).extracting(TaskRecord::id).containsExactly(first);
     }
 
@@ -1038,7 +1038,7 @@ class PostgresTaskStoreIT {
         assertThat(r.cancelRequestedAt()).isNotNull();
         assertThat(r.stateChangedAt()).isEqualTo(r.cancelRequestedAt());
         assertThat(r.encodedPayload()).isNull();
-        assertThat(r.workerId()).isEqualTo(worker);
+        assertThat(r.runnerId()).isEqualTo(runner);
         assertThat(r.leaseUntil()).isNull();
         assertThat(r.uniqueKey()).isNull();
         assertThat(store.finishCancelled(t.id(), r.revision(), "again", false, null))
@@ -1157,7 +1157,7 @@ class PostgresTaskStoreIT {
         assertThat(r.revision()).isEqualTo(dead.revision() + 1);
         assertThat(r.attempts()).isZero();
         assertThat(r.due()).isAfterOrEqualTo(dead.stateChangedAt());
-        assertThat(r.workerId()).isNull();
+        assertThat(r.runnerId()).isNull();
         assertThat(r.uniqueKey()).isEqualTo("r");
         assertThat(r.keyKeep()).isEqualTo(Duration.ofHours(1));
         assertThat(r.keyUntil()).isNull();
@@ -1217,7 +1217,7 @@ class PostgresTaskStoreIT {
         assertThat(store.queues())
                 .containsExactly(new QueueInfo(queue, "default", true), new QueueInfo(other, "other", false));
         assertThat(store.claim(new ClaimRequest(
-                        List.of(new QueueGrant(queue, 5, 5), new QueueGrant(other, 5, 5)), 5, LEASE, worker, null)))
+                        List.of(new QueueGrant(queue, 5, 5), new QueueGrant(other, 5, 5)), 5, LEASE, runner, null)))
                 .extracting(TaskRecord::id)
                 .containsExactly(b);
 
@@ -1252,11 +1252,11 @@ class PostgresTaskStoreIT {
     }
 
     @Test
-    void workerCoverageRoundTripsSmallintArrays() throws SQLException {
+    void runnerCoverageRoundTripsSmallintArrays() throws SQLException {
         var queueIds = Set.of(queue, (int) Short.MAX_VALUE);
         var typeIds = Set.of(type, (int) Short.MAX_VALUE);
-        int covered = store.allocateWorkerId("covered", queueIds, typeIds);
-        assertThat(store.workers())
+        int covered = store.allocateRunnerId("covered", queueIds, typeIds);
+        assertThat(store.runners())
                 .filteredOn(w -> w.id() == covered)
                 .singleElement()
                 .satisfies(w -> {
@@ -1264,8 +1264,8 @@ class PostgresTaskStoreIT {
                     assertThat(w.typeIds()).isEqualTo(typeIds);
                     assertThat(w.accepting()).isTrue();
                 });
-        assertThat(store.workers())
-                .filteredOn(w -> w.id() == worker)
+        assertThat(store.runners())
+                .filteredOn(w -> w.id() == runner)
                 .singleElement()
                 .satisfies(w -> {
                     assertThat(w.queueIds()).isEmpty();
@@ -1293,26 +1293,26 @@ class PostgresTaskStoreIT {
     }
 
     @Test
-    void heartbeatsAreListedAndStaleWorkersPurged() throws Exception {
-        int second = store.allocateWorkerId("host:2", Set.of(), Set.of());
-        store.heartbeat(worker, "host:1", Set.of(), Set.of(), 5, false);
+    void heartbeatsAreListedAndStaleRunnersPurged() throws Exception {
+        int second = store.allocateRunnerId("host:2", Set.of(), Set.of());
+        store.heartbeat(runner, "host:1", Set.of(), Set.of(), 5, false);
 
-        var workers = store.workers();
-        assertThat(workers).extracting(w -> w.id()).containsExactly(worker, second);
-        var w = workers.getFirst();
+        var runners = store.runners();
+        assertThat(runners).extracting(w -> w.id()).containsExactly(runner, second);
+        var w = runners.getFirst();
         assertThat(w.label()).isEqualTo("host:1");
         assertThat(w.running()).isEqualTo(5);
         assertThat(w.accepting()).isFalse();
         assertThat(w.lastSeen()).isAfterOrEqualTo(w.startedAt());
-        assertThat(workers.get(1).running()).isZero();
-        assertThat(workers.get(1).accepting()).isTrue();
-        store.heartbeat(worker, "host:1", Set.of(), Set.of(), 0, true);
-        assertThat(store.workers().getFirst().accepting()).isTrue();
+        assertThat(runners.get(1).running()).isZero();
+        assertThat(runners.get(1).accepting()).isTrue();
+        store.heartbeat(runner, "host:1", Set.of(), Set.of(), 0, true);
+        assertThat(store.runners().getFirst().accepting()).isTrue();
 
-        assertThat(store.purgeWorkers(Duration.ofHours(1))).isZero();
+        assertThat(store.purgeRunners(Duration.ofHours(1))).isZero();
         sql("UPDATE " + prefix + "_worker SET last_seen = now() - interval '2 hours' WHERE id = " + second);
-        assertThat(store.purgeWorkers(Duration.ofHours(1))).isEqualTo(1);
-        assertThat(store.workers()).extracting(x -> x.id()).containsExactly(worker);
+        assertThat(store.purgeRunners(Duration.ofHours(1))).isEqualTo(1);
+        assertThat(store.runners()).extracting(x -> x.id()).containsExactly(runner);
     }
 
     // ---- wave 2: schedule controls -------------------------------------------------------------------

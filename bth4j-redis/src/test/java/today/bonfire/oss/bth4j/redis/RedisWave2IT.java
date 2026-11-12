@@ -37,12 +37,12 @@ import today.bonfire.oss.bth4j.spi.ExpiredTask;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
+import today.bonfire.oss.bth4j.spi.RunnerRecord;
 import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /**
- * The wave 2 operations of {@link RedisTaskStore} (cancel, expiry, admin, workers, schedule controls) against a
+ * The wave 2 operations of {@link RedisTaskStore} (cancel, expiry, admin, runners, schedule controls) against a
  * real Redis, including the checks that read Redis keys directly. Needs Docker.
  */
 @Testcontainers
@@ -155,7 +155,7 @@ class RedisWave2IT {
         assertThat(done.revision()).isEqualTo(t.revision() + 1);
         assertThat(done.cancelReason()).isEqualTo("stop");
         assertThat(done.cancelRequestedAt()).isNotNull();
-        assertThat(done.workerId()).isEqualTo(7);
+        assertThat(done.runnerId()).isEqualTo(7);
         assertThat(done.leaseUntil()).isNull();
         assertThat(done.encodedPayload()).isNull();
         assertThat(jedis.zscore(keys.leased, "1")).isNull();
@@ -383,7 +383,7 @@ class RedisWave2IT {
             assertThat(after.attempts()).isZero();
             assertThat(after.cancelReason()).isNull();
             assertThat(after.cancelRequestedAt()).isNull();
-            assertThat(after.workerId()).isNull();
+            assertThat(after.runnerId()).isNull();
             assertThat(after.leaseUntil()).isNull();
             assertThat(jedis.zscore(keys.queue(queue, type), String.valueOf(id)))
                     .isNotNull();
@@ -577,44 +577,44 @@ class RedisWave2IT {
         assertThat(store.queuedByType()).isEqualTo(Map.of(queue, Map.of(type, 1L)));
     }
 
-    // ---- workers -------------------------------------------------------------------------------------
+    // ---- runners -------------------------------------------------------------------------------------
 
     @Test
-    void workersAreListedInIdOrderWithHeartbeats() {
-        var a = store.allocateWorkerId("a", Set.of(), Set.of());
-        var b = store.allocateWorkerId("b", Set.of(), Set.of());
-        assertThat(store.workers()).extracting(WorkerInfo::running).containsOnly(0);
-        assertThat(store.workers()).extracting(WorkerInfo::accepting).containsOnly(true);
-        var registered = store.workers().getFirst();
+    void runnersAreListedInIdOrderWithHeartbeats() {
+        var a = store.allocateRunnerId("a", Set.of(), Set.of());
+        var b = store.allocateRunnerId("b", Set.of(), Set.of());
+        assertThat(store.runners()).extracting(RunnerRecord::running).containsOnly(0);
+        assertThat(store.runners()).extracting(RunnerRecord::accepting).containsOnly(true);
+        var registered = store.runners().getFirst();
         assertThat(registered.startedAt()).isNotNull();
         assertThat(registered.lastSeen()).isNotNull();
 
         store.heartbeat(b, "b", Set.of(), Set.of(), 4, false);
 
-        var workers = store.workers();
-        assertThat(workers).extracting(WorkerInfo::id).containsExactly(a, b);
-        assertThat(workers).extracting(WorkerInfo::label).containsExactly("a", "b");
-        assertThat(workers.get(1).running()).isEqualTo(4);
-        assertThat(workers.get(1).accepting()).isFalse();
+        var runners = store.runners();
+        assertThat(runners).extracting(RunnerRecord::id).containsExactly(a, b);
+        assertThat(runners).extracting(RunnerRecord::label).containsExactly("a", "b");
+        assertThat(runners.get(1).running()).isEqualTo(4);
+        assertThat(runners.get(1).accepting()).isFalse();
         store.heartbeat(b, "b", Set.of(), Set.of(), 2, true);
-        assertThat(store.workers().get(1).accepting()).isTrue();
-        assertThat(workers.get(1).lastSeen()).isAfterOrEqualTo(workers.get(1).startedAt());
-        assertThat(jedis.zscore(keys.workers, String.valueOf(b))).isNotNull();
+        assertThat(store.runners().get(1).accepting()).isTrue();
+        assertThat(runners.get(1).lastSeen()).isAfterOrEqualTo(runners.get(1).startedAt());
+        assertThat(jedis.zscore(keys.runners, String.valueOf(b))).isNotNull();
     }
 
     @Test
-    void purgeWorkersRemovesOnlyStaleOnes() {
-        var stale = store.allocateWorkerId("stale", Set.of(), Set.of());
-        var fresh = store.allocateWorkerId("fresh", Set.of(), Set.of());
-        jedis.zadd(keys.workers, Instant.now().minusSeconds(3600).toEpochMilli(), String.valueOf(stale));
+    void purgeRunnersRemovesOnlyStaleOnes() {
+        var stale = store.allocateRunnerId("stale", Set.of(), Set.of());
+        var fresh = store.allocateRunnerId("fresh", Set.of(), Set.of());
+        jedis.zadd(keys.runners, Instant.now().minusSeconds(3600).toEpochMilli(), String.valueOf(stale));
 
-        assertThat(store.purgeWorkers(Duration.ofMinutes(10))).isEqualTo(1);
+        assertThat(store.purgeRunners(Duration.ofMinutes(10))).isEqualTo(1);
 
-        assertThat(store.workers()).extracting(WorkerInfo::id).containsExactly(fresh);
-        assertThat(jedis.exists(keys.worker(stale))).isFalse();
-        assertThat(store.purgeWorkers(Duration.ofMinutes(10))).isZero();
+        assertThat(store.runners()).extracting(RunnerRecord::id).containsExactly(fresh);
+        assertThat(jedis.exists(keys.runner(stale))).isFalse();
+        assertThat(store.purgeRunners(Duration.ofMinutes(10))).isZero();
         store.heartbeat(stale, "stale", Set.of(), Set.of(), 1, true);
-        assertThat(store.workers()).extracting(WorkerInfo::id).containsExactly(stale, fresh);
+        assertThat(store.runners()).extracting(RunnerRecord::id).containsExactly(stale, fresh);
     }
 
     // ---- recurring -----------------------------------------------------------------------------------

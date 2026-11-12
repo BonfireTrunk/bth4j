@@ -11,7 +11,7 @@ public enum TaskState {
      * them.
      */
     SCHEDULED(1),
-    /** claimed by a worker that holds the current revision */
+    /** claimed by a runner that holds the current revision */
     LEASED(2),
     /** finished successfully; kept for the succeeded retention */
     SUCCEEDED(3),

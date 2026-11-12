@@ -122,7 +122,7 @@ sequenceDiagram
 
 When a succeeded task can be removed before the sweep comes (a short succeeded retention), also give the request a unique key with a `keepFor` longer than the sweep's reach, so that a resend cannot run it again. The resend is answered `Accepted` on every store.
 
-Enqueueing first and cancelling the task when your transaction rolls back does not work. A worker can start the task before the rollback, and a crash between the two leaves a task for data that was never committed.
+Enqueueing first and cancelling the task when your transaction rolls back does not work. A runner can start the task before the rollback, and a crash between the two leaves a task for data that was never committed.
 
 ## Tasks due at the same time
 

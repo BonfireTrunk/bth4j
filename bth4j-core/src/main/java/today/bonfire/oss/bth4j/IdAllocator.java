@@ -23,7 +23,7 @@ final class IdAllocator {
     }
 
     /**
-     * The revision a new task starts at: random, so that a worker still holding a lease on an earlier task with the
+     * The revision a new task starts at: random, so that a runner still holding a lease on an earlier task with the
      * same id (enqueued again after that task was removed) practically cannot match the new task's revisions: the
      * chance is one in 2^30 for each such reuse. Below 2^30, so the revision has room to count up.
      */

@@ -105,7 +105,7 @@ class TaskExecutionTest {
                 TaskType.of("next-task"),
                 (ctx, payload) -> nextInterrupted.set(Thread.currentThread().isInterrupted()));
         var thrown = new AtomicReference<Throwable>();
-        var worker = new Thread(() -> {
+        var runner = new Thread(() -> {
             try {
                 execution.run();
             } catch (Throwable e) {
@@ -115,7 +115,7 @@ class TaskExecutionTest {
             execution.requestCancel("late cancel");
             next.run();
         });
-        worker.start();
+        runner.start();
         try {
             assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
             clock.advance(LEASE.plusSeconds(1));
@@ -125,8 +125,8 @@ class TaskExecutionTest {
             execution.leaseLost();
 
             assertThat(interrupted.await(5, TimeUnit.SECONDS)).isTrue();
-            worker.join(5_000);
-            assertThat(worker.isAlive()).isFalse();
+            runner.join(5_000);
+            assertThat(runner.isAlive()).isFalse();
             assertThat(thrown.get()).isSameAs(exit == BodyExit.FATAL ? fatal : null);
             assertThat(interruptedAtFinish).isFalse();
             assertThat(nextInterrupted.get()).isFalse();
@@ -149,7 +149,7 @@ class TaskExecutionTest {
                             .contains("was lost"));
         } finally {
             release.countDown();
-            worker.join(5_000);
+            runner.join(5_000);
         }
     }
 
@@ -263,26 +263,26 @@ class TaskExecutionTest {
             }
         });
         var after = new AtomicReference<Boolean>();
-        var worker = new Thread(() -> {
+        var runner = new Thread(() -> {
             execution.run();
             execution.requestCancel("late cancel");
             execution.leaseLost();
             after.set(Thread.currentThread().isInterrupted());
         });
-        worker.start();
+        runner.start();
         try {
             assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
             execution.requestCancel("stop");
-            worker.join(5_000);
+            runner.join(5_000);
 
-            assertThat(worker.isAlive()).isFalse();
+            assertThat(runner.isAlive()).isFalse();
             assertThat(after.get()).isFalse();
             assertThat(interruptedAtFinish).isFalse();
             assertThat(store.getTask(execution.taskId()).orElseThrow().state()).isEqualTo(TaskState.CANCELLED);
             assertThat(events.getLast()).isInstanceOf(TaskEvent.Cancelled.class);
         } finally {
             release.countDown();
-            worker.join(5_000);
+            runner.join(5_000);
         }
     }
 
@@ -306,8 +306,8 @@ class TaskExecutionTest {
                 interrupts.incrementAndGet();
             }
         });
-        var worker = new Thread(execution::run);
-        worker.start();
+        var runner = new Thread(execution::run);
+        runner.start();
         try {
             assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
             execution.requestCancel("stop");
@@ -316,14 +316,14 @@ class TaskExecutionTest {
             execution.requestCancel(null);
             execution.requestCancel(null);
             cleanup.countDown();
-            worker.join(5_000);
+            runner.join(5_000);
 
-            assertThat(worker.isAlive()).isFalse();
+            assertThat(runner.isAlive()).isFalse();
             assertThat(interrupts).hasValue(1);
             assertThat(interruptedAtFinish).isFalse();
         } finally {
             cleanup.countDown();
-            worker.join(5_000);
+            runner.join(5_000);
         }
     }
 
@@ -359,7 +359,7 @@ class TaskExecutionTest {
             releaseBody.await(10, TimeUnit.SECONDS);
             returning.countDown();
         });
-        var worker =
+        var runner =
                 new Thread(() -> {
                     execution.run();
                     nextStarted.countDown();
@@ -385,7 +385,7 @@ class TaskExecutionTest {
             if (cancel) execution.requestCancel("stop");
             else execution.leaseLost();
         });
-        worker.start();
+        runner.start();
         try {
             assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
             signaller.start();
@@ -393,21 +393,21 @@ class TaskExecutionTest {
             releaseBody.countDown();
             assertThat(returning.await(5, TimeUnit.SECONDS)).isTrue();
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-            while (worker.getState() != Thread.State.WAITING
-                    && worker.getState() != Thread.State.TIMED_WAITING
+            while (runner.getState() != Thread.State.WAITING
+                    && runner.getState() != Thread.State.TIMED_WAITING
                     && System.nanoTime() < deadline) {
                 Thread.sleep(1);
             }
-            assertThat(worker.getState()).isIn(Thread.State.WAITING, Thread.State.TIMED_WAITING);
+            assertThat(runner.getState()).isIn(Thread.State.WAITING, Thread.State.TIMED_WAITING);
             assertThat(nextStarted.getCount()).isEqualTo(1);
 
             deliverInterrupt.countDown();
             assertThat(nextStarted.await(5, TimeUnit.SECONDS)).isTrue();
             releaseNext.countDown();
-            worker.join(5_000);
+            runner.join(5_000);
             signaller.join(5_000);
 
-            assertThat(worker.isAlive()).isFalse();
+            assertThat(runner.isAlive()).isFalse();
             assertThat(signaller.isAlive()).isFalse();
             assertThat(nextInterrupted).isFalse();
             assertThat(interruptedAtFinish).isFalse();
@@ -415,7 +415,7 @@ class TaskExecutionTest {
             releaseBody.countDown();
             deliverInterrupt.countDown();
             releaseNext.countDown();
-            worker.join(5_000);
+            runner.join(5_000);
             signaller.join(5_000);
         }
     }

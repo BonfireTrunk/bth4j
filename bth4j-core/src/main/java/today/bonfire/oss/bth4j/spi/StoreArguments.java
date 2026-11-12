@@ -29,7 +29,7 @@ public final class StoreArguments {
         if (uniqueKey != null && uniqueKey.isEmpty()) throw new TaskValidationException("unique key is empty");
     }
 
-    /** @throws TaskValidationException when the worker label is null */
+    /** @throws TaskValidationException when the runner label is null */
     public static void requireLabel(String label) {
         if (label == null) throw new TaskValidationException("label is required");
     }

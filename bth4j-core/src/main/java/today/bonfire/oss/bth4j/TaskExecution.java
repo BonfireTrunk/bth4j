@@ -99,10 +99,10 @@ final class TaskExecution implements Runnable, TaskContext {
     private volatile Instant overrunSince;
     private volatile boolean reporting;
     // Serializes interrupts with detachment so a late signal cannot reach the thread's next task.
-    private final ReentrantLock workerLock = new ReentrantLock();
-    private Thread worker;
+    private final ReentrantLock bodyLock = new ReentrantLock();
+    private Thread bodyThread;
     private boolean leaseLossInterrupted;
-    /** the body was interrupted for a cancel request; guarded by workerLock */
+    /** the body was interrupted for a cancel request; guarded by bodyLock */
     private boolean cancelInterrupted;
     /** the fatal error to rethrow from run(), written by the thread that runs the task only */
     private Error fatal;
@@ -135,7 +135,7 @@ final class TaskExecution implements Runnable, TaskContext {
     void requestCancel(String reason) {
         if (reason != null) cancelReason = reason;
         cancelRequested = true;
-        interruptWorker(false);
+        interruptBody(false);
     }
 
     /** @return when the processor started, or null before that */
@@ -170,7 +170,7 @@ final class TaskExecution implements Runnable, TaskContext {
 
     void leaseLost() {
         leaseLost = true;
-        interruptWorker(true);
+        interruptBody(true);
     }
 
     /** @return true once this attempt is known to have lost its lease */
@@ -178,17 +178,17 @@ final class TaskExecution implements Runnable, TaskContext {
         return leaseLost;
     }
 
-    private void interruptWorker(boolean leaseLoss) {
+    private void interruptBody(boolean leaseLoss) {
         if (!interruptOnCancel) return;
-        workerLock.lock();
+        bodyLock.lock();
         try {
-            if (worker != null && (leaseLoss || !cancelInterrupted)) {
-                worker.interrupt();
+            if (bodyThread != null && (leaseLoss || !cancelInterrupted)) {
+                bodyThread.interrupt();
                 if (leaseLoss) leaseLossInterrupted = true;
                 else cancelInterrupted = true;
             }
         } finally {
-            workerLock.unlock();
+            bodyLock.unlock();
         }
     }
 
@@ -222,7 +222,7 @@ final class TaskExecution implements Runnable, TaskContext {
     private void runAttempt(Runnable freeSlot) {
         var started = s.clock().instant();
         startedAt = started;
-        emit(new TaskEvent.Started(view, record.workerId() == null ? 0 : record.workerId()));
+        emit(new TaskEvent.Started(view, record.runnerId() == null ? 0 : record.runnerId()));
         var registration = s.registry().get(view.type());
         if (registration == null) {
             freeSlot.run();
@@ -232,11 +232,11 @@ final class TaskExecution implements Runnable, TaskContext {
         }
         Throwable failure = null;
         try {
-            workerLock.lock();
+            bodyLock.lock();
             try {
-                worker = Thread.currentThread();
+                bodyThread = Thread.currentThread();
             } finally {
-                workerLock.unlock();
+                bodyLock.unlock();
             }
             if (leaseLost) throw new TaskLeaseLostException("lease of task " + record.id() + " was lost");
             process(registration);
@@ -244,13 +244,13 @@ final class TaskExecution implements Runnable, TaskContext {
             failure = t;
             remember(t);
         } finally {
-            workerLock.lock();
+            bodyLock.lock();
             try {
-                worker = null;
+                bodyThread = null;
                 // Clear cancel and lease-loss interrupts before bookkeeping or the thread's next task.
                 Thread.interrupted();
             } finally {
-                workerLock.unlock();
+                bodyLock.unlock();
             }
         }
         freeSlot.run();
@@ -286,7 +286,7 @@ final class TaskExecution implements Runnable, TaskContext {
     }
 
     private void defer(String reason) {
-        log.error("Task {} cannot run on this worker ({}), deferring it by {}", record.id(), reason, DEFER);
+        log.error("Task {} cannot run on this runner ({}), deferring it by {}", record.id(), reason, DEFER);
         apply(() -> s.store()
                 .reschedule(record.id(), record.revision(), s.clock().instant().plus(DEFER)));
         s.status().issue(Issue.Kind.UNKNOWN_TYPE, reason, record.id());

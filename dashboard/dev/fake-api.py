@@ -41,7 +41,7 @@ def make_tasks():
             "id": tid, "revision": str(1 + i % 5), "queue": qnames[i % 3], "type": ["send-mail", "build-report", "sync-account"][i % 3],
             "payloadVersion": 1, "state": state, "attempts": 1 if state != "QUEUED" else 0, "maxAttempts": 5,
             "createdAt": iso(-86400 + i * 600), "due": iso(-86000 + i * 600), "stateChangedAt": iso(-3600 + i * 20),
-            "workerId": 7 if state == "LEASED" else None, "leaseUntil": iso(30) if state == "LEASED" else None,
+            "runnerId": 7 if state == "LEASED" else None, "leaseUntil": iso(30) if state == "LEASED" else None,
             "claimedAt": iso(-40) if state in ("LEASED", "SUCCEEDED", "DEAD") else None,
             "account": "acme" if i % 2 else None, "headers": {"trace": "t-%d" % i} if i % 4 == 0 else {},
             "uniqueKey": "uk-%d" % i if i % 5 == 0 else None, "scheduleId": "nightly-report" if i % 11 == 0 else None,
@@ -73,7 +73,7 @@ schedules = {
     "mail-pump": {"id": "mail-pump", "type": "send-mail", "queue": "mail", "account": None, "cron": None, "zone": None,
                   "misfire": "SKIP", "fixedDelay": "PT30S", "overlap": "ALLOW", "paused": True, "nextFire": iso(25), "maxAttempts": 5},
 }
-workers = [
+runners = [
     {"id": 7, "label": "host-a/1234", "startedAt": iso(-7200), "lastSeen": iso(-2), "running": 3, "accepting": True, "queues": ["default", "mail"], "types": ["send-mail"]},
     {"id": 8, "label": "host-b/9876", "startedAt": iso(-9000), "lastSeen": iso(-300), "running": 0, "accepting": False, "queues": ["reports"], "types": ["build-report"]},
 ]
@@ -82,7 +82,7 @@ issues = [
     {"at": iso(-60), "kind": "store-error", "detail": "Connection refused (retrying)", "taskId": None},
     {"at": iso(-5000), "kind": "lease-lost", "detail": "Lease expired while running", "taskId": str(BASE_ID + 9)},
 ]
-health = {"status": "RUNNING", "workerId": 7, "runningTasks": 3, "abandonedAttempts": 0, "lastClaimAt": iso(-2), "lastMaintenanceAt": iso(-15),
+health = {"status": "RUNNING", "runnerId": 7, "runningTasks": 3, "abandonedAttempts": 0, "lastClaimAt": iso(-2), "lastMaintenanceAt": iso(-15),
           "lastStoreErrorAt": iso(-60), "lastStoreError": "Connection refused", "issueCount": len(issues)}
 
 
@@ -198,15 +198,15 @@ class Handler(BaseHTTPRequestHandler):
         if head == "health":
             return self.send_json(200, health)
         if head == "overview":
-            return self.send_json(200, {"counts": counts(), "workers": len(workers), "issues": len(issues), "health": health})
+            return self.send_json(200, {"counts": counts(), "runners": len(runners), "issues": len(issues), "health": health})
         if head == "queues":
             if len(segs) == 1:
                 c = counts()
                 return self.send_json(200, [dict(v, counts=c[k]) for k, v in queues.items()])
             queues[segs[1]]["paused"] = segs[2] == "pause"
             return self.send_json(204, None)
-        if head == "workers":
-            return self.send_json(200, workers)
+        if head == "runners":
+            return self.send_json(200, runners)
         if head == "unserved":
             return self.send_json(200, [{"queue": "reports", "type": None, "waiting": 7},
                                         {"queue": "mail", "type": "build-report", "waiting": 2}])

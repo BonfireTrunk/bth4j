@@ -23,7 +23,7 @@ public final class LoggingTaskObserver implements TaskObserver {
     @Override
     public void onEvent(TaskEvent event) {
         switch (event) {
-            case TaskEvent.Started e -> withTask(e.task(), () -> log.debug("started on worker {}", e.workerId()));
+            case TaskEvent.Started e -> withTask(e.task(), () -> log.debug("started on runner {}", e.runnerId()));
             case TaskEvent.Succeeded e ->
                 withTask(e.task(), () -> log.debug("succeeded in {} ({})", e.runTime(), e.outcome()));
             case TaskEvent.Retrying e ->

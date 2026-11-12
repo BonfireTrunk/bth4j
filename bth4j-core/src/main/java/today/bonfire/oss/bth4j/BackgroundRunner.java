@@ -60,9 +60,9 @@ public final class BackgroundRunner implements AutoCloseable {
 
     private volatile boolean stopRequested;
     private volatile boolean stopSequenceDone;
-    private volatile int workerId;
-    private volatile Set<Integer> workerQueueIds;
-    private volatile Set<Integer> workerTypeIds;
+    private volatile int runnerId;
+    private volatile Set<Integer> runnerQueueIds;
+    private volatile Set<Integer> runnerTypeIds;
     private volatile ScheduledFuture<?> monitoringTask;
     private volatile TaskProcessorService taskProcessorService;
     private volatile CustomThread scheduledTaskService;
@@ -119,9 +119,9 @@ public final class BackgroundRunner implements AutoCloseable {
         return registry;
     }
 
-    /** @return this runner's worker id, 0 before {@link #start()} */
-    public int workerId() {
-        return workerId;
+    /** @return this runner's runner id, 0 before {@link #start()} */
+    public int runnerId() {
+        return runnerId;
     }
 
     /**
@@ -158,7 +158,7 @@ public final class BackgroundRunner implements AutoCloseable {
                         : admission.quiet() ? RunnerHealth.Status.QUIET : RunnerHealth.Status.RUNNING;
         return new RunnerHealth(
                 s,
-                workerId,
+                runnerId,
                 admission.running(),
                 queueReservations.abandoned(),
                 status.lastClaimAt(),
@@ -220,9 +220,9 @@ public final class BackgroundRunner implements AutoCloseable {
         config.queuePolicies.forEach((q, p) -> policies.put(names.queueId(q), p));
         var typeIds = new HashSet<Integer>();
         for (var e : registry.typeNames()) typeIds.add(names.typeId(e));
-        workerQueueIds = Set.copyOf(queueIds);
-        workerTypeIds = Set.copyOf(typeIds);
-        workerId = store.allocateWorkerId(config.workerLabel, workerQueueIds, workerTypeIds);
+        runnerQueueIds = Set.copyOf(queueIds);
+        runnerTypeIds = Set.copyOf(typeIds);
+        runnerId = store.allocateRunnerId(config.runnerLabel, runnerQueueIds, runnerTypeIds);
         // stop() gives up waiting for the lifecycle lock when a store call here hangs; it cannot stop what is not
         // started yet
         if (stopRequested) {
@@ -246,7 +246,7 @@ public final class BackgroundRunner implements AutoCloseable {
                 List.copyOf(queueIds),
                 policies,
                 Set.copyOf(typeIds),
-                workerId);
+                runnerId);
         var storeInfo = store.info();
         scheduledTaskService = startScheduledTaskService();
         recurringTaskService = startRecurringTaskService();
@@ -259,7 +259,7 @@ public final class BackgroundRunner implements AutoCloseable {
             return;
         }
         taskProcessorService = startTaskProcessorService();
-        log.info("Background runner {} started as worker {} on {}", threadGroup.getName(), workerId, storeInfo);
+        log.info("Background runner {} started as runner {} on {}", threadGroup.getName(), runnerId, storeInfo);
         monitoringTask = scheduler.scheduleWithFixedDelay(
                 this::checkServices,
                 config.serviceCheckInterval.toMillis(),
@@ -315,7 +315,7 @@ public final class BackgroundRunner implements AutoCloseable {
         recurringTaskService = null;
         maintenanceService = null;
         services = null;
-        workerId = 0;
+        runnerId = 0;
     }
 
     private static Duration remaining(long deadline) {
@@ -599,9 +599,9 @@ public final class BackgroundRunner implements AutoCloseable {
                 .failureDetail(config.failureDetail)
                 .batchSize(serviceBatchSize())
                 .purgeBatchSize(config.purgeBatchSize)
-                .worker(workerId, config.workerLabel, workerQueueIds, workerTypeIds, admission::running)
+                .runner(runnerId, config.runnerLabel, runnerQueueIds, runnerTypeIds, admission::running)
                 .accepting(() -> !admission.quiet() && !stopRequested)
-                .workerStaleAfter(config.workerStaleAfter)
+                .runnerStaleTimeout(config.runnerStaleTimeout)
                 .create();
         service.start();
         service.heartbeatNow();
@@ -619,9 +619,9 @@ public final class BackgroundRunner implements AutoCloseable {
         private RetryPolicy retryPolicy = RetryPolicy.defaultPolicy();
         private Map<String, RetryPolicy> namedRetryPolicies = new LinkedHashMap<>();
         private Map<String, QueuePolicy> queuePolicies = new LinkedHashMap<>();
-        private Duration workerStaleAfter = Duration.ofMinutes(10);
+        private Duration runnerStaleTimeout = Duration.ofMinutes(10);
         private TaskObserver observer;
-        private String workerLabel = defaultWorkerLabel();
+        private String runnerLabel = defaultRunnerLabel();
         private String threadGroupName = "bgr";
         private Duration succeededRetention = Duration.ofMinutes(10);
         private Duration deadRetention = Duration.ofDays(90);
@@ -646,11 +646,11 @@ public final class BackgroundRunner implements AutoCloseable {
 
         private Builder() {}
 
-        private static String defaultWorkerLabel() {
+        private static String defaultRunnerLabel() {
             try {
                 return ManagementFactory.getRuntimeMXBean().getName();
             } catch (RuntimeException e) {
-                return "worker";
+                return "runner";
             }
         }
 
@@ -732,12 +732,12 @@ public final class BackgroundRunner implements AutoCloseable {
         }
 
         /**
-         * Worker rows without a heartbeat for this long are deleted by the purge. Default 10 minutes, at most
+         * Runner rows without a heartbeat for this long are deleted by the purge. Default 10 minutes, at most
          * {@link TaskRequest#MAX_TIME_FROM_NOW}.
          */
-        public Builder workerStaleAfter(Duration staleAfter) {
-            this.workerStaleAfter =
-                    requireStorable(requirePositive(staleAfter, "workerStaleAfter"), "workerStaleAfter");
+        public Builder runnerStaleTimeout(Duration staleAfter) {
+            this.runnerStaleTimeout =
+                    requireStorable(requirePositive(staleAfter, "runnerStaleTimeout"), "runnerStaleTimeout");
             return this;
         }
 
@@ -746,13 +746,13 @@ public final class BackgroundRunner implements AutoCloseable {
             return this;
         }
 
-        /** Identifies this process in the worker registry. Default is the JVM name (pid@host). */
-        public Builder workerLabel(String label) {
+        /** Identifies this process in the runner registry. Default is the JVM name (pid@host). */
+        public Builder runnerLabel(String label) {
             if (StringUtils.isBlank(label) || label.length() > 128) {
-                throw new TaskConfigurationException("workerLabel must be 1 to 128 characters");
+                throw new TaskConfigurationException("runnerLabel must be 1 to 128 characters");
             }
-            if (!StoredText.storable(label)) throw new TaskConfigurationException("workerLabel contains U+0000");
-            this.workerLabel = label;
+            if (!StoredText.storable(label)) throw new TaskConfigurationException("runnerLabel contains U+0000");
+            this.runnerLabel = label;
             return this;
         }
 
@@ -971,10 +971,10 @@ public final class BackgroundRunner implements AutoCloseable {
                 throw new TaskConfigurationException("Set concurrency or taskExecutor, not both");
             }
             // the heartbeat is written once per maintenance check; below three of them one late write would
-            // get a live worker purged
-            if (workerStaleAfter.compareTo(maintenanceCheckInterval.multipliedBy(3)) < 0) {
+            // get a live runner purged
+            if (runnerStaleTimeout.compareTo(maintenanceCheckInterval.multipliedBy(3)) < 0) {
                 throw new TaskConfigurationException(
-                        "workerStaleAfter must be at least three times maintenanceCheckInterval");
+                        "runnerStaleTimeout must be at least three times maintenanceCheckInterval");
             }
             return new BackgroundRunner(snapshot());
         }

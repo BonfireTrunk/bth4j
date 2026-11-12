@@ -2,7 +2,7 @@
 
 A Java library for background tasks with at-least-once delivery. Tasks live in a store (Redis, PostgreSQL or
 SQLite), several instances share the work through that store, and every state change is one atomic
-transition guarded by a revision, so a worker that lost its task cannot change it.
+transition guarded by a revision, so a runner that lost its task cannot change it.
 
 ```mermaid
 flowchart LR
@@ -30,7 +30,7 @@ BTH4J handles three kinds of work:
 
 | Kind | When it runs | Guide |
 |---|---|---|
-| Immediate task | as soon as a worker is free | [Enqueueing](docs/enqueueing.md) |
+| Immediate task | as soon as a runner has a free slot | [Enqueueing](docs/enqueueing.md) |
 | Scheduled task | after a delay or at a run time | [Enqueueing](docs/enqueueing.md) |
 | Recurring task | one task per fire time of a cron or fixed-delay definition | [Recurring tasks](docs/recurring-tasks.md) |
 
@@ -42,7 +42,7 @@ Every task carries the same parts:
 | Queue | decides which runners take the task and how many run at once | [Queues and concurrency](docs/queues-and-concurrency.md) |
 | Unique key (optional) | a second request with the same key is answered `Duplicate` | [Unique keys](docs/enqueueing.md#unique-keys) |
 | Retry budget | a failed attempt is retried until the budget is spent | [Retries and cancelling](docs/retries-and-cancelling.md) |
-| Lease | held while the task runs and renewed by the runner, so a crashed worker's task runs again | [How it works](docs/how-it-works.md) |
+| Lease | held while the task runs and renewed by the runner, so a crashed runner's task runs again | [How it works](docs/how-it-works.md) |
 | Steps (optional) | durable parts of a processor, so a retry resumes where the failed attempt stopped | [Steps](docs/tasks.md#steps) |
 
 Around the tasks, a runner gives you:
@@ -196,7 +196,7 @@ jedis.close();
 | [Queues and concurrency](docs/queues-and-concurrency.md) | queues, queue policies, pausing, fixed and adaptive concurrency |
 | [Exceptions](docs/errors.md) | what bth4j throws, when, and what to do about it |
 | [Configuration](docs/configuration.md) | every runner setting with its default, starting and stopping, how outcomes are written |
-| [Monitoring](docs/monitoring.md) | events, logging, inspection, health, issues, workers, metrics |
+| [Monitoring](docs/monitoring.md) | events, logging, inspection, health, issues, runners, metrics |
 | [Admin API and dashboard](docs/admin.md) | `AdminOps`, the admin HTTP server, roles, sessions, endpoints, the dashboard |
 | [Testing](docs/testing.md) | the test tools, a test with a clock you control, the store integration tests |
 | [Stores](docs/stores.md) | choosing a store and how the stores differ: clocks, precision, durability, transactions |

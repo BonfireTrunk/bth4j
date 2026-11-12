@@ -1,6 +1,6 @@
 # Monitoring
 
-This page shows how to watch a running system. It covers task events, logging, task inspection, runner health, issues, worker heartbeats, unserved work and Micrometer metrics. For the operator view and the operations an operator can run, see [Admin API and dashboard](admin.md).
+This page shows how to watch a running system. It covers task events, logging, task inspection, runner health, issues, runner heartbeats, unserved work and Micrometer metrics. For the operator view and the operations an operator can run, see [Admin API and dashboard](admin.md).
 
 ## On this page
 
@@ -9,7 +9,7 @@ This page shows how to watch a running system. It covers task events, logging, t
 - [Inspection](#inspection)
 - [Health](#health)
 - [Issues](#issues)
-- [Workers and heartbeats](#workers-and-heartbeats)
+- [Runners and heartbeats](#runners-and-heartbeats)
 - [Unserved work](#unserved-work)
 - [Metrics](#metrics)
 
@@ -82,7 +82,7 @@ The runner's own log lines go to the logger names in `Loggers`:
 | `CLIENT` | Schedule registration and generated ids found in use. |
 | `PROCESSOR` | Claims, executor rejections, lease renewal and the maximum run time. |
 | `ATTEMPT` | One attempt of a task: failures, retries, cancellation, rescheduling, deferral and lost leases. |
-| `MAINTENANCE` | Expired leases, start-by expiry, purge, worker heartbeats and stale workers. |
+| `MAINTENANCE` | Expired leases, start-by expiry, purge, runner heartbeats and stale runners. |
 | `RECURRING` | Recurring schedules: queued occurrences, skipped definitions and definitions that never fire again. |
 | `PROMOTION` | Promotion of delayed tasks that became due. |
 | `EXECUTOR` | `DefaultVtExecutor`, the adaptive executor (see [Concurrency](queues-and-concurrency.md#concurrency)). |
@@ -116,7 +116,7 @@ A `TaskView` carries state, attempts, due time, the last failures, completed ste
 These calls report on one runner, and the last one drains it:
 
 ```java
-RunnerHealth health = runner.health();     // status NEW, RUNNING, QUIET, STOPPING or STOPPED; workerId, runningTasks,
+RunnerHealth health = runner.health();     // status NEW, RUNNING, QUIET, STOPPING or STOPPED; runnerId, runningTasks,
                                            // abandonedAttempts, lastClaimAt, lastMaintenanceAt, lastStoreErrorAt,
                                            // lastStoreError, issueCount
 List<Issue> issues = runner.issues();      // the last 100 things an operator should look at, oldest first
@@ -164,37 +164,37 @@ A `corrupt-task` is a task with a stored value the store cannot read, such as a 
 | A schedule with `Overlap.SKIP` whose open occurrence it is | The schedule's next fire is moved ahead with a `schedule-broken` issue, and the other schedules go on. |
 | `AdminOps.cancel` and `delete` | They still work on it, given its id and revision. A corrupt fixed-delay occurrence is then not treated as one, so the cancel or delete neither pauses nor re-arms its definition. |
 
-## Workers and heartbeats
+## Runners and heartbeats
 
-Each runner writes a heartbeat to the worker registry every `maintenanceCheckInterval` (see [Configuration](configuration.md)). The heartbeat holds the last seen time, the running tasks and whether the runner is accepting work.
+Each runner writes a heartbeat to the runner registry every `maintenanceCheckInterval` (see [Configuration](configuration.md)). The heartbeat holds the last seen time, the running tasks and whether the runner is accepting work.
 
 | Call | Effect on accepting work |
 |---|---|
-| (a new worker) | A new worker accepts work. |
-| `quiet()` | The worker stops accepting. |
-| `drain()` | The worker stops accepting. |
-| `resume()` | The worker accepts again. |
+| (a new runner) | A new runner accepts work. |
+| `quiet()` | The runner stops accepting. |
+| `drain()` | The runner stops accepting. |
+| `resume()` | The runner accepts again. |
 
 `quiet()` and `resume()` request an immediate heartbeat on the maintenance thread. They do not block the caller on the store.
 
-- Maintenance deletes workers that were silent for `workerStaleAfter` (10 minutes by default).
-- `admin.workers()` lists the workers. It includes `accepting`, the queue ids they process and their registered task type ids, recorded at startup.
-- A runner that is still alive writes its row again with its next heartbeat. An example is a runner that could not reach the store for longer than `workerStaleAfter`. The row has the same id and the runner's label, queues and types. Its start time is then the time it was written again.
+- Maintenance deletes runners that were silent for `runnerStaleTimeout` (10 minutes by default).
+- `admin.runners()` lists the runners. It includes `accepting`, the queue ids they process and their registered task type ids, recorded at startup.
+- A runner that is still alive writes its row again with its next heartbeat. An example is a runner that could not reach the store for longer than `runnerStaleTimeout`. The row has the same id and the runner's label, queues and types. Its start time is then the time it was written again.
 
 ## Unserved work
 
-`admin.unservedWork()` finds queued work that no worker seen within the last minute can process. `admin.unservedWork(Duration)` chooses another heartbeat window, using the admin clock.
+`admin.unservedWork()` finds queued work that no runner seen within the last minute can process. `admin.unservedWork(Duration)` chooses another heartbeat window, using the admin clock.
 
-A runner writes its heartbeat every `maintenanceCheckInterval` (5 seconds by default). Where runners use an interval above about 20 seconds, pass a window of at least three intervals, or live workers count as absent between two heartbeats.
+A runner writes its heartbeat every `maintenanceCheckInterval` (5 seconds by default). Where runners use an interval above about 20 seconds, pass a window of at least three intervals, or live runners count as absent between two heartbeats.
 
 | Queue situation | Result |
 |---|---|
 | The queue is paused. | It is skipped. |
-| A worker is not accepting work. | That worker does not contribute coverage. |
-| No live accepting worker for the queue. | `UnservedWork(queue, null, waiting)` with the full queued count. |
-| Live accepting workers, but a type none of them handles. | `UnservedWork(queue, type, waiting)` with the exact queued count of that type, one entry per unhandled type. |
+| A runner is not accepting work. | That runner does not contribute coverage. |
+| No live accepting runner for the queue. | `UnservedWork(queue, null, waiting)` with the full queued count. |
+| Live accepting runners, but a type none of them handles. | `UnservedWork(queue, type, waiting)` with the exact queued count of that type, one entry per unhandled type. |
 
-Both results come from `InspectionStore.queuedByType()` at the time of that read. A worker's last seen time is the store's clock, and the window is measured on the admin clock. A skew between them shifts the window by that much.
+Both results come from `InspectionStore.queuedByType()` at the time of that read. A runner's last seen time is the store's clock, and the window is measured on the admin clock. A skew between them shifts the window by that much.
 
 ## Metrics
 

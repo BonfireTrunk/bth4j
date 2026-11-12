@@ -195,7 +195,7 @@ export default {
           <h3>Execution</h3>
           <dl class="kv">
             <dt>Attempts</dt><dd>{{ task.attempts }} of {{ task.maxAttempts }}</dd>
-            <dt>Worker</dt><dd>{{ task.workerId ?? '-' }}</dd>
+            <dt>Runner</dt><dd>{{ task.runnerId ?? '-' }}</dd>
             <dt>Lease until</dt><dd><time-ago :at="task.leaseUntil"></time-ago></dd>
             <dt>Start by</dt><dd><time-ago :at="task.startBy" late></time-ago></dd>
             <dt>Max run time</dt><dd>{{ task.maxRunTime ? duration(task.maxRunTime) : '-' }}</dd>

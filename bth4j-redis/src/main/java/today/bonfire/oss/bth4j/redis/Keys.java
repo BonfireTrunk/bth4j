@@ -8,12 +8,12 @@ package today.bonfire.oss.bth4j.redis;
  * Keys, with {@code qid} a queue id, {@code tid} a type id and {@code state} a
  * {@link today.bonfire.oss.bth4j.TaskState} code:
  * <ul>
- * <li>{@code meta} hash (field {@code schema}); {@code seq:id}, {@code seq:worker}, {@code seq:queue},
+ * <li>{@code meta} hash (field {@code schema}); {@code seq:id}, {@code seq:runner}, {@code seq:queue},
  * {@code seq:type} counters</li>
  * <li>{@code reg:queue} and {@code reg:type} hashes, name to id; listings invert them with one HGETALL and
  * purge walks the queue ids with HVALS</li>
- * <li>{@code w:<id>} hash (label, started, seen, running, accepting, queues, types); {@code workers} zset of
- * worker ids scored by the last heartbeat ms, which {@code purgeWorkers} walks</li>
+ * <li>{@code w:<id>} hash (label, started, seen, running, accepting, queues, types); {@code runners} zset of
+ * runner ids scored by the last heartbeat ms, which {@code purgeRunners} walks</li>
  * <li>{@code paused} set of queue ids that CLAIM skips</li>
  * <li>{@code startby} zset of QUEUED and SCHEDULED ids that have a {@code sb}, scored by it, so that expiry finds
  * them without scanning; an id leaves it on claim, cancel, delete and expire and returns when a task goes back to
@@ -61,7 +61,7 @@ public final class Keys {
     public static final String F_DUE = "due";
     public static final String F_STATE_CHANGED = "sc";
     public static final String F_DATA = "data";
-    public static final String F_WORKER = "wid";
+    public static final String F_RUNNER = "wid";
     public static final String F_LEASE = "lease";
     public static final String F_CLAIMED_AT = "ca";
     public static final String F_ACCOUNT = "acc";
@@ -100,13 +100,13 @@ public final class Keys {
     public final String prefix;
     public final String meta;
     public final String seqId;
-    public final String seqWorker;
+    public final String seqRunner;
     public final String leased;
     public final String cron;
     public final String cronDefinitions;
     public final String paused;
     public final String startBy;
-    public final String workers;
+    public final String runners;
     /** counter behind recurring definition revisions; it never resets, so a recreated definition cannot reuse one */
     public final String cronRevision;
 
@@ -115,13 +115,13 @@ public final class Keys {
         this.prefix = "{" + namespace + "}:";
         this.meta = prefix + "meta";
         this.seqId = prefix + "seq:id";
-        this.seqWorker = prefix + "seq:worker";
+        this.seqRunner = prefix + "seq:worker";
         this.leased = prefix + "leased";
         this.cron = prefix + "cron";
         this.cronDefinitions = prefix + "crondefs";
         this.paused = prefix + "paused";
         this.startBy = prefix + "startby";
-        this.workers = prefix + "workers";
+        this.runners = prefix + "workers";
         this.cronRevision = prefix + "cronrev";
     }
 
@@ -165,7 +165,7 @@ public final class Keys {
         return prefix + "k:" + key;
     }
 
-    public String worker(int id) {
+    public String runner(int id) {
         return prefix + "w:" + id;
     }
 

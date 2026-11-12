@@ -58,7 +58,7 @@ class SqliteTransactionTest {
     private String prefix;
     private int queue;
     private int type;
-    private int worker;
+    private int runner;
 
     @BeforeAll
     static void openDatabase() {
@@ -77,7 +77,7 @@ class SqliteTransactionTest {
         store = database.store(namespace, clock);
         queue = store.queueId("default");
         type = store.typeId("send-mail");
-        worker = store.allocateWorkerId("host:1", Set.of(), Set.of());
+        runner = store.allocateRunnerId("host:1", Set.of(), Set.of());
     }
 
     private TaskRecord.Builder task() {
@@ -89,7 +89,7 @@ class SqliteTransactionTest {
     }
 
     private List<TaskRecord> claim(int count) {
-        return store.claim(new ClaimRequest(List.of(new QueueGrant(queue, count, count)), count, LEASE, worker, null));
+        return store.claim(new ClaimRequest(List.of(new QueueGrant(queue, count, count)), count, LEASE, runner, null));
     }
 
     private TaskRecord enqueueAndClaim(TaskRecord.Builder builder) {
@@ -171,7 +171,7 @@ class SqliteTransactionTest {
     private void roundTrip(SqliteTaskStore pooled) {
         int pooledQueue = pooled.queueId("pooled");
         int pooledType = pooled.typeId("pooled-type");
-        int pooledWorker = pooled.allocateWorkerId("pooled", Set.of(pooledQueue), Set.of(pooledType));
+        int pooledRunner = pooled.allocateRunnerId("pooled", Set.of(pooledQueue), Set.of(pooledType));
         long succeededBefore =
                 pooled.counts().getOrDefault(pooledQueue, StateCounts.ZERO).succeeded();
         int deadBefore =
@@ -181,7 +181,7 @@ class SqliteTransactionTest {
         assertThat(pooled.enqueueAll(List.of(first.build(), second.build())))
                 .containsExactly(EnqueueOutcome.STORED, EnqueueOutcome.STORED);
         var claimed = pooled.claim(
-                new ClaimRequest(List.of(new QueueGrant(pooledQueue, 2, 2)), 2, LEASE, pooledWorker, null));
+                new ClaimRequest(List.of(new QueueGrant(pooledQueue, 2, 2)), 2, LEASE, pooledRunner, null));
         assertThat(claimed).hasSize(2);
         assertThat(pooled.renew(
                         claimed.stream()
@@ -292,7 +292,7 @@ class SqliteTransactionTest {
                 var b = task().build();
                 assertThat(pooled.enqueueAll(List.of(a, b)))
                         .containsExactly(EnqueueOutcome.STORED, EnqueueOutcome.STORED);
-                var request = new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, worker, null);
+                var request = new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, runner, null);
 
                 failWrites("UPDATE", "task", "NEW.id = " + b.id());
                 try {
@@ -566,7 +566,7 @@ class SqliteTransactionTest {
             hold.execute("BEGIN IMMEDIATE");
             try {
                 assertThat(claim(5)).isEmpty();
-                assertThat(quick.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, worker, null)))
+                assertThat(quick.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, runner, null)))
                         .isEmpty();
                 assertThat(quick.promote(10).moved()).isZero();
                 assertThat(quick.reclaim(10)).isEmpty();
@@ -574,7 +574,7 @@ class SqliteTransactionTest {
                 assertThat(quick.purge(TaskState.CANCELLED, Duration.ZERO, 10)).isZero();
                 assertThat(quick.releaseKeys(10)).isZero();
                 assertThat(quick.expire(10)).isEmpty();
-                assertThat(quick.purgeWorkers(Duration.ofDays(1))).isZero();
+                assertThat(quick.purgeRunners(Duration.ofDays(1))).isZero();
                 assertThat(quick.nextDue()).isNull();
                 assertThat(quick.queueId("default")).isEqualTo(queue);
                 assertThat(quick.typeId("send-mail")).isEqualTo(type);
@@ -600,22 +600,22 @@ class SqliteTransactionTest {
         assertThat(t.stateChangedAt()).isEqualTo(now);
         assertThat(t.claimedAt()).isEqualTo(now);
         assertThat(t.leaseUntil()).isEqualTo(now.plus(LEASE));
-        var worker = store.workers().stream()
-                .filter(w -> w.id() == this.worker)
+        var runner = store.runners().stream()
+                .filter(w -> w.id() == this.runner)
                 .findFirst()
                 .orElseThrow();
-        assertThat(worker.startedAt()).isEqualTo(now);
-        assertThat(worker.lastSeen()).isEqualTo(now);
+        assertThat(runner.startedAt()).isEqualTo(now);
+        assertThat(runner.lastSeen()).isEqualTo(now);
 
         clock.advance(Duration.ofSeconds(5));
         var later = clock.instant();
-        store.heartbeat(this.worker, "host:1", Set.of(), Set.of(), 1, true);
+        store.heartbeat(this.runner, "host:1", Set.of(), Set.of(), 1, true);
         assertThat(store.renew(List.of(new LeaseRef(t.id(), t.revision())), LEASE))
                 .singleElement()
                 .satisfies(s -> assertThat(s.owned()).isTrue());
         assertThat(get(t.id()).leaseUntil()).isEqualTo(later.plus(LEASE));
-        assertThat(store.workers().getFirst().lastSeen()).isEqualTo(later);
-        assertThat(store.workers().getFirst().startedAt()).isEqualTo(now);
+        assertThat(store.runners().getFirst().lastSeen()).isEqualTo(later);
+        assertThat(store.runners().getFirst().startedAt()).isEqualTo(now);
 
         assertThat(store.ack(t.id(), t.revision(), true, true, null)).isTrue();
         var done = get(t.id());
@@ -651,15 +651,15 @@ class SqliteTransactionTest {
     }
 
     @Test
-    void workerIdsAreNeverReusedAfterAPurge() {
-        int first = store.allocateWorkerId("host:2", Set.of(), Set.of());
+    void runnerIdsAreNeverReusedAfterAPurge() {
+        int first = store.allocateRunnerId("host:2", Set.of(), Set.of());
         clock.advance(Duration.ofHours(1));
 
-        assertThat(store.purgeWorkers(Duration.ofMinutes(30))).isEqualTo(2);
-        int next = store.allocateWorkerId("host:3", Set.of(), Set.of());
+        assertThat(store.purgeRunners(Duration.ofMinutes(30))).isEqualTo(2);
+        int next = store.allocateRunnerId("host:3", Set.of(), Set.of());
 
         assertThat(next).isGreaterThan(first);
-        assertThat(store.workers()).extracting(w -> w.id()).containsExactly(next);
+        assertThat(store.runners()).extracting(w -> w.id()).containsExactly(next);
     }
 
     @Test
@@ -714,7 +714,7 @@ class SqliteTransactionTest {
         var types = new java.util.HashSet<Integer>();
         IntStream.rangeClosed(1, 5000).forEach(types::add);
 
-        var claimed = store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 10, 10)), 10, LEASE, worker, types));
+        var claimed = store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 10, 10)), 10, LEASE, runner, types));
 
         assertThat(claimed).extracting(TaskRecord::id).containsExactly(known.id());
         assertThat(get(unknown.id()).state()).isEqualTo(TaskState.QUEUED);

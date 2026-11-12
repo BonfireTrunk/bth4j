@@ -452,7 +452,7 @@ class TaskProcessorOverrunTest {
                 .idlePollInterval(Duration.ofMillis(1))
                 .lease(lease)
                 .defaultMaxRunTime(defaultMaxRunTime)
-                .workerId(1)
+                .runnerId(1)
                 .create();
     }
 

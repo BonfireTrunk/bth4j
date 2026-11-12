@@ -41,6 +41,7 @@ import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
+import today.bonfire.oss.bth4j.spi.RunnerRecord;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.ScheduleEntry;
 import today.bonfire.oss.bth4j.spi.ScheduleStore;
@@ -49,7 +50,6 @@ import today.bonfire.oss.bth4j.spi.StoreInfo;
 import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /**
  * A {@link FullStore} that keeps everything in memory, for tests of applications that use bth4j. Every
@@ -101,9 +101,9 @@ public final class InMemoryStore implements FullStore {
     private final Map<String, Integer> queueIds = new LinkedHashMap<>();
     private final Map<String, Integer> typeIds = new LinkedHashMap<>();
     private final Set<Integer> pausedQueues = new HashSet<>();
-    private final Map<Integer, WorkerInfo> workers = new TreeMap<>();
+    private final Map<Integer, RunnerRecord> runners = new TreeMap<>();
     private long nextTaskId = 1;
-    private int nextWorkerId = 1;
+    private int nextRunnerId = 1;
     private long recurringRevision;
 
     public InMemoryStore() {
@@ -151,13 +151,13 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
+    public int allocateRunnerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
         StoreArguments.requireLabel(label);
         lock.lock();
         try {
-            int id = nextWorkerId++;
+            int id = nextRunnerId++;
             Instant now = clock.instant();
-            workers.put(id, new WorkerInfo(id, label, now, now, 0, true, queueIds, typeIds));
+            runners.put(id, new RunnerRecord(id, label, now, now, 0, true, queueIds, typeIds));
             return id;
         } finally {
             lock.unlock();
@@ -377,7 +377,7 @@ public final class InMemoryStore implements FullStore {
                     .claimedAt(now)
                     .stateChangedAt(now)
                     .leaseUntil(now.plus(request.lease()))
-                    .workerId(request.workerId())
+                    .runnerId(request.runnerId())
                     .build();
             claimed.add(save(leased));
         }
@@ -534,7 +534,7 @@ public final class InMemoryStore implements FullStore {
                 .stateChangedAt(now)
                 .leaseUntil(null);
         if (retryAt != null && t.attempts() < t.maxAttempts()) {
-            save(b.state(TaskState.SCHEDULED).due(retryAt).workerId(null).build());
+            save(b.state(TaskState.SCHEDULED).due(retryAt).runnerId(null).build());
             return FailOutcome.RETRY;
         }
         applyEffect(effect);
@@ -569,7 +569,7 @@ public final class InMemoryStore implements FullStore {
                     .revision(t.revision() + 1)
                     .stateChangedAt(clock.instant())
                     .leaseUntil(null)
-                    .workerId(null);
+                    .runnerId(null);
             target.accept(b);
             save(b.build());
             return true;
@@ -1031,13 +1031,13 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public int purgeWorkers(Duration staleAfter) {
+    public int purgeRunners(Duration staleAfter) {
         lock.lock();
         try {
             Instant cutoff = clock.instant().minus(millis(staleAfter));
-            int before = workers.size();
-            workers.values().removeIf(w -> w.lastSeen().isBefore(cutoff));
-            return before - workers.size();
+            int before = runners.size();
+            runners.values().removeIf(w -> w.lastSeen().isBefore(cutoff));
+            return before - runners.size();
         } finally {
             lock.unlock();
         }
@@ -1122,7 +1122,7 @@ public final class InMemoryStore implements FullStore {
                     .revision(t.revision() + 1)
                     .cancelRequestedAt(null)
                     .cancelReason(null)
-                    .workerId(null)
+                    .runnerId(null)
                     .leaseUntil(null)
                     .keyKeep(key != null ? t.keyKeep() : null)
                     .keyUntil(null)
@@ -1185,17 +1185,17 @@ public final class InMemoryStore implements FullStore {
 
     @Override
     public void heartbeat(
-            int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
+            int runnerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
         StoreArguments.requireLabel(label);
         lock.lock();
         try {
             Instant now = clock.instant();
-            WorkerInfo w = workers.get(workerId);
-            workers.put(
-                    workerId,
+            RunnerRecord w = runners.get(runnerId);
+            runners.put(
+                    runnerId,
                     w == null
-                            ? new WorkerInfo(workerId, label, now, now, running, accepting, queueIds, typeIds)
-                            : new WorkerInfo(
+                            ? new RunnerRecord(runnerId, label, now, now, running, accepting, queueIds, typeIds)
+                            : new RunnerRecord(
                                     w.id(),
                                     w.label(),
                                     w.startedAt(),
@@ -1226,10 +1226,10 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public List<WorkerInfo> workers() {
+    public List<RunnerRecord> runners() {
         lock.lock();
         try {
-            return List.copyOf(workers.values());
+            return List.copyOf(runners.values());
         } finally {
             lock.unlock();
         }

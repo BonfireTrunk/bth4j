@@ -30,15 +30,15 @@ class BackgroundRunnerCoverageTest {
                 .clock(clock)
                 .queues(Queues.of("main", "mail", "unused"))
                 .processQueues(List.of("mail", "main", "mail"))
-                .workerLabel("coverage-test")
+                .runnerLabel("coverage-test")
                 .build();
         runner.registry().register(TaskType.of("send"), (context, payload) -> {});
         runner.registry().register(TaskType.of("export"), (context, payload) -> {});
         try {
             runner.start();
 
-            assertThat(store.workers()).singleElement().satisfies(w -> {
-                assertThat(w.id()).isEqualTo(runner.workerId());
+            assertThat(store.runners()).singleElement().satisfies(w -> {
+                assertThat(w.id()).isEqualTo(runner.runnerId());
                 assertThat(w.label()).isEqualTo("coverage-test");
                 assertThat(w.queueIds()).containsExactlyInAnyOrder(store.queueId("main"), store.queueId("mail"));
                 assertThat(w.typeIds()).containsExactlyInAnyOrder(store.typeId("send"), store.typeId("export"));
@@ -49,7 +49,7 @@ class BackgroundRunnerCoverageTest {
     }
 
     @Test
-    void aWorkerRowPurgedWhileTheRunnerLivesIsRestoredWithWhatTheRunnerRegistered() throws Exception {
+    void aRunnerRowPurgedWhileTheRunnerLivesIsRestoredWithWhatTheRunnerRegistered() throws Exception {
         var clock = new MutableClock();
         var store = new InMemoryStore(clock);
         var heartbeats = new LinkedBlockingQueue<Integer>();
@@ -62,22 +62,22 @@ class BackgroundRunnerCoverageTest {
                 .store(observed)
                 .clock(clock)
                 .queues(Queues.of("main"))
-                .workerLabel("restored")
+                .runnerLabel("restored")
                 .maintenanceCheckInterval(Duration.ofHours(1))
-                .workerStaleAfter(Duration.ofHours(3))
+                .runnerStaleTimeout(Duration.ofHours(3))
                 .build();
         runner.registry().register(TaskType.of("send"), (context, payload) -> {});
         try {
             runner.start();
-            assertThat(heartbeats.poll(2, TimeUnit.SECONDS)).isEqualTo(runner.workerId());
+            assertThat(heartbeats.poll(2, TimeUnit.SECONDS)).isEqualTo(runner.runnerId());
             clock.advance(Duration.ofMinutes(11));
-            assertThat(store.purgeWorkers(Duration.ofMinutes(10))).isEqualTo(1);
+            assertThat(store.purgeRunners(Duration.ofMinutes(10))).isEqualTo(1);
 
             runner.resume();
 
-            assertThat(heartbeats.poll(2, TimeUnit.SECONDS)).isEqualTo(runner.workerId());
-            assertThat(store.workers()).singleElement().satisfies(w -> {
-                assertThat(w.id()).isEqualTo(runner.workerId());
+            assertThat(heartbeats.poll(2, TimeUnit.SECONDS)).isEqualTo(runner.runnerId());
+            assertThat(store.runners()).singleElement().satisfies(w -> {
+                assertThat(w.id()).isEqualTo(runner.runnerId());
                 assertThat(w.label()).isEqualTo("restored");
                 assertThat(w.queueIds()).containsExactly(store.queueId("main"));
                 assertThat(w.typeIds()).containsExactly(store.typeId("send"));
@@ -112,7 +112,7 @@ class BackgroundRunnerCoverageTest {
         var runner = BackgroundRunner.builder()
                 .store(observed)
                 .maintenanceCheckInterval(Duration.ofHours(1))
-                .workerStaleAfter(Duration.ofHours(3))
+                .runnerStaleTimeout(Duration.ofHours(3))
                 .build();
         runner.registry().register(TaskType.of("work"), (context, payload) -> {});
         try {
@@ -120,13 +120,13 @@ class BackgroundRunnerCoverageTest {
             assertThat(heartbeats.poll(2, TimeUnit.SECONDS)).isEqualTo(true);
             runner.quiet();
             assertThat(quietHeartbeatEntered.await(2, TimeUnit.SECONDS)).isTrue();
-            assertThat(store.workers().getFirst().accepting()).isTrue();
+            assertThat(store.runners().getFirst().accepting()).isTrue();
             releaseQuietHeartbeat.countDown();
             assertThat(heartbeats.poll(2, TimeUnit.SECONDS)).isEqualTo(false);
-            assertThat(store.workers().getFirst().accepting()).isFalse();
+            assertThat(store.runners().getFirst().accepting()).isFalse();
             runner.resume();
             assertThat(heartbeats.poll(2, TimeUnit.SECONDS)).isEqualTo(true);
-            assertThat(store.workers().getFirst().accepting()).isTrue();
+            assertThat(store.runners().getFirst().accepting()).isTrue();
             assertThat(heartbeatThreads).hasSize(3).doesNotContain(caller);
             assertThat(heartbeatThreads.stream().distinct()).hasSize(1);
         } finally {
@@ -147,7 +147,7 @@ class BackgroundRunnerCoverageTest {
         var runner = BackgroundRunner.builder()
                 .store(observed)
                 .maintenanceCheckInterval(Duration.ofHours(1))
-                .workerStaleAfter(Duration.ofHours(3))
+                .runnerStaleTimeout(Duration.ofHours(3))
                 .build();
         runner.registry().register(TaskType.of("work"), (context, payload) -> {});
         runner.start();
@@ -156,7 +156,7 @@ class BackgroundRunnerCoverageTest {
         runner.stop();
 
         assertThat(published.poll(2, TimeUnit.SECONDS)).isEqualTo(false);
-        assertThat(store.workers().getFirst().accepting()).isFalse();
+        assertThat(store.runners().getFirst().accepting()).isFalse();
     }
 
     @Test
@@ -171,14 +171,14 @@ class BackgroundRunnerCoverageTest {
         var runner = BackgroundRunner.builder()
                 .store(observed)
                 .maintenanceCheckInterval(Duration.ofHours(1))
-                .workerStaleAfter(Duration.ofHours(3))
+                .runnerStaleTimeout(Duration.ofHours(3))
                 .build();
         runner.registry().register(TaskType.of("work"), (context, payload) -> {});
         try {
             runner.quiet();
             runner.start();
             assertThat(published.poll(2, TimeUnit.SECONDS)).isEqualTo(false);
-            assertThat(store.workers().getFirst().accepting()).isFalse();
+            assertThat(store.runners().getFirst().accepting()).isFalse();
         } finally {
             runner.stop();
         }
@@ -224,7 +224,7 @@ class BackgroundRunnerCoverageTest {
                     .isInstanceOf(TaskConfigurationException.class)
                     .hasMessageContaining("json")
                     .hasMessageContaining("jsonMapper");
-            assertThat(store.workers()).isEmpty();
+            assertThat(store.runners()).isEmpty();
         } finally {
             runner.stop();
         }
@@ -246,14 +246,14 @@ class BackgroundRunnerCoverageTest {
                 .store(store)
                 .queues(Queues.of("main", "mail"))
                 .queue("main", QueuePolicy.weight(1))
-                .workerLabel("first");
+                .runnerLabel("first");
         var first = builder.build();
-        builder.workerLabel("second").queue("mail", QueuePolicy.weight(5)).queues(Queues.of("other"));
+        builder.runnerLabel("second").queue("mail", QueuePolicy.weight(5)).queues(Queues.of("other"));
         first.registry().register(TaskType.of("work"), (context, payload) -> {});
         try {
             first.start();
 
-            assertThat(store.workers()).singleElement().satisfies(w -> {
+            assertThat(store.runners()).singleElement().satisfies(w -> {
                 assertThat(w.label()).isEqualTo("first");
                 assertThat(w.queueIds()).containsExactlyInAnyOrder(store.queueId("main"), store.queueId("mail"));
             });
@@ -282,14 +282,14 @@ class BackgroundRunnerCoverageTest {
         assertThatThrownBy(() -> BackgroundRunner.builder()
                         .store(store)
                         .maintenanceCheckInterval(Duration.ofSeconds(10))
-                        .workerStaleAfter(Duration.ofSeconds(29))
+                        .runnerStaleTimeout(Duration.ofSeconds(29))
                         .build())
                 .isInstanceOf(TaskConfigurationException.class)
-                .hasMessageContaining("workerStaleAfter");
+                .hasMessageContaining("runnerStaleTimeout");
         assertThatCode(() -> BackgroundRunner.builder()
                         .store(store)
                         .maintenanceCheckInterval(Duration.ofSeconds(10))
-                        .workerStaleAfter(Duration.ofSeconds(30))
+                        .runnerStaleTimeout(Duration.ofSeconds(30))
                         .build())
                 .doesNotThrowAnyException();
     }
@@ -298,7 +298,7 @@ class BackgroundRunnerCoverageTest {
     void aStartThatCannotReachTheStoreLeavesTheRunnerNewAndStartsOnTheNextCall() {
         var down = new AtomicBoolean(true);
         var observed = StoreInterceptor.around(new InMemoryStore(new MutableClock()), (method, args, real) -> {
-            if (method.equals("allocateWorkerId") && down.get()) throw new TaskStoreException("store down");
+            if (method.equals("allocateRunnerId") && down.get()) throw new TaskStoreException("store down");
             return real.proceed();
         });
         var runner = BackgroundRunner.builder().store(observed).build();
@@ -306,13 +306,13 @@ class BackgroundRunnerCoverageTest {
         try {
             assertThatThrownBy(runner::start).isInstanceOf(TaskStoreException.class);
             assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.NEW);
-            assertThat(runner.workerId()).isZero();
+            assertThat(runner.runnerId()).isZero();
 
             down.set(false);
             runner.start();
 
             assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.RUNNING);
-            assertThat(runner.workerId()).isPositive();
+            assertThat(runner.runnerId()).isPositive();
         } finally {
             runner.stop();
         }
@@ -500,7 +500,7 @@ class BackgroundRunnerCoverageTest {
                     .orElseThrow();
 
             assertThat(view.queue()).isEqualTo(Queues.GENERAL);
-            assertThat(store.workers().getFirst().queueIds()).containsExactly(store.queueId("general"));
+            assertThat(store.runners().getFirst().queueIds()).containsExactly(store.queueId("general"));
         } finally {
             runner.stop();
         }
@@ -565,11 +565,11 @@ class BackgroundRunnerCoverageTest {
         runner.registry().register(TaskType.of("work"), (context, payload) -> {});
         try {
             runner.start();
-            var workerId = runner.workerId();
+            var runnerId = runner.runnerId();
 
             runner.start();
 
-            assertThat(runner.workerId()).isEqualTo(workerId);
+            assertThat(runner.runnerId()).isEqualTo(runnerId);
             assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.RUNNING);
         } finally {
             runner.stop();
@@ -589,7 +589,7 @@ class BackgroundRunnerCoverageTest {
         assertThatThrownBy(runner::start)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("build a new runner");
-        assertThat(store.workers()).hasSize(1);
+        assertThat(store.runners()).hasSize(1);
     }
 
     @Test
@@ -603,7 +603,7 @@ class BackgroundRunnerCoverageTest {
 
         assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.STOPPED);
         assertThatThrownBy(runner::start).isInstanceOf(IllegalStateException.class);
-        assertThat(store.workers()).isEmpty();
+        assertThat(store.runners()).isEmpty();
     }
 
     @Test
@@ -638,7 +638,7 @@ class BackgroundRunnerCoverageTest {
 
         assertThatCode(runner::stop).doesNotThrowAnyException();
 
-        assertThat(store.workers().getFirst().accepting()).isFalse();
+        assertThat(store.runners().getFirst().accepting()).isFalse();
         assertThat(runner.drain(Duration.ofSeconds(Long.MAX_VALUE))).isTrue();
     }
 

@@ -50,7 +50,7 @@ public interface TaskContext {
      * Runs {@code body} once per task, not once per attempt: when a step with this name already completed in
      * an earlier attempt, the stored result is returned and the body does not run. The result is stored before
      * this method returns, so a later attempt resumes after the last completed step. A step is repeated when
-     * the worker dies between finishing the body and storing the result, so the body should be safe to repeat.
+     * the runner dies between finishing the body and storing the result, so the body should be safe to repeat.
      *
      * @param name   unique within the task, at most 64 characters, without U+0000
      * @param type   result class, written and read with the runner's JSON mapper; on a runner without one the

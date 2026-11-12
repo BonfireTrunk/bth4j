@@ -5,14 +5,14 @@ const STALE_MS = 60000;
 
 export default {
   setup() {
-    const { data, loading, error, reload } = usePoll(() => api.workers(), 5000);
+    const { data, loading, error, reload } = usePoll(() => api.runners(), 5000);
     const isStale = (w) => !w.lastSeen || now.value - Date.parse(w.lastSeen) > STALE_MS;
     return { data, loading, error, reload, isStale };
   },
   template: `
   <section>
-    <div class="page-head"><h1>Workers</h1><button type="button" @click="reload">Refresh</button></div>
-    <status-msg :loading="loading" :error="error" :empty="!data || data.length === 0" empty-text="No workers registered." empty-hint="A worker appears when a runner starts against this store."></status-msg>
+    <div class="page-head"><h1>Runners</h1><button type="button" @click="reload">Refresh</button></div>
+    <status-msg :loading="loading" :error="error" :empty="!data || data.length === 0" empty-text="No runners registered." empty-hint="A runner appears here when it starts against this store."></status-msg>
     <div class="table-wrap" v-if="data && data.length">
       <table>
         <thead><tr><th>Id</th><th>Label</th><th>Queues</th><th>Types</th><th>Started</th><th>Last heartbeat</th><th class="num">Running</th><th>Status</th></tr></thead>

@@ -39,9 +39,9 @@ admin.schedules();                                 // ScheduleView: cron, zone i
 admin.pauseSchedule("poll-feed", false);           // resume a paused one; a fixed-delay definition is re-armed one delay from now
 admin.triggerSchedule("nightly-report");           // fires at the next recurring check
 admin.deleteSchedule("nightly-report");
-admin.workers();
+admin.runners();
 admin.unservedWork();
-admin.purgeStaleWorkers(Duration.ofMinutes(10));
+admin.purgeStaleRunners(Duration.ofMinutes(10));
 ```
 
 The queue of `tasks(state, queue, cursor, limit)` and `pauseQueue(queue, paused)` must be a known queue name. A null or blank queue is a `TaskValidationException`; to list every queue, call `tasks(state, cursor, limit)`.
@@ -248,8 +248,8 @@ Task ids and revisions are JSON strings.
 | `tasks/by-key?key=` | Reads the task that holds a unique key. |
 | `tasks/by-key/cancel?key=` | Cancels the task that holds the key, with a body of `{"reason"}` and no revision. |
 | `schedules` | The schedules, with `pause`, `resume`, `trigger` and delete. |
-| `workers` | The workers. |
-| `unserved` | Queued work that no live accepting worker can process. |
+| `runners` | The runners. |
+| `unserved` | Queued work that no live accepting runner can process. |
 | `issues` | The runner's issues. |
 
 Viewers may read, and admins may also change (see [Roles](#roles)).
@@ -269,9 +269,9 @@ Viewers may read, and admins may also change (see [Roles](#roles)).
 - A read answers 404 when no task holds the key.
 - A cancel answers 404 when no task holds the key, and 409 when the holder is already finished or changed between the read and the cancel.
 
-#### Workers and unserved work
+#### Runners and unserved work
 
-- `GET /api/v1/workers` includes `queues` and `types` as name lists and the boolean `accepting`.
+- `GET /api/v1/runners` includes `queues` and `types` as name lists and the boolean `accepting`.
 - `GET /api/v1/unserved` returns a list of `{"queue", "type", "waiting"}`, using the one-minute heartbeat window. A null type means the whole queue is unserved and `waiting` is its queued count. Otherwise `waiting` is the exact queued count of that type. For what counts as unserved, see [Unserved work](monitoring.md#unserved-work).
 - Both endpoints are available to viewers.
 
@@ -316,7 +316,7 @@ The dashboard is the static Vue 3 app in `dashboard/`. It has no build step. It 
 | Tasks | Tasks with filters, and a detail view: timeline, steps, failures and the payload. |
 | Dead tasks | The dead tasks. |
 | Schedules | The schedules. |
-| Workers | The workers, with coverage and quiet status. |
+| Runners | The runners, with coverage and quiet status. |
 | Issues | The issues. |
 
 Admins can also retry, cancel (with a reason), delete, pause and trigger.

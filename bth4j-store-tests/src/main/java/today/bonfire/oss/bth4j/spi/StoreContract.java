@@ -66,8 +66,8 @@ public abstract class StoreContract {
     private static final Duration PAST_MID = Duration.ofMillis(700);
 
     protected FullStore store;
-    private int worker;
-    /** A registered queue no test enqueues to; with it the ids of queue, type and worker all differ. */
+    private int runner;
+    /** A registered queue no test enqueues to; with it the ids of queue, type and runner all differ. */
     private int idle;
 
     private int queue;
@@ -163,13 +163,13 @@ public abstract class StoreContract {
         namespace = "contract" + COUNTER.incrementAndGet() + "x" + System.nanoTime() % 100_000;
         store = newStore(namespace);
         store.init();
-        // a store that writes one id where another belongs fails when queue, type and worker ids differ
+        // a store that writes one id where another belongs fails when queue, type and runner ids differ
         idle = store.queueId("idle");
         queue = store.queueId("main");
         store.typeId("filler-1");
         store.typeId("filler-2");
         type = store.typeId("work");
-        worker = store.allocateWorkerId("contract-test", Set.of(queue), Set.of(type));
+        runner = store.allocateRunnerId("contract-test", Set.of(queue), Set.of(type));
     }
 
     /**
@@ -258,7 +258,7 @@ public abstract class StoreContract {
             queues.add(queue);
         }
         return store.claim(new ClaimRequest(
-                queues.stream().map(q -> new QueueGrant(q, count, count)).toList(), count, lease, worker, typeIds));
+                queues.stream().map(q -> new QueueGrant(q, count, count)).toList(), count, lease, runner, typeIds));
     }
 
     private TaskRecord claimOne() {
@@ -380,11 +380,11 @@ public abstract class StoreContract {
     }
 
     @Test
-    void allocateWorkerIdIsUniqueAcrossCalls() {
-        int a = store.allocateWorkerId("a", Set.of(), Set.of());
-        int b = store.allocateWorkerId("b", Set.of(), Set.of());
-        assertThat(a).isNotEqualTo(b).isNotEqualTo(worker);
-        assertThat(b).isNotEqualTo(worker);
+    void allocateRunnerIdIsUniqueAcrossCalls() {
+        int a = store.allocateRunnerId("a", Set.of(), Set.of());
+        int b = store.allocateRunnerId("b", Set.of(), Set.of());
+        assertThat(a).isNotEqualTo(b).isNotEqualTo(runner);
+        assertThat(b).isNotEqualTo(runner);
     }
 
     @Test
@@ -459,12 +459,12 @@ public abstract class StoreContract {
         assertThat(store.typeNames()).isEqualTo(types);
 
         assertThatThrownBy(() -> store.allocateIds(0)).isInstanceOf(TaskValidationException.class);
-        int workers = store.workers().size();
-        assertThatThrownBy(() -> store.allocateWorkerId(null, Set.of(queue), Set.of(type)))
+        int runners = store.runners().size();
+        assertThatThrownBy(() -> store.allocateRunnerId(null, Set.of(queue), Set.of(type)))
                 .isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> store.heartbeat(worker, null, Set.of(queue), Set.of(type), 0, true))
+        assertThatThrownBy(() -> store.heartbeat(runner, null, Set.of(queue), Set.of(type), 0, true))
                 .isInstanceOf(TaskValidationException.class);
-        assertThat(store.workers()).hasSize(workers);
+        assertThat(store.runners()).hasSize(runners);
 
         TaskRecord t = leased(task());
         assertThatThrownBy(() -> store.reschedule(t.id(), t.revision(), null))
@@ -660,7 +660,7 @@ public abstract class StoreContract {
                 .as("state change time after %s", path)
                 .isNotNull();
         assertThat(Stream.of(
-                        stored.workerId(),
+                        stored.runnerId(),
                         stored.leaseUntil(),
                         stored.claimedAt(),
                         stored.keyUntil(),
@@ -876,7 +876,7 @@ public abstract class StoreContract {
         Instant at = millis(now().minusSeconds(5));
         return builder.state(TaskState.LEASED)
                 .attempts(3)
-                .workerId(worker)
+                .runnerId(runner)
                 .leaseUntil(millis(now().plusSeconds(60)))
                 .claimedAt(at)
                 .keyUntil(millis(now().plusSeconds(90)))
@@ -915,16 +915,16 @@ public abstract class StoreContract {
     }
 
     @Test
-    void aTaskThatWentBackToWaitingNamesNoWorkerOnceItEnds() {
+    void aTaskThatWentBackToWaitingNamesNoRunnerOnceItEnds() {
         TaskRecord retried = leased(task());
         assertThat(store.fail(retried.id(), retried.revision(), failure(1), now().plusSeconds(60), true, null))
                 .isEqualTo(FailOutcome.RETRY);
-        assertThat(get(retried.id()).workerId())
+        assertThat(get(retried.id()).runnerId())
                 .as("waiting after fail with a retry")
                 .isNull();
         assertThat(store.cancel(retried.id(), retried.revision() + 1, "stop", null))
                 .isEqualTo(CancelOutcome.CANCELLED);
-        assertThat(get(retried.id()).workerId())
+        assertThat(get(retried.id()).runnerId())
                 .as("cancelled after fail with a retry")
                 .isNull();
 
@@ -933,7 +933,7 @@ public abstract class StoreContract {
                 .isTrue();
         assertThat(store.cancel(rescheduled.id(), rescheduled.revision() + 1, "stop", null))
                 .isEqualTo(CancelOutcome.CANCELLED);
-        assertThat(get(rescheduled.id()).workerId())
+        assertThat(get(rescheduled.id()).runnerId())
                 .as("cancelled after reschedule")
                 .isNull();
 
@@ -941,7 +941,7 @@ public abstract class StoreContract {
         assertThat(store.unclaim(unclaimed.id(), unclaimed.revision())).isTrue();
         assertThat(store.cancel(unclaimed.id(), unclaimed.revision() + 1, "stop", null))
                 .isEqualTo(CancelOutcome.CANCELLED);
-        assertThat(get(unclaimed.id()).workerId()).as("cancelled after unclaim").isNull();
+        assertThat(get(unclaimed.id()).runnerId()).as("cancelled after unclaim").isNull();
 
         Instant startBy = now().plus(SHORT);
         TaskRecord expiring = leased(task().startBy(startBy));
@@ -950,7 +950,7 @@ public abstract class StoreContract {
                 .isEqualTo(FailOutcome.RETRY);
         advance(PAST_SHORT);
         assertThat(store.expire(10)).extracting(ExpiredTask::id).containsExactly(expiring.id());
-        assertThat(get(expiring.id()).workerId())
+        assertThat(get(expiring.id()).runnerId())
                 .as("expired after fail with a retry")
                 .isNull();
     }
@@ -1098,8 +1098,8 @@ public abstract class StoreContract {
 
         assertThat(store.purge(TaskState.SUCCEEDED, longest, 10)).isZero();
         assertThat(store.getTask(held.id())).isPresent();
-        assertThat(store.purgeWorkers(longest)).isZero();
-        assertThat(store.workers()).extracting(WorkerInfo::id).contains(worker);
+        assertThat(store.purgeRunners(longest)).isZero();
+        assertThat(store.runners()).extracting(RunnerRecord::id).contains(runner);
     }
 
     @Test
@@ -1193,16 +1193,16 @@ public abstract class StoreContract {
                 .isTrue();
         assertThat(store.nextFireTimes()).containsEntry("ms-every", millis(odd.plusSeconds(60)));
 
-        store.heartbeat(worker, "contract-test", Set.of(queue), Set.of(type), 0, true);
-        assertThat(store.workers())
-                .filteredOn(w -> w.id() == worker)
+        store.heartbeat(runner, "contract-test", Set.of(queue), Set.of(type), 0, true);
+        assertThat(store.runners())
+                .filteredOn(w -> w.id() == runner)
                 .singleElement()
                 .satisfies(w -> {
                     assertThat(w.startedAt().getNano() % 1_000_000)
-                            .as("worker startedAt")
+                            .as("runner startedAt")
                             .isZero();
                     assertThat(w.lastSeen().getNano() % 1_000_000)
-                            .as("worker lastSeen")
+                            .as("runner lastSeen")
                             .isZero();
                 });
     }
@@ -1261,7 +1261,7 @@ public abstract class StoreContract {
                 .keyKeep(window);
     }
 
-    /** Stores and claims the task, saves two steps and a progress text, and reads it back as the worker left it. */
+    /** Stores and claims the task, saves two steps and a progress text, and reads it back as the runner left it. */
     private TaskRecord workedTask(
             TaskRecord.Builder builder, Duration lease, EndingTimes times, boolean cancelRequested) {
         long id = put(builder);
@@ -1370,7 +1370,7 @@ public abstract class StoreContract {
                 endedFrom(claimed, retry ? TaskState.SCHEDULED : TaskState.DEAD).failures(List.of(info));
         List<String> notChecked = new ArrayList<>(List.of("progress"));
         if (retry) {
-            expected.due(retryAt).workerId(null).uniqueKey(claimed.uniqueKey());
+            expected.due(retryAt).runnerId(null).uniqueKey(claimed.uniqueKey());
         } else {
             notChecked.add("due");
         }
@@ -1699,7 +1699,7 @@ public abstract class StoreContract {
                     .as("cancel request of %s", how)
                     .isNull();
             assertThat(retried.cancelReason()).as("cancel reason of %s", how).isNull();
-            assertThat(retried.workerId()).as("worker of %s", how).isNull();
+            assertThat(retried.runnerId()).as("runner of %s", how).isNull();
             assertThat(retried.leaseUntil()).as("lease of %s", how).isNull();
             assertThat(retried.attempts()).as("attempts of %s", how).isZero();
         });
@@ -2249,7 +2249,7 @@ public abstract class StoreContract {
         assertThat(t.state()).isEqualTo(TaskState.LEASED);
         assertThat(t.attempts()).isEqualTo(1);
         assertThat(t.revision()).isEqualTo(1);
-        assertThat(t.workerId()).isEqualTo(worker);
+        assertThat(t.runnerId()).isEqualTo(runner);
         assertThat(t.claimedAt()).isAfterOrEqualTo(millis(before));
         assertThat(t.leaseUntil()).isAfterOrEqualTo(millis(before).plus(LEASE));
         assertThat(claimed.revision()).isEqualTo(t.revision());
@@ -2323,7 +2323,7 @@ public abstract class StoreContract {
         }
         var grants = List.of(new QueueGrant(queue, 1, 2), new QueueGrant(empty, 3, 3), new QueueGrant(second, 1, 4));
 
-        assertThat(store.claim(new ClaimRequest(grants, 6, LEASE, worker, null)))
+        assertThat(store.claim(new ClaimRequest(grants, 6, LEASE, runner, null)))
                 .extracting(TaskRecord::id)
                 .containsExactly(
                         firstIds.get(0),
@@ -2353,7 +2353,7 @@ public abstract class StoreContract {
                 new QueueGrant(partial, 2, 5),
                 new QueueGrant(queue, 1, 3));
 
-        assertThat(store.claim(new ClaimRequest(grants, 5, LEASE, worker, null)))
+        assertThat(store.claim(new ClaimRequest(grants, 5, LEASE, runner, null)))
                 .extracting(TaskRecord::id)
                 .containsExactly(partialId, ids.get(0), ids.get(1), ids.get(2));
         assertThat(get(pausedId).state()).isEqualTo(TaskState.QUEUED);
@@ -2371,7 +2371,7 @@ public abstract class StoreContract {
         long extra = put(task(second, type));
         var grants = List.of(new QueueGrant(queue, 1, 5), new QueueGrant(empty, 2, 2), new QueueGrant(second, 1, 5));
 
-        assertThat(store.claim(new ClaimRequest(grants, 4, LEASE, worker, null)))
+        assertThat(store.claim(new ClaimRequest(grants, 4, LEASE, runner, null)))
                 .extracting(TaskRecord::id)
                 .containsExactly(ids.get(0), next, ids.get(1), ids.get(2));
         assertThat(get(ids.get(3)).state()).isEqualTo(TaskState.QUEUED);
@@ -2386,7 +2386,7 @@ public abstract class StoreContract {
         long extra = put(task(second, type));
         var grants = List.of(new QueueGrant(queue, 1, 5), new QueueGrant(second, 5, 5));
 
-        assertThat(store.claim(new ClaimRequest(grants, 2, LEASE, worker, null)))
+        assertThat(store.claim(new ClaimRequest(grants, 2, LEASE, runner, null)))
                 .extracting(TaskRecord::id)
                 .containsExactly(first, next);
         assertThat(get(extra).state()).isEqualTo(TaskState.QUEUED);
@@ -2428,7 +2428,7 @@ public abstract class StoreContract {
         }
         int threads = 8;
         List<List<Long>> perThread = runConcurrently(threads, () -> {
-            int w = store.allocateWorkerId("t", Set.of(), Set.of());
+            int w = store.allocateRunnerId("t", Set.of(), Set.of());
             List<Long> mine = new ArrayList<>();
             while (true) {
                 List<TaskRecord> got =
@@ -2569,7 +2569,7 @@ public abstract class StoreContract {
         assertThat(done.revision()).isEqualTo(t.revision() + 1);
         assertThat(done.encodedPayload()).isNull();
         assertThat(done.leaseUntil()).isNull();
-        assertThat(done.workerId()).isEqualTo(worker);
+        assertThat(done.runnerId()).isEqualTo(runner);
         assertThat(done.stateChangedAt()).isAfterOrEqualTo(get(t.id()).claimedAt());
     }
 
@@ -3138,7 +3138,7 @@ public abstract class StoreContract {
     }
 
     /**
-     * Tries every operation a worker has on its attempt with the given revision and names those the store
+     * Tries every operation a runner has on its attempt with the given revision and names those the store
      * accepted. A schedule id adds a schedule effect to each operation that takes one.
      */
     private List<String> acceptedOperations(long id, int revision, String scheduleId) {
@@ -3180,7 +3180,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void anOldWorkerAfterATakeoverChangesNothingAndTheNewWorkerCanFinish() {
+    void anOldRunnerAfterATakeoverChangesNothingAndTheNewRunnerCanFinish() {
         TaskRecord a = runningFixedDelayOccurrence("a", SHORT);
         Map<String, StepResult> aSteps = Map.of("one", new StepResult(millis(now()), "1"));
         assertThat(store.saveSteps(a.id(), a.revision(), aSteps)).isTrue();
@@ -3231,7 +3231,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void everyWorkerOperationIsRejectedWithTheCurrentRevisionOfATaskThatIsNotLeased() {
+    void everyRunnerOperationIsRejectedWithTheCurrentRevisionOfATaskThatIsNotLeased() {
         for (TaskState state : List.of(
                 TaskState.SUCCEEDED,
                 TaskState.DEAD,
@@ -4256,7 +4256,7 @@ public abstract class StoreContract {
         assertThat(nextFireOf("a")).isEqualTo(parked);
     }
 
-    // wave 2: cancel, retry, delete, pause, expire, workers
+    // wave 2: cancel, retry, delete, pause, expire, runners
 
     private StateCounts counts() {
         return store.counts().getOrDefault(queue, StateCounts.ZERO);
@@ -4294,7 +4294,7 @@ public abstract class StoreContract {
         assertThat(done.cancelReason()).isEqualTo("stop");
         assertThat(done.cancelRequestedAt()).isNotNull();
         assertThat(done.leaseUntil()).isNull();
-        assertThat(done.workerId()).isEqualTo(worker);
+        assertThat(done.runnerId()).isEqualTo(runner);
         assertThat(done.encodedPayload()).isEqualTo("payload");
         assertThat(done.stateChangedAt()).isAfterOrEqualTo(millis(before));
         assertThat(done.uniqueKey()).isNull();
@@ -4387,7 +4387,7 @@ public abstract class StoreContract {
     }
 
     @Test
-    void finishCancelledByTheWorkerIgnoresTheLeaseExpiry() {
+    void finishCancelledByTheRunnerIgnoresTheLeaseExpiry() {
         put(task());
         TaskRecord t = claim(1, SHORT, null).get(0);
         advance(PAST_SHORT);
@@ -4570,7 +4570,7 @@ public abstract class StoreContract {
         assertThat(r.attempts()).isZero();
         assertThat(r.revision()).isEqualTo(t.revision() + 1);
         assertThat(r.failures()).hasSize(1);
-        assertThat(r.workerId()).isNull();
+        assertThat(r.runnerId()).isNull();
         assertThat(r.leaseUntil()).isNull();
         assertThat(r.cancelRequestedAt()).isNull();
         assertThat(r.cancelReason()).isNull();
@@ -4836,19 +4836,20 @@ public abstract class StoreContract {
     }
 
     @Test
-    void allocatedWorkersAreListedAndHeartbeatUpdatesThem() {
-        List<WorkerInfo> before = store.workers();
-        assertThat(before).extracting(WorkerInfo::id).contains(worker);
-        WorkerInfo w = before.stream().filter(x -> x.id() == worker).findFirst().orElseThrow();
+    void allocatedRunnersAreListedAndHeartbeatUpdatesThem() {
+        List<RunnerRecord> before = store.runners();
+        assertThat(before).extracting(RunnerRecord::id).contains(runner);
+        RunnerRecord w =
+                before.stream().filter(x -> x.id() == runner).findFirst().orElseThrow();
         assertThat(w.label()).isEqualTo("contract-test");
         assertThat(w.running()).isZero();
         assertThat(w.accepting()).isTrue();
         assertThat(w.queueIds()).containsExactly(queue);
         assertThat(w.typeIds()).containsExactly(type);
         advance(PAST_SHORT);
-        store.heartbeat(worker, "renamed", Set.of(), Set.of(), 4, false);
-        WorkerInfo after = store.workers().stream()
-                .filter(x -> x.id() == worker)
+        store.heartbeat(runner, "renamed", Set.of(), Set.of(), 4, false);
+        RunnerRecord after = store.runners().stream()
+                .filter(x -> x.id() == runner)
                 .findFirst()
                 .orElseThrow();
         assertThat(after.running()).isEqualTo(4);
@@ -4862,10 +4863,10 @@ public abstract class StoreContract {
 
     @Test
     void heartbeatCanResumeAcceptingWork() {
-        beat(worker, 1, false);
-        beat(worker, 0, true);
-        assertThat(store.workers())
-                .filteredOn(w -> w.id() == worker)
+        beat(runner, 1, false);
+        beat(runner, 0, true);
+        assertThat(store.runners())
+                .filteredOn(w -> w.id() == runner)
                 .singleElement()
                 .satisfies(w -> {
                     assertThat(w.accepting()).isTrue();
@@ -4904,11 +4905,11 @@ public abstract class StoreContract {
     }
 
     @Test
-    void workerCoverageRoundTripsMultipleAndEmptySets() {
+    void runnerCoverageRoundTripsMultipleAndEmptySets() {
         var queues = new HashSet<>(Set.of(queue, store.queueId("other")));
         var types = new HashSet<>(Set.of(type, store.typeId("other")));
-        int known = store.allocateWorkerId("known", queues, types);
-        int empty = store.allocateWorkerId("empty", Set.of(), Set.of());
+        int known = store.allocateRunnerId("known", queues, types);
+        int empty = store.allocateRunnerId("empty", Set.of(), Set.of());
         var expectedQueues = Set.copyOf(queues);
         var expectedTypes = Set.copyOf(types);
         queues.clear();
@@ -4916,14 +4917,14 @@ public abstract class StoreContract {
         store.heartbeat(known, "known", expectedQueues, expectedTypes, 1, true);
         store.heartbeat(empty, "empty", Set.of(), Set.of(), 0, true);
 
-        assertThat(store.workers())
+        assertThat(store.runners())
                 .filteredOn(w -> w.id() == known)
                 .singleElement()
                 .satisfies(w -> {
                     assertThat(w.queueIds()).isEqualTo(expectedQueues);
                     assertThat(w.typeIds()).isEqualTo(expectedTypes);
                 });
-        assertThat(store.workers())
+        assertThat(store.runners())
                 .filteredOn(w -> w.id() == empty)
                 .singleElement()
                 .satisfies(w -> {
@@ -4933,38 +4934,41 @@ public abstract class StoreContract {
     }
 
     @Test
-    void purgeWorkersDeletesOnlyWorkersNotSeenRecently() {
-        int stale = store.allocateWorkerId("stale", Set.of(), Set.of());
+    void purgeRunnersDeletesOnlyRunnersNotSeenRecently() {
+        int stale = store.allocateRunnerId("stale", Set.of(), Set.of());
         advance(PAST_SHORT);
         Instant seenFrom = now();
-        beat(worker, 0, true);
-        Instant seen = store.workers().stream()
-                .filter(w -> w.id() == worker)
+        beat(runner, 0, true);
+        Instant seen = store.runners().stream()
+                .filter(w -> w.id() == runner)
                 .findFirst()
                 .orElseThrow()
                 .lastSeen();
         assertThat(seen).as("the heartbeat is the time last seen").isAfterOrEqualTo(millis(seenFrom));
         Instant seenUntil = seen.plus(SHORT);
-        long purged = store.purgeWorkers(SHORT);
+        long purged = store.purgeRunners(SHORT);
         assumeBefore(seenUntil);
         assertThat(purged).isEqualTo(1);
-        assertThat(store.workers()).extracting(WorkerInfo::id).contains(worker).doesNotContain(stale);
-        long purgedAgain = store.purgeWorkers(SHORT);
+        assertThat(store.runners())
+                .extracting(RunnerRecord::id)
+                .contains(runner)
+                .doesNotContain(stale);
+        long purgedAgain = store.purgeRunners(SHORT);
         assumeBefore(seenUntil);
         assertThat(purgedAgain).isZero();
     }
 
     @Test
-    void aHeartbeatRestoresAPurgedWorkerUnderTheSameId() {
+    void aHeartbeatRestoresAPurgedRunnerUnderTheSameId() {
         advance(PAST_SHORT);
-        assertThat(store.purgeWorkers(SHORT)).isEqualTo(1);
-        assertThat(store.workers()).extracting(WorkerInfo::id).doesNotContain(worker);
+        assertThat(store.purgeRunners(SHORT)).isEqualTo(1);
+        assertThat(store.runners()).extracting(RunnerRecord::id).doesNotContain(runner);
         Instant before = now().truncatedTo(ChronoUnit.MILLIS);
 
-        store.heartbeat(worker, "contract-test", Set.of(queue), Set.of(type), 2, false);
+        store.heartbeat(runner, "contract-test", Set.of(queue), Set.of(type), 2, false);
 
-        assertThat(store.workers())
-                .filteredOn(w -> w.id() == worker)
+        assertThat(store.runners())
+                .filteredOn(w -> w.id() == runner)
                 .singleElement()
                 .satisfies(w -> {
                     assertThat(w.label()).isEqualTo("contract-test");
@@ -4974,14 +4978,14 @@ public abstract class StoreContract {
                     assertThat(w.accepting()).isFalse();
                     assertThat(w.startedAt()).isAfterOrEqualTo(before).isEqualTo(w.lastSeen());
                 });
-        long purgedAgain = store.purgeWorkers(SHORT);
+        long purgedAgain = store.purgeRunners(SHORT);
         assumeBefore(before.plus(SHORT));
         assertThat(purgedAgain).isZero();
-        assertThat(store.allocateWorkerId("next", Set.of(), Set.of())).isGreaterThan(worker);
+        assertThat(store.allocateRunnerId("next", Set.of(), Set.of())).isGreaterThan(runner);
     }
 
-    private void beat(int workerId, int running, boolean accepting) {
-        store.heartbeat(workerId, "contract-test", Set.of(queue), Set.of(type), running, accepting);
+    private void beat(int runnerId, int running, boolean accepting) {
+        store.heartbeat(runnerId, "contract-test", Set.of(queue), Set.of(type), running, accepting);
     }
 
     // races on maintenance, recurring commits as the runner makes them, the largest allowed values
@@ -6171,16 +6175,16 @@ public abstract class StoreContract {
     }
 
     @Test
-    void workersAreListedInTheOrderOfTheirIds() {
+    void runnersAreListedInTheOrderOfTheirIds() {
         List<Integer> ids = new ArrayList<>();
-        ids.add(worker);
+        ids.add(runner);
         for (int i = 0; i < 12; i++) {
-            ids.add(store.allocateWorkerId("order-" + i, Set.of(queue), Set.of(type)));
+            ids.add(store.allocateRunnerId("order-" + i, Set.of(queue), Set.of(type)));
         }
         beat(ids.get(7), 1, true);
         beat(ids.get(2), 0, false);
 
-        assertThat(store.workers()).extracting(WorkerInfo::id).containsExactlyElementsOf(ids);
+        assertThat(store.runners()).extracting(RunnerRecord::id).containsExactlyElementsOf(ids);
         assertThat(ids).isSorted();
     }
 
@@ -7977,28 +7981,28 @@ public abstract class StoreContract {
     }
 
     @Test
-    void awkwardWorkerLabelsRoundTripAndComeBackWithAHeartbeat() {
+    void awkwardRunnerLabelsRoundTripAndComeBackWithAHeartbeat() {
         Map<Integer, String> labels = new LinkedHashMap<>();
         for (String text : AWKWARD_TEXTS) {
-            labels.put(store.allocateWorkerId(text, Set.of(queue), Set.of(type)), text);
+            labels.put(store.allocateRunnerId(text, Set.of(queue), Set.of(type)), text);
         }
-        List<WorkerInfo> before = store.workers();
+        List<RunnerRecord> before = store.runners();
         labels.forEach((id, text) -> assertThat(before)
                 .filteredOn(w -> w.id() == id)
                 .singleElement()
                 .satisfies(w -> assertThat(w.label())
-                        .as("label %s after allocateWorkerId", text)
+                        .as("label %s after allocateRunnerId", text)
                         .isEqualTo(text)));
 
         advance(PAST_SHORT);
         Instant seenFrom = now();
-        beat(worker, 0, true);
-        long purged = store.purgeWorkers(SHORT);
+        beat(runner, 0, true);
+        long purged = store.purgeRunners(SHORT);
         assumeBefore(seenFrom.plus(SHORT));
         assertThat(purged).isEqualTo(labels.size());
-        assertThat(store.workers()).extracting(WorkerInfo::id).doesNotContainAnyElementsOf(labels.keySet());
+        assertThat(store.runners()).extracting(RunnerRecord::id).doesNotContainAnyElementsOf(labels.keySet());
         labels.forEach((id, text) -> store.heartbeat(id, text, Set.of(queue), Set.of(type), 1, true));
-        List<WorkerInfo> after = store.workers();
+        List<RunnerRecord> after = store.runners();
         labels.forEach((id, text) -> assertThat(after)
                 .filteredOn(w -> w.id() == id)
                 .singleElement()

@@ -9,13 +9,13 @@ import today.bonfire.oss.bth4j.StepResult;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /**
- * The transitions workers and producers make. Each method is atomic together with its checks: a
+ * The transitions runners and producers make. Each method is atomic together with its checks: a
  * revision-checked transition has no effect, and reports so, when the task's revision or state differs from
- * what the caller expects. Only the worker holding the current revision of a LEASED task can move it on.
+ * what the caller expects. Only the runner holding the current revision of a LEASED task can move it on.
  * <p>
  * Revision rules: claim, promote, every terminal transition, reschedule, unclaim and admin changes to a
  * task that is not LEASED add one to the revision. {@link #renew}, {@link #saveSteps}, {@link #progress} and
- * admin changes to a LEASED task do not, so a running worker keeps its fence.
+ * admin changes to a LEASED task do not, so a running runner keeps its fence.
  */
 public interface ExecutionStore extends TaskStore {
 
@@ -28,7 +28,7 @@ public interface ExecutionStore extends TaskStore {
      * time) are stored as given, with two exceptions: a record without a created time is created at the store's
      * time of the call, and a key keep without a unique key is dropped. An empty unique key throws
      * {@link TaskValidationException}. A new task starts without run fields: the store ignores the record's
-     * attempts, worker, lease, claim time, key-until, cancel request and reason, progress, steps and failures,
+     * attempts, runner, lease, claim time, key-until, cancel request and reason, progress, steps and failures,
      * and stores the task with none of them and zero attempts. This holds for every way a task gets in,
      * including {@link #enqueueAll} and {@link ScheduleStore#commitSchedule}.
      * <p>
@@ -58,7 +58,7 @@ public interface ExecutionStore extends TaskStore {
      * Within each queue tasks are read by {@code (due, id)}; a store may order equal-due tasks by the id's
      * decimal text (the Redis store does). Tasks outside {@link ClaimRequest#knownTypeIds()} are left
      * unchanged, including their due time; null accepts every type. Each claim adds one to {@code attempts},
-     * sets {@code claimedAt} and keeps {@code due}, returning the new revision, lease and worker.
+     * sets {@code claimedAt} and keeps {@code due}, returning the new revision, lease and runner.
      * <p>
      * A claimed task with a stored value that cannot be read is left out of the result, and its lease ends at
      * once, so that {@link MaintenanceStore#reclaim} hands it to maintenance, which ends it DEAD. The other tasks
@@ -113,7 +113,7 @@ public interface ExecutionStore extends TaskStore {
 
     /**
      * Same as {@link #fail} for a task whose lease {@link MaintenanceStore#reclaim} found expired; also
-     * {@link FailOutcome#LOST} when the lease is no longer expired, because its worker renewed it meanwhile.
+     * {@link FailOutcome#LOST} when the lease is no longer expired, because its runner renewed it meanwhile.
      */
     FailOutcome failExpired(
             long id, int revision, FailureInfo failure, Instant retryAt, boolean keepDead, ScheduleEffect effect);
@@ -148,7 +148,7 @@ public interface ExecutionStore extends TaskStore {
     boolean progress(long id, int revision, String progress);
 
     /**
-     * Ends a LEASED task whose worker stopped it on a cancel request: state CANCELLED, {@code cancelReason}
+     * Ends a LEASED task whose runner stopped it on a cancel request: state CANCELLED, {@code cancelReason}
      * set, {@code cancelRequestedAt} kept or set now, lease cleared, unique key handled like {@link #ack}.
      *
      * @param keepPayload false drops {@link TaskRecord#encodedPayload()}
@@ -159,7 +159,7 @@ public interface ExecutionStore extends TaskStore {
 
     /**
      * Same as {@link #finishCancelled} for a task whose lease {@link MaintenanceStore#reclaim} found expired;
-     * also false when the lease is no longer expired, because its worker renewed it meanwhile.
+     * also false when the lease is no longer expired, because its runner renewed it meanwhile.
      *
      * @param effect applied to a recurring definition in the same atomic step when the task ends; may be null
      */

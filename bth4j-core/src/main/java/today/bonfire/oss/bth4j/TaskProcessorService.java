@@ -43,7 +43,7 @@ class TaskProcessorService extends CustomThread {
     private final Map<Integer, QueuePolicy> policies;
     private final boolean policed;
     private final Set<Integer> knownTypeIds;
-    private final int workerId;
+    private final int runnerId;
     private final Duration lease;
     private final Duration renewInterval;
     private final Duration defaultMaxRunTime;
@@ -71,7 +71,7 @@ class TaskProcessorService extends CustomThread {
         this.policies = Map.copyOf(b.queuePolicies);
         this.policed = policies.values().stream().anyMatch(p -> !p.equals(QueuePolicy.DEFAULT));
         this.knownTypeIds = Set.copyOf(b.knownTypeIds);
-        this.workerId = b.workerId;
+        this.runnerId = b.runnerId;
         this.admission = b.admission;
         this.reservations = b.reservations;
         this.lease = b.lease;
@@ -260,7 +260,7 @@ class TaskProcessorService extends CustomThread {
                                 .toList(),
                         count,
                         lease,
-                        workerId,
+                        runnerId,
                         knownTypeIds));
     }
 
@@ -304,7 +304,7 @@ class TaskProcessorService extends CustomThread {
         for (int i = 0; i < order.size(); i++) {
             grants.add(new QueueGrant(order.get(i), shares[i], caps[i]));
         }
-        var claimed = settings.store().claim(new ClaimRequest(grants, slots, lease, workerId, knownTypeIds));
+        var claimed = settings.store().claim(new ClaimRequest(grants, slots, lease, runnerId, knownTypeIds));
         int left = slots - claimed.size();
         if (left <= 0) return claimed;
         // a store skips a grant without a share, also when the queues with a share have nothing to run
@@ -316,7 +316,7 @@ class TaskProcessorService extends CustomThread {
         }
         if (skipped.isEmpty()) return claimed;
         try {
-            var more = settings.store().claim(new ClaimRequest(skipped, left, lease, workerId, knownTypeIds));
+            var more = settings.store().claim(new ClaimRequest(skipped, left, lease, runnerId, knownTypeIds));
             if (more.isEmpty()) return claimed;
             var all = new ArrayList<TaskRecord>(claimed.size() + more.size());
             all.addAll(claimed);
@@ -324,7 +324,7 @@ class TaskProcessorService extends CustomThread {
             return all;
         } catch (RuntimeException e) {
             if (claimed.isEmpty()) throw e;
-            // the tasks of the first claim are leased to this worker and still have to run
+            // the tasks of the first claim are leased to this runner and still have to run
             settings.status().storeError(e);
             return claimed;
         }
@@ -516,7 +516,7 @@ class TaskProcessorService extends CustomThread {
         private List<Integer> queueIds;
         private Map<Integer, QueuePolicy> queuePolicies = Map.of();
         private Set<Integer> knownTypeIds;
-        private int workerId;
+        private int runnerId;
         private Duration lease = Duration.ofSeconds(60);
         private Duration defaultMaxRunTime = Duration.ofHours(1);
         private Duration idlePollInterval = Duration.ofMillis(500);
@@ -560,8 +560,8 @@ class TaskProcessorService extends CustomThread {
             return this;
         }
 
-        Builder workerId(int workerId) {
-            this.workerId = workerId;
+        Builder runnerId(int runnerId) {
+            this.runnerId = runnerId;
             return this;
         }
 

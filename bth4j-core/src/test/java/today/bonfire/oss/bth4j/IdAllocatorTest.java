@@ -41,7 +41,7 @@ class IdAllocatorTest {
         public void init() {}
 
         @Override
-        public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
+        public int allocateRunnerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
             return 1;
         }
 

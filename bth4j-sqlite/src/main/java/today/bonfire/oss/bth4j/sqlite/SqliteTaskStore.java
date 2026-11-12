@@ -51,6 +51,7 @@ import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.RecordJson;
+import today.bonfire.oss.bth4j.spi.RunnerRecord;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.ScheduleEntry;
 import today.bonfire.oss.bth4j.spi.StoreArguments;
@@ -58,12 +59,11 @@ import today.bonfire.oss.bth4j.spi.StoreInfo;
 import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /**
  * {@link FullStore} on SQLite (3.45 or newer in WAL mode, tested on 3.54): one row per task in
  * {@code <prefix>_task} with a state column, name registries in {@code <prefix>_queue} and
- * {@code <prefix>_type}, workers in {@code <prefix>_worker}, recurring definitions in
+ * {@code <prefix>_type}, runners in {@code <prefix>_runner}, recurring definitions in
  * {@code <prefix>_schedule}, counters in {@code <prefix>_meta}. All tables are STRICT; times are epoch
  * milliseconds from the {@link Clock} given to the store, never from an SQL function. Runners that share the
  * database file share the work, in one process or in several processes on one machine.
@@ -100,7 +100,7 @@ public final class SqliteTaskStore implements FullStore {
     private static final String FAILED = "SQLite task store operation failed";
 
     private static final String NEXT_TASK_ID = "next_task_id";
-    private static final String NEXT_WORKER_ID = "next_worker_id";
+    private static final String NEXT_RUNNER_ID = "next_worker_id";
     private static final String NEXT_QUEUE_ID = "next_queue_id";
     private static final String NEXT_TYPE_ID = "next_type_id";
     private static final String NEXT_SCHEDULE_REV = "next_schedule_rev";
@@ -140,7 +140,7 @@ public final class SqliteTaskStore implements FullStore {
     private final String meta;
     private final String queue;
     private final String type;
-    private final String worker;
+    private final String runner;
     private final String task;
     private final String schedule;
 
@@ -192,7 +192,7 @@ public final class SqliteTaskStore implements FullStore {
         this.meta = prefix + "_meta";
         this.queue = prefix + "_queue";
         this.type = prefix + "_type";
-        this.worker = prefix + "_worker";
+        this.runner = prefix + "_worker";
         this.task = prefix + "_task";
         this.schedule = prefix + "_schedule";
 
@@ -257,7 +257,7 @@ public final class SqliteTaskStore implements FullStore {
                         + " name TEXT NOT NULL UNIQUE,"
                         + " paused INTEGER NOT NULL) STRICT",
                 "CREATE TABLE IF NOT EXISTS " + type + " (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE) STRICT",
-                "CREATE TABLE IF NOT EXISTS " + worker + " ("
+                "CREATE TABLE IF NOT EXISTS " + runner + " ("
                         + " id INTEGER PRIMARY KEY,"
                         + " label TEXT NOT NULL,"
                         + " started_at INTEGER NOT NULL,"
@@ -337,7 +337,7 @@ public final class SqliteTaskStore implements FullStore {
                         + " triggered INTEGER NOT NULL) STRICT",
                 "CREATE INDEX IF NOT EXISTS " + schedule + "_due ON " + schedule + " (next_fire) WHERE paused = 0",
                 "INSERT INTO " + meta + " (key, value) VALUES ('schema_version', " + SCHEMA_VERSION + "),"
-                        + " ('" + NEXT_TASK_ID + "', 1), ('" + NEXT_WORKER_ID + "', 1), ('" + NEXT_QUEUE_ID
+                        + " ('" + NEXT_TASK_ID + "', 1), ('" + NEXT_RUNNER_ID + "', 1), ('" + NEXT_QUEUE_ID
                         + "', 1), ('" + NEXT_TYPE_ID + "', 1), ('" + NEXT_SCHEDULE_REV + "', 1)"
                         + " ON CONFLICT (key) DO NOTHING");
     }
@@ -453,16 +453,16 @@ public final class SqliteTaskStore implements FullStore {
     }
 
     @Override
-    public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
+    public int allocateRunnerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
         StoreArguments.requireLabel(label);
         var queues = idsJson(queueIds);
         var types = idsJson(typeIds);
         return inTransaction(c -> {
             long now = clock.millis();
-            long id = nextValue(c, NEXT_WORKER_ID, 1);
+            long id = nextValue(c, NEXT_RUNNER_ID, 1);
             update(
                     c,
-                    "INSERT INTO " + worker + " (id, label, started_at, last_seen, running, accepting, queue_ids,"
+                    "INSERT INTO " + runner + " (id, label, started_at, last_seen, running, accepting, queue_ids,"
                             + " type_ids) VALUES (?1, ?2, ?3, ?3, 0, 1, ?4, ?5)",
                     id,
                     label,
@@ -543,7 +543,7 @@ public final class SqliteTaskStore implements FullStore {
 
     /**
      * Stores a task on the caller's connection, inside the caller's transaction: the task becomes visible to
-     * workers only when the caller commits, and disappears with a rollback. The connection is neither
+     * runners only when the caller commits, and disappears with a rollback. The connection is neither
      * committed nor closed. The task should come from {@code TaskClient.prepare}.
      * <p>
      * A write in SQLite that follows a read in the same transaction can fail with SQLITE_BUSY when another
@@ -683,7 +683,7 @@ public final class SqliteTaskStore implements FullStore {
         return released;
     }
 
-    // ---- workers -------------------------------------------------------------------------------------
+    // ---- runners -------------------------------------------------------------------------------------
 
     /**
      * Both claim passes in one write transaction. Pass 1 takes each grant's share in grant order; pass 2 lets the
@@ -717,12 +717,12 @@ public final class SqliteTaskStore implements FullStore {
                             unreadable.add(e.taskId());
                         }
                     },
-                    r.workerId(),
+                    r.runnerId(),
                     now,
                     now + r.lease().toMillis(),
                     idsJson(picked));
             // a task it cannot read gets no lease, so that maintenance takes it over
-            if (!unreadable.isEmpty()) update(c, endLeasesSql, idsJson(unreadable), r.workerId());
+            if (!unreadable.isEmpty()) update(c, endLeasesSql, idsJson(unreadable), r.runnerId());
             var result = new ArrayList<TaskRecord>(byId.size());
             for (var id : picked) {
                 var t = byId.get(id);
@@ -1619,7 +1619,7 @@ public final class SqliteTaskStore implements FullStore {
                 .due(getInstant(rs, "due"))
                 .stateChangedAt(getInstant(rs, "state_changed"))
                 .encodedPayload(rs.getString("data"))
-                .workerId(getInteger(rs, "worker_id"))
+                .runnerId(getInteger(rs, "worker_id"))
                 .leaseUntil(getInstant(rs, "lease_until"))
                 .claimedAt(getInstant(rs, "claimed_at"))
                 .account(rs.getString("account"))
@@ -1674,7 +1674,7 @@ public final class SqliteTaskStore implements FullStore {
         return "SqliteTaskStore[" + prefix + "]";
     }
 
-    // ---- cancellation, expiry, admin, workers, schedule controls ---------------------------------------
+    // ---- cancellation, expiry, admin, runners, schedule controls ---------------------------------------
 
     @Override
     public boolean finishCancelled(long id, int revision, String reason, boolean keepPayload, ScheduleEffect effect) {
@@ -1725,13 +1725,13 @@ public final class SqliteTaskStore implements FullStore {
     }
 
     @Override
-    public int purgeWorkers(Duration staleAfter) {
-        var stale = "SELECT 1 FROM " + worker + " WHERE last_seen < ? LIMIT 1";
+    public int purgeRunners(Duration staleAfter) {
+        var stale = "SELECT 1 FROM " + runner + " WHERE last_seen < ? LIMIT 1";
         if (!withConnection(c -> queryOne(c, stale, rs -> true, clock.millis() - staleAfter.toMillis()) != null)) {
             return 0;
         }
         return inTransaction(c ->
-                update(c, "DELETE FROM " + worker + " WHERE last_seen < ?", clock.millis() - staleAfter.toMillis()));
+                update(c, "DELETE FROM " + runner + " WHERE last_seen < ?", clock.millis() - staleAfter.toMillis()));
     }
 
     /**
@@ -1855,18 +1855,18 @@ public final class SqliteTaskStore implements FullStore {
 
     @Override
     public void heartbeat(
-            int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
+            int runnerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
         StoreArguments.requireLabel(label);
         var queues = idsJson(queueIds);
         var types = idsJson(typeIds);
         inTransaction(c -> update(
                 c,
-                "INSERT INTO " + worker
+                "INSERT INTO " + runner
                         + " (id, label, started_at, last_seen, running, accepting, queue_ids, type_ids)"
                         + " VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7) ON CONFLICT (id) DO UPDATE"
                         + " SET last_seen = excluded.last_seen, running = excluded.running,"
                         + " accepting = excluded.accepting",
-                workerId,
+                runnerId,
                 label,
                 clock.millis(),
                 running,
@@ -1889,14 +1889,14 @@ public final class SqliteTaskStore implements FullStore {
     }
 
     @Override
-    public List<WorkerInfo> workers() {
+    public List<RunnerRecord> runners() {
         return withConnection(c -> {
-            var result = new ArrayList<WorkerInfo>();
+            var result = new ArrayList<RunnerRecord>();
             queryEach(
                     c,
-                    "SELECT id, label, started_at, last_seen, running, accepting, queue_ids, type_ids FROM " + worker
+                    "SELECT id, label, started_at, last_seen, running, accepting, queue_ids, type_ids FROM " + runner
                             + " ORDER BY id",
-                    rs -> result.add(new WorkerInfo(
+                    rs -> result.add(new RunnerRecord(
                             rs.getInt(1),
                             rs.getString(2),
                             instant(rs, 3),

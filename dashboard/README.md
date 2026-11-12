@@ -3,11 +3,11 @@
 A static single-page operator dashboard for the bth4j admin HTTP API. No build step, no package manager:
 `index.html`, `app.css`, `api.js`, `ui.js`, `app.js` and `pages/*.js` (plain ES modules).
 
-Pages: overview, queues, tasks (filter, cursor paging, detail), dead tasks, schedules, workers, issues.
-Workers shows each worker's queues, registered types and accepting state (`accepting` from the API).
-A live worker that is not accepting is shown as quiet; a stale heartbeat still shows the silence warning.
-Overview polls `GET /api/v1/unserved` for queued work without a live accepting worker (heartbeat within
-one minute). Whole-queue and per-type counts are exact at the queued-count read. Quiet workers do not
+Pages: overview, queues, tasks (filter, cursor paging, detail), dead tasks, schedules, runners, issues.
+Runners shows each runner's queues, registered types and accepting state (`accepting` from the API).
+A live runner that is not accepting is shown as quiet; a stale heartbeat still shows the silence warning.
+Overview polls `GET /api/v1/unserved` for queued work without a live accepting runner (heartbeat within
+one minute). Whole-queue and per-type counts are exact at the queued-count read. Quiet runners do not
 contribute coverage, and paused queues are skipped.
 
 ## Serving it
@@ -71,7 +71,7 @@ Task ids and revisions are handled as strings and never parsed to numbers (they 
 ## Trying it without Java
 
 `dev/fake-api.py` is a Python 3 standard-library server that implements the API shapes with sample data
-(130 tasks across all states, 2 schedules, 2 workers, 3 issues) and also serves this directory:
+(130 tasks across all states, 2 schedules, 2 runners, 3 issues) and also serves this directory:
 
 ```
 python3 dashboard/dev/fake-api.py [port]     # default 8787

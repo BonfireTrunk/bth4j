@@ -440,7 +440,7 @@ class TaskClientTest {
                         List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)),
                         1,
                         Duration.ofSeconds(30),
-                        store.allocateWorkerId("test", Set.of(), Set.of()),
+                        store.allocateRunnerId("test", Set.of(), Set.of()),
                         null))
                 .getFirst();
         assertThat(store.ack(id, leased.revision(), true, false, null)).isTrue();
@@ -1368,7 +1368,7 @@ class TaskClientTest {
                         List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)),
                         1,
                         Duration.ofSeconds(30),
-                        store.allocateWorkerId("test", Set.of(), Set.of()),
+                        store.allocateRunnerId("test", Set.of(), Set.of()),
                         null))
                 .getFirst();
         assertThat(store.ack(request.id(), leased.revision(), false, false, null))

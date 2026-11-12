@@ -6,16 +6,16 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * What a worker asks for in {@link ExecutionStore#claim}.
+ * What a runner asks for in {@link ExecutionStore#claim}.
  *
  * @param grants        queue shares and caps in order of preference
  * @param count         at most this many tasks
  * @param lease         how long each lease lasts unless renewed
- * @param workerId      the claiming worker, recorded with each task
+ * @param runnerId      the claiming runner, recorded with each task
  * @param knownTypeIds only tasks of these types are claimed; null means every type
  */
 public record ClaimRequest(
-        List<QueueGrant> grants, int count, Duration lease, int workerId, Set<Integer> knownTypeIds) {
+        List<QueueGrant> grants, int count, Duration lease, int runnerId, Set<Integer> knownTypeIds) {
     public ClaimRequest {
         grants = List.copyOf(grants);
         if (grants.isEmpty()) throw new IllegalArgumentException("grants must not be empty");

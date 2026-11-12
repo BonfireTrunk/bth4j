@@ -77,7 +77,7 @@ stateDiagram-v2
 |---|---|---|
 | QUEUED | Waiting in its queue and runnable now. | No |
 | SCHEDULED | Waiting for its due time: a delayed enqueue, a retry after a failure, a reschedule or a recurring occurrence. | No |
-| LEASED | Claimed by a worker that holds the lease. | No |
+| LEASED | Claimed by a runner that holds the lease. | No |
 | SUCCEEDED | The processor finished without an error. | Yes |
 | DEAD | The attempts are used up, the retry policy gave up, or the processor threw `TaskUnrecoverableException`. | Yes |
 | CANCELLED | An operator cancelled it, its processor threw `TaskCancelledException`, or it ran past its `maxRunTime`. | Yes |
@@ -95,11 +95,11 @@ From DEAD, CANCELLED or EXPIRED an operator can send the task back to QUEUED wit
 | ack | LEASED | SUCCEEDED | The processor returned without an error. |
 | fail, attempts left | LEASED | SCHEDULED | The attempt failed and the retry policy gives a delay. The task runs again at the retry time. See [Retries](retries-and-cancelling.md#retries). |
 | fail, exhausted | LEASED | DEAD | The attempt failed and the attempts are used up, or the retry policy returned `Dead(reason)`. A processor that throws `TaskUnrecoverableException` ends the task DEAD at once. |
-| lease expired | LEASED | SCHEDULED or DEAD | The worker crashed or stopped renewing the lease. Maintenance handles the task like a failed attempt. |
+| lease expired | LEASED | SCHEDULED or DEAD | The runner crashed or stopped renewing the lease. Maintenance handles the task like a failed attempt. |
 | reschedule | LEASED | SCHEDULED | The processor threw `TaskRescheduleException(delay)`. The task runs again later without spending an attempt. |
 | unclaim | LEASED | QUEUED | The runner gives a claimed task back to its queue, for example when the executor rejected it. |
 | cancel | QUEUED or SCHEDULED | CANCELLED | An operator cancels the task. It happens at once. A LEASED task only gets a cancel request. |
-| finishCancelled | LEASED | CANCELLED | A cancel was requested and the processor stopped. Also used when a worker died with a cancel pending and its lease expired. |
+| finishCancelled | LEASED | CANCELLED | A cancel was requested and the processor stopped. Also used when a runner died with a cancel pending and its lease expired. |
 | expire | QUEUED or SCHEDULED | EXPIRED | The `startBy` time passed before the task started. Maintenance does it. |
 | operator retry | DEAD, CANCELLED or EXPIRED | QUEUED | An operator calls `AdminOps.retry`. |
 
@@ -119,7 +119,7 @@ The in-memory store skips such tasks like PostgreSQL and SQLite. The Redis limit
 ### How a transition stays safe
 
 Every transition is one atomic call on the store. The call checks the task's revision. So a task runs again only
-when the worker holding it crashed, lost its lease or failed the attempt. Several runners on the same store share
+when the runner holding it crashed, lost its lease or failed the attempt. Several runners on the same store share
 the work without locks.
 
 | Store | How one transition is atomic |
@@ -176,7 +176,7 @@ Events that end an attempt carry the outcome. The observer receives it after the
 | `LOST` | The store rejected the change because the lease had moved on. |
 | `UNKNOWN` | The store call failed, so the change may or may not have been made. If it was not, the lease expires and the task runs again. |
 
-A lease that is not renewed expires. This happens when the worker crashed, or when it paused for longer than the
+A lease that is not renewed expires. This happens when the runner crashed, or when it paused for longer than the
 lease. Maintenance then handles the task like a failed attempt: it retries the task, or ends it DEAD when the
 attempts are used up. When a cancel was pending, maintenance ends the task CANCELLED instead of retrying it. A
 lease that has lapsed is not revived by a later renewal. See `leaseDuration` in
@@ -192,8 +192,8 @@ A runner is made of four services. A monitor restarts a service whose thread die
 | Task processor | Claims tasks in batches, runs them and renews their leases. | Claims at most `claimBatchSize` tasks (32) per call, bounded by the free executor slots. After a claim that found nothing it sleeps `idlePollInterval` (500 ms). Renews leases every third of `leaseDuration`. |
 | Scheduled task service | Promotes due SCHEDULED tasks to QUEUED. | At most `scheduledTasksCheckInterval` (1 second) between promotions. It wakes earlier for the next due task. |
 | Recurring task service | Creates the occurrences of recurring definitions. See [Recurring tasks](recurring-tasks.md). | Every `recurringTasksCheckInterval` (10 seconds). |
-| Maintenance service | Retries expired leases, expires tasks past their `startBy` and writes the worker heartbeat. | Every `maintenanceCheckInterval` (5 seconds). |
-| Maintenance service, purge | Purges finished tasks, releases unique keys and removes stale workers. | Every `purgeInterval` (1 minute). Workers without a heartbeat for `workerStaleAfter` (10 minutes) are removed. |
+| Maintenance service | Retries expired leases, expires tasks past their `startBy` and writes the runner heartbeat. | Every `maintenanceCheckInterval` (5 seconds). |
+| Maintenance service, purge | Purges finished tasks, releases unique keys and removes stale runners. | Every `purgeInterval` (1 minute). Runners without a heartbeat for `runnerStaleTimeout` (10 minutes) are removed. |
 
 ## Retention
 

@@ -437,7 +437,7 @@ class TaskProcessorCapacityTest {
                                     .toList(),
                             3,
                             asked.lease(),
-                            asked.workerId(),
+                            asked.runnerId(),
                             asked.knownTypeIds()));
                 }),
                 executor,
@@ -1052,7 +1052,7 @@ class TaskProcessorCapacityTest {
                 .claimBatchSize(claimBatchSize)
                 .idlePollInterval(idlePollInterval)
                 .lease(LEASE)
-                .workerId(1)
+                .runnerId(1)
                 .create();
     }
 

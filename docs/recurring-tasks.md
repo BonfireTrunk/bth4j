@@ -122,7 +122,7 @@ The overlap rule says what happens to a fire while the task of the previous occu
 
 | Rule | A fire while the previous occurrence is not finished | Choose it when |
 |---|---|---|
-| `Overlap.ALLOW` | creates its occurrence, so both run when workers are free | runs are independent, for example one report per hour |
+| `Overlap.ALLOW` | creates its occurrence, so both run when runners have free slots | runs are independent, for example one report per hour |
 | `Overlap.SKIP` | is skipped, and a `schedule-overlap` issue is recorded | two runs must never work at once, or a late run makes the next one pointless |
 
 ```java

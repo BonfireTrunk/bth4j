@@ -15,7 +15,7 @@ class KeysTest {
                 keys.prefix,
                 keys.meta,
                 keys.seqId,
-                keys.seqWorker,
+                keys.seqRunner,
                 keys.leased,
                 keys.cron,
                 keys.cronRevision,
@@ -29,7 +29,7 @@ class KeysTest {
                 keys.activeTypes(2),
                 keys.typeSet("d"),
                 keys.uniqueKey("k"),
-                keys.worker(4),
+                keys.runner(4),
                 keys.cronDefinition("s"),
                 keys.registry("queue"));
 
@@ -56,11 +56,11 @@ class KeysTest {
         assertThat(List.of(
                         keys.meta,
                         keys.seqId,
-                        keys.seqWorker,
+                        keys.seqRunner,
                         keys.leased,
                         keys.startBy,
                         keys.paused,
-                        keys.workers,
+                        keys.runners,
                         keys.cronDefinitions,
                         keys.cron,
                         keys.cronRevision))

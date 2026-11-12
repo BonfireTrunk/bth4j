@@ -56,6 +56,7 @@ import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
 import today.bonfire.oss.bth4j.spi.RecordJson;
+import today.bonfire.oss.bth4j.spi.RunnerRecord;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.ScheduleEntry;
 import today.bonfire.oss.bth4j.spi.ScheduleStore;
@@ -64,7 +65,6 @@ import today.bonfire.oss.bth4j.spi.StoreInfo;
 import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /**
  * {@link FullStore} on Redis 7.4 or newer and Valkey 9 or newer (hash field expiry is required; tested on
@@ -263,10 +263,10 @@ public final class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
+    public int allocateRunnerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
         StoreArguments.requireLabel(label);
         var args = List.of(label, Json.write(queueIds), Json.write(typeIds));
-        return (int) num(guard(() -> scripts.run(RedisScripts.WORKER_REGISTER, args)));
+        return (int) num(guard(() -> scripts.run(RedisScripts.RUNNER_REGISTER, args)));
     }
 
     @Override
@@ -394,7 +394,7 @@ public final class RedisTaskStore implements FullStore {
 
     /**
      * The script returns the hash fields as they were before the claim and the time it used; the fields it
-     * wrote (state, stateChanged, revision, attempts, claimedAt, lease, worker) are filled in here.
+     * wrote (state, stateChanged, revision, attempts, claimedAt, lease, runner) are filled in here.
      */
     @Override
     @SuppressWarnings("unchecked")
@@ -406,7 +406,7 @@ public final class RedisTaskStore implements FullStore {
         var args = new ArrayList<String>();
         args.add(String.valueOf(request.count()));
         args.add(String.valueOf(request.lease().toMillis()));
-        args.add(String.valueOf(request.workerId()));
+        args.add(String.valueOf(request.runnerId()));
         var types = known == null ? null : typeSet(known);
         args.add(types == null ? "" : types.digest());
         request.grants().forEach(g -> {
@@ -431,13 +431,13 @@ public final class RedisTaskStore implements FullStore {
         List<String> unreadable = null;
         for (var entry : r.subList(1, r.size())) {
             try {
-                tasks.add(TaskHashes.fromClaim(entry, at, leaseUntil, request.workerId()));
+                tasks.add(TaskHashes.fromClaim(entry, at, leaseUntil, request.runnerId()));
             } catch (UnreadableTaskException e) {
                 if (unreadable == null) unreadable = new ArrayList<>();
                 unreadable.add(String.valueOf(e.taskId()));
             }
         }
-        if (unreadable != null) endLeases(at, request.workerId(), unreadable);
+        if (unreadable != null) endLeases(at, request.runnerId(), unreadable);
         return tasks;
     }
 
@@ -445,10 +445,10 @@ public final class RedisTaskStore implements FullStore {
      * Ends the leases this claim just took on tasks it cannot read, so maintenance takes them over at once. When
      * that fails the leases lapse on their own; the readable tasks of the claim are returned either way.
      */
-    private void endLeases(long claimedAt, int workerId, List<String> ids) {
+    private void endLeases(long claimedAt, int runnerId, List<String> ids) {
         var args = new ArrayList<String>(ids.size() + 2);
         args.add(String.valueOf(claimedAt));
-        args.add(String.valueOf(workerId));
+        args.add(String.valueOf(runnerId));
         args.addAll(ids);
         try {
             guard(() -> scripts.run(RedisScripts.END_LEASES, args));
@@ -1099,7 +1099,7 @@ public final class RedisTaskStore implements FullStore {
         return out;
     }
 
-    // ---- wave 2: cancel, expiry, admin, workers ------------------------------------------------------
+    // ---- wave 2: cancel, expiry, admin, runners ------------------------------------------------------
 
     /** An optional text for a script: '' for null, else the text after a one-character prefix, so '' is kept. */
     private static String optionalText(String text) {
@@ -1143,14 +1143,14 @@ public final class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public int purgeWorkers(Duration staleAfter) {
-        var args = List.of(String.valueOf(staleAfter.toMillis()), String.valueOf(RedisScripts.PURGE_WORKERS_PAGE));
+    public int purgeRunners(Duration staleAfter) {
+        var args = List.of(String.valueOf(staleAfter.toMillis()), String.valueOf(RedisScripts.PURGE_RUNNERS_PAGE));
         var total = 0;
         int page;
         do {
-            page = (int) num(guard(() -> scripts.run(RedisScripts.PURGE_WORKERS, args)));
+            page = (int) num(guard(() -> scripts.run(RedisScripts.PURGE_RUNNERS, args)));
             total += page;
-        } while (page == RedisScripts.PURGE_WORKERS_PAGE);
+        } while (page == RedisScripts.PURGE_RUNNERS_PAGE);
         return total;
     }
 
@@ -1210,12 +1210,12 @@ public final class RedisTaskStore implements FullStore {
 
     @Override
     public void heartbeat(
-            int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
+            int runnerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
         StoreArguments.requireLabel(label);
         guard(() -> scripts.run(
                 RedisScripts.HEARTBEAT,
                 List.of(
-                        String.valueOf(workerId),
+                        String.valueOf(runnerId),
                         String.valueOf(running),
                         accepting ? "1" : "0",
                         label,
@@ -1224,38 +1224,38 @@ public final class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public List<WorkerInfo> workers() {
+    public List<RunnerRecord> runners() {
         return guard(() -> {
-            var ids = jedis.zrange(keys.workers, 0, -1).stream()
+            var ids = jedis.zrange(keys.runners, 0, -1).stream()
                     .map(Integer::valueOf)
                     .sorted()
                     .toList();
             var hashes = new ArrayList<Response<Map<String, String>>>(ids.size());
             try (var pipeline = jedis.pipelined()) {
-                ids.forEach(id -> hashes.add(pipeline.hgetAll(keys.worker(id))));
+                ids.forEach(id -> hashes.add(pipeline.hgetAll(keys.runner(id))));
                 pipeline.sync();
             }
-            var out = new ArrayList<WorkerInfo>(ids.size());
+            var out = new ArrayList<RunnerRecord>(ids.size());
             for (var i = 0; i < ids.size(); i++) {
                 var h = hashes.get(i).get();
                 if (h.isEmpty()) {
                     continue;
                 }
-                out.add(new WorkerInfo(
+                out.add(new RunnerRecord(
                         ids.get(i),
                         h.getOrDefault(F_LABEL, ""),
                         Instant.ofEpochMilli(Long.parseLong(h.get(F_STARTED))),
                         Instant.ofEpochMilli(Long.parseLong(h.get(F_SEEN))),
                         Integer.parseInt(h.getOrDefault(F_RUNNING, "0")),
                         "1".equals(h.get(F_ACCEPTING)),
-                        workerIds(h.get(F_QUEUES)),
-                        workerIds(h.get(F_TYPES))));
+                        runnerIds(h.get(F_QUEUES)),
+                        runnerIds(h.get(F_TYPES))));
             }
             return out;
         });
     }
 
-    private static Set<Integer> workerIds(String value) {
+    private static Set<Integer> runnerIds(String value) {
         var ids = new HashSet<Integer>();
         for (var id : (List<?>) Json.parse(value)) ids.add(((Number) id).intValue());
         return ids;

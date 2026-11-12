@@ -43,8 +43,8 @@ The namespace prefixes every key and carries the Redis Cluster hash tag, so all 
 | `queuedByType()` and the counts | Read exact zset cardinalities of the active types in one script, without task hash reads. |
 | Finished tasks | Are listed and purged from one zset per state and queue. |
 | Removing a task whose unique key window is open | Leaves only a key string, which expires at the end of the window. |
-| Worker registration | Sets `accepting` to 1. |
-| Worker heartbeat | One script atomically updates the worker's time, running count and accepting flag. It also writes the hash of a removed worker again, with its label, queues and types. |
+| Runner registration | Sets `accepting` to 1. |
+| Runner heartbeat | One script atomically updates the runner's time, running count and accepting flag. It also writes the hash of a removed runner again, with its label, queues and types. |
 
 How the store answers a resent enqueue:
 
@@ -110,7 +110,7 @@ Other details:
 | Task hash field `wt` | the random per-record write token that enqueue stores with the other fields |
 | Task and recurring-definition hashes, field `ty` | the type id |
 | Recurring-definition hash, field `trg` | set to 1 while the next fire time is one an operator triggered |
-| Worker hash, field `accepting` | set to 1 on registration; the heartbeat script updates it |
+| Runner hash, field `accepting` | set to 1 on registration; the heartbeat script updates it |
 | `ts:<digest>` lifetime | expires a day after the last claim that named it; a claim writes it again when it is missing |
 | Claim | takes the intersection of the `active:<queue-id>` set and the `ts:<digest>` set, so its cost grows with the types that have queued tasks, not with the types registered |
 

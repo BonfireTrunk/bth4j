@@ -35,7 +35,7 @@ final class TaskHashes {
         put(f, F_ATTEMPTS, t.attempts());
         put(f, F_MAX_ATTEMPTS, t.maxAttempts());
         put(f, F_CREATED, t.createdAt());
-        put(f, F_WORKER, t.workerId());
+        put(f, F_RUNNER, t.runnerId());
         put(f, F_LEASE, t.leaseUntil());
         put(f, F_CLAIMED_AT, t.claimedAt());
         put(f, F_ACCOUNT, t.account());
@@ -66,7 +66,7 @@ final class TaskHashes {
     private static final int CLAIM_ENTRY_SIZE = 4 + RedisScripts.CLAIM_FIELDS.length;
 
     /** Fields the claim script writes itself, so its reply does not carry them; the claim sets them instead. */
-    private static final Set<String> SET_BY_CLAIM = Set.of(F_STATE_CHANGED, F_WORKER, F_LEASE, F_CLAIMED_AT);
+    private static final Set<String> SET_BY_CLAIM = Set.of(F_STATE_CHANGED, F_RUNNER, F_LEASE, F_CLAIMED_AT);
 
     /**
      * @param h        the task hash
@@ -91,17 +91,17 @@ final class TaskHashes {
      * @throws TaskStoreException      if the entry does not have the shape the script returns
      * @throws UnreadableTaskException if a stored value cannot be read
      */
-    static TaskRecord fromClaim(Object entry, long at, long leaseUntil, int workerId) {
-        return fromClaim(entry, CLAIM_POSITIONS, CLAIM_ENTRY_SIZE, at, leaseUntil, workerId);
+    static TaskRecord fromClaim(Object entry, long at, long leaseUntil, int runnerId) {
+        return fromClaim(entry, CLAIM_POSITIONS, CLAIM_ENTRY_SIZE, at, leaseUntil, runnerId);
     }
 
     /** {@link #fromClaim(Object, long, long, int)} for a reply carrying {@code fields}; for tests of drift. */
-    static TaskRecord fromClaim(Object entry, String[] fields, long at, long leaseUntil, int workerId) {
-        return fromClaim(entry, positions(fields, 4), 4 + fields.length, at, leaseUntil, workerId);
+    static TaskRecord fromClaim(Object entry, String[] fields, long at, long leaseUntil, int runnerId) {
+        return fromClaim(entry, positions(fields, 4), 4 + fields.length, at, leaseUntil, runnerId);
     }
 
     private static TaskRecord fromClaim(
-            Object entry, Map<String, Integer> positions, int size, long at, long leaseUntil, int workerId) {
+            Object entry, Map<String, Integer> positions, int size, long at, long leaseUntil, int runnerId) {
         if (!(entry instanceof List<?> e) || e.size() != size) {
             throw new TaskStoreException("claim reply entry is not a list of " + size + " values: "
                     + (entry instanceof List<?> l
@@ -134,7 +134,7 @@ final class TaskHashes {
                         .attempts(integer(stored, F_ATTEMPTS) + 1)
                         .claimedAt(Instant.ofEpochMilli(at))
                         .leaseUntil(Instant.ofEpochMilli(leaseUntil))
-                        .workerId(workerId)
+                        .runnerId(runnerId)
                         .build());
     }
 
@@ -199,7 +199,7 @@ final class TaskHashes {
                 .due(instant(h, F_DUE))
                 .stateChangedAt(instant(h, F_STATE_CHANGED))
                 .encodedPayload(encodedPayload)
-                .workerId((leased || state.isTerminal()) && h.get(F_WORKER) != null ? integer(h, F_WORKER) : null)
+                .runnerId((leased || state.isTerminal()) && h.get(F_RUNNER) != null ? integer(h, F_RUNNER) : null)
                 .leaseUntil(leased ? instant(h, F_LEASE) : null)
                 .claimedAt(instant(h, F_CLAIMED_AT))
                 .account(h.get(F_ACCOUNT))

@@ -41,12 +41,12 @@ An arrow means "extends".
 
 | Interface | Content |
 |---|---|
-| `TaskStore` | `info`, `init`, `allocateIds`, `allocateWorkerId`, `queueId`, `typeId`, `queueNames`, `typeNames` |
+| `TaskStore` | `info`, `init`, `allocateIds`, `allocateRunnerId`, `queueId`, `typeId`, `queueNames`, `typeNames` |
 | `ExecutionStore` | `enqueue`, `enqueueAll`, `claim`, `renew`, `ack`, `fail`, `failExpired`, `finishCancelled`, `reschedule`, `unclaim`, `saveSteps`, `progress` |
-| `MaintenanceStore` | `promote`, `reclaim`, `expire`, `purge`, `purgeWorkers`, `releaseKeys`, `nextDue` |
+| `MaintenanceStore` | `promote`, `reclaim`, `expire`, `purge`, `purgeRunners`, `releaseKeys`, `nextDue` |
 | `ScheduleStore` | `putSchedule`, `deleteSchedule`, `nextFireTimes`, `schedules`, `dueSchedules`, `commitSchedule`, `pauseSchedule`, `resumeSchedule`, `triggerSchedule`, `setNextFire` |
 | `InspectionStore` | `getTask`, `taskByKey`, `holdsKey`, `counts`, `tasks` (by state, paged by an opaque cursor on `(due, id)` for QUEUED and SCHEDULED and on `(stateChangedAt, id)` for the other states) |
-| `AdminStore` | `cancel`, `retry`, `delete`, `pauseQueue`, `queues`, `heartbeat`, `workers` |
+| `AdminStore` | `cancel`, `retry`, `delete`, `pauseQueue`, `queues`, `heartbeat`, `runners` |
 
 ## What a store needs from its engine
 
@@ -76,12 +76,12 @@ See [Redis](stores/redis.md), [PostgreSQL](stores/postgresql.md) and [SQLite](st
 | Be safe under concurrency | Calls are made concurrently from many threads and processes. Each must be atomic and safe to repeat. |
 | Throw `TaskStoreException` | A failure to reach the engine throws `TaskStoreException`. Callers retry on their next cycle. A stored task that cannot be read throws `UnreadableTaskException`, which is not a store failure: a retry would fail the same way. |
 | Check the schema in `init()` | `init()` creates the schema or verifies the store's schema version (`StoreInfo.schemaVersion`) and refuses another one. |
-| Check arguments with `StoreArguments` | Arguments are checked alike on every store: queue and type names, worker label, the `reschedule` due, every count and limit (at least 1) and the purge state. A refused argument throws `TaskValidationException`, as a malformed listing cursor does. A pause of a queue id that was never registered is ignored. |
+| Check arguments with `StoreArguments` | Arguments are checked alike on every store: queue and type names, runner label, the `reschedule` due, every count and limit (at least 1) and the purge state. A refused argument throws `TaskValidationException`, as a malformed listing cursor does. A pause of a queue id that was never registered is ignored. |
 | Stay within the time limit | Every time the library hands a store lies within `TaskRequest.MAX_TIME_FROM_NOW` (100 years) of now, and every duration is at most that long, so epoch milliseconds or SQL timestamps hold them. |
 
 ## How a claim works
 
-`ExecutionStore.claim` takes `ClaimRequest(List<QueueGrant> grants, int count, Duration lease, int workerId, Set<Integer> knownTypeIds)`.
+`ExecutionStore.claim` takes `ClaimRequest(List<QueueGrant> grants, int count, Duration lease, int runnerId, Set<Integer> knownTypeIds)`.
 
 | Part | Rule |
 |---|---|
@@ -125,9 +125,9 @@ flowchart TD
 | `MaintenanceStore.reclaim(limit)` | Returns `ExpiredLease` with `queueId` and `typeId`, read by the same statement or script that lists the lease. |
 | An id a store cannot read | A store that cannot read a queue or type id from a damaged record reports 0. Registered ids start at 1, so 0 is never a real id, and the runner names it `unknown` in the event. |
 | `InspectionStore.queuedByType()` | Returns exact QUEUED counts as queue id to type id to count, with only non-zero entries. |
-| `AdminStore.heartbeat(workerId, label, queueIds, typeIds, running, accepting)` | Persists the worker's accepting state, exposed by `WorkerInfo.accepting()`. It creates the row again under the same id when maintenance purged it. |
+| `AdminStore.heartbeat(runnerId, label, queueIds, typeIds, running, accepting)` | Persists the runner's accepting state, exposed by `RunnerRecord.accepting()`. It creates the row again under the same id when maintenance purged it. |
 | `AdminStore.cancel`, `retry`, `delete` | Each answers in the same atomic step as the change, with the first reason that applies: no such task (`NOT_FOUND`), then another revision (`STALE`), then a state that refuses the change (`FINISHED`, `NOT_RETRYABLE` or `LEASED`). A key-only row, which is a removed task that still holds its key, is not a task. A `retry` that finds the task's unique key held by another task, which only damaged data can cause, throws `TaskStoreException` and changes nothing. |
-| `allocateWorkerId` | Creates accepting workers. |
+| `allocateRunnerId` | Creates accepting runners. |
 | `StoreArguments` | Holds the argument checks every store applies. Every time the library hands a store lies within `TaskRequest.MAX_TIME_FROM_NOW` of now. |
 | `ScheduleStore.triggerSchedule(scheduleId, fireAt)` | The operator's trigger. It marks the fire time it stores, and `dueSchedules` reports the mark as `DueSchedule.triggered()`, so that the runner creates the task however late it takes the fire up. The mark goes with the next write that replaces the fire time. |
 | `StoreContract` | Covers these behaviors for every store implementation. |

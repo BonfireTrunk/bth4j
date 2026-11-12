@@ -35,7 +35,7 @@ class BackgroundRunnerBuilderTest {
                 builder::succeededRetention,
                 builder::deadRetention,
                 builder::cancelledRetention,
-                builder::workerStaleAfter);
+                builder::runnerStaleTimeout);
 
         for (var setting : settings) {
             assertThatCode(() -> setting.apply(longest)).doesNotThrowAnyException();
@@ -83,10 +83,10 @@ class BackgroundRunnerBuilderTest {
     }
 
     @Test
-    void aWorkerLabelOrQueueNameWithAU0000IsRejected() {
+    void aRunnerLabelOrQueueNameWithAU0000IsRejected() {
         var builder = BackgroundRunner.builder();
 
-        assertThatThrownBy(() -> builder.workerLabel("host\u00001")).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> builder.runnerLabel("host\u00001")).isInstanceOf(TaskConfigurationException.class);
         assertThatThrownBy(() -> Queues.of("Q\u00001")).isInstanceOf(TaskConfigurationException.class);
     }
 }

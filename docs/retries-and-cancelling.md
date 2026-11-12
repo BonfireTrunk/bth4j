@@ -67,7 +67,7 @@ Two clocks are involved:
 
 | Clock | What it decides |
 |---|---|
-| The worker's clock | a retry's due time |
+| The runner's clock | a retry's due time |
 | The store's clock | promotion and leases |
 
 Keep these clocks synchronized: skew changes the effective retry delay. After a failover to a store server whose clock is
@@ -164,7 +164,7 @@ runner.registry().register(EXPORT, (ctx, export) -> {
 | The processor throws any exception, also a `TaskUnrecoverableException` or a `TaskRescheduleException` | The task ends CANCELLED. A body that reschedules itself every attempt can still be cancelled. |
 | The processor ignores the cancellation and returns normally, and the revision fence still accepts it | The task ends SUCCEEDED. The request is not applied after a normal return. |
 | The request reaches the store after the last renewal of an attempt that then fails | The request stays on the task when it is retried, so the next attempt starts with `cancelRequested()` true. |
-| The worker dies while the cancel is pending | Maintenance ends the task CANCELLED when its lease expires, instead of retrying it. |
+| The runner dies while the cancel is pending | Maintenance ends the task CANCELLED when its lease expires, instead of retrying it. |
 
 ### Lease loss
 
@@ -228,7 +228,7 @@ This example shows both limits on one request:
 
 ```java
 client.enqueue(TaskRequest.of(EXPORT, export)
-        .startBy(Instant.now().plus(Duration.ofMinutes(10)))   // expired, not run, if no worker was free by then
+        .startBy(Instant.now().plus(Duration.ofMinutes(10)))   // expired, not run, if no runner had a free slot by then
         .maxRunTime(Duration.ofMinutes(30))                        // asked to stop after 30 minutes
         .build());
 ```

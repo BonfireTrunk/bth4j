@@ -76,7 +76,7 @@ How a step behaves:
 
 - The result is stored before `step` returns.
 - On a retry the stored result is returned and the body does not run.
-- A step is repeated only when the worker dies between finishing the body and storing the result.
+- A step is repeated only when the runner dies between finishing the body and storing the result.
 
 So put side effects inside steps and keep each step idempotent.
 
@@ -87,7 +87,7 @@ flowchart TD
     B -->|"no"| D["Run the body"]
     D --> E["Store the result"]
     E --> F["Return the result"]
-    D -.->|"worker dies after the body, before the result is stored"| G["The next attempt finds no result and runs the body again"]
+    D -.->|"runner dies after the body, before the result is stored"| G["The next attempt finds no result and runs the body again"]
 ```
 
 Step results are encoded with the runner's JSON mapper. On a runner without one, a step with a result type fails with a `TaskConfigurationException` before its body runs; a step without a result needs no mapper. These limits apply:

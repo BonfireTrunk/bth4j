@@ -28,7 +28,7 @@ How the runner finds its store, its processors and its JSON mapping, and how it 
 | `registry` | new registry | the processor registry; by default created by the runner and reached with `runner.registry()` |
 | `jsonMapper` | none | payloads and step results as JSON; needed unless every task type has its own codec. A runner without one refuses to start when a registered task type has a JSON payload |
 | `clock` | `Clock.systemUTC()` | clock for client-side instants (`createdAt`, delays, retry times) |
-| `workerLabel` | JVM name (`pid@host`) | identifies this process in the worker registry; 1 to 128 characters |
+| `runnerLabel` | JVM name (`pid@host`) | identifies this process in the runner registry; 1 to 128 characters |
 | `threadGroupName` | `bgr` | name of the runner's thread group |
 
 ## Executor and concurrency
@@ -71,7 +71,7 @@ How long a claimed task is leased, how often the runner polls and how often each
 | `claimBatchSize` | 32 | most tasks claimed in one call, bounded by free executor slots |
 | `shutdownTimeout` | 30 s | how long `stop()` takes at most, waiting for services and running tasks |
 | `serviceCheckInterval` | 10 s (at least 1 ms) | how often a dead service thread is restarted |
-| `maintenanceCheckInterval` | 5 s (at least 1 s) | how often expired leases are looked for, tasks past `startBy` are expired and the worker heartbeat is written |
+| `maintenanceCheckInterval` | 5 s (at least 1 s) | how often expired leases are looked for, tasks past `startBy` are expired and the runner heartbeat is written |
 | `scheduledTasksCheckInterval` | 1 s (at least 10 ms) | upper bound of the wait between promotions of due scheduled tasks; it wakes earlier for the next due task |
 | `recurringTasksCheckInterval` | 10 s (at least 10 ms) | how often recurring definitions are checked; twice this value (at least 1 minute) is the misfire threshold |
 
@@ -87,7 +87,7 @@ How long finished tasks stay readable and how the purge removes them. See [Reten
 | `keepSucceededPayload` | false | keep the payload of succeeded tasks (dropped on success by default) |
 | `purgeInterval` | 1 minute (at least 1 ms) | time between purge runs |
 | `purgeBatchSize` | 500 | tasks removed per purge call; the purge loops until a call removes fewer |
-| `workerStaleAfter` | 10 minutes (at least three times `maintenanceCheckInterval`, at most 100 years) | worker registry rows without a heartbeat for this long are deleted by the purge |
+| `runnerStaleTimeout` | 10 minutes (at least three times `maintenanceCheckInterval`, at most 100 years) | runner registry rows without a heartbeat for this long are deleted by the purge |
 
 ## Task ids
 
@@ -165,7 +165,7 @@ stateDiagram-v2
 
 `STOPPED` is never reported because the shutdown timeout ran out. A script that ends the process should wait for `STOPPED`, or use the answer of `stop()`: `false` means tasks were still running. A task whose processor ignores interrupts keeps the runner in `STOPPING` for as long as it runs.
 
-A lease that has lapsed is not revived by a later renewal, so `leaseDuration` must sit well above the worst pause of a worker (GC, container freeze, slow store round trip).
+A lease that has lapsed is not revived by a later renewal, so `leaseDuration` must sit well above the worst pause of a runner (GC, container freeze, slow store round trip).
 
 ## How outcomes are written
 

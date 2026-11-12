@@ -31,7 +31,7 @@ import today.bonfire.oss.bth4j.TaskState;
  *                          scheduled one, the retry time after a failure (store clock); never null once stored
  * @param stateChangedAt    when the current state was entered (store clock); the finish time of a terminal task
  * @param encodedPayload    encoded payload; null when there is none or it was dropped on success
- * @param workerId          the worker that claimed the task; kept after it finished
+ * @param runnerId          the runner that claimed the task; kept after it finished
  * @param leaseUntil        when the lease expires unless renewed; LEASED only
  * @param claimedAt         when the last attempt started
  * @param account           application-defined owner, or null
@@ -65,7 +65,7 @@ public record TaskRecord(
         Instant due,
         Instant stateChangedAt,
         String encodedPayload,
-        Integer workerId,
+        Integer runnerId,
         Instant leaseUntil,
         Instant claimedAt,
         String account,
@@ -96,14 +96,14 @@ public record TaskRecord(
 
     /**
      * @return this record as {@link ExecutionStore#enqueue} stores a new task: the fields a producer sets, zero
-     *         attempts, and no worker, lease, claim time, key-until, cancel request or reason, progress, steps or
+     *         attempts, and no runner, lease, claim time, key-until, cancel request or reason, progress, steps or
      *         failures. A {@link #keyKeep()} without a {@link #uniqueKey()} keeps nothing and is dropped.
      */
     public TaskRecord asNew() {
         return toBuilder()
                 .keyKeep(uniqueKey == null ? null : keyKeep)
                 .attempts(0)
-                .workerId(null)
+                .runnerId(null)
                 .leaseUntil(null)
                 .claimedAt(null)
                 .keyUntil(null)
@@ -129,7 +129,7 @@ public record TaskRecord(
         b.due = due;
         b.stateChangedAt = stateChangedAt;
         b.encodedPayload = encodedPayload;
-        b.workerId = workerId;
+        b.runnerId = runnerId;
         b.leaseUntil = leaseUntil;
         b.claimedAt = claimedAt;
         b.account = account;
@@ -168,7 +168,7 @@ public record TaskRecord(
         private Instant due;
         private Instant stateChangedAt;
         private String encodedPayload;
-        private Integer workerId;
+        private Integer runnerId;
         private Instant leaseUntil;
         private Instant claimedAt;
         private String account;
@@ -249,8 +249,8 @@ public record TaskRecord(
             return this;
         }
 
-        public Builder workerId(Integer v) {
-            workerId = v;
+        public Builder runnerId(Integer v) {
+            runnerId = v;
             return this;
         }
 
@@ -353,7 +353,7 @@ public record TaskRecord(
                     due,
                     stateChangedAt,
                     encodedPayload,
-                    workerId,
+                    runnerId,
                     leaseUntil,
                     claimedAt,
                     account,

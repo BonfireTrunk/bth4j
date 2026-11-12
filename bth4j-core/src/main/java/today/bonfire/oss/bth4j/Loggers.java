@@ -26,7 +26,7 @@ public final class Loggers {
     /** One attempt of a task: failures, retries, cancellation, rescheduling, deferral and lost leases. */
     public static final String ATTEMPT = "today.bonfire.oss.bth4j.TaskExecution";
 
-    /** Expired leases, start-by expiry, purge, worker heartbeats and stale workers. */
+    /** Expired leases, start-by expiry, purge, runner heartbeats and stale runners. */
     public static final String MAINTENANCE = "today.bonfire.oss.bth4j.MaintenanceService";
 
     /** Recurring schedules: queued occurrences, skipped definitions and definitions that never fire again. */
