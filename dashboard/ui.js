@@ -1,11 +1,14 @@
+import { serverNow } from './api.js';
+
 const { reactive, ref, onMounted, onUnmounted } = Vue;
 
 export const STATES = ['QUEUED', 'SCHEDULED', 'LEASED', 'SUCCEEDED', 'DEAD', 'CANCELLED', 'EXPIRED'];
 
-// one clock for every countdown on the page; components read it so relative times tick without a request
-export const now = ref(Date.now());
+// one clock for every countdown on the page, set to the server's time because the timestamps compared with it are
+// the server's; components read it so relative times tick without a request
+export const now = ref(serverNow());
 setInterval(() => {
-  now.value = Date.now();
+  now.value = serverNow();
 }, 1000);
 
 function pad(n) {
@@ -150,10 +153,11 @@ export function usePoll(fetcher, intervalMs = 0) {
   const error = ref('');
   let timer = null;
   let inFlight = false;
+  let rerun = null;
   let alive = true;
 
   async function load() {
-    if (inFlight) return;
+    if (inFlight || !alive) return;
     inFlight = true;
     try {
       const result = await fetcher();
@@ -167,7 +171,23 @@ export function usePoll(fetcher, intervalMs = 0) {
     } finally {
       inFlight = false;
       loading.value = false;
+      const next = rerun;
+      rerun = null;
+      if (next) (alive ? load() : Promise.resolve()).then(next.resolve);
     }
+  }
+
+  // A timer tick that finds a request in flight is skipped. A reload asked for after an action must show the
+  // state after it, so it waits for the request in flight and makes one more, whatever number of reloads asked.
+  function reload() {
+    if (!inFlight) return load();
+    if (!rerun) {
+      rerun = {};
+      rerun.promise = new Promise((resolve) => {
+        rerun.resolve = resolve;
+      });
+    }
+    return rerun.promise;
   }
 
   onMounted(() => {
@@ -178,7 +198,7 @@ export function usePoll(fetcher, intervalMs = 0) {
     alive = false;
     if (timer) clearInterval(timer);
   });
-  return { data, loading, error, reload: load };
+  return { data, loading, error, reload };
 }
 
 const HOLD_MS = 3000;
@@ -190,7 +210,7 @@ export function useChanges() {
   function diff(current) {
     if (previous) {
       for (const [k, v] of Object.entries(current)) {
-        if (previous[k] !== undefined && previous[k] !== v) marks.set(k, Date.now() + HOLD_MS);
+        if (previous[k] !== undefined && previous[k] !== v) marks.set(k, serverNow() + HOLD_MS);
       }
     }
     previous = current;

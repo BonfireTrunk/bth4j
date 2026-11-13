@@ -196,6 +196,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The jar of every module carries the licence text as `META-INF/LICENSE`.
 - fastjson2 2.0.66.
 - Documentation: [Upgrading](docs/upgrading.md) covers 4.x to 5.0, with every old name beside its new one. [Writing a store](docs/writing-a-store.md) has the rules of the fence, the time fields, ids, unique keys, the ways a task ends and schedules, each with its reason. The design record of 3.0, which described storage that no longer exists, the roadmap whose findings are done, and the 2.x upgrade page are removed; they are in the git history.
+- Admin HTTP: a static file carries an `ETag` made from its size and modification time, and a request whose `If-None-Match` names it is answered `304 Not Modified` without reading the file. The dashboard asks on every page load (`Cache-Control: no-cache` stays) and no longer downloads about 230 KB each time.
+- The dashboard polls `/overview` once for the page and the header together: an open overview page makes 12 requests a minute where it made 18.
 
 ### Fixed
 
@@ -249,6 +251,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A `+` in a query value is a space, so a filter on a queue name with a space works.
   - An encoded slash (`%2F`) in a path segment answers 404; it reached a route that takes an id without one.
   - The overview says "N waiting" for the count, which is exact.
+  - A refresh asked for while the dashboard's own poll is in flight makes one more request when that one ends. Before, the page showed the older answer until the next poll, so it could still show the state from before a pause, retry or cancel.
+  - "Late" and "silent over 1 min" follow the server's clock, not the browser's. The dashboard reads the `Date` header of every answer; a browser clock 90 seconds ahead no longer shows every runner as silent. The server adds `Access-Control-Expose-Headers: Date` for an allowed origin so that a dashboard on another origin can read it.
+  - "Next to leave" asks for the 8 soonest tasks and no longer says that an earlier one can be missing: the listing of SCHEDULED tasks is ordered by due time.
 - `bth4j-micrometer`: the `state` tag is lower-cased without the default locale (a Turkish locale wrote `expıred`).
 - Documentation: `Deferred` and `bth4j.deferred` are for a task without a processor on this runner (a payload that cannot be decoded ends the task as dead, which [Tasks](docs/tasks.md) now lists); what `Retrying.retryAt` holds for `LOST` and `UNKNOWN`; when a misfire is recorded as an issue; a queue listed twice under a queue policy; the table prefix starts with a letter; the storage layouts are on the store pages; Redis Cluster in the `RedisTaskStore` Javadoc; the test hooks of `StoreContract`; the task payload in the dashboard.
 

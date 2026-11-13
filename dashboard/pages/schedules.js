@@ -1,4 +1,4 @@
-import { api, isAdmin } from '../api.js';
+import { api, isAdmin, serverNow } from '../api.js';
 import { usePoll, duration, confirmDialog, toast, toastError } from '../ui.js';
 
 const { ref } = Vue;
@@ -41,7 +41,7 @@ export default {
     // The runner parks a fixed-delay definition a century ahead while its occurrence runs; the real
     // next fire is only known once that occurrence ends.
     const PARKED_AFTER_MS = 50 * 365 * 86400 * 1000;
-    const parked = (s) => !!s.fixedDelay && Date.parse(s.nextFireAt) - Date.now() > PARKED_AFTER_MS;
+    const parked = (s) => !!s.fixedDelay && Date.parse(s.nextFireAt) - serverNow() > PARKED_AFTER_MS;
 
     function refresh() {
       stale.value = false;

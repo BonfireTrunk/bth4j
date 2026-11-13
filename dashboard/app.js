@@ -1,4 +1,4 @@
-import { api, session, clearSession, setSession, isAdmin } from './api.js';
+import { api, session, clearSession, setSession, isAdmin, latestOverview } from './api.js';
 import { registerComponents, toasts, dismissToast, dialog, closeDialog, toastError } from './ui.js';
 import Login from './pages/login.js';
 import Overview from './pages/overview.js';
@@ -89,23 +89,33 @@ const App = {
     const health = ref(undefined);
     const deadCount = ref(0);
     const issueCount = ref(0);
+    const OVERVIEW_MS = 10000;
     let overviewTimer = null;
     async function loadOverview() {
       if (!authed.value) return;
       try {
-        const o = await api.overview();
-        health.value = o.health;
-        deadCount.value = Number((o.totals && o.totals.DEAD) || 0);
-        issueCount.value = Number(o.issues || 0);
+        await api.overview();
       } catch (e) {
         health.value = undefined;
       }
     }
+    // every /overview answer feeds the header, so this asks only when no page has asked within the interval
+    watch(latestOverview, (latest) => {
+      const o = latest.data;
+      health.value = o.health;
+      deadCount.value = Number((o.totals && o.totals.DEAD) || 0);
+      issueCount.value = Number(o.issues || 0);
+    });
+    async function overviewTick() {
+      const age = latestOverview.value ? Date.now() - latestOverview.value.at : Infinity;
+      if (age >= OVERVIEW_MS) await loadOverview();
+      overviewTimer = setTimeout(overviewTick, age >= OVERVIEW_MS ? OVERVIEW_MS : OVERVIEW_MS - age);
+    }
     onMounted(() => {
       loadOverview();
-      overviewTimer = setInterval(loadOverview, 10000);
+      overviewTimer = setTimeout(overviewTick, OVERVIEW_MS);
     });
-    onUnmounted(() => clearInterval(overviewTimer));
+    onUnmounted(() => clearTimeout(overviewTimer));
     watch(authed, (v) => v && loadOverview());
     const navCount = (name) => (name === 'dead' ? deadCount.value : name === 'issues' ? issueCount.value : 0);
 

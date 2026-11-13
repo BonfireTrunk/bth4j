@@ -71,11 +71,37 @@ function url(path, query) {
   return base + path + (qs ? '?' + qs : '');
 }
 
+// The offset of the server's clock from the browser's, which decides "late" and "silent": the Date header has
+// whole seconds, so one answer only bounds the offset, and each further answer narrows the bounds.
+let offsetLow = 0;
+let offsetHigh = 0;
+let offsetKnown = false;
+
+function noteServerClock(res, sent, received) {
+  const date = Date.parse(res.headers.get('Date'));
+  if (Number.isNaN(date)) return;
+  const low = date - received;
+  const high = date + 1000 - sent;
+  if (offsetKnown && low <= offsetHigh && high >= offsetLow) {
+    offsetLow = Math.max(offsetLow, low);
+    offsetHigh = Math.min(offsetHigh, high);
+  } else {
+    offsetLow = low;
+    offsetHigh = high;
+    offsetKnown = true;
+  }
+}
+
+export function serverNow() {
+  return Date.now() + (offsetKnown ? (offsetLow + offsetHigh) / 2 : 0);
+}
+
 async function request(method, path, { query, body, noRedirect } = {}) {
   const headers = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (method !== 'GET' && session.csrf) headers['X-CSRF-Token'] = session.csrf;
   let res;
+  const sent = Date.now();
   try {
     res = await fetch(url(path, query), {
       method,
@@ -86,6 +112,7 @@ async function request(method, path, { query, body, noRedirect } = {}) {
   } catch (e) {
     throw new ApiError(0, 'Cannot reach the server');
   }
+  noteServerClock(res, sent, Date.now());
   if (res.status === 401 && !noRedirect) {
     clearSession();
     location.hash = '#/login';
@@ -120,12 +147,22 @@ async function request(method, path, { query, body, noRedirect } = {}) {
 
 const enc = encodeURIComponent;
 
+// The newest /overview answer and when it came, whoever asked: the shell's header reads it, so the overview page
+// and the shell do not both poll.
+export const latestOverview = Vue.shallowRef(null);
+
+async function overview() {
+  const data = await request('GET', '/overview');
+  latestOverview.value = { data, at: Date.now() };
+  return data;
+}
+
 export const api = {
   login: (user, password) => request('POST', '/session', { body: { user, password }, noRedirect: true }),
   logout: () => request('DELETE', '/session', { noRedirect: true }),
   me: () => request('GET', '/me', { noRedirect: true }),
   health: () => request('GET', '/health'),
-  overview: () => request('GET', '/overview'),
+  overview,
   queues: () => request('GET', '/queues'),
   pauseQueue: (name) => request('POST', '/queues/' + enc(name) + '/pause', { body: {} }),
   resumeQueue: (name) => request('POST', '/queues/' + enc(name) + '/resume', { body: {} }),
