@@ -376,8 +376,8 @@ public final class PostgresTaskStore implements FullStore {
 
     /**
      * Both claim passes in one statement, so a claim is atomic without a transaction. Pass 1 (p1) takes each
-     * grant's share; pass 2 (p2) lets the grants that took their share in full take up to their cap, skipping
-     * what pass 1 took. Each pass is one bounded, index-ordered scan per queue, then orders by grant, due and id
+     * grant's share; pass 2 (p2) lets the grants that took their share in full take up to their cap, continuing
+     * behind the last row pass 1 took from the queue. Each pass is one bounded, index-ordered scan per queue, then orders by grant, due and id
      * and stops at the count left; a single ORDER BY array_position(...) would sort every queued row on each claim.
      * Parameters: [types], queue ids, shares, caps, count, count, count, runner, lease ms.
      */
@@ -395,11 +395,13 @@ public final class PostgresTaskStore implements FullStore {
                 + " l1 AS (SELECT c.id, g.queue_id, g.prio, c.due FROM q g, LATERAL (SELECT id, due FROM " + task
                 + "   WHERE" + eligible + " ORDER BY due, id LIMIT g.take FOR UPDATE SKIP LOCKED) c),"
                 + " p1 AS (SELECT * FROM l1 ORDER BY prio, due, id LIMIT ?),"
-                + " q2 AS (SELECT q.queue_id, q.prio, q.cap - q.take AS take FROM q"
+                // a queue is here only when pass 1 took its full share, so it has a last row
+                + " q2 AS (SELECT q.queue_id, q.prio, q.cap - q.take AS take, lp.due, lp.id FROM q,"
+                + "   LATERAL (SELECT due, id FROM p1 WHERE p1.queue_id = q.queue_id ORDER BY due DESC, id DESC LIMIT 1) lp"
                 + "   WHERE q.cap > q.take AND (SELECT count(*) FROM p1) < ?"
                 + "   AND (SELECT count(*) FROM p1 WHERE p1.queue_id = q.queue_id) = q.take),"
-                + " l2 AS (SELECT c.id, g.prio, c.due FROM q2 g, LATERAL (SELECT id, due FROM " + task + " t"
-                + "   WHERE" + eligible + " AND NOT EXISTS (SELECT 1 FROM p1 WHERE p1.id = t.id)"
+                + " l2 AS (SELECT c.id, g.prio, c.due FROM q2 g, LATERAL (SELECT id, due FROM " + task
+                + "   WHERE" + eligible + " AND (due, id) > (g.due, g.id)"
                 + "   ORDER BY due, id LIMIT g.take FOR UPDATE SKIP LOCKED) c),"
                 + " p2 AS (SELECT * FROM l2 ORDER BY prio, due, id LIMIT (SELECT ? - count(*) FROM p1)),"
                 + " picked AS (SELECT id, row_number() OVER (ORDER BY pass, prio, due, id) AS ord FROM"
@@ -478,8 +480,10 @@ public final class PostgresTaskStore implements FullStore {
                         + " (state, state_changed, id) WHERE state BETWEEN 3 AND 6",
                 "CREATE INDEX IF NOT EXISTS " + task + "_finished_queue ON " + task
                         + " (queue_id, state, state_changed, id) WHERE state BETWEEN 3 AND 6",
-                "CREATE INDEX IF NOT EXISTS " + task + "_counts ON " + task + " (queue_id, state) WHERE state < "
-                        + KEY_ONLY,
+                // state 0 is left out: the claim's condition would match this index exactly and the planner
+                // could prefer it to _queued, which reads in claim order
+                "CREATE INDEX IF NOT EXISTS " + task + "_counts ON " + task
+                        + " (queue_id, state) WHERE state BETWEEN 1 AND 6",
                 "CREATE UNIQUE INDEX IF NOT EXISTS " + task + "_unique_key ON " + task
                         + " (unique_key) WHERE unique_key IS NOT NULL",
                 "CREATE INDEX IF NOT EXISTS " + task + "_key_until ON " + task
@@ -712,7 +716,8 @@ public final class PostgresTaskStore implements FullStore {
     /**
      * Inserts every task in one statement, then classifies the ones that were not stored. A task whose
      * conflicting row went away between the insert and the classification (its key holder was purged or
-     * released its key) is inserted again.
+     * released its key) is inserted again, and so is one whose key is held only by a task whose key window
+     * has passed: that key is released first.
      */
     @Override
     public List<EnqueueOutcome> enqueueAll(List<TaskRecord> tasks) {
@@ -749,9 +754,19 @@ public final class PostgresTaskStore implements FullStore {
             var outcomes = new EnqueueOutcome[tasks.size()];
             var pending = new ArrayList<Integer>();
             for (int i = 0; i < tasks.size(); i++) pending.add(i);
+            // Locks taken by one statement stay until the transaction ends. Outside auto-commit, a batch with
+            // several keys therefore releases its expired keys before the insert, so that every lock is taken
+            // in key order; a release after the insert could wait for a lock behind a key already inserted.
+            var releaseFirst = !c.getAutoCommit()
+                    && tasks.stream()
+                                    .map(TaskRecord::uniqueKey)
+                                    .filter(Objects::nonNull)
+                                    .distinct()
+                                    .count()
+                            > 1;
             for (int round = 0; round < SETTLE_ROUNDS && !pending.isEmpty(); round++) {
                 var batch = pending.stream().map(tasks::get).toList();
-                releaseExpiredKeys(c, batch);
+                if (releaseFirst) releaseExpiredKeys(c, batch);
                 var stored = insert(c, batch);
                 var unresolved = new ArrayList<Integer>();
                 // the same id twice in one call is stored once, for its first occurrence
@@ -875,7 +890,8 @@ public final class PostgresTaskStore implements FullStore {
 
     /**
      * Fills the outcome of each task that was not stored: its id exists, or its key is held by another task.
-     * Returns the tasks that are neither, because the conflicting row went away meanwhile.
+     * Returns the tasks that are neither, because the conflicting row went away meanwhile, and those whose key
+     * was held only by a task whose key window has passed, after releasing that key.
      */
     private ArrayList<Integer> classify(
             Connection c, List<TaskRecord> tasks, List<Integer> unresolved, EnqueueOutcome[] outcomes)
@@ -894,6 +910,7 @@ public final class PostgresTaskStore implements FullStore {
             idArray.free();
         }
         var holders = new HashMap<String, Long>();
+        var expired = new HashSet<String>();
         var keys = unresolved.stream()
                 .map(i -> tasks.get(i).uniqueKey())
                 .filter(Objects::nonNull)
@@ -901,10 +918,15 @@ public final class PostgresTaskStore implements FullStore {
                 .toArray(String[]::new);
         if (keys.length > 0) {
             var keyArray = c.createArrayOf("text", keys);
-            try (var ps = c.prepareStatement("SELECT unique_key, id FROM " + task + " WHERE unique_key = ANY(?)")) {
+            try (var ps = c.prepareStatement("SELECT unique_key, id,"
+                    + " key_until <= date_trunc('milliseconds', statement_timestamp()) FROM " + task
+                    + " WHERE unique_key = ANY(?)")) {
                 ps.setArray(1, keyArray);
                 try (var rs = ps.executeQuery()) {
-                    while (rs.next()) holders.put(rs.getString(1), rs.getLong(2));
+                    while (rs.next()) {
+                        holders.put(rs.getString(1), rs.getLong(2));
+                        if (rs.getBoolean(3)) expired.add(rs.getString(1));
+                    }
                 }
             } finally {
                 keyArray.free();
@@ -915,10 +937,14 @@ public final class PostgresTaskStore implements FullStore {
             if (existingIds.contains(t.id())) {
                 outcomes[i] = EnqueueOutcome.EXISTS;
             } else if (t.uniqueKey() != null && holders.containsKey(t.uniqueKey())) {
-                outcomes[i] = new EnqueueOutcome.DuplicateKey(holders.get(t.uniqueKey()));
+                if (expired.contains(t.uniqueKey())) retry.add(i);
+                else outcomes[i] = new EnqueueOutcome.DuplicateKey(holders.get(t.uniqueKey()));
             } else {
                 retry.add(i);
             }
+        }
+        if (!expired.isEmpty()) {
+            releaseExpiredKeys(c, retry.stream().map(tasks::get).toList());
         }
         return retry;
     }
@@ -1501,49 +1527,57 @@ public final class PostgresTaskStore implements FullStore {
         var fixedDelay = due.definition().isFixedDelay();
         SqlFunction<CommitOutcome> commit = c -> {
             boolean stored;
-            if (o.uniqueKey() != null) {
-                // the schedule row before the key holder's row, the order every other schedule write takes
-                try (var ps = c.prepareStatement("SELECT 1 FROM " + schedule + " WHERE id = ? FOR UPDATE")) {
-                    ps.setString(1, due.scheduleId());
-                    ps.executeQuery().close();
+            var releaseFirst = false;
+            while (true) {
+                if (o.uniqueKey() != null) {
+                    // the schedule row before the key holder's row, the order every other schedule write takes
+                    try (var ps = c.prepareStatement("SELECT 1 FROM " + schedule + " WHERE id = ? FOR UPDATE")) {
+                        ps.setString(1, due.scheduleId());
+                        ps.executeQuery().close();
+                    }
+                    if (releaseFirst) releaseExpiredKeys(c, List.of(o));
                 }
-                releaseExpiredKeys(c, List.of(o));
-            }
-            try (var ps = c.prepareStatement(commitScheduleSql)) {
-                setInstant(ps, 1, nextFire);
-                ps.setString(2, due.scheduleId());
-                ps.setLong(3, due.definition().revision());
-                setInstant(ps, 4, due.fireAt());
-                ps.setLong(5, o.id());
-                ps.setInt(6, o.revision());
-                ps.setInt(7, o.queueId());
-                ps.setInt(8, o.typeId());
-                ps.setInt(9, o.payloadVersion());
-                ps.setInt(10, o.maxAttempts());
-                setInstant(ps, 11, o.createdAt());
-                setInstant(ps, 12, due.fireAt());
-                ps.setString(13, o.encodedPayload());
-                ps.setString(14, o.account());
-                ps.setString(15, RecordJson.encodeHeaders(o.headers()));
-                ps.setString(16, o.retryPolicy());
-                ps.setString(17, o.scheduleId() == null ? due.scheduleId() : o.scheduleId());
-                ps.setString(18, o.uniqueKey());
-                if (o.uniqueKey() == null || o.keyKeep() == null) ps.setNull(19, Types.BIGINT);
-                else ps.setLong(19, o.keyKeep().toMillis());
-                setInstant(ps, 20, o.startBy());
-                if (o.maxRunTime() == null) ps.setNull(21, Types.INTEGER);
-                else ps.setInt(21, Math.toIntExact(o.maxRunTime().toMillis()));
-                if (o.retryOf() == null) ps.setNull(22, Types.BIGINT);
-                else ps.setLong(22, o.retryOf());
-                try (var rs = ps.executeQuery()) {
-                    rs.next();
-                    if (rs.getLong(1) != 1) return CommitOutcome.NOT_COMMITTED;
-                    stored = rs.getLong(2) != 0;
-                    if (!stored && taskExists(c, o.id())) {
-                        c.rollback();
-                        return CommitOutcome.NOT_COMMITTED;
+                try (var ps = c.prepareStatement(commitScheduleSql)) {
+                    setInstant(ps, 1, nextFire);
+                    ps.setString(2, due.scheduleId());
+                    ps.setLong(3, due.definition().revision());
+                    setInstant(ps, 4, due.fireAt());
+                    ps.setLong(5, o.id());
+                    ps.setInt(6, o.revision());
+                    ps.setInt(7, o.queueId());
+                    ps.setInt(8, o.typeId());
+                    ps.setInt(9, o.payloadVersion());
+                    ps.setInt(10, o.maxAttempts());
+                    setInstant(ps, 11, o.createdAt());
+                    setInstant(ps, 12, due.fireAt());
+                    ps.setString(13, o.encodedPayload());
+                    ps.setString(14, o.account());
+                    ps.setString(15, RecordJson.encodeHeaders(o.headers()));
+                    ps.setString(16, o.retryPolicy());
+                    ps.setString(17, o.scheduleId() == null ? due.scheduleId() : o.scheduleId());
+                    ps.setString(18, o.uniqueKey());
+                    if (o.uniqueKey() == null || o.keyKeep() == null) ps.setNull(19, Types.BIGINT);
+                    else ps.setLong(19, o.keyKeep().toMillis());
+                    setInstant(ps, 20, o.startBy());
+                    if (o.maxRunTime() == null) ps.setNull(21, Types.INTEGER);
+                    else ps.setInt(21, Math.toIntExact(o.maxRunTime().toMillis()));
+                    if (o.retryOf() == null) ps.setNull(22, Types.BIGINT);
+                    else ps.setLong(22, o.retryOf());
+                    try (var rs = ps.executeQuery()) {
+                        rs.next();
+                        if (rs.getLong(1) != 1) return CommitOutcome.NOT_COMMITTED;
+                        stored = rs.getLong(2) != 0;
+                        if (!stored && taskExists(c, o.id())) {
+                            c.rollback();
+                            return CommitOutcome.NOT_COMMITTED;
+                        }
                     }
                 }
+                if (stored || o.uniqueKey() == null || releaseFirst || !holderKeyExpired(c, o.uniqueKey())) break;
+                // the key is held only by a task whose key window has passed: undo the advance, free the key, and
+                // commit again with the schedule row locked first
+                c.rollback();
+                releaseFirst = true;
             }
             if (fixedDelay) {
                 try (var ps = c.prepareStatement("UPDATE " + schedule + " SET occurrence_id = ? WHERE id = ?"
@@ -1568,6 +1602,16 @@ public final class PostgresTaskStore implements FullStore {
             return stored ? CommitOutcome.STORED : CommitOutcome.SKIPPED;
         };
         return inTransaction(commit);
+    }
+
+    private boolean holderKeyExpired(Connection c, String key) throws SQLException {
+        try (var ps = c.prepareStatement("SELECT 1 FROM " + task + " WHERE unique_key = ?"
+                + " AND key_until <= date_trunc('milliseconds', statement_timestamp())")) {
+            ps.setString(1, key);
+            try (var rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
     }
 
     /** Sees a row that a concurrent insert of that id committed: ON CONFLICT waited for it before skipping. */
@@ -1624,7 +1668,7 @@ public final class PostgresTaskStore implements FullStore {
         });
     }
 
-    /** Every registered queue appears, with zeros when it has no tasks. Counts by a scan of the {@code _counts} index. */
+    /** Every registered queue appears, with zeros when it has no tasks. Counts by a scan of the {@code _counts} index, and of {@code _queued} for the queued tasks. */
     @Override
     public Map<Integer, StateCounts> counts() {
         int states = TaskState.values().length;
@@ -1634,8 +1678,10 @@ public final class PostgresTaskStore implements FullStore {
                     var rs = ps.executeQuery()) {
                 while (rs.next()) raw.put(rs.getInt(1), new long[states]);
             }
-            try (var ps = c.prepareStatement("SELECT queue_id, state, count(*) FROM " + task + " WHERE state < "
-                            + KEY_ONLY + " GROUP BY queue_id, state");
+            try (var ps = c.prepareStatement("SELECT queue_id, state, count(*) FROM " + task
+                            + " WHERE state BETWEEN 1 AND 6 GROUP BY queue_id, state"
+                            + " UNION ALL SELECT queue_id, 0, count(*) FROM " + task
+                            + " WHERE state = 0 GROUP BY queue_id");
                     var rs = ps.executeQuery()) {
                 while (rs.next()) {
                     raw.computeIfAbsent(rs.getInt(1), k -> new long[states])[rs.getInt(2)] = rs.getLong(3);
