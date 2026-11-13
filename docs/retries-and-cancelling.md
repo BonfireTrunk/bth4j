@@ -195,7 +195,7 @@ More about lease loss:
 
 `maxRunTime(duration)` uses the same path as a cancel. When an attempt has run longer, the runner asks it to stop
 with the reason "max run time ... exceeded". The runner looks about once a second, so the request comes up to a second
-after the limit.
+after the limit. The run time is elapsed time in the runner's process: setting the machine's clock does not move it.
 
 | Setting | Value |
 |---|---|

@@ -9,7 +9,9 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -118,6 +120,30 @@ class TaskProcessorOverrunTest {
         assertThat(reservations.abandoned())
                 .as("one renewal period after the cancel request")
                 .isEqualTo(1);
+    }
+
+    @Test
+    void theMaximumRunTimeIsElapsedTimeWhateverTheWallClockIsSetTo() throws Exception {
+        var elapsed = new AtomicLong(Long.MAX_VALUE - 1_000);
+        var processor = processor(DEFAULT_MAX_RUN_TIME, settings, LEASE, elapsed::get);
+        startStuckAttempt(processor, TaskRequest.of(TYPE).build());
+
+        clock.advance(Duration.ofHours(3));
+        processor.cancelOverrunning();
+        assertThat(context.get().isCancelRequested())
+                .as("the wall clock set forward")
+                .isFalse();
+
+        clock.set(clock.instant().minus(Duration.ofHours(6)));
+        elapsed.addAndGet(DEFAULT_MAX_RUN_TIME.plusMillis(1).toNanos());
+        processor.cancelOverrunning();
+        assertThat(context.get().isCancelRequested())
+                .as("the wall clock set back, the run time over")
+                .isTrue();
+
+        elapsed.addAndGet(RENEW_INTERVAL.toNanos());
+        processor.renewOnce();
+        assertThat(reservations.abandoned()).isEqualTo(1);
     }
 
     @Test
@@ -348,7 +374,7 @@ class TaskProcessorOverrunTest {
             clock.advance(RENEW_INTERVAL);
             processor.renewOnce();
 
-            assertThat(attempt.overrunSince()).isNull();
+            assertThat(attempt.overrunSinceNanos()).isNull();
             assertThat(attempt.isCancelRequested()).isFalse();
             assertThat(reservations.abandoned()).isZero();
             assertThat(status.issues()).noneMatch(i -> i.kind() == Issue.Kind.ATTEMPT_ABANDONED);
@@ -478,6 +504,16 @@ class TaskProcessorOverrunTest {
 
     private TaskProcessorService processor(
             Duration defaultMaxRunTime, TaskExecution.Settings processorSettings, Duration lease) {
+        // elapsed time follows the test's clock, so that advancing the clock is time passing
+        return processor(
+                defaultMaxRunTime, processorSettings, lease, () -> TimeUnit.MILLISECONDS.toNanos(clock.millis()));
+    }
+
+    private TaskProcessorService processor(
+            Duration defaultMaxRunTime,
+            TaskExecution.Settings processorSettings,
+            Duration lease,
+            LongSupplier nanoTime) {
         return new TaskProcessorService.Builder()
                 .group(new ThreadGroup("overrun-test"))
                 .threadName("overrun-test")
@@ -491,6 +527,7 @@ class TaskProcessorOverrunTest {
                 .idlePollInterval(Duration.ofMillis(1))
                 .lease(lease)
                 .defaultMaxRunTime(defaultMaxRunTime)
+                .nanoTime(nanoTime)
                 .runnerId(1)
                 .create();
     }

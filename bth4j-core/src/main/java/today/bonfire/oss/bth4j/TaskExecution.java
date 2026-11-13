@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.TaskEvent.Outcome;
@@ -95,8 +96,11 @@ final class TaskExecution implements Runnable, TaskContext {
     private volatile boolean cancelRequested;
     private volatile String cancelReason;
     private volatile boolean leaseLost;
-    private volatile Instant startedAt;
-    private volatile Instant overrunSince;
+    /** elapsed time for durations and the maximum run time: setting the wall clock must not move either */
+    private final LongSupplier nanoTime;
+
+    private volatile Long startedNanos;
+    private volatile Long overrunSinceNanos;
     private volatile boolean reporting;
     // Serializes interrupts with detachment so a late signal cannot reach the thread's next task.
     private final ReentrantLock bodyLock = new ReentrantLock();
@@ -108,8 +112,13 @@ final class TaskExecution implements Runnable, TaskContext {
     private Error fatal;
 
     TaskExecution(TaskRecord record, Settings settings, Consumer<TaskExecution> onFinished) {
+        this(record, settings, onFinished, System::nanoTime);
+    }
+
+    TaskExecution(TaskRecord record, Settings settings, Consumer<TaskExecution> onFinished, LongSupplier nanoTime) {
         this.record = record;
         this.s = settings;
+        this.nanoTime = nanoTime;
         this.view = settings.names().view(record);
         this.onFinished = onFinished;
         this.steps = new LinkedHashMap<>(record.steps() == null ? Map.of() : record.steps());
@@ -138,22 +147,22 @@ final class TaskExecution implements Runnable, TaskContext {
         interruptBody(false);
     }
 
-    /** @return when the processor started, or null before that */
-    Instant startedAt() {
-        return startedAt;
+    /** @return the elapsed-time reading at which the processor started, or null before that */
+    Long startedNanos() {
+        return startedNanos;
     }
 
     Duration maxRunTime() {
         return record.maxRunTime();
     }
 
-    /** @return when the runner found this attempt past its maximum run time, or null */
-    Instant overrunSince() {
-        return overrunSince;
+    /** @return the elapsed-time reading at which the runner found this attempt past its maximum run time, or null */
+    Long overrunSinceNanos() {
+        return overrunSinceNanos;
     }
 
-    void markOverrun(Instant at) {
-        overrunSince = at;
+    void markOverrun(long nanos) {
+        overrunSinceNanos = nanos;
     }
 
     int queueId() {
@@ -220,8 +229,8 @@ final class TaskExecution implements Runnable, TaskContext {
     }
 
     private void runAttempt(Runnable freeSlot) {
-        var started = s.clock().instant();
-        startedAt = started;
+        long started = nanoTime.getAsLong();
+        startedNanos = started;
         emit(new TaskEvent.Started(view, record.runnerId() == null ? 0 : record.runnerId()));
         var registration = s.registry().get(view.typeName());
         if (registration == null) {
@@ -293,7 +302,7 @@ final class TaskExecution implements Runnable, TaskContext {
         emit(new TaskEvent.Deferred(record.id(), view.queue(), view.typeName(), reason));
     }
 
-    private void succeed(Instant started) {
+    private void succeed(long started) {
         var rearm = rearmEffect();
         // a re-arm must stay atomic with its own transition, so it keeps the single call
         var outcome = apply(() -> rearm == null
@@ -302,7 +311,7 @@ final class TaskExecution implements Runnable, TaskContext {
         if (outcome == Outcome.LOST) {
             log.warn("Task {} completed but its lease was lost, it may run again", record.id());
         }
-        emit(new TaskEvent.Succeeded(view, Duration.between(started, s.clock().instant()), outcome));
+        emit(new TaskEvent.Succeeded(view, Duration.ofNanos(nanoTime.getAsLong() - started), outcome));
     }
 
     /** The re-arm of a fixed-delay occurrence; a header that cannot be read must not stop the acknowledgement. */

@@ -1,7 +1,6 @@
 package today.bonfire.oss.bth4j;
 
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -9,6 +8,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.LongSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
@@ -50,6 +50,7 @@ class TaskProcessorService extends CustomThread {
     private final Duration defaultMaxRunTime;
     private final Duration idlePollInterval;
     private final int claimBatchSize;
+    private final LongSupplier nanoTime;
     private final AtomicInteger queueOffset = new AtomicInteger();
     /** shared with the runner so that a restarted processor keeps renewing the tasks its predecessor started */
     private final Admission admission;
@@ -91,6 +92,7 @@ class TaskProcessorService extends CustomThread {
         this.defaultMaxRunTime = b.defaultMaxRunTime;
         this.idlePollInterval = b.idlePollInterval;
         this.claimBatchSize = b.claimBatchSize;
+        this.nanoTime = b.nanoTime;
         this.group = b.group;
         this.renewerName = b.threadName + "-lease";
         this.renewer = newRenewer();
@@ -232,7 +234,7 @@ class TaskProcessorService extends CustomThread {
         TaskExecution execution = null;
         boolean submitting = false;
         try {
-            execution = new TaskExecution(record, settings, this::finished);
+            execution = new TaskExecution(record, settings, this::finished, nanoTime);
             admission.started(execution);
             reservations.reserve(
                     execution,
@@ -436,7 +438,7 @@ class TaskProcessorService extends CustomThread {
      * late.
      */
     void cancelOverrunning() {
-        var now = settings.clock().instant();
+        long now = nanoTime.getAsLong();
         for (var e : admission.attempts()) {
             if (!e.reporting()) cancelIfOverrunning(e, now);
         }
@@ -449,7 +451,7 @@ class TaskProcessorService extends CustomThread {
     void renewOnce() {
         var attempts = admission.attempts();
         if (attempts.isEmpty()) return;
-        var now = settings.clock().instant();
+        long now = nanoTime.getAsLong();
         var executions = new ArrayList<TaskExecution>(attempts.size());
         for (var e : attempts) {
             // an attempt whose processor returned is writing its outcome: it is renewed until that write resolves
@@ -493,11 +495,11 @@ class TaskProcessorService extends CustomThread {
         return e.maxRunTime() != null ? e.maxRunTime() : defaultMaxRunTime;
     }
 
-    private void cancelIfOverrunning(TaskExecution e, Instant now) {
-        var started = e.startedAt();
-        if (started == null || e.overrunSince() != null) return;
+    private void cancelIfOverrunning(TaskExecution e, long now) {
+        var started = e.startedNanos();
+        if (started == null || e.overrunSinceNanos() != null) return;
         var maxRunTime = maxRunTime(e);
-        if (!now.isAfter(started.plus(maxRunTime))) return;
+        if (now - started <= maxRunTime.toNanos()) return;
         e.markOverrun(now);
         if (e.isCancelRequested()) return;
         log.warn("Task {} exceeded its maximum run time of {}, requesting cancellation", e.taskId(), maxRunTime);
@@ -510,9 +512,9 @@ class TaskProcessorService extends CustomThread {
      *
      * @return true when the attempt is abandoned
      */
-    private boolean abandonIfStuck(TaskExecution e, Instant now) {
-        var since = e.overrunSince();
-        if (since == null || now.isBefore(since.plus(renewInterval))) return false;
+    private boolean abandonIfStuck(TaskExecution e, long now) {
+        var since = e.overrunSinceNanos();
+        if (since == null || now - since < renewInterval.toNanos()) return false;
         if (reservations.abandon(e)) {
             var detail = "task " + e.taskId() + " ran past its maximum run time of " + maxRunTime(e)
                     + " and did not stop; its lease is no longer renewed and its slots stay held until it ends ("
@@ -560,6 +562,7 @@ class TaskProcessorService extends CustomThread {
         private Duration defaultMaxRunTime = Duration.ofHours(1);
         private Duration idlePollInterval = Duration.ofMillis(500);
         private int claimBatchSize = 32;
+        private LongSupplier nanoTime = System::nanoTime;
         private Admission admission = new Admission();
         private QueueReservations reservations = new QueueReservations();
 
@@ -612,6 +615,12 @@ class TaskProcessorService extends CustomThread {
         /** The maximum run time of an attempt whose task sets none. */
         Builder defaultMaxRunTime(Duration defaultMaxRunTime) {
             this.defaultMaxRunTime = defaultMaxRunTime;
+            return this;
+        }
+
+        /** The source of elapsed time for the maximum run time; a test passes its own. */
+        Builder nanoTime(LongSupplier nanoTime) {
+            this.nanoTime = nanoTime;
             return this;
         }
 
