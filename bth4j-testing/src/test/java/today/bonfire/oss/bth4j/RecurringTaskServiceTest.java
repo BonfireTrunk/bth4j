@@ -232,6 +232,49 @@ class RecurringTaskServiceTest {
         assertThat(status.issues()).noneMatch(i -> i.detail().contains("catching up"));
     }
 
+    @Test
+    void aCatchUpCreatesEveryFireItsScanFoundEvenWhenMoreFiresFallDueMeanwhile() throws Exception {
+        clock.set(T0.plusSeconds(150));
+        register(definition("* * * * *", StoredSchedule.MISFIRE_CATCH_UP, 3), T0);
+        var committed = new AtomicInteger();
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            var result = real.proceed();
+            if (method.equals("commitSchedule") && committed.incrementAndGet() == 1) {
+                clock.advance(Duration.ofMinutes(2));
+            }
+            return result;
+        });
+
+        round();
+
+        assertThat(occurrences())
+                .extracting(TaskRecord::dueAt)
+                .containsExactly(T0, T0.plusSeconds(60), T0.plusSeconds(120), T0.plusSeconds(180), T0.plusSeconds(240));
+        assertThat(store.nextFireTimes()).containsEntry(ID, T0.plusSeconds(300));
+    }
+
+    @Test
+    void aDefinitionChangedInTheMiddleOfACatchUpIsScannedAgain() throws Exception {
+        clock.set(T0.plusSeconds(150));
+        register(definition("* * * * *", StoredSchedule.MISFIRE_CATCH_UP, 3), T0);
+        var committed = new AtomicInteger();
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            var result = real.proceed();
+            if (method.equals("commitSchedule") && committed.incrementAndGet() == 1) {
+                register(definition("* * * * *", StoredSchedule.MISFIRE_CATCH_UP, 1), T0.plusSeconds(60));
+            }
+            return result;
+        });
+
+        round();
+
+        assertThat(occurrences()).extracting(TaskRecord::dueAt).containsExactly(T0, T0.plusSeconds(120));
+        assertThat(status.issues()).singleElement().satisfies(i -> {
+            assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_MISFIRE);
+            assertThat(i.detail()).endsWith("catching up the last 1 fires from " + T0.plusSeconds(120));
+        });
+    }
+
     // ---- fire once now --------------------------------------------------------------------------------
 
     @ParameterizedTest

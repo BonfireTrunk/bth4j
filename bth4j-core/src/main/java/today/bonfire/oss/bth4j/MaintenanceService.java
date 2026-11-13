@@ -11,6 +11,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.IntSupplier;
+import java.util.function.LongSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.TaskEvent.Outcome;
@@ -27,7 +28,9 @@ import today.bonfire.oss.bth4j.spi.TaskRecord;
  * cancel request was pending), expires tasks that missed their start-by time and records this runner's
  * heartbeat. Every purge interval: purges finished tasks past their retention, releases unique keys whose
  * window passed and deletes stale runner rows. Jobs run on the scheduler thread itself; {@link #stopThread()}
- * returns at once and {@link #waitTillDone(Duration)} waits for a job in progress.
+ * returns at once and {@link #waitTillDone(Duration)} waits for a job in progress. A job that works through
+ * many batches does not hold the others back: a purge runs a cycle between two batches, and a cycle writes
+ * the heartbeat again between two batches, whenever a check interval has passed.
  */
 class MaintenanceService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(Loggers.MAINTENANCE);
@@ -53,6 +56,9 @@ class MaintenanceService extends CustomThread {
     private final IntSupplier running;
     private final BooleanSupplier accepting;
     private final Duration runnerStaleTimeout;
+    private final LongSupplier nanoTime;
+    private long lastCycleEnd;
+    private long lastHeartbeat;
 
     MaintenanceService(Builder b) {
         super(b.group, b.threadName);
@@ -76,6 +82,9 @@ class MaintenanceService extends CustomThread {
         this.running = b.running;
         this.accepting = b.accepting;
         this.runnerStaleTimeout = b.runnerStaleTimeout;
+        this.nanoTime = b.nanoTime;
+        this.lastCycleEnd = nanoTime.getAsLong();
+        this.lastHeartbeat = lastCycleEnd;
         this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
             var thread = new Thread(b.group, r, b.threadName + "-scheduler");
             thread.setDaemon(true);
@@ -113,12 +122,24 @@ class MaintenanceService extends CustomThread {
         reclaimExpiredLeases();
         expireMissedStarts();
         if (seen) status.maintained();
+        lastCycleEnd = nanoTime.getAsLong();
+    }
+
+    /** Between two batches of a long purge, so that it does not hold back the heartbeat, lease recovery and expiry. */
+    private void cycleIfDue() {
+        if (nanoTime.getAsLong() - lastCycleEnd >= checkInterval.toNanos()) cycle();
+    }
+
+    /** Between two batches of a long backlog, so that it does not make this runner look gone. */
+    private void heartbeatIfDue() {
+        if (nanoTime.getAsLong() - lastHeartbeat >= checkInterval.toNanos() && heartbeat()) status.maintained();
     }
 
     private void reclaimExpiredLeases() {
         try {
             int count;
             int handled;
+            boolean more;
             do {
                 var expired = store.reclaim(batchSize);
                 count = expired.size();
@@ -132,7 +153,9 @@ class MaintenanceService extends CustomThread {
                     }
                 }
                 // a lease that could not be handled stays expired, so a batch of only those would come back at once
-            } while (count == batchSize && handled > 0 && canContinueProcessing);
+                more = count == batchSize && handled > 0 && canContinueProcessing;
+                if (more) heartbeatIfDue();
+            } while (more);
         } catch (Exception e) {
             status.storeError(e);
             log.error("Error in reclaiming expired leases", e);
@@ -243,6 +266,7 @@ class MaintenanceService extends CustomThread {
     private void expireMissedStarts() {
         try {
             int count;
+            boolean more;
             do {
                 var tasks = store.expire(batchSize);
                 count = tasks.size();
@@ -251,7 +275,9 @@ class MaintenanceService extends CustomThread {
                             t.id(), names.queueNameOrUnknown(t.queueId()), names.typeNameOrUnknown(t.typeId())));
                 }
                 if (count > 0) log.info("Expired {} tasks that missed their start-by time", count);
-            } while (count == batchSize && canContinueProcessing);
+                more = count == batchSize && canContinueProcessing;
+                if (more) heartbeatIfDue();
+            } while (more);
         } catch (Exception e) {
             status.storeError(e);
             log.error("Error in expiring tasks", e);
@@ -271,6 +297,7 @@ class MaintenanceService extends CustomThread {
 
     /** @return false when the store call failed */
     private boolean heartbeat() {
+        lastHeartbeat = nanoTime.getAsLong();
         try {
             if (runnerId > 0) {
                 store.heartbeat(
@@ -294,19 +321,25 @@ class MaintenanceService extends CustomThread {
             for (var entry : retention.entrySet()) {
                 long removed = 0;
                 long batch;
+                boolean more;
                 do {
                     batch = store.purge(entry.getKey(), entry.getValue(), purgeBatchSize);
                     removed += batch;
-                } while (batch == purgeBatchSize && canContinueProcessing);
+                    more = batch == purgeBatchSize && canContinueProcessing;
+                    if (more) cycleIfDue();
+                } while (more);
                 if (removed > 0) {
                     log.info("Purged {} {} tasks", removed, entry.getKey());
                     observer.emit(new TaskEvent.Purged(entry.getKey(), removed));
                 }
             }
             int released;
+            boolean more;
             do {
                 released = store.releaseKeys(purgeBatchSize);
-            } while (released == purgeBatchSize && canContinueProcessing);
+                more = released == purgeBatchSize && canContinueProcessing;
+                if (more) cycleIfDue();
+            } while (more);
             int runners = store.purgeRunners(runnerStaleTimeout);
             if (runners > 0) log.info("Removed {} runners without a heartbeat for {}", runners, runnerStaleTimeout);
         } catch (Exception e) {
@@ -371,6 +404,7 @@ class MaintenanceService extends CustomThread {
         private IntSupplier running = () -> 0;
         private BooleanSupplier accepting = () -> true;
         private Duration runnerStaleTimeout = Duration.ofMinutes(10);
+        private LongSupplier nanoTime = System::nanoTime;
 
         Builder group(ThreadGroup group) {
             this.group = group;
@@ -468,6 +502,12 @@ class MaintenanceService extends CustomThread {
 
         Builder runnerStaleTimeout(Duration runnerStaleTimeout) {
             this.runnerStaleTimeout = runnerStaleTimeout;
+            return this;
+        }
+
+        /** The source of elapsed time between maintenance cycles; a test passes its own. */
+        Builder nanoTime(LongSupplier nanoTime) {
+            this.nanoTime = nanoTime;
             return this;
         }
 
