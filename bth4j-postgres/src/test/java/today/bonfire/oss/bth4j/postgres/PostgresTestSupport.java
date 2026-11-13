@@ -37,6 +37,19 @@ public final class PostgresTestSupport {
         return store;
     }
 
+    static String jdbcUrl() {
+        dataSource();
+        return CONTAINER.getJdbcUrl();
+    }
+
+    static String username() {
+        return CONTAINER.getUsername();
+    }
+
+    static String password() {
+        return CONTAINER.getPassword();
+    }
+
     static String prefix(String namespace) {
         return "t_" + namespace.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_]", "_");
     }
