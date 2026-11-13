@@ -207,6 +207,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A long purge no longer holds back the heartbeat, the recovery of expired leases and the expiry of tasks past their start-by time. Maintenance runs on one thread, and a purge worked through all its batches first (1,200 store calls for 600,000 finished tasks). Now a maintenance cycle runs between two batches whenever a check interval has passed, and a large backlog of expired leases writes the heartbeat again between its batches.
+- A `Misfire.catchUp` definition walks its missed fires once, not once per occurrence it creates: 1,000 missed fires cost 1,000 evaluations of the cron expression where they cost about 500,000, on the thread that serves every definition. The fires one walk found are all created, also when more fall due meanwhile; those are counted by the next walk under the same `maxFires`.
 - Redis and Valkey: promoting delayed tasks reads the queue whose first task has been due longest first. It read the queues in the order they were registered, so a queue with more due tasks than one call moves kept the calls to itself while older tasks of a queue registered later waited. The other stores take the oldest due task first.
 - Admin HTTP: `sessionTtl` below one second is refused. It was accepted and gave a cookie with `Max-Age=0`, which the browser deletes at once.
 - Micrometer: a binding that fails while it is built removes the gauges it had registered and stops its poller, so the same tags can be bound again; a refresh interval too large for milliseconds no longer fails after the gauges are registered.
