@@ -1590,6 +1590,51 @@ class AdminHttpServerTest {
     }
 
     @Test
+    void atTheTrackingCapAKeptKeyStaysWhereAnotherKeyWithTheSameFailuresIsForgotten() {
+        var throttle = new LoginThrottle(clock, Set.of("real"), 100);
+        for (var i = 0; i < 4; i++) {
+            throttle.attempt("real");
+            throttle.attempt("made-up");
+        }
+        clock.advance(Duration.ofMillis(1));
+        for (var key = 0; key < 98; key++) {
+            for (var i = 0; i < 4; i++) throttle.attempt("flood-" + key);
+        }
+
+        throttle.attempt("one-more");
+
+        assertThat(throttle.attempt("real")).as("the fifth failure").isZero();
+        assertThat(throttle.attempt("real")).as("its four failures were kept").isEqualTo(10_000);
+        for (var i = 0; i < 5; i++) {
+            assertThat(throttle.attempt("made-up"))
+                    .as("the oldest key that is not kept went, so its count restarted")
+                    .isZero();
+        }
+    }
+
+    @Test
+    void floodingTheServerWithOtherNamesDoesNotTakeAwayTheFailuresOfAUserThatExists() throws Exception {
+        start(builder().addTrustedProxy("127.0.0.1").loginThrottleCapacity(20));
+        for (var i = 1; i <= 4; i++) {
+            assertThat(loginFrom("203.0.113." + i, "alice", "bad")).isEqualTo(401);
+        }
+        clock.advance(Duration.ofMillis(1));
+        for (var name = 0; name < 25; name++) {
+            for (var i = 0; i < 4; i++) {
+                assertThat(loginFrom("198.51." + name + "." + i, "made-up-" + name, "bad"))
+                        .isEqualTo(401);
+            }
+        }
+
+        assertThat(loginFrom("203.0.113.5", "alice", "bad"))
+                .as("the fifth failure")
+                .isEqualTo(401);
+        assertThat(loginFrom("203.0.113.6", "alice", "s3cret"))
+                .as("the four failures before the flood were kept")
+                .isEqualTo(429);
+    }
+
+    @Test
     void theFirstRefusalOfABlockIsToldOnceAndAgainForTheNextBlock() {
         var throttle = new LoginThrottle(clock);
         assertThat(failFive(throttle, "key")).isEqualTo(10_000);

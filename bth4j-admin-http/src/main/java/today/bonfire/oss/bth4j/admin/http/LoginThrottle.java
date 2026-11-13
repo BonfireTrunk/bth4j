@@ -3,6 +3,7 @@ package today.bonfire.oss.bth4j.admin.http;
 import java.time.Clock;
 import java.util.Comparator;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -39,14 +40,26 @@ final class LoginThrottle {
     // not shorter than the longest block: four attempts per window must not allow more guesses than five and a block
     private static final long FORGET_MILLIS = 900_000;
     private static final long RESET_MILLIS = 900_000;
-    private static final int MAX_ENTRIES = 10_000;
-    private static final int EVICT_AT_CAP = MAX_ENTRIES / 10;
+    static final int DEFAULT_CAPACITY = 10_000;
 
     private final ConcurrentHashMap<String, Entry> entries = new ConcurrentHashMap<>();
     private final Clock clock;
+    private final Set<String> kept;
+    private final int capacity;
 
     LoginThrottle(Clock clock) {
+        this(clock, Set.of(), DEFAULT_CAPACITY);
+    }
+
+    /**
+     * @param kept     keys that are never forgotten to make room, a small fixed set such as the names of the users
+     *                 that exist: flooding the throttle with other keys cannot take their failures away
+     * @param capacity how many keys the throttle holds before it makes room
+     */
+    LoginThrottle(Clock clock, Set<String> kept, int capacity) {
         this.clock = clock;
+        this.kept = Set.copyOf(kept);
+        this.capacity = capacity;
     }
 
     /**
@@ -57,7 +70,7 @@ final class LoginThrottle {
      */
     long attempt(String key) {
         var now = clock.millis();
-        if (!entries.containsKey(key) && entries.size() >= MAX_ENTRIES) {
+        if (!entries.containsKey(key) && entries.size() >= capacity) {
             makeRoom(now);
         }
         var wait = new long[1];
@@ -116,7 +129,8 @@ final class LoginThrottle {
     }
 
     /**
-     * Active blocks are kept, so flooding the map with many keys cannot lift one. Of the rest, a key without
+     * Active blocks and the keys named at construction are kept, so flooding the map with many keys cannot
+     * lift a block or take the failures of such a key away. Of the rest, a key without
      * a block history goes first, so flooding cannot make the throttle forget how often a key was blocked
      * before it has to forget a key that was never blocked. Among those, a key with fewer failures goes before
      * one with more, so a key that is one failure short of a block outlives keys that were tried once. Enough
@@ -126,13 +140,13 @@ final class LoginThrottle {
         entries.values()
                 .removeIf(e ->
                         e.blockedUntil <= now && now - idleSince(e) > (e.blocks > 0 ? RESET_MILLIS : FORGET_MILLIS));
-        if (entries.size() >= MAX_ENTRIES) {
+        if (entries.size() >= capacity) {
             entries.entrySet().stream()
-                    .filter(e -> e.getValue().blockedUntil <= now)
+                    .filter(e -> e.getValue().blockedUntil <= now && !kept.contains(e.getKey()))
                     .sorted(Comparator.<Map.Entry<String, Entry>>comparingInt(e -> e.getValue().blocks)
                             .thenComparingInt(e -> e.getValue().attempts)
                             .thenComparingLong(e -> e.getValue().lastAttempt))
-                    .limit(EVICT_AT_CAP)
+                    .limit(Math.max(1, capacity / 10))
                     .map(Map.Entry::getKey)
                     .toList()
                     .forEach(entries::remove);

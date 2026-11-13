@@ -224,7 +224,7 @@ The server counts a failed login twice, and either count can block the next logi
 | Counted by | What the fifth failure blocks | Notes |
 |---|---|---|
 | Where the login comes from | Logins from there, for 10 seconds the first time | An IPv4 address counts by itself. An IPv6 address counts by its /64 network, because one client usually owns the whole network. |
-| The user name it gives | Logins with that name from anywhere, for 10 seconds the first time | Every name is counted, also one that does not exist, so a block does not show which users exist. |
+| The user name it gives | Logins with that name from anywhere, for 10 seconds the first time | Every name is counted, also one that does not exist, so a block does not show which users exist (except while the server is flooded with names, see below). |
 
 These rules apply to both counts:
 
@@ -233,7 +233,8 @@ These rules apply to both counts:
 - A successful login takes back only its own attempt, on its own address and its own user name. It does not clear the failures counted before it, and it cannot shorten the block of another name.
 - Failures are forgotten when no attempt followed them for 15 minutes. That is as long as the longest block, so staying just under five failures (four tries per 15 minutes) is no faster than being blocked.
 - Once a block has grown, someone who knows a user name and has many addresses can try about 5 passwords per 15 minutes for it, about 480 a day, down from about 43,000 a day with a block that stays at 10 seconds. Give every account a long random password (see [Passwords](#passwords)).
-- The server remembers at most 10,000 addresses and 10,000 names at a time, and when it is full it first forgets the ones without a block and with the fewest failures. Someone with thousands of addresses can use that: between their guesses at one name they send logins for thousands of made-up names, about 9,000 for each guess, until the failures of that name are forgotten before its fifth. The limit above holds against anyone who sends less than that. A long random password is what holds against the rest.
+- The server remembers at most 10,000 addresses and 10,000 names at a time. When it is full it forgets the ones without a block and with the fewest failures first, and it never forgets the name of a user that exists. So sending logins for thousands of made-up names does not take away the failures counted for a real user, and the limit above holds for every account however many logins arrive.
+- That has a price: during such a flood, someone can find out whether a user name exists, because a name that exists is still blocked on its fifth failure and a made-up one may not be. It takes about 10,000 logins from many addresses for each name they test. Without a flood, a block looks the same for both.
 - The same growth lets someone who knows a user name keep that user out. After the attack on a name stops, the real user may have to wait up to 15 minutes for the block to end. Keep the server off networks where that is a concern.
 
 #### What the server logs

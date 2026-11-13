@@ -28,6 +28,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.stream.Collectors;
 import javax.net.ssl.SSLContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -123,8 +124,11 @@ public final class AdminHttpServer implements AutoCloseable {
         this.ownExecutor = b.executor == null;
         this.executor = ownExecutor ? Executors.newVirtualThreadPerTaskExecutor() : b.executor;
         this.sessions = new Sessions(b.clock, b.sessionTtl, MAX_SESSIONS);
-        this.addressThrottle = new LoginThrottle(b.clock);
-        this.userThrottle = new LoginThrottle(b.clock);
+        this.addressThrottle = new LoginThrottle(b.clock, Set.of(), b.loginThrottleCapacity);
+        this.userThrottle = new LoginThrottle(
+                b.clock,
+                users.keySet().stream().map(this::userThrottleKey).collect(Collectors.toUnmodifiableSet()),
+                b.loginThrottleCapacity);
         this.clientAddress = ClientAddress.trusting(b.trustedProxies);
     }
 
@@ -451,6 +455,10 @@ public final class AdminHttpServer implements AutoCloseable {
         }
     }
 
+    private String userThrottleKey(String name) {
+        return HexFormat.of().formatHex(digest(throttleKeySalt, name));
+    }
+
     private void login(HttpExchange ex) throws IOException {
         var client = clientAddress(ex);
         var address = HexFormat.of().formatHex(digest(throttleKeySalt, ClientAddress.throttleKey(client)));
@@ -466,7 +474,7 @@ public final class AdminHttpServer implements AutoCloseable {
             throw new HttpError(400, "user and password are required");
         }
         // counted for every name, known or not, so that a block does not tell which users exist
-        var userKey = HexFormat.of().formatHex(digest(throttleKeySalt, name));
+        var userKey = userThrottleKey(name);
         wait = userThrottle.attempt(userKey);
         if (wait > 0) {
             addressThrottle.takeBack(address);
@@ -858,6 +866,7 @@ public final class AdminHttpServer implements AutoCloseable {
         private final List<String> trustedProxies = new ArrayList<>();
         private Executor executor;
         private Clock clock = Clock.systemUTC();
+        private int loginThrottleCapacity = LoginThrottle.DEFAULT_CAPACITY;
 
         private Builder() {}
 
@@ -953,6 +962,11 @@ public final class AdminHttpServer implements AutoCloseable {
 
         Builder clock(Clock clock) {
             this.clock = clock;
+            return this;
+        }
+
+        Builder loginThrottleCapacity(int capacity) {
+            this.loginThrottleCapacity = capacity;
             return this;
         }
 
