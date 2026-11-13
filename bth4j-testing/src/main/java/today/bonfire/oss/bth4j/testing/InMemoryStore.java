@@ -28,6 +28,7 @@ import today.bonfire.oss.bth4j.RetryOutcome;
 import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.StepResult;
 import today.bonfire.oss.bth4j.TaskState;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
@@ -133,7 +134,9 @@ public final class InMemoryStore implements FullStore {
             return this;
         }
 
+        /** @throws TaskConfigurationException when the clock is null */
         public InMemoryStore build() {
+            if (clock == null) throw new TaskConfigurationException("clock is required");
             return new InMemoryStore(clock, registryBound);
         }
     }

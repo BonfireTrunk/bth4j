@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 
 class InMemoryStoreBuilderTest {
@@ -29,6 +30,13 @@ class InMemoryStoreBuilderTest {
         store.allocateRunnerId("r", Set.of(), Set.of());
 
         assertThat(store.runners().getFirst().startedAt()).isEqualTo(Instant.parse("2030-01-01T00:00:00Z"));
+    }
+
+    @Test
+    void aNullClockIsRefusedAsOnTheOtherStores() {
+        assertThatThrownBy(() -> InMemoryStore.builder().clock(null).build())
+                .isInstanceOf(TaskConfigurationException.class)
+                .hasMessage("clock is required");
     }
 
     @Test
