@@ -77,29 +77,47 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
         this.admin = admin;
         this.registry = registry;
         this.commonTags = commonTags;
-        meters.add(Gauge.builder(RUNNING, running, Supplier::get)
-                .tags(commonTags)
-                .description("Tasks currently running in this runner")
-                .strongReference(true)
-                .register(registry));
-        meters.add(Gauge.builder(UP, up, AtomicInteger::get)
-                .tags(commonTags)
-                .description("1 while the runner reports status RUNNING, otherwise 0")
-                .strongReference(true)
-                .register(registry));
-        meters.add(Gauge.builder(ABANDONED, abandoned, AtomicInteger::get)
-                .tags(commonTags)
-                .description("Attempts past their maximum run time that still hold a slot")
-                .strongReference(true)
-                .register(registry));
+        long millis = delayMillis(refresh);
         poller = Executors.newSingleThreadScheduledExecutor(r -> {
             var thread = new Thread(r, "bth4j-micrometer-poller");
             thread.setDaemon(true);
             return thread;
         });
-        refresh();
-        long millis = Math.max(1, refresh.toMillis());
-        poller.scheduleWithFixedDelay(this::refresh, millis, millis, TimeUnit.MILLISECONDS);
+        try {
+            meters.add(Gauge.builder(RUNNING, running, Supplier::get)
+                    .tags(commonTags)
+                    .description("Tasks currently running in this runner")
+                    .strongReference(true)
+                    .register(registry));
+            meters.add(Gauge.builder(UP, up, AtomicInteger::get)
+                    .tags(commonTags)
+                    .description("1 while the runner reports status RUNNING, otherwise 0")
+                    .strongReference(true)
+                    .register(registry));
+            meters.add(Gauge.builder(ABANDONED, abandoned, AtomicInteger::get)
+                    .tags(commonTags)
+                    .description("Attempts past their maximum run time that still hold a slot")
+                    .strongReference(true)
+                    .register(registry));
+            refresh();
+            poller.scheduleWithFixedDelay(this::refresh, millis, millis, TimeUnit.MILLISECONDS);
+        } catch (RuntimeException | Error e) {
+            try {
+                close();
+            } catch (RuntimeException | Error cleanup) {
+                e.addSuppressed(cleanup);
+            }
+            throw e;
+        }
+    }
+
+    /** A duration too large for milliseconds waits as long as the scheduler allows. */
+    private static long delayMillis(Duration refresh) {
+        try {
+            return Math.max(1, refresh.toMillis());
+        } catch (ArithmeticException e) {
+            return Long.MAX_VALUE;
+        }
     }
 
     /**

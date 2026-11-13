@@ -366,6 +366,41 @@ class MicrometerRunnerMetricsTest {
     }
 
     @Test
+    void aRefreshTooLargeForMillisecondsStillBindsAndCloseRemovesTheGauges() {
+        var metrics = MicrometerRunnerMetrics.bind(admin, () -> 0, registry, Duration.ofSeconds(Long.MAX_VALUE));
+
+        assertThat(gauge("bth4j.runner.up")).isEqualTo(1);
+        metrics.close();
+
+        assertThat(registry.getMeters()).isEmpty();
+    }
+
+    @Test
+    void aBindingThatFailsWhileItRegistersLeavesNoMeterAndItsTagsCanBeBoundAgain() {
+        var failing = new SimpleMeterRegistry();
+        var registered = new AtomicInteger();
+        failing.config().meterFilter(new io.micrometer.core.instrument.config.MeterFilter() {
+            @Override
+            public Meter.Id map(Meter.Id id) {
+                if (id.getName().startsWith("bth4j.") && registered.incrementAndGet() == 3) {
+                    throw new IllegalStateException("registry refuses the third gauge");
+                }
+                return id;
+            }
+        });
+
+        assertThatThrownBy(() -> MicrometerRunnerMetrics.bind(admin, () -> 0, failing, Duration.ofHours(1)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("third gauge");
+        assertThat(failing.getMeters()).isEmpty();
+
+        try (var again = MicrometerRunnerMetrics.bind(admin, () -> 0, failing, Duration.ofHours(1))) {
+            assertThat(failing.get("bth4j.runner.up").gauge().value()).isEqualTo(1);
+        }
+        assertThat(failing.getMeters()).isEmpty();
+    }
+
+    @Test
     void refreshMustBePositive() {
         assertThatThrownBy(() -> MicrometerRunnerMetrics.bind(admin, () -> 0, registry, Duration.ZERO))
                 .isInstanceOf(TaskConfigurationException.class);
