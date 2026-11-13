@@ -376,8 +376,8 @@ public final class PostgresTaskStore implements FullStore {
 
     /**
      * Both claim passes in one statement, so a claim is atomic without a transaction. Pass 1 (p1) takes each
-     * grant's share; pass 2 (p2) lets the grants that took their share in full take up to their cap, skipping
-     * what pass 1 took. Each pass is one bounded, index-ordered scan per queue, then orders by grant, due and id
+     * grant's share; pass 2 (p2) lets the grants that took their share in full take up to their cap, continuing
+     * behind the last row pass 1 took from the queue. Each pass is one bounded, index-ordered scan per queue, then orders by grant, due and id
      * and stops at the count left; a single ORDER BY array_position(...) would sort every queued row on each claim.
      * Parameters: [types], queue ids, shares, caps, count, count, count, runner, lease ms.
      */
@@ -395,11 +395,13 @@ public final class PostgresTaskStore implements FullStore {
                 + " l1 AS (SELECT c.id, g.queue_id, g.prio, c.due FROM q g, LATERAL (SELECT id, due FROM " + task
                 + "   WHERE" + eligible + " ORDER BY due, id LIMIT g.take FOR UPDATE SKIP LOCKED) c),"
                 + " p1 AS (SELECT * FROM l1 ORDER BY prio, due, id LIMIT ?),"
-                + " q2 AS (SELECT q.queue_id, q.prio, q.cap - q.take AS take FROM q"
+                // a queue is here only when pass 1 took its full share, so it has a last row
+                + " q2 AS (SELECT q.queue_id, q.prio, q.cap - q.take AS take, lp.due, lp.id FROM q,"
+                + "   LATERAL (SELECT due, id FROM p1 WHERE p1.queue_id = q.queue_id ORDER BY due DESC, id DESC LIMIT 1) lp"
                 + "   WHERE q.cap > q.take AND (SELECT count(*) FROM p1) < ?"
                 + "   AND (SELECT count(*) FROM p1 WHERE p1.queue_id = q.queue_id) = q.take),"
-                + " l2 AS (SELECT c.id, g.prio, c.due FROM q2 g, LATERAL (SELECT id, due FROM " + task + " t"
-                + "   WHERE" + eligible + " AND NOT EXISTS (SELECT 1 FROM p1 WHERE p1.id = t.id)"
+                + " l2 AS (SELECT c.id, g.prio, c.due FROM q2 g, LATERAL (SELECT id, due FROM " + task
+                + "   WHERE" + eligible + " AND (due, id) > (g.due, g.id)"
                 + "   ORDER BY due, id LIMIT g.take FOR UPDATE SKIP LOCKED) c),"
                 + " p2 AS (SELECT * FROM l2 ORDER BY prio, due, id LIMIT (SELECT ? - count(*) FROM p1)),"
                 + " picked AS (SELECT id, row_number() OVER (ORDER BY pass, prio, due, id) AS ord FROM"

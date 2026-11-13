@@ -2068,4 +2068,33 @@ class PostgresTaskStoreIT {
         assertThat(counts.get(none).queued()).isZero();
         assertThat(counts.get(none).of(TaskState.SUCCEEDED)).isZero();
     }
+
+    @Test
+    void theSecondClaimPassTakesTheNextTasksInDueOrderOfEveryQueueThatGaveItsFullShare() {
+        int full = store.queueId("full");
+        int thin = store.queueId("thin");
+        int empty = store.queueId("empty");
+        var now = Instant.now();
+        long base = store.allocateIds(9);
+        for (int i = 0; i < 6; i++) {
+            store.enqueue(task(base + i)
+                    .queueId(full)
+                    .dueAt(now.minusSeconds(100 - i))
+                    .build());
+        }
+        store.enqueue(task(base + 6).queueId(thin).dueAt(now.minusSeconds(90)).build());
+        store.enqueue(task(base + 7).queueId(thin).dueAt(now.minusSeconds(50)).build());
+        store.enqueue(task(base + 8).queueId(thin).dueAt(now.minusSeconds(40)).build());
+
+        var claimed = store.claim(new ClaimRequest(
+                List.of(new QueueGrant(empty, 2, 5), new QueueGrant(full, 2, 5), new QueueGrant(thin, 3, 5)),
+                8,
+                LEASE,
+                runner,
+                null));
+
+        assertThat(claimed)
+                .extracting(TaskRecord::id)
+                .containsExactly(base, base + 1, base + 6, base + 7, base + 8, base + 2, base + 3, base + 4);
+    }
 }

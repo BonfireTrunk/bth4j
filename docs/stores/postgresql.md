@@ -97,7 +97,7 @@ A claim walks the queued tasks of a queue in due order past those of types it do
 
 | Operation | What it reads |
 |---|---|
-| Claim | the queued tasks of a queue in due order, past those of types it does not handle |
+| Claim | the queued tasks of a queue in due order, past those of types it does not handle; a second pass continues behind the last task the first pass took from the queue |
 | `queuedByType()` | one `GROUP BY queue_id, type_id` over the queued rows |
 | `counts()` | the `<namespace>_task_counts` index (`queue_id, state`, states 1 to 6) for the scheduled, leased and finished tasks, and an index-only scan of the queued index for the queued ones |
 | Listing one finished state of one queue | `<namespace>_task_finished_queue` |
