@@ -10,6 +10,7 @@
 - [Admin HTTP server](#admin-http-server)
 - [Server settings](#server-settings)
 - [Roles](#roles)
+- [Passwords](#passwords)
 - [Signing in and sessions](#signing-in-and-sessions)
 - [Failed logins](#failed-logins)
 - [Endpoints](#endpoints)
@@ -139,7 +140,7 @@ At least one user is required. A server runs once: `start()` after `stop()` thro
 |---|---|
 | `admin(AdminOps)` | The `AdminOps` the server exposes. |
 | `bind(host, port)` | Where the server listens. The default is `127.0.0.1` and `8787`. |
-| `addUser(name, password, role)` | Adds a user with a [role](#roles). At least one user is required. |
+| `addUser(name, password, role)` | Adds a user with a [role](#roles). At least one user is required. Read the password from the environment or a secret store and make it long and random (see [Passwords](#passwords)). |
 | `staticDir(path)` | Serves the dashboard from that directory at the server's address. |
 | `sessionTtl` | How long a session lasts, counted from the sign-in. The default is 12 hours. |
 | `https(SSLContext)` | Makes the server speak HTTPS and marks the cookie `Secure`. |
@@ -163,6 +164,18 @@ Every signed-in user, a viewer too, reads what the tasks carry. Give an account 
 | The last store error and the runner issues (`/health`, `/issues`, `/overview`) | the runner. A store error is shown with its message, which can name the store's host and port, also with `CLASS_NAME_ONLY` | nothing to set; the text comes from the store's driver, not from a task |
 
 A failure stays as long as its task does: 90 days for a dead task by default (`deadRetention`).
+
+### Passwords
+
+Give every account a randomly generated password of at least 32 characters, never a word and never a password used anywhere else. One way to make one:
+
+```
+openssl rand -base64 32
+```
+
+The server throttles guesses (see [Failed logins](#failed-logins)) but keeps each password as a salt and one round of SHA3-384, in memory only and nothing on disk. A slow hash would make every sign-in attempt cost CPU in the process that runs the tasks, so the length and randomness of the password is what protects it. A random 32-character password cannot be guessed at 480 tries a day, nor recovered from a memory dump.
+
+Pass the password from the environment or a secret store, as the example above does with `System.getenv`, and never write it in source. The server does not enforce a minimum length.
 
 ### Signing in and sessions
 

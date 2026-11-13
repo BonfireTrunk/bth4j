@@ -20,14 +20,15 @@ Point the admin HTTP server at this directory and open the server's address. The
 ```java
 AdminHttpServer.builder()
         .admin(adminOps)
-        .addUser("ops", "change-me", Role.ADMIN)
-        .addUser("support", "change-me-too", Role.VIEWER)
+        .addUser("ops", System.getenv("BTH4J_OPS_PASSWORD"), Role.ADMIN)
+        .addUser("support", System.getenv("BTH4J_SUPPORT_PASSWORD"), Role.VIEWER)
         .staticDir(Path.of("dashboard"))
         .build()
         .start();
 ```
 
-Then browse to `http://127.0.0.1:8787/`.
+Then browse to `http://127.0.0.1:8787/`. Use a long random password for every account and read it from the
+environment or a secret store, never from source (see [Passwords](../docs/admin.md#passwords)).
 
 ### Any static host
 
@@ -77,6 +78,6 @@ Task ids and revisions are handled as strings and never parsed to numbers (they 
 python3 dashboard/dev/fake-api.py [port]     # default 8787
 ```
 
-Open `http://127.0.0.1:8787/` and sign in as `admin` / `admin` or `viewer` / `viewer`. State lives in memory
+Open `http://127.0.0.1:8787/` and sign in as `admin` / `admin` or `viewer` / `viewer`. These two accounts exist only in this fake API, for development; a real server must not use passwords like them. State lives in memory
 and resets on restart. It is a development aid only; it does not model the real server's semantics beyond
 revision checks (`409`), CSRF (`403`) and roles (`403`).
