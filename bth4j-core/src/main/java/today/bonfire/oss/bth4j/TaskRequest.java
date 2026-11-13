@@ -26,6 +26,12 @@ public final class TaskRequest<T> {
     public static final int MAX_UNIQUE_KEY_LENGTH = 256;
     public static final int MAX_ACCOUNT_LENGTH = 128;
     public static final int MAX_RETRY_POLICY_LENGTH = 64;
+
+    /** The rule for the name of a retry policy: 1 to {@link #MAX_RETRY_POLICY_LENGTH} characters, not blank. */
+    static boolean isRetryPolicyName(String name) {
+        return name != null && !name.isBlank() && name.length() <= MAX_RETRY_POLICY_LENGTH;
+    }
+
     public static final int MAX_HEADERS_BYTES = 8 * 1024;
     public static final int MAX_PAYLOAD_BYTES = 256 * 1024;
 
@@ -324,7 +330,7 @@ public final class TaskRequest<T> {
 
         /** Name of a retry policy registered with {@code BackgroundRunner.Builder#addRetryPolicy(String, RetryPolicy)}; an unknown name falls back to the default policy. */
         public Builder<T> retryPolicy(String name) {
-            if (name != null && (name.isBlank() || name.length() > MAX_RETRY_POLICY_LENGTH)) {
+            if (name != null && !isRetryPolicyName(name)) {
                 throw new TaskValidationException(
                         "retryPolicy must be 1 to " + MAX_RETRY_POLICY_LENGTH + " characters");
             }

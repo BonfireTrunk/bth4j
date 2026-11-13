@@ -70,7 +70,7 @@ class EnqueueFailedExceptionTest {
                 TaskRequest.of(VOID).uniqueKey("k").build(),
                 TaskRequest.of(VOID).build(),
                 TaskRequest.of(VOID).build());
-        List<EnqueueResult> settled = List.of(new EnqueueResult.Duplicate(99L), new EnqueueResult.Accepted(20L));
+        List<EnqueueResult> settled = List.of(new EnqueueResult.Duplicate(99L), new EnqueueResult.Accepted(20L, true));
         var failure =
                 new EnqueueFailedException(List.of(10L, 20L, 30L), settled, Set.of(), new TaskStoreException("failed"));
 

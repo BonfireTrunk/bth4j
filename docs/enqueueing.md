@@ -39,11 +39,11 @@ unique keys, enqueueing inside your own database transaction, and how to resend 
 
 ## Results
 
-`enqueue` returns `Accepted(id)` or `Duplicate(existingId)`. A few cases throw instead:
+`enqueue` returns `Accepted(id, created)` or `Duplicate(existingId)`. A few cases throw instead:
 
 | Result | When |
 |---|---|
-| `Accepted(id)` | The task is stored. With an existing id and matching content, `Accepted` only confirms that the record exists. It never starts another run, even when the task is DEAD. Use `AdminOps.retry` to run a dead task again. |
+| `Accepted(id, created)` | The task is stored. `created` is true when this call stored it and false when a task with this id and the same content was already there (a resend); in that case `Accepted` only confirms that the record exists. It never starts another run, even when the task is DEAD. Use `AdminOps.retry` to run a dead task again. A write that the store's own transport repeated still answers `created = true`. |
 | `Duplicate(existingId)` | A task holds the request's unique key. A DEAD holder inside the `keepFor` window still answers `Duplicate` with its id. A running task holds its key until it ends. |
 | `EnqueueFailedException` (thrown) | The store cannot be reached, and the caller does not know whether the task was stored. See [When the store cannot be reached](#when-the-store-cannot-be-reached). |
 | `TaskValidationException` (thrown) | The request carries an id that was never allocated. |
@@ -184,7 +184,7 @@ sequenceDiagram
     App->>Client: enqueue(same request, same id)
     Client->>Store: write the task
     Store-->>Client: stored now, or already stored by the first call
-    Client-->>App: Accepted(id)
+    Client-->>App: Accepted(id, created)
 ```
 
 In code:
@@ -195,7 +195,7 @@ var request = TaskRequest.of(SEND_MAIL, mail).id(id).build();
 try {
     client.enqueue(request);
 } catch (EnqueueFailedException e) {
-    client.enqueue(request);        // same id: stored once, answered Accepted either way
+    client.enqueue(request);        // same id: stored once, answered Accepted either way; created tells which call stored it
 }
 ```
 

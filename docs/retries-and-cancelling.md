@@ -89,6 +89,11 @@ client.enqueue(TaskRequest.of(SEND_MAIL, mail).retryPolicy("slow-api").build());
 A task that names a policy the runner does not have uses the default policy, and the runner records a `retry-policy`
 issue (see [Issues](monitoring.md#issues)).
 
+A process that only enqueues does not know the runners' policy names. Give its client the names with
+`TaskClient.builder().addRetryPolicyName("slow-api")`, and `enqueue` and `enqueueAll` refuse a request that names any
+other policy with a `TaskValidationException`, so a wrong name is found when the task is enqueued and not when it first
+fails. A request that names no policy passes. A client with no names added checks nothing.
+
 ## Cancelling tasks
 
 ### Requesting a cancel

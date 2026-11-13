@@ -713,7 +713,7 @@ public final class BackgroundRunner implements AutoCloseable {
          * unknown policy uses the default one and the runner records an issue.
          */
         public Builder addRetryPolicy(String name, RetryPolicy retryPolicy) {
-            if (StringUtils.isBlank(name) || name.length() > TaskRequest.MAX_RETRY_POLICY_LENGTH) {
+            if (!TaskRequest.isRetryPolicyName(name)) {
                 throw new TaskConfigurationException(
                         "retry policy name must be 1 to " + TaskRequest.MAX_RETRY_POLICY_LENGTH + " characters");
             }
