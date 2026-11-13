@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Micrometer: gauge `bth4j.runner.counts.age`, the seconds since the task counts were last read from the store. When a read fails the count gauges keep their last values, as before, and this gauge keeps growing, so a dashboard or an alert can tell old numbers from current ones. Until the first read that works it counts from the moment of binding.
 - Admin HTTP: `AdminHttpServer.Builder.addTrustedProxy(...)` names a reverse proxy in front of the server, as an address or a range such as `10.0.0.0/8`. For a request from one of them the login throttle counts by the last address in `X-Forwarded-For` that is not a trusted proxy. Without the setting the header is ignored, as before, and the server logs one warning when a login carries it.
 
 - `TaskClient.Builder.addRetryPolicyName(name)` tells a client which retry policy names the runners have. Once a name is added, `enqueue`, `enqueueAll` and `prepare` refuse a request that names any other policy with a `TaskValidationException`, so a wrong name is found when the task is enqueued and not when it first fails. A request that names no policy passes, and a client with no names added checks nothing, as before.

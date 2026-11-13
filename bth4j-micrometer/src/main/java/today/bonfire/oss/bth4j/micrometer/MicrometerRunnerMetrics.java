@@ -31,9 +31,10 @@ import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 
 /**
- * Gauges for one runner: running tasks, health, abandoned attempts, concurrency limit when available, and
- * task counts by state and queue, and the age of those counts. Health and counts are read by a single daemon every {@code refresh}, so
- * scraping never touches the store. Call {@link #close()} to stop polling and remove the meters.
+ * Gauges for one runner: running tasks, health, abandoned attempts, concurrency limit when available, task
+ * counts by state and queue, and the age of those counts. Health and counts are read by a single daemon every
+ * {@code refresh}, so scraping never touches the store. Call {@link #close()} to stop polling and remove the
+ * meters.
  */
 public final class MicrometerRunnerMetrics implements AutoCloseable {
 
