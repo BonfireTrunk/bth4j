@@ -716,7 +716,8 @@ public final class PostgresTaskStore implements FullStore {
     /**
      * Inserts every task in one statement, then classifies the ones that were not stored. A task whose
      * conflicting row went away between the insert and the classification (its key holder was purged or
-     * released its key) is inserted again.
+     * released its key) is inserted again, and so is one whose key is held only by a task whose key window
+     * has passed: that key is released first.
      */
     @Override
     public List<EnqueueOutcome> enqueueAll(List<TaskRecord> tasks) {
@@ -753,9 +754,19 @@ public final class PostgresTaskStore implements FullStore {
             var outcomes = new EnqueueOutcome[tasks.size()];
             var pending = new ArrayList<Integer>();
             for (int i = 0; i < tasks.size(); i++) pending.add(i);
+            // Locks taken by one statement stay until the transaction ends. Outside auto-commit, a batch with
+            // several keys therefore releases its expired keys before the insert, so that every lock is taken
+            // in key order; a release after the insert could wait for a lock behind a key already inserted.
+            var releaseFirst = !c.getAutoCommit()
+                    && tasks.stream()
+                                    .map(TaskRecord::uniqueKey)
+                                    .filter(Objects::nonNull)
+                                    .distinct()
+                                    .count()
+                            > 1;
             for (int round = 0; round < SETTLE_ROUNDS && !pending.isEmpty(); round++) {
                 var batch = pending.stream().map(tasks::get).toList();
-                releaseExpiredKeys(c, batch);
+                if (releaseFirst) releaseExpiredKeys(c, batch);
                 var stored = insert(c, batch);
                 var unresolved = new ArrayList<Integer>();
                 // the same id twice in one call is stored once, for its first occurrence
@@ -879,7 +890,8 @@ public final class PostgresTaskStore implements FullStore {
 
     /**
      * Fills the outcome of each task that was not stored: its id exists, or its key is held by another task.
-     * Returns the tasks that are neither, because the conflicting row went away meanwhile.
+     * Returns the tasks that are neither, because the conflicting row went away meanwhile, and those whose key
+     * was held only by a task whose key window has passed, after releasing that key.
      */
     private ArrayList<Integer> classify(
             Connection c, List<TaskRecord> tasks, List<Integer> unresolved, EnqueueOutcome[] outcomes)
@@ -898,6 +910,7 @@ public final class PostgresTaskStore implements FullStore {
             idArray.free();
         }
         var holders = new HashMap<String, Long>();
+        var expired = new HashSet<String>();
         var keys = unresolved.stream()
                 .map(i -> tasks.get(i).uniqueKey())
                 .filter(Objects::nonNull)
@@ -905,10 +918,15 @@ public final class PostgresTaskStore implements FullStore {
                 .toArray(String[]::new);
         if (keys.length > 0) {
             var keyArray = c.createArrayOf("text", keys);
-            try (var ps = c.prepareStatement("SELECT unique_key, id FROM " + task + " WHERE unique_key = ANY(?)")) {
+            try (var ps = c.prepareStatement("SELECT unique_key, id,"
+                    + " key_until <= date_trunc('milliseconds', statement_timestamp()) FROM " + task
+                    + " WHERE unique_key = ANY(?)")) {
                 ps.setArray(1, keyArray);
                 try (var rs = ps.executeQuery()) {
-                    while (rs.next()) holders.put(rs.getString(1), rs.getLong(2));
+                    while (rs.next()) {
+                        holders.put(rs.getString(1), rs.getLong(2));
+                        if (rs.getBoolean(3)) expired.add(rs.getString(1));
+                    }
                 }
             } finally {
                 keyArray.free();
@@ -919,10 +937,14 @@ public final class PostgresTaskStore implements FullStore {
             if (existingIds.contains(t.id())) {
                 outcomes[i] = EnqueueOutcome.EXISTS;
             } else if (t.uniqueKey() != null && holders.containsKey(t.uniqueKey())) {
-                outcomes[i] = new EnqueueOutcome.DuplicateKey(holders.get(t.uniqueKey()));
+                if (expired.contains(t.uniqueKey())) retry.add(i);
+                else outcomes[i] = new EnqueueOutcome.DuplicateKey(holders.get(t.uniqueKey()));
             } else {
                 retry.add(i);
             }
+        }
+        if (!expired.isEmpty()) {
+            releaseExpiredKeys(c, retry.stream().map(tasks::get).toList());
         }
         return retry;
     }
@@ -1505,49 +1527,57 @@ public final class PostgresTaskStore implements FullStore {
         var fixedDelay = due.definition().isFixedDelay();
         SqlFunction<CommitOutcome> commit = c -> {
             boolean stored;
-            if (o.uniqueKey() != null) {
-                // the schedule row before the key holder's row, the order every other schedule write takes
-                try (var ps = c.prepareStatement("SELECT 1 FROM " + schedule + " WHERE id = ? FOR UPDATE")) {
-                    ps.setString(1, due.scheduleId());
-                    ps.executeQuery().close();
+            var releaseFirst = false;
+            while (true) {
+                if (o.uniqueKey() != null) {
+                    // the schedule row before the key holder's row, the order every other schedule write takes
+                    try (var ps = c.prepareStatement("SELECT 1 FROM " + schedule + " WHERE id = ? FOR UPDATE")) {
+                        ps.setString(1, due.scheduleId());
+                        ps.executeQuery().close();
+                    }
+                    if (releaseFirst) releaseExpiredKeys(c, List.of(o));
                 }
-                releaseExpiredKeys(c, List.of(o));
-            }
-            try (var ps = c.prepareStatement(commitScheduleSql)) {
-                setInstant(ps, 1, nextFire);
-                ps.setString(2, due.scheduleId());
-                ps.setLong(3, due.definition().revision());
-                setInstant(ps, 4, due.fireAt());
-                ps.setLong(5, o.id());
-                ps.setInt(6, o.revision());
-                ps.setInt(7, o.queueId());
-                ps.setInt(8, o.typeId());
-                ps.setInt(9, o.payloadVersion());
-                ps.setInt(10, o.maxAttempts());
-                setInstant(ps, 11, o.createdAt());
-                setInstant(ps, 12, due.fireAt());
-                ps.setString(13, o.encodedPayload());
-                ps.setString(14, o.account());
-                ps.setString(15, RecordJson.encodeHeaders(o.headers()));
-                ps.setString(16, o.retryPolicy());
-                ps.setString(17, o.scheduleId() == null ? due.scheduleId() : o.scheduleId());
-                ps.setString(18, o.uniqueKey());
-                if (o.uniqueKey() == null || o.keyKeep() == null) ps.setNull(19, Types.BIGINT);
-                else ps.setLong(19, o.keyKeep().toMillis());
-                setInstant(ps, 20, o.startBy());
-                if (o.maxRunTime() == null) ps.setNull(21, Types.INTEGER);
-                else ps.setInt(21, Math.toIntExact(o.maxRunTime().toMillis()));
-                if (o.retryOf() == null) ps.setNull(22, Types.BIGINT);
-                else ps.setLong(22, o.retryOf());
-                try (var rs = ps.executeQuery()) {
-                    rs.next();
-                    if (rs.getLong(1) != 1) return CommitOutcome.NOT_COMMITTED;
-                    stored = rs.getLong(2) != 0;
-                    if (!stored && taskExists(c, o.id())) {
-                        c.rollback();
-                        return CommitOutcome.NOT_COMMITTED;
+                try (var ps = c.prepareStatement(commitScheduleSql)) {
+                    setInstant(ps, 1, nextFire);
+                    ps.setString(2, due.scheduleId());
+                    ps.setLong(3, due.definition().revision());
+                    setInstant(ps, 4, due.fireAt());
+                    ps.setLong(5, o.id());
+                    ps.setInt(6, o.revision());
+                    ps.setInt(7, o.queueId());
+                    ps.setInt(8, o.typeId());
+                    ps.setInt(9, o.payloadVersion());
+                    ps.setInt(10, o.maxAttempts());
+                    setInstant(ps, 11, o.createdAt());
+                    setInstant(ps, 12, due.fireAt());
+                    ps.setString(13, o.encodedPayload());
+                    ps.setString(14, o.account());
+                    ps.setString(15, RecordJson.encodeHeaders(o.headers()));
+                    ps.setString(16, o.retryPolicy());
+                    ps.setString(17, o.scheduleId() == null ? due.scheduleId() : o.scheduleId());
+                    ps.setString(18, o.uniqueKey());
+                    if (o.uniqueKey() == null || o.keyKeep() == null) ps.setNull(19, Types.BIGINT);
+                    else ps.setLong(19, o.keyKeep().toMillis());
+                    setInstant(ps, 20, o.startBy());
+                    if (o.maxRunTime() == null) ps.setNull(21, Types.INTEGER);
+                    else ps.setInt(21, Math.toIntExact(o.maxRunTime().toMillis()));
+                    if (o.retryOf() == null) ps.setNull(22, Types.BIGINT);
+                    else ps.setLong(22, o.retryOf());
+                    try (var rs = ps.executeQuery()) {
+                        rs.next();
+                        if (rs.getLong(1) != 1) return CommitOutcome.NOT_COMMITTED;
+                        stored = rs.getLong(2) != 0;
+                        if (!stored && taskExists(c, o.id())) {
+                            c.rollback();
+                            return CommitOutcome.NOT_COMMITTED;
+                        }
                     }
                 }
+                if (stored || o.uniqueKey() == null || releaseFirst || !holderKeyExpired(c, o.uniqueKey())) break;
+                // the key is held only by a task whose key window has passed: undo the advance, free the key, and
+                // commit again with the schedule row locked first
+                c.rollback();
+                releaseFirst = true;
             }
             if (fixedDelay) {
                 try (var ps = c.prepareStatement("UPDATE " + schedule + " SET occurrence_id = ? WHERE id = ?"
@@ -1572,6 +1602,16 @@ public final class PostgresTaskStore implements FullStore {
             return stored ? CommitOutcome.STORED : CommitOutcome.SKIPPED;
         };
         return inTransaction(commit);
+    }
+
+    private boolean holderKeyExpired(Connection c, String key) throws SQLException {
+        try (var ps = c.prepareStatement("SELECT 1 FROM " + task + " WHERE unique_key = ?"
+                + " AND key_until <= date_trunc('milliseconds', statement_timestamp())")) {
+            ps.setString(1, key);
+            try (var rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
     }
 
     /** Sees a row that a concurrent insert of that id committed: ON CONFLICT waited for it before skipping. */

@@ -199,6 +199,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Admin HTTP: a static file carries an `ETag` made from its size and modification time, and a request whose `If-None-Match` names it is answered `304 Not Modified` without reading the file. The dashboard asks on every page load (`Cache-Control: no-cache` stays) and no longer downloads about 230 KB each time.
 - The dashboard polls `/overview` once for the page and the header together: an open overview page makes 12 requests a minute where it made 18.
 - PostgreSQL: the second pass of a claim continues behind the last task the first pass took from each queue, as an index range, instead of excluding the first pass's tasks one by one, which made a claim of many slots quadratic. The same tasks come back in the same order; a task another session held locked during the first pass is left for the next claim.
+- PostgreSQL: a keyed `enqueue`, `enqueueAll` and recurring commit inserts first and releases a key whose keep window has passed only when the insert meets one, so a keyed enqueue on a free key is one statement, not two. The answers and the lock order are the same.
 
 ### Fixed
 
