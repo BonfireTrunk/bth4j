@@ -27,6 +27,8 @@ import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.RedisClient;
 import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.jedis.exceptions.JedisNoScriptException;
+import today.bonfire.oss.bth4j.CancelOutcome;
+import today.bonfire.oss.bth4j.DeleteOutcome;
 import today.bonfire.oss.bth4j.EnqueueResult;
 import today.bonfire.oss.bth4j.FailureInfo;
 import today.bonfire.oss.bth4j.JsonMapperTest;
@@ -65,6 +67,7 @@ class RedisScriptsIT {
 
     private static RedisClient jedis;
 
+    private final RedisFixtures.UsedNamespaces used = new RedisFixtures.UsedNamespaces();
     private RedisTaskStore store;
     private RecordingJedis spy;
     private RedisTaskStore spied;
@@ -104,6 +107,7 @@ class RedisScriptsIT {
                 .namespace("S" + NAMESPACES.incrementAndGet())
                 .build();
         keys = store.keys();
+        used.add(keys.namespace);
         store.init();
         queue = store.queueId("default");
         type = store.typeId("send");
@@ -114,6 +118,11 @@ class RedisScriptsIT {
     @AfterEach
     void closeSpy() {
         spy.close();
+    }
+
+    @AfterEach
+    void queueSetsAgree() {
+        used.assertQueueSetsAgree(jedis);
     }
 
     private TaskRecord.Builder task(long id) {
@@ -444,6 +453,7 @@ class RedisScriptsIT {
 
         assertThat(spy.events()).containsExactly("pipeline 1");
         assertThat(jedis.exists(keys.task(1))).isTrue();
+        used.forget(keys.namespace);
     }
 
     private List<LeaseRef> leaseRefs(int count, int wrongEvery) {
@@ -875,5 +885,248 @@ class RedisScriptsIT {
 
         assertThat(counts.calls("evalsha")).isEqualTo(1);
         assertThat(counts.roundTrips()).isEqualTo(1);
+    }
+
+    // ---- the queue set -------------------------------------------------------------------------------------
+
+    private static final long BASE = 1_700_000_000_000L;
+
+    private List<Integer> typesNamed(RedisTaskStore of, int count) {
+        var ids = new ArrayList<Integer>();
+        for (var t = 0; t < count; t++) ids.add(of.typeId("busy" + t));
+        return ids;
+    }
+
+    private static List<Long> idsOf(List<TaskRecord> tasks) {
+        return tasks.stream().map(TaskRecord::id).toList();
+    }
+
+    /** The ids of the given tasks in the order a claim takes them: due time, then id as text. */
+    private static List<Long> inClaimOrder(List<TaskRecord> tasks) {
+        return tasks.stream()
+                .sorted(java.util.Comparator.<TaskRecord>comparingLong(
+                                t -> t.dueAt().toEpochMilli())
+                        .thenComparing(t -> String.valueOf(t.id())))
+                .map(TaskRecord::id)
+                .toList();
+    }
+
+    /** Tasks of every given type, repeated, with due times that interleave the types; returns what it stored. */
+    private List<TaskRecord> spread(RedisTaskStore of, int queueId, List<Integer> types, int perType, long firstId) {
+        var tasks = new ArrayList<TaskRecord>();
+        var id = firstId;
+        for (var n = 0; n < perType; n++) {
+            for (var type : types) {
+                tasks.add(task(id).queueId(queueId)
+                        .typeId(type)
+                        .dueAt(Instant.ofEpochMilli(BASE + (id * 7) % 11))
+                        .build());
+                id++;
+            }
+        }
+        of.enqueueAll(tasks);
+        return tasks;
+    }
+
+    private static ClaimRequest request(int queueId, int count, Set<Integer> known) {
+        return new ClaimRequest(List.of(new QueueGrant(queueId, count, count)), count, LEASE, 1, known);
+    }
+
+    @Test
+    void aRunnerThatHandlesEveryTypeReadsOneSetOfTheQueueAndTakesTheTasksInDueThenIdOrder() {
+        var types = typesNamed(store, 50);
+        var tasks = spread(store, queue, types, 3, 1);
+        var request = request(queue, 8, Set.copyOf(types));
+        var first = store.claim(request);
+        var claimed = new ArrayList<TaskRecord>();
+
+        var counts = ServerCounters.measure(jedis, () -> claimed.addAll(store.claim(request)));
+
+        // a take of 8 from one source is one page of 8; with a source per type it would be 50 pages of 1
+        assertThat(counts.calls("zrange")).isEqualTo(1);
+        assertThat(counts.calls("sinter")).isEqualTo(1);
+        var expected = inClaimOrder(tasks);
+        assertThat(idsOf(first)).isEqualTo(expected.subList(0, 8));
+        assertThat(idsOf(claimed)).isEqualTo(expected.subList(8, 16));
+    }
+
+    @Test
+    void aRunnerThatLacksOneBusyTypeReadsTheTypeSetsAndNeverGetsATaskOfThatType() {
+        var types = typesNamed(store, 50);
+        var missing = types.getFirst();
+        var tasks = spread(store, queue, types, 2, 1);
+        var handled = tasks.stream().filter(t -> t.typeId() != missing).toList();
+        var request = request(queue, 8, Set.copyOf(types.subList(1, types.size())));
+        var claimed = new ArrayList<TaskRecord>();
+        var calls = new ArrayList<ServerCounters.Counts>();
+
+        for (var n = 0; n < 13; n++) {
+            calls.add(ServerCounters.measure(jedis, () -> claimed.addAll(store.claim(request))));
+        }
+
+        assertThat(claimed).extracting(TaskRecord::typeId).doesNotContain(missing);
+        assertThat(idsOf(claimed)).isEqualTo(inClaimOrder(handled));
+        assertThat(calls.get(1).calls("zrange"))
+                .as("one page per eligible type")
+                .isGreaterThanOrEqualTo(49);
+        assertThat(store.queuedByType().get(queue)).containsOnlyKeys(missing).containsEntry(missing, 2L);
+    }
+
+    @Test
+    void theSameTasksComeInTheSameOrderThroughTheQueueSetAndThroughTheTypeSets() {
+        var other = RedisTaskStore.builder()
+                .client(jedis)
+                .namespace(keys.namespace + "b")
+                .build();
+        used.add(other.keys().namespace);
+        other.init();
+        var types = typesNamed(store, 12);
+        var otherTypes = typesNamed(other, 12);
+        var otherQueue = other.queueId("default");
+        var tasks = spread(store, queue, types, 5, 1);
+        spread(other, otherQueue, otherTypes, 5, 1);
+        var extra = other.typeId("extra");
+        var later = new ArrayList<TaskRecord>();
+        for (var id = 5000L; id < 5010; id++) {
+            later.add(task(id).queueId(otherQueue)
+                    .typeId(extra)
+                    .dueAt(Instant.ofEpochMilli(BASE + 1_000_000))
+                    .build());
+        }
+        other.enqueueAll(later);
+        var single = new ArrayList<TaskRecord>();
+        var perType = new ArrayList<TaskRecord>();
+        var all = request(queue, 7, Set.copyOf(types));
+        var without = request(otherQueue, 7, Set.copyOf(otherTypes));
+
+        for (var n = 0; n < 9; n++) {
+            single.addAll(store.claim(all));
+            perType.addAll(other.claim(without));
+        }
+
+        assertThat(idsOf(single)).hasSize(60).isEqualTo(inClaimOrder(tasks));
+        assertThat(idsOf(perType)).isEqualTo(idsOf(single));
+        assertThat(jedis.zcard(other.keys().queueAll(otherQueue))).isEqualTo(10);
+    }
+
+    @Test
+    void aStaleMemberOfTheQueueSetIsSkippedAndRemovedAndTheNextClaimDoesNotMeetItAgain() {
+        for (var id = 1L; id <= 3; id++) {
+            store.enqueue(task(id).dueAt(Instant.ofEpochMilli(BASE + id)).build());
+        }
+        jedis.del(keys.task(2));
+        var request = request(queue, 3, Set.of(type));
+        var first = store.claim(request);
+        var claimedFirst = idsOf(first);
+        var second = new ArrayList<TaskRecord>();
+
+        var counts = ServerCounters.measure(jedis, () -> second.addAll(store.claim(request)));
+
+        assertThat(claimedFirst).containsExactly(1L, 3L);
+        assertThat(jedis.zscore(keys.queueAll(queue), "2")).isNull();
+        assertThat(second).isEmpty();
+        assertThat(counts.calls("hmget"))
+                .as("the stale member is not read again")
+                .isZero();
+        // the type of a task whose hash is gone is unknown, so its entry stays in its type set until a claim of a
+        // runner that lacks one of the types reads that set; the check of the layout would see it
+        jedis.zrem(keys.queue(queue, type), "2");
+        jedis.srem(keys.activeTypes(queue), String.valueOf(type));
+    }
+
+    @Test
+    void aStaleMemberOfTheQueueSetWhoseHashNamesATypeIsAlsoRemovedFromThatTypeSet() {
+        var other = store.typeId("other");
+        store.enqueue(task(1).typeId(other).dueAt(Instant.ofEpochMilli(BASE)).build());
+        store.enqueue(task(2).dueAt(Instant.ofEpochMilli(BASE + 1)).build());
+        jedis.hset(keys.task(1), "state", String.valueOf(TaskState.SCHEDULED.code()));
+
+        var claimed = store.claim(request(queue, 5, Set.of(type, other)));
+
+        assertThat(idsOf(claimed)).containsExactly(2L);
+        assertThat(jedis.zscore(keys.queueAll(queue), "1")).isNull();
+        assertThat(jedis.zscore(keys.queue(queue, other), "1")).isNull();
+        assertThat(jedis.smembers(keys.activeTypes(queue))).isEmpty();
+    }
+
+    @Test
+    void aTaskPastItsStartByStaysQueuedInBothSetsWhenTheQueueSetIsTheSource() {
+        store.enqueue(
+                task(1).startBy(Instant.EPOCH).dueAt(Instant.ofEpochMilli(BASE)).build());
+        store.enqueue(task(2).dueAt(Instant.ofEpochMilli(BASE + 1)).build());
+
+        var claimed = store.claim(request(queue, 5, Set.of(type)));
+
+        assertThat(idsOf(claimed)).containsExactly(2L);
+        assertThat(store.task(1).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
+        assertThat(jedis.zscore(keys.queueAll(queue), "1")).isEqualTo((double) BASE);
+        assertThat(jedis.zscore(keys.queue(queue, type), "1")).isEqualTo((double) BASE);
+        assertThat(jedis.smembers(keys.activeTypes(queue))).containsExactly(String.valueOf(type));
+    }
+
+    @Test
+    void aQueuedListingPageOpensOneSetPerQueueWhateverTheNumberOfTypes() {
+        for (var q = 0; q < 4; q++) {
+            var queueId = store.queueId("q" + q);
+            for (var t = 0; t < 10; t++) {
+                var id = q * 10 + t + 1;
+                store.enqueue(task(id).queueId(queueId)
+                        .typeId(store.typeId("t" + t))
+                        .dueAt(Instant.ofEpochMilli(BASE + t * 4 + q))
+                        .build());
+            }
+        }
+        store.tasks(TaskState.QUEUED, null, null, 2);
+        var page = new java.util.concurrent.atomic.AtomicReference<today.bonfire.oss.bth4j.spi.TaskPage>();
+
+        var counts = ServerCounters.measure(jedis, () -> page.set(store.tasks(TaskState.QUEUED, null, null, 2)));
+
+        assertThat(page.get().items()).hasSize(2);
+        // one set per registered queue, 4 with tasks and the empty default one, each opened with a first page of 2
+        // that the page of 2 plus one never uses up; with a set per type it would be 40
+        assertThat(counts.calls("zrange")).isEqualTo(store.queueNames().size());
+        assertThat(counts.calls("zcount")).isZero();
+        assertThat(counts.calls("smembers")).isZero();
+    }
+
+    @Test
+    void theQueuedCountEqualsTheSumOfTheQueuedCountsByTypeAfterAMixedRun() {
+        var queues = List.of(queue, store.queueId("b"), store.queueId("c"));
+        var types = typesNamed(store, 4);
+        var tasks = new ArrayList<TaskRecord>();
+        for (var q : queues) tasks.addAll(spread(store, q, types, 3, 100L * (q + 1) + 1));
+        tasks.add(task(900).dueAt(Instant.now().plusSeconds(3600)).build());
+        store.enqueue(tasks.getLast());
+        var claimed = store.claim(new ClaimRequest(
+                List.of(new QueueGrant(queues.get(0), 4, 4), new QueueGrant(queues.get(1), 4, 4)),
+                8,
+                LEASE,
+                1,
+                Set.copyOf(types)));
+        store.ack(claimed.get(0).id(), claimed.get(0).revision(), false, false, null);
+        RedisFixtures.addHistory(store, claimed.get(1), Instant.now().minusSeconds(5));
+        store.promote(10);
+        assertThat(store.delete(
+                        tasks.get(30).id(),
+                        store.task(tasks.get(30).id()).orElseThrow().revision(),
+                        null))
+                .isEqualTo(DeleteOutcome.DELETED);
+        assertThat(store.cancel(
+                        tasks.get(31).id(),
+                        store.task(tasks.get(31).id()).orElseThrow().revision(),
+                        "no",
+                        null))
+                .isEqualTo(CancelOutcome.CANCELLED);
+
+        var counts = store.counts();
+        var byType = store.queuedByType();
+
+        for (var q : queues) {
+            var sum = byType.getOrDefault(q, Map.of()).values().stream()
+                    .mapToLong(Long::longValue)
+                    .sum();
+            assertThat(counts.get(q).queued()).as("queue %d", q).isEqualTo(sum).isPositive();
+            assertThat(counts.get(q).queued()).isEqualTo(jedis.zcard(keys.queueAll(q)));
+        }
     }
 }

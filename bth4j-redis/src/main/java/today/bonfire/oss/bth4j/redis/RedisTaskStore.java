@@ -82,7 +82,7 @@ public final class RedisTaskStore implements FullStore {
      * The version of the keys this class writes, stored in the namespace's {@code meta} hash. {@link #init}
      * refuses a namespace with any other version.
      */
-    public static final int SCHEMA_VERSION = 7;
+    public static final int SCHEMA_VERSION = 8;
 
     private static final int PAGE_CHUNK = 500;
 
@@ -1014,8 +1014,7 @@ public final class RedisTaskStore implements FullStore {
 
     /**
      * Lists from the structures that hold the state: {@code idx:<state>:<qid>} for LEASED and the terminal
-     * states, {@code q:<qid>:<tid>} of the types in
-     * {@code active:<qid>} for QUEUED and {@code sched:<qid>} for SCHEDULED. Order is by the zset score, then the id
+     * states, {@code qa:<qid>} for QUEUED and {@code sched:<qid>} for SCHEDULED. Order is by the zset score, then the id
      * as text, which is the order a claim takes them in: stateChanged for the indexed states, due for QUEUED and
      * SCHEDULED. The cursor is
      * {@code <score>:<id>} of the last entry of the page. Pages merge the zsets of each queue, preserving the same

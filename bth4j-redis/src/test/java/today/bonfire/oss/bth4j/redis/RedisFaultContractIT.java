@@ -7,6 +7,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
@@ -36,6 +37,7 @@ class RedisFaultContractIT extends FaultContract {
             .waitingFor(Wait.forLogMessage(".*Ready to accept connections.*\\n", 1));
 
     private static RedisFaults faults;
+    private static final RedisFixtures.UsedNamespaces used = new RedisFixtures.UsedNamespaces();
 
     @BeforeAll
     static void connect() {
@@ -47,8 +49,14 @@ class RedisFaultContractIT extends FaultContract {
         faults.close();
     }
 
+    @AfterEach
+    void queueSetsAgree() {
+        used.assertQueueSetsAgree(faults.direct());
+    }
+
     @Override
     protected Faulty newFaulty(String namespace) {
+        used.add(namespace);
         return faults.faulty(namespace);
     }
 
@@ -83,7 +91,9 @@ class RedisFaultContractIT extends FaultContract {
     }
 
     private static Faulty retrying() {
-        var f = faults.faultyRetrying("retry" + RETRY_NAMESPACES.incrementAndGet() + "x" + System.nanoTime() % 100_000);
+        var namespace = "retry" + RETRY_NAMESPACES.incrementAndGet() + "x" + System.nanoTime() % 100_000;
+        var f = faults.faultyRetrying(namespace);
+        used.add(namespace);
         f.plain().init();
         return f;
     }

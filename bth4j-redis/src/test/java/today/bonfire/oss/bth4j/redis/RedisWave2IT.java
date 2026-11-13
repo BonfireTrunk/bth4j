@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -101,6 +102,11 @@ class RedisWave2IT {
         store.init();
         queue = store.queueId("default");
         type = store.typeId("send");
+    }
+
+    @AfterEach
+    void queueSetsAgree() {
+        RedisFixtures.assertQueueSetsAgree(jedis, keys.namespace);
     }
 
     private TaskRecord.Builder task(long id) {

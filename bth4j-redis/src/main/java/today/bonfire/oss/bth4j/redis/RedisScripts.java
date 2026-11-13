@@ -13,7 +13,7 @@ import java.util.stream.Collectors;
  * reading the clock before writing needs effect replication, the default since Redis 7.0.
  * <p>
  * Every state change goes through {@code move}, {@code enter} and {@code leave}, which keep the structure that
- * represents the state (queue zset, {@code sched}, {@code leased} plus {@code idx}, or {@code idx}) in step
+ * represents the state (queue zsets, {@code sched}, {@code leased} plus {@code idx}, or {@code idx}) in step
  * with the hash. Zset writes are collected per key and flushed as one command per key at the end of the
  * script, so a batch of tasks costs a few commands per zset instead of a few per task. State transitions read
  * the hash with HMGET and use HGET of the type id when entering or leaving QUEUED. The revision and the attempt
@@ -96,12 +96,15 @@ final class RedisScripts {
               return counts
             end
 
+            -- A QUEUED task is in the zset of its type and in qa:<qid>, the zset of every queued task of the queue,
+            -- under the same score; both are written here and nowhere else, so they cannot drift.
             -- A terminal task is in idx scored by stateChanged, which PURGE reads, whether or not its key window is
             -- open: the k: string keeps the key taken on its own once the task is gone.
             -- tid is optional: callers that already know the type pass it and save an HGET.
             local function enter(id, qid, state, score, at, tid)
               if state == 0 then
                 zadd(queueKey(id, qid, tid), score, id)
+                zadd(P .. 'qa:' .. qid, score, id)
               elseif state == 1 then
                 zadd(P .. 'sched:' .. qid, score, id)
               else
@@ -113,6 +116,7 @@ final class RedisScripts {
             local function leave(id, qid, state, tid)
               if state == 0 then
                 zrem(queueKey(id, qid, tid), id)
+                zrem(P .. 'qa:' .. qid, id)
               elseif state == 1 then
                 zrem(P .. 'sched:' .. qid, id)
               else
@@ -336,8 +340,10 @@ final class RedisScripts {
      * it and calls again; a call that finds less than half of {@link #TYPE_SET_TTL_MS} left on it extends its life to
      * the whole time, so that polls of an idle runner do not write. A queue's eligible types are
      * the intersection of {@code active:<qid>} and that set, which Redis computes from the smaller one, so types
-     * without queued tasks cost nothing. Both passes share each queue's scan budget of min(count*4, 1000).
-     * Eligible type heads are merged by (due, lexical id). Deferred zset writes let each type page by offset
+     * without queued tasks cost nothing. When that intersection is all of {@code active:<qid>} (or there is no set),
+     * the runner handles every type that waits in the queue and {@code qa:<qid>} is the only source; otherwise
+     * each eligible type zset is a source. Both passes share each queue's scan budget of min(count*4, 1000).
+     * The heads of the sources are merged by (due, lexical id). Deferred zset writes let each source page by offset
      * across both passes. Returns {at, entry...}, each entry {id, payload, steps, {failure...}, then
      * CLAIM_FIELDS as read before claim}. The hs/fc markers avoid reading absent history keys.
      */
@@ -372,14 +378,26 @@ final class RedisScripts {
               if take <= 0 then return 0 end
               if not g.heap then
                 g.heap = {}
-                local active = P .. 'active:' .. g.qid
-                local eligible = tset and redis.call('SINTER', active, tset) or redis.call('SMEMBERS', active)
-                -- the first page splits the take between the types, so one type needs one ZRANGE
-                local first = math.max(1, math.min(64, g.budget, math.ceil(take / math.max(1, #eligible))))
-                for _, tid in ipairs(eligible) do
-                  local source = {key = P .. 'q:' .. g.qid .. ':' .. tid, tid = tid,
-                    offset = 0, pos = 1, page = {}}
-                  if advance(source, first) then push(g.heap, source) end
+                local eligible, single = nil, true
+                if tset then
+                  local active = P .. 'active:' .. g.qid
+                  eligible = redis.call('SINTER', active, tset)
+                  local waiting = redis.call('SCARD', active)
+                  single = #eligible == waiting
+                  if waiting == 0 then return 0 end
+                end
+                if single then
+                  -- the runner handles every type that waits here: qa:<qid> is the only source
+                  local source = {key = P .. 'qa:' .. g.qid, offset = 0, pos = 1, page = {}}
+                  if advance(source, math.max(1, math.min(64, g.budget, take))) then push(g.heap, source) end
+                else
+                  -- the first page splits the take between the types, so one type needs one ZRANGE
+                  local first = math.max(1, math.min(64, g.budget, math.ceil(take / math.max(1, #eligible))))
+                  for _, tid in ipairs(eligible) do
+                    local source = {key = P .. 'q:' .. g.qid .. ':' .. tid, tid = tid,
+                      offset = 0, pos = 1, page = {}}
+                    if advance(source, first) then push(g.heap, source) end
+                  end
                 end
               end
               local size = math.min(count, g.budget, 64)
@@ -397,11 +415,19 @@ final class RedisScripts {
                 -- an unreadable number must not stop the script after it leased other tasks: such a task is
                 -- leased anyway, the store finds the field unreadable and ends the lease, and maintenance ends it
                 local sb = v[@sb@] and tonumber(v[@sb@])
-                if v[@state@] ~= '0' or v[@ty@] ~= source.tid or v[@q@] ~= g.qid then
-                  zrem(queueKey(id, g.qid, source.tid), id)
+                local tid = source.tid or v[@ty@]
+                local belongs = v[@state@] == '0' and v[@q@] == g.qid and v[@ty@]
+                if not belongs or v[@ty@] ~= tid then
+                  -- a stale entry: drop it from the zset it was read from, and from qa:<qid> and the zset of the
+                  -- type its hash names unless it is queued here, where only the entry of the wrong type is stale
+                  if source.tid then zrem(queueKey(id, g.qid, source.tid), id) end
+                  if not belongs then
+                    zrem(P .. 'qa:' .. g.qid, id)
+                    if v[@ty@] and v[@ty@] ~= source.tid then zrem(queueKey(id, g.qid, v[@ty@]), id) end
+                  end
                 elseif not (sb and sb <= at) then
                   -- a task past its start-by deadline stays queued: maintenance expires it and reports the expiry
-                  move(id, g.qid, 0, 2, at, lease, source.tid)
+                  move(id, g.qid, 0, 2, at, lease, tid)
                   if v[@sb@] then zrem(P .. 'startby', id) end
                   redis.call('HSET', tkey, 'state', 2, 'sc', at, 'rev', (tonumber(v[@rev@]) or 0) + 1,
                     'att', (tonumber(v[@att@]) or 0) + 1, 'ca', at, 'lease', lease, 'wid', ARGV[4])
@@ -474,15 +500,13 @@ final class RedisScripts {
             """;
 
     /**
-     * Returns {queue id, queued, scheduled, leased, succeeded, dead, cancelled, expired} rows. Only the types in
-     * {@code active:<qid>} are read for queued.
+     * Returns {queue id, queued, scheduled, leased, succeeded, dead, cancelled, expired} rows. The queued count is
+     * the cardinality of {@code qa:<qid>}.
      */
     static final String COUNTS = PRELUDE + """
             local out = {}
             for _, qid in ipairs(redis.call('HVALS', P .. 'reg:queue')) do
-              local queued = 0
-              for _, pair in ipairs(queuedCounts(qid)) do queued = queued + pair[2] end
-              local row = {qid, queued, redis.call('ZCARD', P .. 'sched:' .. qid),
+              local row = {qid, redis.call('ZCARD', P .. 'qa:' .. qid), redis.call('ZCARD', P .. 'sched:' .. qid),
                 redis.call('ZCARD', P .. 'idx:2:' .. qid)}
               for state = 3, 6 do
                 row[#row + 1] = redis.call('ZCARD', P .. 'idx:' .. state .. ':' .. qid)
@@ -967,7 +991,7 @@ final class RedisScripts {
             """;
 
     /**
-     * ARGV: what to list ('q' the type zsets of the queues, 's' the scheduled zsets, 'i' the index zsets of a
+     * ARGV: what to list ('q' the {@code qa:<qid>} zsets of the queues, 's' the scheduled zsets, 'i' the index zsets of a
      * state), the state code, cursor score or '', cursor member, limit, then the queue ids (none: every registered
      * queue). Merges the zsets in the order of the zset: score, then member bytes. Returns up to limit members,
      * each followed by its score, that come after the cursor. A zset's place after the cursor is its count of
@@ -1034,9 +1058,7 @@ final class RedisScripts {
             end
             for _, qid in ipairs(qids) do
               if mode == 'q' then
-                for _, tid in ipairs(redis.call('SMEMBERS', P .. 'active:' .. qid)) do
-                  add(P .. 'q:' .. qid .. ':' .. tid)
-                end
+                add(P .. 'qa:' .. qid)
               elseif mode == 's' then
                 add(P .. 'sched:' .. qid)
               else

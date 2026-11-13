@@ -257,6 +257,6 @@ class TaskHashesTest {
     void theClaimScriptHasEveryFieldPositionFilledIn() {
         assertThat(RedisScripts.CLAIM).doesNotContainPattern("@[A-Za-z]+@");
         var state = Arrays.asList(RedisScripts.CLAIM_FIELDS).indexOf(F_STATE) + 1;
-        assertThat(RedisScripts.CLAIM).contains("if v[" + state + "] ~= '0'");
+        assertThat(RedisScripts.CLAIM).contains("v[" + state + "] == '0'");
     }
 }
