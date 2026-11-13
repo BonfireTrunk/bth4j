@@ -143,4 +143,35 @@ class ScheduledTaskServiceTest {
         assertThat(promotes).hasValue(2);
         assertThat(status.issues()).extracting(Issue::kind).containsExactly(Issue.Kind.STORE_ERROR);
     }
+
+    @Test
+    void anOutageOfThePromotionLoopLogsOneStackTraceThenOneLinePerFailureAndTheRecovery() {
+        var running = new AtomicReference<ScheduledTaskService>();
+        var promotes = new AtomicInteger();
+        var failing = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("promote")) {
+                int call = promotes.incrementAndGet();
+                if (call <= 3) throw new TaskStoreException("store down");
+                if (call == 5) running.get().stopThread();
+            }
+            return real.proceed();
+        });
+        var service = service(failing, Duration.ofMillis(1));
+        running.set(service);
+
+        try (var logs = new LogCapture(Loggers.PROMOTION)) {
+            service.run();
+
+            var lines = logs.lines();
+            assertThat(lines).hasSize(4);
+            assertThat(lines.get(0)).isEqualTo("ERROR Scheduled task service Thread error [trace]");
+            assertThat(lines.get(1))
+                    .isEqualTo("ERROR Scheduled task service Thread error (failure 2 in a row: "
+                            + "today.bonfire.oss.bth4j.exceptions.TaskStoreException: store down)");
+            assertThat(lines.get(2)).contains("failure 3 in a row").doesNotContain("[trace]");
+            assertThat(lines.get(3))
+                    .startsWith("INFO Scheduled task promotion: the store answers again after 3 failed attempts over ")
+                    .endsWith(" seconds");
+        }
+    }
 }

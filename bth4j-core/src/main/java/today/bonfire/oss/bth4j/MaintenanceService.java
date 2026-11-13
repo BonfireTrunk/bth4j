@@ -59,6 +59,10 @@ class MaintenanceService extends CustomThread {
     private final LongSupplier nanoTime;
     private long lastCycleEnd;
     private long lastHeartbeat;
+    private final OutageLog heartbeatOutage;
+    private final OutageLog reclaimOutage;
+    private final OutageLog expiryOutage;
+    private final OutageLog purgeOutage;
 
     MaintenanceService(Builder b) {
         super(b.group, b.threadName);
@@ -85,6 +89,10 @@ class MaintenanceService extends CustomThread {
         this.nanoTime = b.nanoTime;
         this.lastCycleEnd = nanoTime.getAsLong();
         this.lastHeartbeat = lastCycleEnd;
+        this.heartbeatOutage = new OutageLog(log, "Maintenance heartbeat", nanoTime);
+        this.reclaimOutage = new OutageLog(log, "Maintenance lease reclaim", nanoTime);
+        this.expiryOutage = new OutageLog(log, "Maintenance expiry of missed starts", nanoTime);
+        this.purgeOutage = new OutageLog(log, "Maintenance purge", nanoTime);
         this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
             var thread = new Thread(b.group, r, b.threadName + "-scheduler");
             thread.setDaemon(true);
@@ -142,6 +150,7 @@ class MaintenanceService extends CustomThread {
             boolean more;
             do {
                 var expired = store.reclaim(batchSize);
+                reclaimOutage.succeeded();
                 count = expired.size();
                 handled = 0;
                 for (var e : expired) {
@@ -158,7 +167,7 @@ class MaintenanceService extends CustomThread {
             } while (more);
         } catch (Exception e) {
             status.storeError(e);
-            log.error("Error in reclaiming expired leases", e);
+            reclaimOutage.failed(e, "Error in reclaiming expired leases");
         }
     }
 
@@ -269,6 +278,7 @@ class MaintenanceService extends CustomThread {
             boolean more;
             do {
                 var tasks = store.expire(batchSize);
+                expiryOutage.succeeded();
                 count = tasks.size();
                 for (var t : tasks) {
                     observer.emit(new TaskEvent.Expired(
@@ -280,7 +290,7 @@ class MaintenanceService extends CustomThread {
             } while (more);
         } catch (Exception e) {
             status.storeError(e);
-            log.error("Error in expiring tasks", e);
+            expiryOutage.failed(e, "Error in expiring tasks");
         }
     }
 
@@ -307,11 +317,12 @@ class MaintenanceService extends CustomThread {
                         runnerTypeIds,
                         running.getAsInt(),
                         accepting.getAsBoolean());
+                heartbeatOutage.succeeded();
             }
             return true;
         } catch (Exception e) {
             status.storeError(e);
-            log.error("Heartbeat of runner {} failed", runnerId, e);
+            heartbeatOutage.failed(e, "Heartbeat of runner {} failed", runnerId);
             return false;
         }
     }
@@ -342,9 +353,10 @@ class MaintenanceService extends CustomThread {
             } while (more);
             int runners = store.purgeRunners(runnerStaleTimeout);
             if (runners > 0) log.info("Removed {} runners without a heartbeat for {}", runners, runnerStaleTimeout);
+            purgeOutage.succeeded();
         } catch (Exception e) {
             status.storeError(e);
-            log.error("Error in purging finished tasks", e);
+            purgeOutage.failed(e, "Error in purging finished tasks");
         }
     }
 

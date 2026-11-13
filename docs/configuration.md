@@ -125,7 +125,7 @@ The default `FULL` is what finding the cause of a failed task needs. An exceptio
 | The `TaskEvent` error (a `RedactedFailure` that has the class name as `toString()`) | carries no message and no stack |
 | The runner issues about a task's failure | carry no message and no stack |
 | The runner's log lines about a task's failure | carry no message and no stack |
-| A store error, in the runner issues, in `RunnerHealth.lastStoreError` and in the log | not covered: recorded and logged with its message and stack. It comes from the store's driver and is what finding an outage needs; it can name the store's host and port |
+| A store error, in the runner issues, in `RunnerHealth.lastStoreError` and in the log | not covered: recorded and logged with its message and stack (the stack on the first failure of a kind, see [While the store is unreachable](monitoring.md#while-the-store-is-unreachable)). It comes from the store's driver and is what finding an outage needs; it can name the store's host and port |
 | A rethrown `VirtualMachineError` | not covered: it reaches the thread's uncaught exception handler with its message and stack |
 | The message of a `TaskCancelledException` | not stored as the cancel reason; the operator's reason or "cancel requested" is |
 | Progress text and messages that your own retry policy returns | not touched |

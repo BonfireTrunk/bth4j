@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
@@ -1129,6 +1130,84 @@ class MaintenanceServiceTest {
         assertThat(calls.stream().filter("heartbeat"::equals)).hasSize(3);
         assertThat(calls.indexOf("expire")).isGreaterThan(calls.lastIndexOf("reclaim"));
         assertThat(status.lastMaintenanceAt()).isNotNull();
+    }
+
+    @ParameterizedTest
+    @CsvSource(
+            delimiter = '|',
+            value = {
+                "heartbeat|cycle|Heartbeat of runner %d failed|Maintenance heartbeat",
+                "reclaim|cycle|Error in reclaiming expired leases|Maintenance lease reclaim",
+                "expire|cycle|Error in expiring tasks|Maintenance expiry of missed starts",
+                "purgeRunners|purge|Error in purging finished tasks|Maintenance purge",
+            })
+    void anOutageOfAMaintenanceJobLogsOneStackTraceThenOneLinePerFailureAndTheRecovery(
+            String failingCall, String job, String text, String loop) throws Exception {
+        runnerId = store.allocateRunnerId("runner-a", Set.of(), Set.of());
+        var failures = new AtomicInteger(3);
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals(failingCall) && failures.getAndDecrement() > 0)
+                throw new TaskStoreException("store down");
+            return real.proceed();
+        });
+        var service = service();
+        var message = text.formatted(runnerId);
+
+        try (var logs = new LogCapture(Loggers.MAINTENANCE)) {
+            for (int i = 0; i < 5; i++) {
+                if (job.equals("cycle")) service.cycle();
+                else service.purge();
+            }
+
+            var lines = logs.lines();
+            assertThat(lines).hasSize(4);
+            assertThat(lines.get(0)).isEqualTo("ERROR " + message + " [trace]");
+            assertThat(lines.get(1))
+                    .isEqualTo("ERROR " + message + " (failure 2 in a row: "
+                            + "today.bonfire.oss.bth4j.exceptions.TaskStoreException: store down)");
+            assertThat(lines.get(2))
+                    .isEqualTo("ERROR " + message + " (failure 3 in a row: "
+                            + "today.bonfire.oss.bth4j.exceptions.TaskStoreException: store down)");
+            assertThat(lines.get(3))
+                    .startsWith("INFO " + loop + ": the store answers again after 3 failed attempts over ")
+                    .endsWith(" seconds");
+        }
+    }
+
+    @Test
+    void theRecoveryLineOfAMaintenanceJobCountsTheSecondsOfItsOwnClock() throws Exception {
+        runnerId = store.allocateRunnerId("runner-a", Set.of(), Set.of());
+        var failures = new AtomicInteger(2);
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("heartbeat") && failures.getAndDecrement() > 0) {
+                nanos.addAndGet(Duration.ofMillis(2500).toNanos());
+                throw new TaskStoreException("store down");
+            }
+            return real.proceed();
+        });
+        var service = service();
+
+        try (var logs = new LogCapture(Loggers.MAINTENANCE)) {
+            service.cycle();
+            service.cycle();
+            nanos.addAndGet(Duration.ofMillis(3700).toNanos());
+            service.cycle();
+
+            assertThat(logs.lines().getLast())
+                    .isEqualTo(
+                            "INFO Maintenance heartbeat: the store answers again after 2 failed attempts over 6.2 seconds");
+        }
+    }
+
+    @Test
+    void aServiceWithoutARunnerMakesNoHeartbeatCallSoItNeverReportsAHeartbeatRecovery() throws Exception {
+        try (var logs = new LogCapture(Loggers.MAINTENANCE)) {
+            var service = service();
+            service.cycle();
+            service.cycle();
+
+            assertThat(logs.lines()).isEmpty();
+        }
     }
 
     private void cycle() throws Exception {

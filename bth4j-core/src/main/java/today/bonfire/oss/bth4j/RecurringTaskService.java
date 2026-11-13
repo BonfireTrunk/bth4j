@@ -88,6 +88,7 @@ class RecurringTaskService extends CustomThread {
     private final Map<String, CatchUpWindow> catchUpWindows = new HashMap<>();
 
     private long cycle;
+    private final OutageLog outage = new OutageLog(log, "Recurring task service", System::nanoTime);
 
     /** The fires one scan found missed, for a revision; {@code cycle} is the last check that used it. */
     private record CatchUpWindow(long revision, Instant first, Instant last, long cycle) {
@@ -125,7 +126,7 @@ class RecurringTaskService extends CustomThread {
                     }
                 } catch (Exception e) {
                     status.storeError(e);
-                    log.error("Recurring task service Thread error", e);
+                    outage.failed(e, "Recurring task service Thread error");
                     sleepAfterError();
                 }
             }
@@ -159,12 +160,13 @@ class RecurringTaskService extends CustomThread {
                         progress = commit(d);
                     } catch (TaskStoreException e) {
                         status.storeError(e);
-                        log.error("Recurring task service could not reach the store, ending this round", e);
+                        outage.failed(e, "Recurring task service could not reach the store, ending this round");
                         return;
                     }
                     if (progress == Progress.QUEUED) queued++;
                     if (progress != Progress.NONE) progressed++;
                 }
+                outage.succeeded();
                 // no progress means every due definition was taken by another instance or could not be moved
                 if (progressed == 0) {
                     break;
