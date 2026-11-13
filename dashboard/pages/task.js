@@ -1,5 +1,5 @@
 import { api, isAdmin } from '../api.js';
-import { duration, confirmDialog, toast, toastError } from '../ui.js';
+import { duration, confirmDialog, toast, toastError, indentJson, compareInstants } from '../ui.js';
 
 const { ref, computed, onMounted } = Vue;
 
@@ -54,10 +54,11 @@ export default {
       if (payload.value === '') return '(no payload)';
       if (typeof payload.value !== 'string') return JSON.stringify(payload.value, null, 2);
       try {
-        return JSON.stringify(JSON.parse(payload.value), null, 2);
+        JSON.parse(payload.value);
       } catch (e) {
         return payload.value;
       }
+      return indentJson(payload.value);
     });
 
     async function act(fn, okMessage, after) {
@@ -131,8 +132,12 @@ export default {
     });
     const cancelled = computed(() => task.value && (task.value.cancelRequestedAt || task.value.cancelReason));
 
+    // An object does not keep the order of its keys (a step named "2" comes before "10" and before "fetch"),
+    // so the order the steps finished in comes from their times.
     const steps = computed(() =>
-      Object.entries((task.value && task.value.steps) || {}).map(([name, s]) => ({ name, at: s && s.at, result: s && s.result })),
+      Object.entries((task.value && task.value.steps) || {})
+        .map(([name, s]) => ({ name, at: s && s.at, result: s && s.result }))
+        .sort((a, b) => compareInstants(a.at, b.at)),
     );
     const failures = computed(() => {
       const f = (task.value && task.value.failures) || [];

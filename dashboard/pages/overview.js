@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { STATES, usePoll, sum, useChanges } from '../ui.js';
 
-const { computed, watch } = Vue;
+const { computed, ref, watch } = Vue;
 
 export default {
   setup() {
@@ -24,10 +24,12 @@ export default {
 
     // A fixed-delay definition is parked a century ahead while its occurrence runs (see schedules.js).
     const PARKED_AFTER_MS = 50 * 365 * 86400 * 1000;
+    const partial = ref(false);
     async function loadDepartures() {
       // The listing is ordered by state change, not by due, so the soonest departures are picked client-side
       // from the server's largest page; beyond 200 waiting tasks the board is approximate.
       const [waiting, schedules] = await Promise.all([api.tasks({ state: 'SCHEDULED', limit: 200 }), api.schedules()]);
+      partial.value = waiting.next != null;
       const rows = [];
       for (const t of waiting.items) rows.push({ key: 't' + t.id, at: t.dueAt, what: t.type, queue: t.queue, kind: 'task', href: '#/task/' + t.id, who: '#' + t.id });
       for (const s of schedules) {
@@ -50,7 +52,7 @@ export default {
 
     const reloadAll = () => Promise.all([reload(), board.reload(), unserved.reload()]);
 
-    return { data, loading, error, reload: reloadAll, board, unserved, queues, totals, grand, health, STATES, changed, rowTotal, link };
+    return { data, loading, error, reload: reloadAll, board, partial, unserved, queues, totals, grand, health, STATES, changed, rowTotal, link };
   },
   template: `
   <section>
@@ -101,6 +103,7 @@ export default {
               </tbody>
             </table>
           </div>
+          <p v-if="partial" class="muted small">More than 200 tasks are waiting for a time. This list looks at 200 of them, so an earlier one can be missing.</p>
         </div>
         <div>
           <h2>Unserved work</h2>

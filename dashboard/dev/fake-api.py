@@ -37,24 +37,25 @@ def make_tasks():
     for i in range(130):
         state = STATES[(i * 3 + i // 7) % len(STATES)]
         tid = str(BASE_ID + i)
+        changed = -3600 + i * 20
         t = {
             "id": tid, "revision": str(1 + i % 5), "queue": qnames[i % 3], "type": ["send-mail", "build-report", "sync-account"][i % 3],
             "payloadVersion": 1, "state": state, "attempts": 1 if state != "QUEUED" else 0, "maxAttempts": 5,
-            "createdAt": iso(-86400 + i * 600), "dueAt": iso(-86000 + i * 600), "stateChangedAt": iso(-3600 + i * 20),
+            "createdAt": iso(-86400 + i * 600), "dueAt": iso(-86000 + i * 600), "stateChangedAt": iso(changed),
             "runnerId": 7 if state == "LEASED" else None, "leaseUntil": iso(30) if state == "LEASED" else None,
-            "claimedAt": iso(-40) if state in ("LEASED", "SUCCEEDED", "DEAD") else None,
+            "claimedAt": iso(changed) if state == "LEASED" else iso(changed - 420) if state in ("SUCCEEDED", "DEAD") else None,
             "account": "acme" if i % 2 else None, "headers": {"trace": "t-%d" % i} if i % 4 == 0 else {},
             "uniqueKey": "uk-%d" % i if i % 5 == 0 else None, "scheduleId": "nightly-report" if i % 11 == 0 else None,
             "retryOf": None, "startBy": None, "maxRunTime": "PT15M" if i % 3 == 0 else None,
-            "cancelRequestedAt": iso(-100) if state == "CANCELLED" else None,
+            "cancelRequestedAt": iso(changed) if state == "CANCELLED" else None,
             "cancelReason": "no longer needed" if state == "CANCELLED" else None,
             "progress": "step 2 of 3" if state == "LEASED" else None,
-            "steps": {"fetch": {"at": iso(-3000), "result": "ok"}, "render": {"at": iso(-2900), "result": None}} if state in ("SUCCEEDED", "DEAD") else {},
+            "steps": {"fetch": {"at": iso(changed - 400), "result": "ok"}, "render": {"at": iso(changed - 300), "result": None}} if state in ("SUCCEEDED", "DEAD") else {},
             "failures": [], "lastFailure": None,
         }
         if state == "DEAD":
             t["attempts"] = 5
-            t["failures"] = [{"attempt": n, "at": iso(-3000 + n * 60), "type": "java.io.IOException", "message": "connection reset %d" % n,
+            t["failures"] = [{"attempt": n, "at": iso(changed - (5 - n) * 60), "type": "java.io.IOException", "message": "connection reset %d" % n,
                               "stack": "java.io.IOException: connection reset %d\n\tat app.Mailer.send(Mailer.java:42)\n\tat app.Worker.run(Worker.java:17)" % n} for n in range(1, 6)]
             t["lastFailure"] = t["failures"][-1]
         tasks[tid] = t
