@@ -194,12 +194,16 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
                 if (closed) {
                     return;
                 }
-                stateValues.values().forEach(v -> v.set(0));
                 for (var entry : counts.entrySet()) {
                     for (var state : TaskState.values()) {
                         stateGauge(entry.getKey(), state).set(entry.getValue().of(state));
                     }
                 }
+                // only a queue that left the counts drops to zero: a scrape reads the gauges without this lock
+                // and must not meet a zero for a queue that has tasks
+                stateValues.forEach((key, value) -> {
+                    if (!counts.containsKey(key.queue())) value.set(0);
+                });
             } finally {
                 metersLock.unlock();
             }

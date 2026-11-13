@@ -11,9 +11,11 @@ import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -107,6 +109,26 @@ class MicrometerRunnerMetricsTest {
             metrics.refresh();
 
             assertThat(state("a", "queued")).isEqualTo(0);
+        }
+    }
+
+    @Test
+    void aScrapeDuringARefreshNeverReadsAZeroForAQueueThatHasTasks() {
+        counts.set(Map.of("q", new StateCounts(5, 0, 0, 0, 0, 0, 0)));
+        try (var metrics = MicrometerRunnerMetrics.bind(admin, () -> 0, registry, Duration.ofHours(1))) {
+            var readWhileRefreshing = new ArrayList<Double>();
+            // the refresh walks the entries of the counts it was given: that moment stands for a scrape in between
+            counts.set(new LinkedHashMap<>(Map.of("q", new StateCounts(7, 0, 0, 0, 0, 0, 0))) {
+                @Override
+                public Set<Map.Entry<String, StateCounts>> entrySet() {
+                    readWhileRefreshing.add(state("q", "queued"));
+                    return super.entrySet();
+                }
+            });
+            metrics.refresh();
+
+            assertThat(readWhileRefreshing).isNotEmpty().containsOnly(5.0);
+            assertThat(state("q", "queued")).isEqualTo(7);
         }
     }
 
