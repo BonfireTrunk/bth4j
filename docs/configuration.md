@@ -197,3 +197,7 @@ What this means in practice:
 ## A process that only produces tasks
 
 A process that only produces tasks can use `TaskClient.builder().store(store).jsonMapper(mapper).queues(queues).build()`, with the `Queues` value the runners have. See [Enqueueing](enqueueing.md).
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `addRetryPolicyName(name)` | none | names a retry policy the runners have; name 1 to 64 characters; may be called several times. Once one name is added, a request that names another policy is refused with a `TaskValidationException`. With no name added nothing is checked. See [Named retry policies](retries-and-cancelling.md#named-retry-policies) |

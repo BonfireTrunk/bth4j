@@ -183,6 +183,54 @@ class TaskClientTest {
     }
 
     @Test
+    void withNoRetryPolicyNamesAnyNameIsAccepted() {
+        var client = builder().build();
+
+        assertThat(client.enqueue(TaskRequest.of(VOID).retryPolicy("anything").build())
+                        .isAccepted())
+                .isTrue();
+    }
+
+    @Test
+    void aRequestMayNameAnAddedRetryPolicyOrNoneAtAll() {
+        var client =
+                builder().addRetryPolicyName("slow").addRetryPolicyName("fast").build();
+
+        assertThat(client.enqueue(TaskRequest.of(VOID).retryPolicy("slow").build())
+                        .isAccepted())
+                .isTrue();
+        assertThat(client.enqueue(TaskRequest.of(VOID).build()).isAccepted()).isTrue();
+        assertThat(client.enqueueAll(List.of(
+                        TaskRequest.of(VOID).retryPolicy("fast").build(),
+                        TaskRequest.of(VOID).build())))
+                .hasSize(2)
+                .allMatch(EnqueueResult::isAccepted);
+    }
+
+    @Test
+    void aRequestNamingAnotherRetryPolicyIsRefusedByEnqueueAndEnqueueAll() {
+        var client = builder().addRetryPolicyName("slow").build();
+        var unknown = TaskRequest.of(VOID).retryPolicy("typo").build();
+
+        assertThatThrownBy(() -> client.enqueue(unknown))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("retry policy typo is not one of the names this client was given");
+        assertThatThrownBy(() -> client.enqueueAll(List.of(TaskRequest.of(VOID).build(), unknown)))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("retry policy typo is not one of the names this client was given");
+        assertThatThrownBy(() -> client.prepare(unknown)).isInstanceOf(TaskValidationException.class);
+        assertThat(client.counts().get("Q:DEF").queued()).isZero();
+    }
+
+    @Test
+    void aBadRetryPolicyNameGivenToTheBuilderIsRefused() {
+        assertThatThrownBy(() -> builder().addRetryPolicyName(null)).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> builder().addRetryPolicyName(" ")).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> builder().addRetryPolicyName("x".repeat(TaskRequest.MAX_RETRY_POLICY_LENGTH + 1)))
+                .isInstanceOf(TaskConfigurationException.class);
+    }
+
+    @Test
     void reusedIdWithTheSameContentIsAcceptedAgain() {
         var client = builder().build();
         long id = client.nextId();

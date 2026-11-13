@@ -44,6 +44,7 @@ public final class TaskClient {
     private final QueuesHolder queues;
     private final Clock clock;
     private final int defaultMaxAttempts;
+    private final Set<String> retryPolicyNames;
     private final AdminOps admin;
 
     TaskClient(Builder b) {
@@ -54,6 +55,7 @@ public final class TaskClient {
         this.queues = b.queues;
         this.clock = b.clock;
         this.defaultMaxAttempts = b.defaultMaxAttempts;
+        this.retryPolicyNames = Set.copyOf(b.retryPolicyNames);
         this.admin = new DefaultAdminOps(store, names, clock, null, null);
     }
 
@@ -319,6 +321,7 @@ public final class TaskClient {
 
     private <T> TaskRecord toRecord(TaskRequest<T> request, long id) {
         var type = request.type();
+        requireKnownRetryPolicy(request.retryPolicy());
         var now = clock.instant();
         StoredTime.require("at", request.at(), now);
         StoredTime.require("startBy", request.startBy(), now);
@@ -350,6 +353,13 @@ public final class TaskClient {
             b.keyKeep(k.duration());
         }
         return b.build();
+    }
+
+    private void requireKnownRetryPolicy(String name) {
+        if (name != null && !retryPolicyNames.isEmpty() && !retryPolicyNames.contains(name)) {
+            throw new TaskValidationException(
+                    "retry policy " + name + " is not one of the names this client was given");
+        }
     }
 
     private static Map<String, String> validHeaders(Map<String, String> headers) {
@@ -526,6 +536,7 @@ public final class TaskClient {
         private Clock clock = Clock.systemUTC();
         private int idBlockSize = 64;
         private int defaultMaxAttempts = 10;
+        private final Set<String> retryPolicyNames = new HashSet<>();
         private QueuesHolder queues = QueuesHolder.of(Queues.of(Queues.GENERAL), null);
 
         private Builder() {}
@@ -561,6 +572,24 @@ public final class TaskClient {
                 throw new TaskConfigurationException("defaultMaxAttempts must be 1 to " + TaskRequest.MAX_ATTEMPTS);
             }
             this.defaultMaxAttempts = attempts;
+            return this;
+        }
+
+        /**
+         * Names a retry policy the runners have, as given to {@code BackgroundRunner.Builder#addRetryPolicy}. Once
+         * a name is added, a request that names a retry policy outside the added names is refused with a
+         * {@link TaskValidationException}, so a wrong name is found when the task is enqueued and not when it first
+         * fails. A request that names no policy always passes; with no name added nothing is checked.
+         *
+         * @throws TaskConfigurationException when the name is blank or longer than
+         *                                    {@value TaskRequest#MAX_RETRY_POLICY_LENGTH} characters
+         */
+        public Builder addRetryPolicyName(String name) {
+            if (!TaskRequest.isRetryPolicyName(name)) {
+                throw new TaskConfigurationException(
+                        "retry policy name must be 1 to " + TaskRequest.MAX_RETRY_POLICY_LENGTH + " characters");
+            }
+            this.retryPolicyNames.add(name);
             return this;
         }
 
