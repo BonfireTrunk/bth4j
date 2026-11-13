@@ -39,7 +39,8 @@ The namespace prefixes every key and carries the Redis Cluster hash tag, so all 
 | Enqueue | Writes a random per-record token with the other fields of the task. A resend is judged by that token (see the table below). |
 | Enqueue and acknowledgement batches | Run as one script per group of tasks. |
 | Claim | Runs both grant passes in one atomic script. It merges the eligible types by `(due, lexical id)` and leaves foreign tasks unchanged. Its scan budget is `min(count * 4, 1000)` eligible entries per queue across both passes. Its cost grows with the types that have queued tasks, not with the types registered. A claim leaves a task whose `startBy` has passed in its queue for maintenance to expire. |
-| Queue listings | Merge the active type zsets by `(due, id as text)`, the order a claim takes them in, and retain their position cursors when a type empties. A page finds its place by rank, so many tasks due in one millisecond cost a page no more than any others. |
+| Queue listings | Merge the active type zsets by `(due, id as text)`, the order a claim takes them in, and retain their position cursors when a type empties. A page is one script call and one round trip for every queue and type, and the script blocks the server for as long as its sets and its page need, not for the number of tasks. A page finds its place by rank, so many tasks due in one millisecond cost a page no more than any others. |
+| Reclaim | One script reads the server's time, the expired leases and the fields maintenance needs of each, so a pass is one round trip whether it finds nothing or a full page of leases. |
 | `queuedByType()` and the counts | Read exact zset cardinalities of the active types in one script, without task hash reads. |
 | Finished tasks | Are listed and purged from one zset per state and queue. |
 | Removing a task whose unique key window is open | Leaves only a key string, which expires at the end of the window. |
@@ -128,7 +129,7 @@ Other details:
 | Task and recurring-definition hashes, field `ty` | the type id |
 | Recurring-definition hash, field `trg` | set to 1 while the next fire time is one an operator triggered |
 | Runner hash, field `accepting` | set to 1 on registration; the heartbeat script updates it |
-| `ts:<digest>` lifetime | expires a day after the last claim that named it; a claim writes it again when it is missing |
+| `ts:<digest>` lifetime | a claim that finds less than half a day left on it extends it to a day, so a runner that polls an idle queue writes nothing; it expires between twelve and twenty-four hours after the last claim that named it, and a claim writes it again when it is missing |
 | Work per call | lease renewals and batched acknowledgements go in groups of 256 leases, and one call removes at most 500 stale runners, so that no call blocks the server for long |
 | Zset writes | are collected per key and sent as one command per key at the end of a script |
 | Task ids in scripts | travel as text, because a Lua number is a double and keeps 53 bits; revisions, attempts and times are numbers |

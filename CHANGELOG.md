@@ -201,6 +201,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The dashboard polls `/overview` once for the page and the header together: an open overview page makes 12 requests a minute where it made 18.
 - PostgreSQL: the second pass of a claim continues behind the last task the first pass took from each queue, as an index range, instead of reading every queued task of those queues to leave out what the first pass took. The same tasks come back in the same order; a task another session held locked during the first pass is left for the next claim.
 - PostgreSQL: a keyed `enqueue`, `enqueueAll` and recurring commit inserts first and releases a key whose keep window has passed only when the insert meets one, so a keyed enqueue on a free key is one statement, not two. The answers and the lock order are the same.
+- Redis and Valkey: a page of the task listing is one script call and one round trip, where it made one call per queue and type (a page of QUEUED tasks over 20 queues with 50 types made 1,001 round trips). The script merges the sets on the server in the same order, with the same cursor.
+- Redis and Valkey: a claim that finds nothing no longer writes. It extended the lifetime of the runner's type set on every call, so an idle runner wrote twice a second to the append-only file and to every replica; now it extends it once less than half of its day is left.
+- Redis and Valkey: reclaiming expired leases takes one round trip where it took two, with or without leases to reclaim.
 
 ### Fixed
 

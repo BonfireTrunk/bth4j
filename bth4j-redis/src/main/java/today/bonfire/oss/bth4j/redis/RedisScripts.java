@@ -296,24 +296,10 @@ final class RedisScripts {
     };
 
     /**
-     * ARGV: count, lease ms, runner id, the digest naming the {@code ts:<digest>} set of known type ids ('' for
-     * every type), then queue/share/cap triples. Returns {-1} when that set is missing, so that the caller writes
-     * it and calls again; each call extends its life by {@link #TYPE_SET_TTL_MS}. A queue's eligible types are
-     * the intersection of {@code active:<qid>} and that set, which Redis computes from the smaller one, so types
-     * without queued tasks cost nothing. Both passes share each queue's scan budget of min(count*4, 1000).
-     * Eligible type heads are merged by (due, lexical id). Deferred zset writes let each type page by offset
-     * across both passes. Returns {at, entry...}, each entry {id, payload, steps, {failure...}, then
-     * CLAIM_FIELDS as read before claim}. The hs/fc markers avoid reading absent history keys.
+     * A binary min-heap of sources, each with a {@code score} and an {@code id}, ordered by score and then by id
+     * text; CLAIM merges the heads of the type zsets of a queue with it and LIST the heads of the zsets of a page.
      */
-    static final String CLAIM = PRELUDE
-            + """
-            local F = {@FIELDS@}
-            local at = now()
-            local count = tonumber(ARGV[2])
-            local lease = at + tonumber(ARGV[3])
-            local tset = ARGV[5] ~= '' and P .. 'ts:' .. ARGV[5] or nil
-            if tset and redis.call('PEXPIRE', tset, @TTL@) == 0 then return {-1} end
-            local remaining, result, grants = count, {at}, {}
+    private static final String MERGE_HEAP = """
             local function before(a, b)
               return a.score < b.score or (a.score == b.score and a.id < b.id)
             end
@@ -342,6 +328,33 @@ final class RedisScripts {
               end
               return first
             end
+            """;
+
+    /**
+     * ARGV: count, lease ms, runner id, the digest naming the {@code ts:<digest>} set of known type ids ('' for
+     * every type), then queue/share/cap triples. Returns {-1} when that set is missing, so that the caller writes
+     * it and calls again; a call that finds less than half of {@link #TYPE_SET_TTL_MS} left on it extends its life to
+     * the whole time, so that polls of an idle runner do not write. A queue's eligible types are
+     * the intersection of {@code active:<qid>} and that set, which Redis computes from the smaller one, so types
+     * without queued tasks cost nothing. Both passes share each queue's scan budget of min(count*4, 1000).
+     * Eligible type heads are merged by (due, lexical id). Deferred zset writes let each type page by offset
+     * across both passes. Returns {at, entry...}, each entry {id, payload, steps, {failure...}, then
+     * CLAIM_FIELDS as read before claim}. The hs/fc markers avoid reading absent history keys.
+     */
+    static final String CLAIM = PRELUDE
+            + MERGE_HEAP
+            + """
+            local F = {@FIELDS@}
+            local at = now()
+            local count = tonumber(ARGV[2])
+            local lease = at + tonumber(ARGV[3])
+            local tset = ARGV[5] ~= '' and P .. 'ts:' .. ARGV[5] or nil
+            if tset then
+              local left = redis.call('PTTL', tset)
+              if left == -2 then return {-1} end
+              if left < @TTL@ / 2 then redis.call('PEXPIRE', tset, @TTL@) end
+            end
+            local remaining, result, grants = count, {at}, {}
             local function advance(source, size)
               if source.pos > #source.page then
                 source.page = redis.call('ZRANGE', source.key, '-inf', at, 'BYSCORE',
@@ -900,6 +913,30 @@ final class RedisScripts {
             return stored[1]
             """;
 
+    /** The hash fields RECLAIM reads of each expired lease, in reply order. */
+    static final String[] RECLAIM_FIELDS = {
+        Keys.F_REVISION, Keys.F_ATTEMPTS, Keys.F_MAX_ATTEMPTS, Keys.F_QUEUE, Keys.F_TYPE, Keys.F_CANCEL_AT
+    };
+
+    /**
+     * ARGV: limit. Returns up to limit leases that expired by the server's clock, oldest first, each as {id, then
+     * RECLAIM_FIELDS as stored}; a field the hash does not hold, or the whole hash, is nil.
+     */
+    static final String RECLAIM = PRELUDE
+            + """
+            local F = {@FIELDS@}
+            local out = {}
+            for _, id in ipairs(redis.call('ZRANGE', P .. 'leased', '-inf', now(), 'BYSCORE', 'LIMIT', 0, ARGV[2])) do
+              local v = redis.call('HMGET', P .. 't:' .. id, unpack(F))
+              local row = {id}
+              for j = 1, #F do row[j + 1] = v[j] end
+              out[#out + 1] = row
+            end
+            return out
+            """.replace(
+                    "@FIELDS@",
+                    Arrays.stream(RECLAIM_FIELDS).map(f -> "'" + f + "'").collect(Collectors.joining(", ")));
+
     /**
      * ARGV: ids. Sets the revision of a LEASED task to 0 when it is not a 32-bit integer, so that reclaim can fence
      * it again; the lease has expired, so no runner holds a revision that 0 could wrongly match. Returns the count.
@@ -919,12 +956,15 @@ final class RedisScripts {
             """;
 
     /**
-     * ARGV: zset key, cursor score or '', cursor member, limit. Returns up to limit members, each followed by its
-     * score, that come after the cursor in the order of the zset: score, then member bytes. The cursor's place is
-     * its own rank while it is in the zset at that score, else a binary search inside the group of its score finds
-     * it, so that a large group is never read whole.
+     * ARGV: what to list ('q' the type zsets of the queues, 's' the scheduled zsets, 'i' the index zsets of a
+     * state), the state code, cursor score or '', cursor member, limit, then the queue ids (none: every registered
+     * queue). Merges the zsets in the order of the zset: score, then member bytes. Returns up to limit members,
+     * each followed by its score, that come after the cursor. A zset's place after the cursor is its count of
+     * lower scores, moved on inside the group of the cursor's score by the cursor's own rank or by a binary search
+     * when a zset has one, so that a large group is never read whole. Each zset is read a few entries at a time,
+     * so the work is the number of zsets plus the limit, not the number of tasks.
      */
-    static final String LIST = PRELUDE + """
+    static final String LIST = PRELUDE + MERGE_HEAP + """
             local function follows(a, b)
               for i = 1, math.min(#a, #b) do
                 local x, y = string.byte(a, i), string.byte(b, i)
@@ -932,23 +972,74 @@ final class RedisScripts {
               end
               return #a > #b
             end
-            local key, from = ARGV[2], 0
-            if ARGV[3] ~= '' then
-              local score, member = ARGV[3], ARGV[4]
-              local own = redis.call('ZSCORE', key, member)
-              if own and tonumber(own) == tonumber(score) then
-                from = redis.call('ZRANK', key, member) + 1
-              else
-                local lo = redis.call('ZCOUNT', key, '-inf', '(' .. score)
-                local hi = redis.call('ZCOUNT', key, '-inf', score)
-                while lo < hi do
-                  local mid = math.floor((lo + hi) / 2)
-                  if follows(redis.call('ZRANGE', key, mid, mid)[1], member) then hi = mid else lo = mid + 1 end
+            local mode, state, cscore, cmember, limit = ARGV[2], ARGV[3], ARGV[4], ARGV[5], tonumber(ARGV[6])
+            local qids = {}
+            for i = 7, #ARGV do qids[#qids + 1] = ARGV[i] end
+            if #qids == 0 then qids = redis.call('HVALS', P .. 'reg:queue') end
+            local first = math.min(limit, 2)
+            local function advance(source)
+              if source.pos > #source.page then
+                source.page = redis.call('ZRANGE', source.key, source.offset, source.offset + source.size - 1, 'WITHSCORES')
+                source.size = math.min(source.size * 2, limit)
+                source.offset = source.offset + #source.page / 2
+                source.pos = 1
+              end
+              if #source.page == 0 then return false end
+              source.id = source.page[source.pos]
+              source.text = source.page[source.pos + 1]
+              source.score = tonumber(source.text)
+              source.pos = source.pos + 2
+              return true
+            end
+            local function open(key)
+              local source = {key = key, offset = 0, pos = 1, page = {}, size = first}
+              if cmember ~= '' then
+                local lo = redis.call('ZCOUNT', key, '-inf', '(' .. cscore)
+                source.offset = lo
+                local page = redis.call('ZRANGE', key, lo, lo + first - 1, 'WITHSCORES')
+                if #page > 0 and tonumber(page[2]) == tonumber(cscore) then
+                  local hi = redis.call('ZCOUNT', key, '-inf', cscore)
+                  local own = redis.call('ZSCORE', key, cmember)
+                  if own and tonumber(own) == tonumber(cscore) then
+                    source.offset = redis.call('ZRANK', key, cmember) + 1
+                  else
+                    while lo < hi do
+                      local mid = math.floor((lo + hi) / 2)
+                      if follows(redis.call('ZRANGE', key, mid, mid)[1], cmember) then hi = mid else lo = mid + 1 end
+                    end
+                    source.offset = lo
+                  end
+                else
+                  source.page = page
+                  source.offset = lo + #page / 2
                 end
-                from = lo
+              end
+              return source
+            end
+            local heap = {}
+            local function add(key)
+              local source = open(key)
+              if advance(source) then push(heap, source) end
+            end
+            for _, qid in ipairs(qids) do
+              if mode == 'q' then
+                for _, tid in ipairs(redis.call('SMEMBERS', P .. 'active:' .. qid)) do
+                  add(P .. 'q:' .. qid .. ':' .. tid)
+                end
+              elseif mode == 's' then
+                add(P .. 'sched:' .. qid)
+              else
+                add(P .. 'idx:' .. state .. ':' .. qid)
               end
             end
-            return redis.call('ZRANGE', key, from, from + tonumber(ARGV[5]) - 1, 'WITHSCORES')
+            local out = {}
+            while #out < limit * 2 and #heap > 0 do
+              local source = pop(heap)
+              out[#out + 1] = source.id
+              out[#out + 1] = source.text
+              if advance(source) then push(heap, source) end
+            end
+            return out
             """;
 
     /**
