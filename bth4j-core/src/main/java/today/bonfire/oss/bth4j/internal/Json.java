@@ -158,7 +158,7 @@ public final class Json {
         }
 
         Object readValue(int depth) {
-            if (depth > MAX_DEPTH) {
+            if (depth >= MAX_DEPTH) {
                 throw error("Nesting deeper than " + MAX_DEPTH);
             }
             if (pos >= s.length()) {

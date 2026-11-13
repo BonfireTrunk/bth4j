@@ -36,12 +36,19 @@ public final class Codecs {
         } catch (Exception e) {
             throw new TaskDataException("Unable to encode the payload of task type " + type, e);
         }
-        if (text != null && text.getBytes(StandardCharsets.UTF_8).length > TaskRequest.MAX_PAYLOAD_BYTES) {
+        if (text != null && exceedsPayloadLimit(text)) {
             throw new TaskValidationException(
                     "payload of task type " + type + " exceeds " + TaskRequest.MAX_PAYLOAD_BYTES + " bytes");
         }
         StoredText.require("payload of task type " + type, text);
         return text;
+    }
+
+    /** A char takes one to three bytes in UTF-8, so only a text between the two bounds is encoded to count them. */
+    private static boolean exceedsPayloadLimit(String text) {
+        if (text.length() > TaskRequest.MAX_PAYLOAD_BYTES) return true;
+        if (text.length() <= TaskRequest.MAX_PAYLOAD_BYTES / 3) return false;
+        return text.getBytes(StandardCharsets.UTF_8).length > TaskRequest.MAX_PAYLOAD_BYTES;
     }
 
     /**

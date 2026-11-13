@@ -138,6 +138,11 @@ class CodecsTest {
 
         assertThat(twoBytesEach.length()).isLessThan(TaskRequest.MAX_PAYLOAD_BYTES);
         assertThatThrownBy(() -> codecs.encode(raw, twoBytesEach)).isInstanceOf(TaskValidationException.class);
+
+        // three bytes each: a third of the limit in chars still fits, one char more does not
+        var fits = "\u20ac".repeat(TaskRequest.MAX_PAYLOAD_BYTES / 3);
+        assertThat(codecs.encode(raw, fits)).isEqualTo(fits);
+        assertThatThrownBy(() -> codecs.encode(raw, fits + "\u20ac")).isInstanceOf(TaskValidationException.class);
     }
 
     @Test

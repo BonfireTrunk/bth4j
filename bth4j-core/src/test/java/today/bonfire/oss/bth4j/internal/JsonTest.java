@@ -95,6 +95,14 @@ class JsonTest {
     }
 
     @Test
+    void theNestingLimitIsTheNumberOfLevelsItNames() {
+        assertThat(Json.parse("[".repeat(256) + "]".repeat(256))).isInstanceOf(List.class);
+        assertThatThrownBy(() -> Json.parse("[".repeat(257) + "]".repeat(257)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Nesting deeper than 256");
+    }
+
+    @Test
     void rejectsExcessiveNesting() {
         var deep = "[".repeat(1000) + "]".repeat(1000);
         assertThatThrownBy(() -> Json.parse(deep))
