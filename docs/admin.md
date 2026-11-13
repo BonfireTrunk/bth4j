@@ -99,11 +99,11 @@ A retried task:
 - resets its attempts to zero,
 - loses its `startBy`, so a retried expired task does not expire again.
 
-Inside a `keepFor` window the task retains its unique key without expiry while it is open.
+Inside a `keepAfterDone` window the task retains its unique key without expiry while it is open.
 
 - `taskByKey` and `cancelByKey` still reach it.
 - A same-key enqueue answers `Duplicate` with its id.
-- The `keepFor` setting is kept, so a fresh keep window starts when the retried task finishes.
+- The `keepAfterDone` setting is kept, so a fresh keep window starts when the retried task finishes.
 - If another task holds the retained key, which only damaged stored data can cause, retry throws `TaskStoreException` and changes nothing. It never takes the key from the other task. The admin HTTP route answers it like every unexpected failure: 500 with `"internal error"`, and the cause in the server's log.
 
 ## Unique keys after a retry
@@ -113,7 +113,7 @@ A key is released at some point. A retry after that release runs the task withou
 | Key | Released when | A retry after the release |
 |---|---|---|
 | Default until-done key | The task finishes. | Runs the task **without a key**. |
-| `keepFor` key | Its window passes. | Runs the task **without a key**. |
+| `keepAfterDone` key | Its window passes. | Runs the task **without a key**. |
 
 After the release, one of two things is true:
 

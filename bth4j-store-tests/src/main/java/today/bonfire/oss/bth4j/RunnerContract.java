@@ -621,16 +621,16 @@ public abstract class RunnerContract {
     }
 
     @Test
-    void uniqueKeyWithKeepForStaysDuplicateAfterSuccess() {
+    void uniqueKeyWithKeepAfterDoneStaysDuplicateAfterSuccess() {
         startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {}));
 
         long first = enqueue(TaskRequest.of(VOID_TYPE)
-                .uniqueKey("kept", Uniqueness.keepFor(Duration.ofMinutes(5)))
+                .uniqueKey("kept", Uniqueness.keepAfterDone(Duration.ofMinutes(5)))
                 .build());
         awaitState(first, TaskState.SUCCEEDED);
 
         var again = client.enqueue(TaskRequest.of(VOID_TYPE)
-                .uniqueKey("kept", Uniqueness.keepFor(Duration.ofMinutes(5)))
+                .uniqueKey("kept", Uniqueness.keepAfterDone(Duration.ofMinutes(5)))
                 .build());
 
         assertThat(again).isEqualTo(new EnqueueResult.Duplicate(first));

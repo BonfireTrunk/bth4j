@@ -98,7 +98,8 @@ class TaskRequestTest {
         assertThatThrownBy(() -> TaskRequest.of(VOID).uniqueKey("sched:nightly"))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("sched:");
-        assertThatThrownBy(() -> TaskRequest.of(VOID).uniqueKey("sched:", Uniqueness.keepFor(Duration.ofMinutes(1))))
+        assertThatThrownBy(
+                        () -> TaskRequest.of(VOID).uniqueKey("sched:", Uniqueness.keepAfterDone(Duration.ofMinutes(1))))
                 .isInstanceOf(TaskValidationException.class);
         assertThat(TaskRequest.of(VOID).uniqueKey("schedule-7").build().uniqueKey())
                 .isEqualTo("schedule-7");
@@ -107,7 +108,7 @@ class TaskRequestTest {
     @Test
     void aUniqueKeySetAgainWithoutAUniquenessDropsTheEarlierKeepWindow() {
         var request = TaskRequest.of(VOID)
-                .uniqueKey("k", Uniqueness.keepFor(Duration.ofMinutes(1)))
+                .uniqueKey("k", Uniqueness.keepAfterDone(Duration.ofMinutes(1)))
                 .uniqueKey("other")
                 .build();
 
@@ -118,11 +119,11 @@ class TaskRequestTest {
     @Test
     void uniqueKeyWithUniquenessKeepsBoth() {
         var request = TaskRequest.of(VOID)
-                .uniqueKey("k", Uniqueness.keepFor(Duration.ofMinutes(1)))
+                .uniqueKey("k", Uniqueness.keepAfterDone(Duration.ofMinutes(1)))
                 .build();
 
         assertThat(request.uniqueKey()).isEqualTo("k");
-        assertThat(request.uniqueness()).isEqualTo(new Uniqueness.KeepFor(Duration.ofMinutes(1)));
+        assertThat(request.uniqueness()).isEqualTo(new Uniqueness.KeepAfterDone(Duration.ofMinutes(1)));
     }
 
     @Test
@@ -207,13 +208,13 @@ class TaskRequestTest {
     }
 
     @Test
-    void keepForIsPositiveAndAtMostOneHundredYears() {
-        assertThat(Uniqueness.MAX_KEEP_FOR).isEqualTo(TaskRequest.MAX_TIME_FROM_NOW);
-        assertThat(Uniqueness.keepFor(Uniqueness.MAX_KEEP_FOR))
-                .isEqualTo(new Uniqueness.KeepFor(Duration.ofDays(36_525)));
-        assertThatThrownBy(() -> Uniqueness.keepFor(Uniqueness.MAX_KEEP_FOR.plusMillis(1)))
+    void keepAfterDoneIsPositiveAndAtMostOneHundredYears() {
+        assertThat(Uniqueness.MAX_KEEP_AFTER_DONE).isEqualTo(TaskRequest.MAX_TIME_FROM_NOW);
+        assertThat(Uniqueness.keepAfterDone(Uniqueness.MAX_KEEP_AFTER_DONE))
+                .isEqualTo(new Uniqueness.KeepAfterDone(Duration.ofDays(36_525)));
+        assertThatThrownBy(() -> Uniqueness.keepAfterDone(Uniqueness.MAX_KEEP_AFTER_DONE.plusMillis(1)))
                 .isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> Uniqueness.keepAfterDone(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
     }
 
     @Test
@@ -271,7 +272,7 @@ class TaskRequestTest {
                 .queue("other")
                 .account("account")
                 .at(Instant.parse("2031-01-01T00:00:00Z"))
-                .uniqueKey("key", Uniqueness.keepFor(Duration.ofMinutes(5)))
+                .uniqueKey("key", Uniqueness.keepAfterDone(Duration.ofMinutes(5)))
                 .maxAttempts(7)
                 .addHeader("a", "b")
                 .startBy(Instant.parse("2031-01-02T00:00:00Z"))
@@ -297,19 +298,20 @@ class TaskRequestTest {
     }
 
     @Test
-    void uniquenessKeepForMustBeAtLeastOneMillisecond() {
-        assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ofNanos(999_999)))
+    void uniquenessKeepAfterDoneMustBeAtLeastOneMillisecond() {
+        assertThatThrownBy(() -> Uniqueness.keepAfterDone(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> Uniqueness.keepAfterDone(Duration.ofNanos(999_999)))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessage("duration must be at least 1 ms");
-        assertThat(Uniqueness.keepFor(Duration.ofMillis(1))).isEqualTo(new Uniqueness.KeepFor(Duration.ofMillis(1)));
-        assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ofSeconds(-1)))
+        assertThat(Uniqueness.keepAfterDone(Duration.ofMillis(1)))
+                .isEqualTo(new Uniqueness.KeepAfterDone(Duration.ofMillis(1)));
+        assertThatThrownBy(() -> Uniqueness.keepAfterDone(Duration.ofSeconds(-1)))
                 .isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> Uniqueness.keepFor(null)).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> Uniqueness.keepFor(ChronoUnit.FOREVER.getDuration()))
+        assertThatThrownBy(() -> Uniqueness.keepAfterDone(null)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> Uniqueness.keepAfterDone(ChronoUnit.FOREVER.getDuration()))
                 .isInstanceOf(TaskValidationException.class)
-                .hasMessage("duration must be at most " + Uniqueness.MAX_KEEP_FOR);
-        assertThatThrownBy(() -> Uniqueness.keepFor(Duration.ofSeconds(Long.MIN_VALUE)))
+                .hasMessage("duration must be at most " + Uniqueness.MAX_KEEP_AFTER_DONE);
+        assertThatThrownBy(() -> Uniqueness.keepAfterDone(Duration.ofSeconds(Long.MIN_VALUE)))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessage("duration must be at least 1 ms");
     }

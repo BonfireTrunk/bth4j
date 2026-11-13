@@ -231,7 +231,7 @@ Retention and the key window are independent:
 | What | Decides | Set by |
 |---|---|---|
 | Retention | How long the task stays readable. | The retention settings above. |
-| Key window | How long the task's unique key blocks a same-key enqueue. | `keepFor` on the request. See [Enqueueing](enqueueing.md). |
+| Key window | How long the task's unique key blocks a same-key enqueue. | `keepAfterDone` on the request. See [Enqueueing](enqueueing.md). |
 
 A task can be removed inside its key window, either with retention zero at the transition or when it is purged
 after its retention. It is then gone from every read. Its key still answers a same-key enqueue with `Duplicate`

@@ -349,7 +349,7 @@ public final class TaskRequest<T> {
          * task has the same type, queue, payload (compared as stored text, when the task still has it) and
          * unique key (when the stored task still holds one); anything else throws a
          * {@link today.bonfire.oss.bth4j.exceptions.TaskIdReusedException}. Headers, account, attempts, retry
-         * policy, start-by, max run, delay, {@code at(...)} time, {@code keepFor} duration and payload version
+         * policy, start-by, max run, delay, {@code at(...)} time, {@code keepAfterDone} duration and payload version
          * are not compared. Never invent an id.
          */
         public Builder<T> id(long id) {

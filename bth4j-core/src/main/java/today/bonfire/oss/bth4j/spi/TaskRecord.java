@@ -38,7 +38,7 @@ import today.bonfire.oss.bth4j.TaskState;
  * @param headers           application headers, or null
  * @param uniqueKey         the unique key while it is held, or null
  * @param keyKeep           how long the key stays held after the task ends, at most
- *                          {@link today.bonfire.oss.bth4j.Uniqueness#MAX_KEEP_FOR}; null releases it at the end
+ *                          {@link today.bonfire.oss.bth4j.Uniqueness#MAX_KEEP_AFTER_DONE}; null releases it at the end
  * @param keyUntil          when the held key of a finished task is released
  * @param retryPolicy       name of the retry policy; null means the runner's default
  * @param scheduleId        the recurring definition this task is an occurrence of, or null
