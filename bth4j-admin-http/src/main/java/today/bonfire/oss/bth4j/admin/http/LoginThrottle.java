@@ -5,6 +5,7 @@ import java.util.Comparator;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Blocks a key for a while after repeated failed logins. The server keeps one throttle keyed by where a login
@@ -15,6 +16,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>The first block of a key lasts ten seconds and each further block twice as long as the one before, up to
  * fifteen minutes. A key starts again at ten seconds when no attempt of it followed its last block for fifteen
  * minutes. A blocked attempt changes nothing, so repeating attempts against a block does not lengthen it.
+ *
+ * <p>The throttle never holds more keys than its capacity and the keys named at construction. When every key it
+ * holds is blocked or named, a key it does not know is let through without being counted until a block ends.
  */
 final class LoginThrottle {
 
@@ -43,9 +47,14 @@ final class LoginThrottle {
     static final int DEFAULT_CAPACITY = 10_000;
 
     private final ConcurrentHashMap<String, Entry> entries = new ConcurrentHashMap<>();
+    // a key enters the map only under this lock, so that concurrent first attempts cannot pass the capacity together
+    private final ReentrantLock admission = new ReentrantLock();
     private final Clock clock;
     private final Set<String> kept;
     private final int capacity;
+    // while every key is blocked or kept nothing can make room, and looking again for each attempt of a flood would
+    // sort the whole map every time
+    private volatile long noRoomBefore;
 
     LoginThrottle(Clock clock) {
         this(clock, Set.of(), DEFAULT_CAPACITY);
@@ -66,30 +75,46 @@ final class LoginThrottle {
      * Checks and counts one login attempt in a single step per key, before the password is verified, so
      * concurrent attempts cannot all pass a block. {@link #takeBack} takes this attempt back.
      *
+     * <p>A key the throttle does not hold is not counted when the throttle is full and can forget nothing: the
+     * attempt goes ahead. Refusing it instead would let whoever filled the throttle keep everyone else out, and the
+     * keys named at construction are counted whatever the throttle holds.
+     *
      * @return milliseconds the key must wait, 0 when this attempt may go ahead
      */
     long attempt(String key) {
         var now = clock.millis();
-        if (!entries.containsKey(key) && entries.size() >= capacity) {
-            makeRoom(now);
+        var wait = new long[] {-1};
+        entries.computeIfPresent(key, (k, old) -> count(old, now, wait));
+        if (wait[0] >= 0) {
+            return wait[0];
         }
-        var wait = new long[1];
-        entries.compute(key, (k, old) -> {
-            if (old != null && old.blockedUntil > now) {
-                wait[0] = old.blockedUntil - now;
-                return old;
+        admission.lock();
+        try {
+            if (!entries.containsKey(key) && !kept.contains(key) && entries.size() >= capacity && !makeRoom(now)) {
+                return 0;
             }
-            var blocks = old != null && now - old.touched <= RESET_MILLIS ? old.blocks : 0;
-            var remembered = old != null && now - old.lastAttempt <= FORGET_MILLIS;
-            var attempts = remembered ? old.attempts + 1 : 1;
-            var before = old == null ? 0 : old.touched;
-            if (attempts < MAX_FAILURES) {
-                return new Entry(attempts, 0, now, blocks, now, before, false);
-            }
-            var block = Math.min(BLOCK_MILLIS << Math.min(blocks, MAX_BLOCKS), MAX_BLOCK_MILLIS);
-            return new Entry(0, now + block, now, blocks + 1, now + block, before, false);
-        });
-        return wait[0];
+            entries.compute(key, (k, old) -> count(old, now, wait));
+            return wait[0];
+        } finally {
+            admission.unlock();
+        }
+    }
+
+    private static Entry count(Entry old, long now, long[] wait) {
+        if (old != null && old.blockedUntil > now) {
+            wait[0] = old.blockedUntil - now;
+            return old;
+        }
+        wait[0] = 0;
+        var blocks = old != null && now - old.touched <= RESET_MILLIS ? old.blocks : 0;
+        var remembered = old != null && now - old.lastAttempt <= FORGET_MILLIS;
+        var attempts = remembered ? old.attempts + 1 : 1;
+        var before = old == null ? 0 : old.touched;
+        if (attempts < MAX_FAILURES) {
+            return new Entry(attempts, 0, now, blocks, now, before, false);
+        }
+        var block = Math.min(BLOCK_MILLIS << Math.min(blocks, MAX_BLOCKS), MAX_BLOCK_MILLIS);
+        return new Entry(0, now + block, now, blocks + 1, now + block, before, false);
     }
 
     /**
@@ -116,6 +141,7 @@ final class LoginThrottle {
     void takeBack(String key) {
         entries.computeIfPresent(key, (k, e) -> {
             if (e.blockedUntil > 0) {
+                noRoomBefore = 0;
                 return new Entry(
                         MAX_FAILURES - 1, 0, e.lastAttempt, e.blocks - 1, e.previousTouched, e.previousTouched, false);
             }
@@ -135,25 +161,44 @@ final class LoginThrottle {
      * before it has to forget a key that was never blocked. Among those, a key with fewer failures goes before
      * one with more, so a key that is one failure short of a block outlives keys that were tried once. Enough
      * keys with as many failures still push it out: the map is bounded, and so is what it can remember.
+     *
+     * @return false when every key is blocked or kept, so that there is no room for another one
      */
-    private void makeRoom(long now) {
+    private boolean makeRoom(long now) {
+        if (now < noRoomBefore) {
+            return false;
+        }
         entries.values()
                 .removeIf(e ->
                         e.blockedUntil <= now && now - idleSince(e) > (e.blocks > 0 ? RESET_MILLIS : FORGET_MILLIS));
-        if (entries.size() >= capacity) {
-            entries.entrySet().stream()
-                    .filter(e -> e.getValue().blockedUntil <= now && !kept.contains(e.getKey()))
-                    .sorted(Comparator.<Map.Entry<String, Entry>>comparingInt(e -> e.getValue().blocks)
-                            .thenComparingInt(e -> e.getValue().attempts)
-                            .thenComparingLong(e -> e.getValue().lastAttempt))
-                    .limit(Math.max(1, capacity / 10))
-                    .map(Map.Entry::getKey)
-                    .toList()
-                    .forEach(entries::remove);
+        if (entries.size() < capacity) {
+            return true;
         }
+        var forgotten = entries.entrySet().stream()
+                .filter(e -> e.getValue().blockedUntil <= now && !kept.contains(e.getKey()))
+                .sorted(Comparator.<Map.Entry<String, Entry>>comparingInt(e -> e.getValue().blocks)
+                        .thenComparingInt(e -> e.getValue().attempts)
+                        .thenComparingLong(e -> e.getValue().lastAttempt))
+                .limit(Math.max(1, capacity / 10))
+                .map(Map.Entry::getKey)
+                .toList();
+        forgotten.forEach(entries::remove);
+        if (!forgotten.isEmpty()) {
+            return true;
+        }
+        noRoomBefore = entries.entrySet().stream()
+                .filter(e -> !kept.contains(e.getKey()))
+                .mapToLong(e -> e.getValue().blockedUntil)
+                .min()
+                .orElse(now);
+        return false;
     }
 
     private static long idleSince(Entry e) {
         return e.blocks > 0 ? e.touched : e.lastAttempt;
+    }
+
+    int size() {
+        return entries.size();
     }
 }

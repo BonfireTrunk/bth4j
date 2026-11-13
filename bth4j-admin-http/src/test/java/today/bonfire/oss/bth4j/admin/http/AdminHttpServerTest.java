@@ -1686,6 +1686,63 @@ class AdminHttpServerTest {
     }
 
     @Test
+    void aThrottleFullOfBlockedKeysHoldsNoMoreAndLetsAnotherKeyThroughUncounted() {
+        var throttle = new LoginThrottle(clock, Set.of("real"), 3);
+        for (var key : List.of("a", "b", "c")) {
+            for (var i = 0; i < 5; i++) throttle.attempt(key);
+        }
+
+        for (var i = 0; i < 12; i++) {
+            assertThat(throttle.attempt("d"))
+                    .as("not counted, so never blocked")
+                    .isZero();
+        }
+        assertThat(throttle.size()).isEqualTo(3);
+        assertThat(throttle.attempt("a"))
+                .as("a block is not lifted to make room")
+                .isPositive();
+
+        for (var i = 0; i < 5; i++) {
+            assertThat(throttle.attempt("real"))
+                    .as("failure %d of a named key", i + 1)
+                    .isZero();
+        }
+        assertThat(throttle.attempt("real"))
+                .as("a named key is counted however full")
+                .isEqualTo(10_000);
+        assertThat(throttle.size()).isEqualTo(4);
+
+        clock.advance(Duration.ofSeconds(11));
+        for (var i = 0; i < 5; i++) throttle.attempt("d");
+        assertThat(throttle.attempt("d"))
+                .as("counted again once a block has ended")
+                .isPositive();
+        assertThat(throttle.size()).isLessThanOrEqualTo(4);
+    }
+
+    @Test
+    void concurrentFirstAttemptsOfManyKeysCannotPassTheCapacityTogether() throws Exception {
+        var throttle = new LoginThrottle(clock, Set.of(), 8);
+        for (var key = 0; key < 8; key++) throttle.attempt("known-" + key);
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(16)) {
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var futures = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            for (var i = 0; i < 64; i++) {
+                var key = "new-" + i;
+                futures.add(pool.submit(() -> {
+                    start.await();
+                    throttle.attempt(key);
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (var f : futures) f.get();
+        }
+
+        assertThat(throttle.size()).isEqualTo(8);
+    }
+
+    @Test
     void floodingTheServerWithOtherNamesDoesNotTakeAwayTheFailuresOfAUserThatExists() throws Exception {
         start(builder().addTrustedProxy("127.0.0.1").loginThrottleCapacity(20));
         for (var i = 1; i <= 4; i++) {
