@@ -28,7 +28,7 @@ The namespace prefixes every key and carries the Redis Cluster hash tag, so all 
 | Server | Redis 7.4 or newer, or Valkey 9 or newer. The store expires the key fields of finished tasks with hash field expiry, and `init` refuses a server that does not have it. |
 | Tested on | standalone Redis 8.10 and Valkey 9.1.3 |
 | `maxmemory-policy` | `noeviction`. `init` refuses to start under any other policy (see [Memory eviction](#memory-eviction)). |
-| Schema version | 6, stored in the namespace's `meta` hash. `init` refuses a namespace that holds keys of the store without a schema version, and a namespace with another version, which includes every namespace written by bth4j 4.x or older; there is no migration. Start with a new namespace. |
+| Schema version | 7, stored in the namespace's `meta` hash. `init` refuses a namespace that holds keys of the store without a schema version, and a namespace with another version, which includes every namespace written by bth4j 4.x or older; there is no migration. Start with a new namespace. |
 | Redis Cluster | Not tested. The namespace's slot must not be resharded while runners use it (see [Redis Cluster](#redis-cluster)). |
 
 ## What the store does
@@ -43,6 +43,9 @@ The namespace prefixes every key and carries the Redis Cluster hash tag, so all 
 | Reclaim | One script reads the server's time, the expired leases and the fields maintenance needs of each, so a pass is one round trip whether it finds nothing or a full page of leases. |
 | `queuedByType()` and the counts | Read exact zset cardinalities of the active types in one script, without task hash reads. |
 | Finished tasks | Are listed and purged from one zset per state and queue. |
+| `upcomingSchedules(limit)` | One `ZRANGE` of the `cron` zset (its score is the next fire time, and equal scores are in byte order of the id, the order of `ScheduleStore.ID_ORDER`), then the hashes of those schedules in one pipeline. |
+| `schedule(id)` | One `HGETALL`. |
+| `schedules(afterId, limit)` | One `ZRANGE crondefs <min> + BYLEX LIMIT 0 limit` (`min` is `-`, or `(` and the id after which the page starts), then the hashes of that page in one pipeline: 101 commands in 2 round trips for a page of 100, whatever the number of schedules. `nextFireTimes()` reads all ids with one `ZRANGE 0 -1` and every hash, as many commands as there are schedules plus one. |
 | Removing a task whose unique key window is open | Leaves only a key string, which expires at the end of the window. |
 | Runner registration | Sets `accepting` to 1. |
 | Runner heartbeat | One script atomically updates the runner's time, running count and accepting flag. It also writes the hash of a removed runner again, with its label, queues and types. |
@@ -93,7 +96,7 @@ PostgreSQL, SQLite and the in-memory store skip those tasks in the claim.
 
 ## Inside the Redis store
 
-Schema version 6 uses these keys:
+Schema version 7 uses these keys:
 
 | Key | Type | What it holds |
 |---|---|---|
@@ -117,7 +120,7 @@ Schema version 6 uses these keys:
 | `workers` | zset | runner ids, scored by the last heartbeat |
 | `cron:<schedule-id>` | hash | a schedule |
 | `cron` | zset | the next fire time of every schedule that is not paused |
-| `crondefs` | set | the ids of all schedules |
+| `crondefs` | zset | the ids of all schedules, every score 0, so it is ordered by the bytes of the id (`ScheduleStore.ID_ORDER`); the schedule listing pages through it |
 
 Every key starts with `{<namespace>}:`. The keys of runners kept the word "worker" from earlier releases.
 

@@ -13,6 +13,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.ScheduleEntry;
+import today.bonfire.oss.bth4j.spi.StoreArguments;
 import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
@@ -192,9 +193,21 @@ final class DefaultAdminOps implements AdminOps {
     }
 
     @Override
-    public List<ScheduleView> schedules() {
+    public ScheduleViewPage schedules(String cursor, int limit) {
+        StoreArguments.requireLimit(limit);
+        var entries = store.schedules(cursor, (int) Math.min((long) limit + 1, Integer.MAX_VALUE));
+        var page = entries.size() > limit ? entries.subList(0, limit) : entries;
+        var result = new ArrayList<ScheduleView>(page.size());
+        for (var s : page) result.add(view(s));
+        return new ScheduleViewPage(
+                result, entries.size() > limit ? page.getLast().definition().scheduleId() : null);
+    }
+
+    @Override
+    public List<ScheduleView> upcomingSchedules(int limit) {
+        StoreArguments.requireLimit(limit);
         var result = new ArrayList<ScheduleView>();
-        for (var s : store.schedules()) result.add(view(s));
+        for (var s : store.upcomingSchedules(limit)) result.add(view(s));
         return result;
     }
 
@@ -223,10 +236,8 @@ final class DefaultAdminOps implements AdminOps {
         if (paused) return store.pauseSchedule(id, revision);
         // a fixed-delay definition parks its next fire while paused, so it resumes one delay from now; the store
         // applies that only to a paused definition whose occurrence is not still running
-        var next = store.schedules().stream()
-                .filter(s ->
-                        s.definition().scheduleId().equals(id) && s.definition().isFixedDelay())
-                .findFirst()
+        var next = store.schedule(id)
+                .filter(s -> s.definition().isFixedDelay())
                 .map(s -> clock.instant().plus(s.definition().fixedDelay()))
                 .orElse(null);
         return store.resumeSchedule(id, revision, next);

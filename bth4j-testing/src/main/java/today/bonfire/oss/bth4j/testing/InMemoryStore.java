@@ -726,16 +726,6 @@ public final class InMemoryStore implements FullStore {
         }
     }
 
-    @Override
-    public Instant nextDue() {
-        lock.lock();
-        try {
-            return nextDueLocked();
-        } finally {
-            lock.unlock();
-        }
-    }
-
     private Instant nextDueLocked() {
         return tasks.values().stream()
                 .filter(t -> t.state() == TaskState.SCHEDULED)
@@ -1264,14 +1254,47 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public List<ScheduleEntry> schedules() {
+    public List<ScheduleEntry> schedules(String afterId, int limit) {
+        StoreArguments.requireLimit(limit);
         lock.lock();
         try {
             return recurring.entrySet().stream()
+                    .filter(e -> afterId == null || ScheduleStore.ID_ORDER.compare(e.getKey(), afterId) > 0)
                     .sorted(Map.Entry.comparingByKey(ScheduleStore.ID_ORDER))
+                    .limit(limit)
                     .map(e -> new ScheduleEntry(
                             e.getValue().definition(), e.getValue().nextFireAt()))
                     .toList();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public List<ScheduleEntry> upcomingSchedules(int limit) {
+        StoreArguments.requireLimit(limit);
+        lock.lock();
+        try {
+            return recurring.entrySet().stream()
+                    .filter(e -> !e.getValue().definition().paused())
+                    .sorted(Comparator.comparing((Map.Entry<String, Recurring> e) ->
+                                    e.getValue().nextFireAt())
+                            .thenComparing(Map.Entry::getKey, ScheduleStore.ID_ORDER))
+                    .limit(limit)
+                    .map(e -> new ScheduleEntry(
+                            e.getValue().definition(), e.getValue().nextFireAt()))
+                    .toList();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public Optional<ScheduleEntry> schedule(String scheduleId) {
+        lock.lock();
+        try {
+            return Optional.ofNullable(recurring.get(scheduleId))
+                    .map(r -> new ScheduleEntry(r.definition(), r.nextFireAt()));
         } finally {
             lock.unlock();
         }

@@ -1082,7 +1082,7 @@ class AdminHttpServerTest {
                 .containsEntry("name", "default")
                 .containsEntry("paused", false)
                 .containsKey("counts");
-        var schedules = jsonList(get("/api/v1/schedules", login));
+        var schedules = items(json(get("/api/v1/schedules", login)));
         assertThat(schedules.get(0))
                 .containsEntry("id", "nightly")
                 .containsEntry("revision", "5")
@@ -1098,6 +1098,111 @@ class AdminHttpServerTest {
         assertThat(jsonList(get("/api/v1/issues", login)).get(0))
                 .containsEntry("kind", "store-error")
                 .containsEntry("taskId", "5");
+    }
+
+    private static ScheduleView schedule(String id, Instant nextFireAt, boolean paused) {
+        var base = schedule(id);
+        return new ScheduleView(
+                base.id(),
+                base.revision(),
+                base.typeName(),
+                base.queue(),
+                base.account(),
+                base.cron(),
+                base.zone(),
+                base.misfire(),
+                base.fixedDelay(),
+                base.overlap(),
+                paused,
+                nextFireAt,
+                base.maxAttempts(),
+                base.maxRunTime());
+    }
+
+    @Test
+    void scheduleListPagesByCursorWithTheShapeOfTheTaskList() throws Exception {
+        for (var id : List.of("a", "b", "c")) ops.schedules.add(schedule(id));
+        start();
+        var login = viewer();
+
+        var first = json(get("/api/v1/schedules?limit=2", login));
+        assertThat(items(first)).extracting(t -> t.get("id")).containsExactly("a", "b");
+        assertThat(first).containsEntry("next", "b");
+        var second = json(get("/api/v1/schedules?limit=2&cursor=b", login));
+        assertThat(items(second)).extracting(t -> t.get("id")).containsExactly("c");
+        assertThat(second).containsKey("next").containsEntry("next", null);
+        assertThat(items(json(get("/api/v1/schedules?cursor=", login)))).hasSize(3);
+
+        get("/api/v1/schedules", login);
+        get("/api/v1/schedules?limit=100000", login);
+        assertThat(ops.calls)
+                .contains(
+                        "schedules cursor=null 2",
+                        "schedules cursor=b 2",
+                        "schedules cursor=null 100",
+                        "schedules cursor=null 200");
+    }
+
+    @Test
+    void scheduleListRefusesABadLimitAsTheTaskListDoes() throws Exception {
+        start();
+        var login = viewer();
+
+        for (var bad : List.of("0", "-1", "x", "1.5")) {
+            var res = get("/api/v1/schedules?limit=" + bad, login);
+            var task = get("/api/v1/tasks?state=DEAD&limit=" + bad, login);
+            assertThat(res.statusCode()).as("limit=%s", bad).isEqualTo(400).isEqualTo(task.statusCode());
+            assertThat(res.body()).as("limit=%s", bad).isEqualTo(task.body());
+            assertThat(get("/api/v1/schedules/upcoming?limit=" + bad, login).statusCode())
+                    .as("upcoming limit=%s", bad)
+                    .isEqualTo(400);
+        }
+        assertThat(ops.calls).noneMatch(c -> c.startsWith("schedules ") || c.startsWith("upcomingSchedules"));
+    }
+
+    @Test
+    void upcomingSchedulesAreAListOfTheSoonestUnpausedOnesWithADefaultOfEight() throws Exception {
+        var base = Instant.parse("2026-02-01T00:00:00Z");
+        for (int i = 0; i < 10; i++) ops.schedules.add(schedule("s" + i, base.plusSeconds(100 - i), false));
+        ops.schedules.add(schedule("paused", base, true));
+        start();
+        var login = viewer();
+
+        var res = get("/api/v1/schedules/upcoming", login);
+        assertThat(res.statusCode()).isEqualTo(200);
+        assertThat(jsonList(res))
+                .extracting(t -> t.get("id"))
+                .containsExactly("s9", "s8", "s7", "s6", "s5", "s4", "s3", "s2");
+        assertThat(jsonList(get("/api/v1/schedules/upcoming?limit=2", login)))
+                .extracting(t -> t.get("id"))
+                .containsExactly("s9", "s8");
+        get("/api/v1/schedules/upcoming?limit=100000", login);
+        assertThat(ops.calls).contains("upcomingSchedules 8", "upcomingSchedules 2", "upcomingSchedules 200");
+    }
+
+    @Test
+    void upcomingIsARouteOfItsOwnAndNotAScheduleId() throws Exception {
+        ops.schedules.add(schedule("upcoming"));
+        start();
+        var login = admin();
+
+        assertThat(get("/api/v1/schedules/other", login).statusCode()).isEqualTo(404);
+        assertThat(get("/api/v1/schedules/upcoming/pause", login).statusCode()).isEqualTo(404);
+        assertThat(jsonList(get("/api/v1/schedules/upcoming", login))).hasSize(1);
+        assertThat(mutate("POST", "/api/v1/schedules/upcoming/pause", login, "{\"revision\":\"5\"}")
+                        .statusCode())
+                .isEqualTo(200);
+        assertThat(ops.calls).contains("pauseSchedule upcoming 5 true");
+    }
+
+    @Test
+    void scheduleReadsNeedASessionAndAViewerMayMakeThem() throws Exception {
+        start();
+
+        assertThat(get("/api/v1/schedules", null).statusCode()).isEqualTo(401);
+        assertThat(get("/api/v1/schedules/upcoming", null).statusCode()).isEqualTo(401);
+        assertThat(get("/api/v1/schedules", viewer()).statusCode()).isEqualTo(200);
+        assertThat(get("/api/v1/schedules/upcoming", viewer()).statusCode()).isEqualTo(200);
     }
 
     @Test

@@ -25,7 +25,7 @@ export default {
     // A fixed-delay definition is parked a century ahead while its occurrence runs (see schedules.js).
     const PARKED_AFTER_MS = 50 * 365 * 86400 * 1000;
     async function loadDepartures() {
-      const [waiting, schedules] = await Promise.all([api.tasks({ state: 'SCHEDULED', limit: 8 }), api.schedules()]);
+      const [waiting, schedules] = await Promise.all([api.tasks({ state: 'SCHEDULED', limit: 8 }), api.upcomingSchedules(8)]);
       const rows = [];
       for (const t of waiting.items) rows.push({ key: 't' + t.id, at: t.dueAt, what: t.type, queue: t.queue, kind: 'task', href: '#/task/' + t.id, who: '#' + t.id });
       for (const s of schedules) {

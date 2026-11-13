@@ -1,7 +1,6 @@
 package today.bonfire.oss.bth4j.spi;
 
 import java.time.Duration;
-import java.time.Instant;
 import java.util.List;
 import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
@@ -40,9 +39,6 @@ public interface MaintenanceStore extends TaskStore {
      * @return how many were released
      */
     int releaseKeys(int limit);
-
-    /** @return the earliest due time among SCHEDULED tasks, or null */
-    Instant nextDue();
 
     /**
      * Moves QUEUED and SCHEDULED tasks whose {@link TaskRecord#startBy()} has passed to EXPIRED (revision +1,

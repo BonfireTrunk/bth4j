@@ -74,6 +74,11 @@ schedules = {
     "mail-pump": {"id": "mail-pump", "type": "send-mail", "queue": "mail", "account": None, "cron": None, "zone": None,
                   "misfire": "SKIP", "fixedDelay": "PT30S", "overlap": "ALLOW", "paused": True, "nextFireAt": iso(25), "maxAttempts": 5, "revision": "42"},
 }
+for n in range(120):
+    sid = "sync-%03d" % n
+    schedules[sid] = {"id": sid, "type": "send-mail", "queue": "mail", "account": None, "cron": "*/5 * * * *", "zone": "UTC",
+                      "misfire": "SKIP", "fixedDelay": None, "overlap": "ALLOW", "paused": False, "nextFireAt": iso(600 + 60 * n),
+                      "maxAttempts": 3, "revision": str(100 + n)}
 runners = [
     {"id": 7, "label": "host-a/1234", "startedAt": iso(-7200), "lastSeenAt": iso(-2), "running": 3, "accepting": True, "queues": ["default", "mail"], "types": ["send-mail"]},
     {"id": 8, "label": "host-b/9876", "startedAt": iso(-9000), "lastSeenAt": iso(-300), "running": 0, "accepting": False, "queues": ["reports"], "types": ["build-report"]},
@@ -217,7 +222,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, issues)
         if head == "schedules":
             if len(segs) == 1:
-                return self.send_json(200, list(schedules.values()))
+                ordered = sorted(schedules.values(), key=lambda s: s["id"].encode())
+                cursor = q.get("cursor")
+                if cursor:
+                    ordered = [s for s in ordered if s["id"].encode() > cursor.encode()]
+                limit = max(1, min(int(q.get("limit", 100)), 200))
+                page = ordered[:limit]
+                return self.send_json(200, {"items": page, "next": page[-1]["id"] if len(ordered) > limit else None})
+            if len(segs) == 2 and segs[1] == "upcoming" and method == "GET":
+                limit = max(1, min(int(q.get("limit", 8)), 200))
+                armed = [s for s in schedules.values() if not s["paused"]]
+                armed.sort(key=lambda s: (s["nextFireAt"], s["id"].encode()))
+                return self.send_json(200, armed[:limit])
             sc = schedules.get(segs[1])
             if sc is None:
                 return self.send_json(404, {"error": "there is no such schedule", "code": "NOT_FOUND"})

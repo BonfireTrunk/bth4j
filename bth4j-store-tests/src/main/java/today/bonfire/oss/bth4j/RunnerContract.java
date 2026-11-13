@@ -1264,14 +1264,15 @@ public abstract class RunnerContract {
         await("two ticks", () -> okRuns.get() >= 2);
         await(
                 "the broken schedule to pause",
-                () -> runner.admin().schedules().stream().anyMatch(s -> s.id().equals("broken") && s.paused()));
-        var broken = runner.admin().schedules().stream()
+                () -> runner.admin().schedules(null, 200).items().stream()
+                        .anyMatch(s -> s.id().equals("broken") && s.paused()));
+        var broken = runner.admin().schedules(null, 200).items().stream()
                 .filter(s -> s.id().equals("broken"))
                 .findFirst()
                 .orElseThrow();
         assertThat(broken.fixedDelay()).isEqualTo(Duration.ofSeconds(1));
         assertThat(runner.issues()).anyMatch(i -> i.kind() == Issue.Kind.SCHEDULE_PAUSED);
-        var tick = runner.admin().schedules().stream()
+        var tick = runner.admin().schedules(null, 200).items().stream()
                 .filter(s -> s.id().equals("tick"))
                 .findFirst()
                 .orElseThrow();
@@ -1295,11 +1296,13 @@ public abstract class RunnerContract {
 
         await(
                 "the overrunning occurrence to pause its schedule",
-                () -> runner.admin().schedules().stream().anyMatch(s -> s.id().equals("slow") && s.paused()));
+                () -> runner.admin().schedules(null, 200).items().stream()
+                        .anyMatch(s -> s.id().equals("slow") && s.paused()));
         var task = client.task(occurrence.get()).orElseThrow();
         assertThat(task.maxRunTime()).isEqualTo(Duration.ofMillis(300));
         assertThat(task.state()).isEqualTo(TaskState.CANCELLED);
-        assertThat(runner.admin().schedules().getFirst().maxRunTime()).isEqualTo(Duration.ofMillis(300));
+        assertThat(runner.admin().schedules(null, 200).items().getFirst().maxRunTime())
+                .isEqualTo(Duration.ofMillis(300));
     }
 
     @Test
@@ -1431,7 +1434,7 @@ public abstract class RunnerContract {
                 "the overlap issue",
                 () -> runner.issues().stream().anyMatch(i -> i.kind() == Issue.Kind.SCHEDULE_OVERLAP));
         assertThat(runs.get()).isEqualTo(1);
-        var guarded = runner.admin().schedules().stream()
+        var guarded = runner.admin().schedules(null, 200).items().stream()
                 .filter(s -> s.id().equals("guarded"))
                 .findFirst()
                 .orElseThrow();
@@ -1454,7 +1457,7 @@ public abstract class RunnerContract {
                 .withZone(java.time.ZoneId.of("Asia/Kolkata"))
                 .withMisfire(Misfire.SKIP));
 
-        var view = runner.admin().schedules().stream()
+        var view = runner.admin().schedules(null, 200).items().stream()
                 .filter(s -> s.id().equals("kolkata"))
                 .findFirst()
                 .orElseThrow();
@@ -1466,7 +1469,7 @@ public abstract class RunnerContract {
 
         assertThat(runner.admin().pauseSchedule("kolkata", view.revision(), true))
                 .isEqualTo(ScheduleOutcome.APPLIED);
-        assertThat(runner.admin().schedules().stream()
+        assertThat(runner.admin().schedules(null, 200).items().stream()
                         .filter(s -> s.id().equals("kolkata"))
                         .findFirst()
                         .orElseThrow()
@@ -1479,7 +1482,7 @@ public abstract class RunnerContract {
     }
 
     private static long revisionOf(BackgroundRunner runner, String scheduleId) {
-        return runner.admin().schedules().stream()
+        return runner.admin().schedules(null, 200).items().stream()
                 .filter(s -> s.id().equals(scheduleId))
                 .findFirst()
                 .orElseThrow()

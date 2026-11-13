@@ -128,7 +128,25 @@ public interface AdminOps {
      */
     int purgeStaleRunners(Duration staleAfter);
 
-    List<ScheduleView> schedules();
+    /**
+     * Lists the schedule definitions ordered by id (by the code points of the ids).
+     *
+     * @param cursor {@link ScheduleViewPage#next()} of the previous page, an opaque string; null starts at the
+     *     beginning
+     * @param limit the most definitions one page holds, at least 1. There is no upper bound, and a page is read
+     *     into memory as a whole; the HTTP API caps it at 200.
+     * @throws TaskValidationException if the limit is below 1
+     */
+    ScheduleViewPage schedules(String cursor, int limit);
+
+    /**
+     * Lists the definitions that will fire next: those that are not paused, soonest next fire time first and by
+     * id among equal times. A paused definition does not fire and is left out.
+     *
+     * @param limit the most definitions returned, at least 1
+     * @throws TaskValidationException if the limit is below 1
+     */
+    List<ScheduleView> upcomingSchedules(int limit);
 
     /**
      * Pauses or resumes a definition. Every schedule write takes the {@link ScheduleView#revision()} the operator

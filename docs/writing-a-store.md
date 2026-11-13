@@ -50,8 +50,8 @@ An arrow means "extends".
 |---|---|
 | `TaskStore` | `info`, `init`, `allocateIds`, `allocateRunnerId`, `queueId`, `typeId`, `queueNames`, `typeNames` |
 | `ExecutionStore` | `enqueue`, `enqueueAll`, `claim`, `renew`, `ack`, `ackAll`, `fail`, `failExpired`, `finishCancelled`, `finishCancelledExpired`, `reschedule`, `unclaim`, `saveSteps`, `progress` |
-| `MaintenanceStore` | `promote`, `reclaim`, `expire`, `purge`, `purgeRunners`, `releaseKeys`, `nextDue` |
-| `ScheduleStore` | `putSchedule`, `deleteSchedule`, `nextFireTimes`, `schedules`, `dueSchedules`, `commitSchedule`, `pauseSchedule`, `resumeSchedule`, `triggerSchedule`, `setNextFire` |
+| `MaintenanceStore` | `promote`, `reclaim`, `expire`, `purge`, `purgeRunners`, `releaseKeys` |
+| `ScheduleStore` | `putSchedule`, `deleteSchedule`, `nextFireTimes`, `schedules`, `upcomingSchedules`, `schedule`, `dueSchedules`, `commitSchedule`, `pauseSchedule`, `resumeSchedule`, `triggerSchedule`, `setNextFire` |
 | `InspectionStore` | `task`, `idHighWaterMark`, `taskByKey`, `holdsKey`, `counts`, `queuedByType`, `tasks` (by state, paged by an opaque cursor on `(dueAt, id)` for QUEUED and SCHEDULED and on `(stateChangedAt, id)` for the other states) |
 | `AdminStore` | `cancel`, `retry`, `delete`, `pauseQueue`, `queues`, `heartbeat`, `runners` |
 
@@ -246,6 +246,9 @@ flowchart TD
 | `allocateRunnerId` | Creates accepting runners. |
 | `StoreArguments` | Holds the argument checks every store applies. Every time the library hands a store lies within `TaskRequest.MAX_TIME_FROM_NOW` of now. |
 | `ScheduleStore.triggerSchedule(scheduleId, expectedRevision, fireAt)` | The operator's trigger. It marks the fire time it stores, and `dueSchedules` reports the mark as `DueSchedule.triggered()`, so that the runner creates the task however late it takes the fire up. The mark goes with the next write that replaces the fire time. |
+| `ScheduleStore.schedules(afterId, limit)` | One page of definitions in `ID_ORDER` (the code points of the ids, which is also the byte order of their UTF-8 form) whose id is after `afterId`; null starts at the first. An id that no definition has starts behind where it would be. A limit below 1 throws `TaskValidationException`. Answer it from an index or key ordered by id, not by reading every definition. |
+| `ScheduleStore.upcomingSchedules(limit)` | The definitions that are not paused, by next fire time and then by `ID_ORDER`. A paused definition does not fire and is left out. The index that serves `dueSchedules` serves this too. |
+| `ScheduleStore.schedule(scheduleId)` | One definition with its next fire time, found by its id, or empty. |
 | `StoreContract` | Covers these behaviors for every store implementation. |
 
 ## Testing your store

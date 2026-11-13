@@ -491,7 +491,7 @@ public final class PostgresTaskStore implements FullStore {
                 "CREATE INDEX IF NOT EXISTS " + task + "_start_by ON " + task
                         + " (start_by) WHERE start_by IS NOT NULL AND state < 2",
                 "CREATE TABLE IF NOT EXISTS " + schedule + " ("
-                        + " id text PRIMARY KEY,"
+                        + " id text COLLATE \"C\" PRIMARY KEY,"
                         + " type_id smallint NOT NULL,"
                         + " payload_version integer NOT NULL,"
                         + " queue_id smallint NOT NULL,"
@@ -511,7 +511,7 @@ public final class PostgresTaskStore implements FullStore {
                         + " next_fire timestamptz(3) NOT NULL,"
                         + " triggered boolean NOT NULL DEFAULT false)",
                 "CREATE SEQUENCE IF NOT EXISTS " + scheduleSeq,
-                "CREATE INDEX IF NOT EXISTS " + schedule + "_due ON " + schedule + " (next_fire) WHERE NOT paused",
+                "CREATE INDEX IF NOT EXISTS " + schedule + "_due ON " + schedule + " (next_fire, id) WHERE NOT paused",
                 "INSERT INTO " + meta + " (key, value) VALUES ('schema_version', '" + SCHEMA_VERSION + "')"
                         + " ON CONFLICT (key) DO NOTHING");
     }
@@ -1354,17 +1354,6 @@ public final class PostgresTaskStore implements FullStore {
             try (var ps = c.prepareStatement(releaseKeysSql)) {
                 ps.setInt(1, limit);
                 return (int) single(ps);
-            }
-        });
-    }
-
-    @Override
-    public Instant nextDue() {
-        return withConnection(c -> {
-            try (var ps = c.prepareStatement(nextDueSql);
-                    var rs = ps.executeQuery()) {
-                rs.next();
-                return getInstant(rs, 1);
             }
         });
     }
@@ -2242,15 +2231,48 @@ public final class PostgresTaskStore implements FullStore {
     }
 
     @Override
-    public List<ScheduleEntry> schedules() {
+    public List<ScheduleEntry> schedules(String afterId, int limit) {
+        StoreArguments.requireLimit(limit);
         return withConnection(c -> {
-            var result = new ArrayList<ScheduleEntry>();
-            try (var ps = c.prepareStatement("SELECT * FROM " + schedule + " ORDER BY id COLLATE \"C\"");
-                    var rs = ps.executeQuery()) {
-                while (rs.next()) result.add(new ScheduleEntry(readDefinition(rs), getInstant(rs, "next_fire")));
+            var sql = "SELECT * FROM " + schedule + (afterId == null ? "" : " WHERE id COLLATE \"C\" > ?")
+                    + " ORDER BY id COLLATE \"C\" LIMIT ?";
+            try (var ps = c.prepareStatement(sql)) {
+                var at = 1;
+                if (afterId != null) ps.setString(at++, afterId);
+                ps.setInt(at, limit);
+                return readEntries(ps);
             }
-            return result;
         });
+    }
+
+    @Override
+    public List<ScheduleEntry> upcomingSchedules(int limit) {
+        StoreArguments.requireLimit(limit);
+        return withConnection(c -> {
+            try (var ps = c.prepareStatement(
+                    "SELECT * FROM " + schedule + " WHERE NOT paused ORDER BY next_fire, id COLLATE \"C\" LIMIT ?")) {
+                ps.setInt(1, limit);
+                return readEntries(ps);
+            }
+        });
+    }
+
+    @Override
+    public Optional<ScheduleEntry> schedule(String scheduleId) {
+        return withConnection(c -> {
+            try (var ps = c.prepareStatement("SELECT * FROM " + schedule + " WHERE id = ?")) {
+                ps.setString(1, scheduleId);
+                return readEntries(ps).stream().findFirst();
+            }
+        });
+    }
+
+    private List<ScheduleEntry> readEntries(PreparedStatement ps) throws SQLException {
+        var result = new ArrayList<ScheduleEntry>();
+        try (var rs = ps.executeQuery()) {
+            while (rs.next()) result.add(new ScheduleEntry(readDefinition(rs), getInstant(rs, "next_fire")));
+        }
+        return result;
     }
 
     @Override

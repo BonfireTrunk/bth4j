@@ -369,7 +369,7 @@ public final class SqliteTaskStore implements FullStore {
                         + " occurrence_id INTEGER,"
                         + " next_fire INTEGER NOT NULL,"
                         + " triggered INTEGER NOT NULL) STRICT",
-                "CREATE INDEX IF NOT EXISTS " + schedule + "_due ON " + schedule + " (next_fire) WHERE paused = 0",
+                "CREATE INDEX IF NOT EXISTS " + schedule + "_due ON " + schedule + " (next_fire, id) WHERE paused = 0",
                 "INSERT INTO " + meta + " (key, value) VALUES ('schema_version', " + SCHEMA_VERSION + "),"
                         + " ('" + NEXT_TASK_ID + "', 1), ('" + NEXT_RUNNER_ID + "', 1), ('" + NEXT_QUEUE_ID
                         + "', 1), ('" + NEXT_TYPE_ID + "', 1), ('" + NEXT_SCHEDULE_REV + "', 1)"
@@ -1126,8 +1126,7 @@ public final class SqliteTaskStore implements FullStore {
         return inTransaction(c -> releaseSelected(c, clock.millis(), select, (long) limit));
     }
 
-    @Override
-    public Instant nextDue() {
+    private Instant nextDue() {
         return withConnection(c -> queryOne(c, nextDueSql, rs -> instant(rs, 1)));
     }
 
@@ -1980,15 +1979,50 @@ public final class SqliteTaskStore implements FullStore {
     }
 
     @Override
-    public List<ScheduleEntry> schedules() {
+    public List<ScheduleEntry> schedules(String afterId, int limit) {
+        StoreArguments.requireLimit(limit);
         return withConnection(c -> {
             var result = new ArrayList<ScheduleEntry>();
-            queryEach(c, "SELECT " + SCHEDULE_COLUMNS + " FROM " + schedule + " ORDER BY id", rs -> {
-                var row = readSchedule(rs);
-                result.add(new ScheduleEntry(row.definition(), row.nextFireAt()));
-            });
+            var select = "SELECT " + SCHEDULE_COLUMNS + " FROM " + schedule;
+            if (afterId == null) {
+                queryEach(c, select + " ORDER BY id LIMIT ?", rs -> addEntry(result, rs), limit);
+            } else {
+                queryEach(c, select + " WHERE id > ? ORDER BY id LIMIT ?", rs -> addEntry(result, rs), afterId, limit);
+            }
             return result;
         });
+    }
+
+    @Override
+    public List<ScheduleEntry> upcomingSchedules(int limit) {
+        StoreArguments.requireLimit(limit);
+        return withConnection(c -> {
+            var result = new ArrayList<ScheduleEntry>();
+            queryEach(
+                    c,
+                    "SELECT " + SCHEDULE_COLUMNS + " FROM " + schedule
+                            + " WHERE paused = 0 ORDER BY next_fire, id LIMIT ?",
+                    rs -> addEntry(result, rs),
+                    limit);
+            return result;
+        });
+    }
+
+    @Override
+    public Optional<ScheduleEntry> schedule(String scheduleId) {
+        return withConnection(c -> Optional.ofNullable(queryOne(
+                c,
+                "SELECT " + SCHEDULE_COLUMNS + " FROM " + schedule + " WHERE id = ?",
+                rs -> {
+                    var row = readSchedule(rs);
+                    return new ScheduleEntry(row.definition(), row.nextFireAt());
+                },
+                scheduleId)));
+    }
+
+    private static void addEntry(List<ScheduleEntry> into, ResultSet rs) throws SQLException {
+        var row = readSchedule(rs);
+        into.add(new ScheduleEntry(row.definition(), row.nextFireAt()));
     }
 
     @Override

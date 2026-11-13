@@ -108,6 +108,7 @@ A claim walks the queued tasks of a queue in due order past those of types it do
 | Foreign keys | none |
 | Schema version | 4 |
 | Times | `timestamptz(3)` columns: whole milliseconds |
+| Schedule ids | `text COLLATE "C"`, so that the primary key index is in byte order, the order of `ScheduleStore.ID_ORDER` |
 | Task types | stored in `<namespace>_type`, and as `type_id` columns in the task and schedule tables |
 | Runner coverage | `queue_ids` and `type_ids` as `smallint[] NOT NULL` |
 | `accepting` | a required boolean, true on registration and updated by the heartbeat |
@@ -123,5 +124,8 @@ A claim walks the queued tasks of a queue in due order past those of types it do
 | `counts()` | the `<namespace>_task_counts` index (`queue_id, state`, states 1 to 6) for the scheduled, leased and finished tasks, and an index-only scan of the queued index for the queued ones |
 | Listing one finished state of one queue | `<namespace>_task_finished_queue` |
 | Listing QUEUED across all queues | the queued index, once per queue, merged by due time and id |
+| `schedules(afterId, limit)` | the primary key of the schedule table, from the first id after `afterId`; it reads one page |
+| `upcomingSchedules(limit)` | the `<namespace>_schedule_due` index (`next_fire, id`, schedules that are not paused), which is in the order asked for, so it reads `limit` entries however many schedules fire at the same time; `dueSchedules` uses the same index |
+| `schedule(id)` | the primary key |
 
 The queued partial index ends with `type_id` to cover the `queuedByType()` counts while preserving claim order. It uses ordinary index columns.

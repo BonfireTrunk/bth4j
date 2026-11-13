@@ -188,6 +188,7 @@ Everything bth4j throws to refuse a call or to report a failure of its own exten
 | `CancelOutcome.STALE` for a missing or finished task too | `NOT_FOUND`, `STALE` and `FINISHED` are told apart |
 | `RetryOutcome.DUPLICATE` | gone; `NOT_FOUND`, `STALE` and `NOT_RETRYABLE` are told apart |
 | `AdminOps.delete` returning a boolean | returning `DeleteOutcome` (`DELETED`, `NOT_FOUND`, `STALE`, `LEASED`) |
+| `AdminOps.schedules()`, a `List<ScheduleView>` of every definition | `schedules(cursor, limit)` returning a `ScheduleViewPage` (`items`, `next`), as `tasks(...)` does; `upcomingSchedules(limit)` lists the ones that fire next |
 | `AdminOps.pauseSchedule(id, paused)`, `triggerSchedule(id)`, `deleteSchedule(id)` returning a boolean | `pauseSchedule(id, revision, paused)`, `triggerSchedule(id, revision)`, `deleteSchedule(id, revision)` returning `ScheduleOutcome` (`APPLIED`, `NOT_FOUND`, `STALE`); the revision is `ScheduleView.revision()`, see [Changing a schedule that someone else changed](recurring-tasks.md#changing-a-schedule-that-someone-else-changed) |
 
 ## The admin server and its HTTP API
@@ -200,6 +201,7 @@ Everything bth4j throws to refuse a call or to report a failure of its own exten
 | `GET tasks/by-key/{key}`, `POST tasks/by-key/{key}/cancel` | `GET tasks/by-key?key=`, `POST tasks/by-key/cancel?key=` |
 | a retry, cancel or delete that is refused for its state answers 409 like a stale revision | every refusal has a `code` in the error body: 404 `NOT_FOUND`, 409 `STALE` or 409 `WRONG_STATE`; the code `KEY_HELD` is gone |
 | JSON `workerId`, `workers`, `due`, `nextFire`, `lastSeen` | `runnerId`, `runners`, `dueAt`, `nextFireAt`, `lastSeenAt` |
+| `GET schedules`, a JSON array of every schedule | `{"items": [...], "next": ...}` with `cursor` and `limit` (default 100, up to 200), as `GET tasks`; `GET schedules/upcoming?limit=` is new (default 8, up to 200) |
 | `POST schedules/{id}/pause`, `resume`, `trigger` without a body, `DELETE schedules/{id}` | each schedule in the listing has a `revision` (a string); the POST routes take it in the JSON body, the DELETE as the query value `revision=`. Missing or malformed: 400. Changed meanwhile: 409 `STALE`. Unknown id: 404 `NOT_FOUND`. |
 
 Failed logins are also counted by the user name they give, and a block that repeats grows from 10 seconds up to 15 minutes. Behind a reverse proxy, name the proxy with `addTrustedProxy`, so that failures are counted per client; see [Failed logins](admin.md#failed-logins).
@@ -232,7 +234,9 @@ The store SPI says "schedule" and "runner" as the API does, and its record types
 | `putRecurring`, `deleteRecurring`, `pauseRecurring`, `resumeRecurring`, `triggerRecurring` | `putSchedule`, `deleteSchedule`, `pauseSchedule`, `resumeSchedule`, `triggerSchedule` |
 | `dueRecurring`, `commitRecurring` | `dueSchedules`, `commitSchedule` |
 | `commitRecurring` returns `boolean` | `commitSchedule` returns `CommitOutcome`: `STORED`, `SKIPPED` (the definition advanced, the occurrence's unique key is held) or `NOT_COMMITTED` |
-| `recurringDefinitions()`, `recurringSchedules()` | `schedules()`, `nextFireTimes()` |
+| `recurringDefinitions()`, `recurringSchedules()` | `schedules(afterId, limit)`, `nextFireTimes()` |
+| `ScheduleStore.schedules()`, every definition at once | `schedules(afterId, limit)`, one page in `ID_ORDER`; `upcomingSchedules(limit)` and `schedule(scheduleId)` are new |
+| `MaintenanceStore.nextDue()` | removed; the time of the next scheduled task is `PromoteResult.nextDue()` |
 | `setNextFire(scheduleId, nextFire)`, the operator's write | `triggerSchedule(scheduleId, expectedRevision, fireAt)`; `DueSchedule` has `triggered` |
 | `deleteSchedule`, `pauseSchedule`, `resumeSchedule` return `boolean` | they take `Long expectedRevision` after the id (null for any) and return `ScheduleOutcome`, as `triggerSchedule` does; see [Writing a store](writing-a-store.md) |
 | `ScheduleEffect.nextFire()`, `pauses()`, `applied()` | `nextFireAt()`, `isPause()`, `isApplied()` |

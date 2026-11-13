@@ -27,7 +27,7 @@ import redis.clients.jedis.Response;
 import redis.clients.jedis.UnifiedJedis;
 import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.jedis.exceptions.JedisException;
-import redis.clients.jedis.resps.Tuple;
+import redis.clients.jedis.params.ZRangeParams;
 import today.bonfire.oss.bth4j.CancelOutcome;
 import today.bonfire.oss.bth4j.DeleteOutcome;
 import today.bonfire.oss.bth4j.FailureInfo;
@@ -60,7 +60,6 @@ import today.bonfire.oss.bth4j.spi.RecordJson;
 import today.bonfire.oss.bth4j.spi.RunnerRecord;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.ScheduleEntry;
-import today.bonfire.oss.bth4j.spi.ScheduleStore;
 import today.bonfire.oss.bth4j.spi.StoreArguments;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
 import today.bonfire.oss.bth4j.spi.StoredSchedule;
@@ -83,7 +82,7 @@ public final class RedisTaskStore implements FullStore {
      * The version of the keys this class writes, stored in the namespace's {@code meta} hash. {@link #init}
      * refuses a namespace with any other version.
      */
-    public static final int SCHEMA_VERSION = 6;
+    public static final int SCHEMA_VERSION = 7;
 
     private static final int PAGE_CHUNK = 500;
 
@@ -763,28 +762,6 @@ public final class RedisTaskStore implements FullStore {
         return 0;
     }
 
-    @Override
-    public Instant nextDue() {
-        return guard(() -> {
-            var heads = new ArrayList<Response<List<Tuple>>>();
-            try (var pipeline = jedis.pipelined()) {
-                for (var qid : sortedQueueIds()) {
-                    heads.add(pipeline.zrangeWithScores(keys.scheduled(qid), 0, 0));
-                }
-                pipeline.sync();
-            }
-            Instant next = null;
-            for (var head : heads) {
-                var h = head.get();
-                if (!h.isEmpty()) {
-                    var due = Instant.ofEpochMilli((long) h.getFirst().getScore());
-                    if (next == null || due.isBefore(next)) next = due;
-                }
-            }
-            return next;
-        });
-    }
-
     // ---- schedules -----------------------------------------------------------------------------------
 
     @Override
@@ -850,7 +827,8 @@ public final class RedisTaskStore implements FullStore {
     @Override
     public Map<String, Instant> nextFireTimes() {
         var result = new LinkedHashMap<String, Instant>();
-        schedules().forEach(r -> result.put(r.definition().scheduleId(), r.nextFireAt()));
+        guard(() -> entries(jedis.zrange(keys.cronDefinitions, 0, -1)))
+                .forEach(r -> result.put(r.definition().scheduleId(), r.nextFireAt()));
         return result;
     }
 
@@ -1291,26 +1269,42 @@ public final class RedisTaskStore implements FullStore {
     // ---- wave 2: schedule controls -------------------------------------------------------------------
 
     @Override
-    public List<ScheduleEntry> schedules() {
+    public List<ScheduleEntry> schedules(String afterId, int limit) {
+        StoreArguments.requireLimit(limit);
         return guard(() -> {
-            var ids = jedis.smembers(keys.cronDefinitions).stream()
-                    .sorted(ScheduleStore.ID_ORDER)
-                    .toList();
-            var hashes = new ArrayList<Response<Map<String, String>>>(ids.size());
-            try (var pipeline = jedis.pipelined()) {
-                ids.forEach(id -> hashes.add(pipeline.hgetAll(keys.cronDefinition(id))));
-                pipeline.sync();
-            }
-            var out = new ArrayList<ScheduleEntry>(ids.size());
-            for (var i = 0; i < ids.size(); i++) {
-                var h = hashes.get(i).get();
-                if (!h.isEmpty()) {
-                    out.add(new ScheduleEntry(
-                            definition(ids.get(i), h), Instant.ofEpochMilli(Long.parseLong(h.get(F_NEXT)))));
-                }
-            }
-            return out;
+            var from = afterId == null ? "-" : "(" + afterId;
+            return entries(jedis.zrange(
+                    keys.cronDefinitions,
+                    ZRangeParams.zrangeByLexParams(from, "+").limit(0, limit)));
         });
+    }
+
+    @Override
+    public List<ScheduleEntry> upcomingSchedules(int limit) {
+        StoreArguments.requireLimit(limit);
+        return guard(() -> entries(jedis.zrange(keys.cron, 0, limit - 1L)));
+    }
+
+    @Override
+    public Optional<ScheduleEntry> schedule(String scheduleId) {
+        return guard(() -> entries(List.of(scheduleId)).stream().findFirst());
+    }
+
+    private List<ScheduleEntry> entries(List<String> ids) {
+        var hashes = new ArrayList<Response<Map<String, String>>>(ids.size());
+        try (var pipeline = jedis.pipelined()) {
+            ids.forEach(id -> hashes.add(pipeline.hgetAll(keys.cronDefinition(id))));
+            pipeline.sync();
+        }
+        var out = new ArrayList<ScheduleEntry>(ids.size());
+        for (var i = 0; i < ids.size(); i++) {
+            var h = hashes.get(i).get();
+            if (!h.isEmpty()) {
+                out.add(new ScheduleEntry(
+                        definition(ids.get(i), h), Instant.ofEpochMilli(Long.parseLong(h.get(F_NEXT)))));
+            }
+        }
+        return out;
     }
 
     @Override

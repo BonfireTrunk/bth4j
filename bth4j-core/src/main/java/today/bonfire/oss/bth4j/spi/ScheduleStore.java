@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import today.bonfire.oss.bth4j.PutScheduleResult;
 import today.bonfire.oss.bth4j.ScheduleOutcome;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
@@ -68,7 +69,7 @@ public interface ScheduleStore extends TaskStore {
     CommitOutcome commitSchedule(DueSchedule due, Instant nextFireAt, TaskRecord occurrence);
 
     /**
-     * The order of {@link #schedules()}: by the code points of the ids, which is also the byte order
+     * The order of {@link #schedules}: by the code points of the ids, which is also the byte order
      * of their UTF-8 form, so a database that compares bytes and a store that compares in Java list alike.
      */
     Comparator<String> ID_ORDER = (a, b) -> {
@@ -84,8 +85,26 @@ public interface ScheduleStore extends TaskStore {
         return Integer.compare(a.length() - i, b.length() - j);
     };
 
-    /** @return every definition with its next fire time, in {@link #ID_ORDER} */
-    List<ScheduleEntry> schedules();
+    /**
+     * @param afterId the id the page starts behind, or null to start at the first one; an id that no definition
+     *                has starts behind where it would be
+     * @param limit at least 1
+     * @return the definitions with their next fire times whose id is after {@code afterId} in {@link #ID_ORDER},
+     *         in that order, up to the limit
+     * @throws TaskValidationException if the limit is below 1
+     */
+    List<ScheduleEntry> schedules(String afterId, int limit);
+
+    /**
+     * @param limit at least 1
+     * @return the definitions that are not paused, soonest next fire time first and by {@link #ID_ORDER} among
+     *         equal times, up to the limit; a paused definition does not fire and is left out
+     * @throws TaskValidationException if the limit is below 1
+     */
+    List<ScheduleEntry> upcomingSchedules(int limit);
+
+    /** @return the definition with its next fire time, empty when there is none with that id */
+    Optional<ScheduleEntry> schedule(String scheduleId);
 
     /**
      * Pauses a definition. A paused definition keeps its next fire time but is left out of {@link #dueSchedules}.

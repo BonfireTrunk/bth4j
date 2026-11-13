@@ -352,7 +352,11 @@ class MaintenanceServiceTest {
         cycle();
 
         assertThat(state(id)).isEqualTo(TaskState.DEAD);
-        assertThat(store.schedules().getFirst().definition().paused()).isTrue();
+        assertThat(store.schedules(null, Integer.MAX_VALUE)
+                        .getFirst()
+                        .definition()
+                        .paused())
+                .isTrue();
         assertThat(status.issues()).singleElement().satisfies(i -> {
             assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_PAUSED);
             assertThat(i.taskId()).isEqualTo(id);
@@ -369,7 +373,11 @@ class MaintenanceServiceTest {
         cycle();
 
         assertThat(state(id)).isEqualTo(TaskState.SCHEDULED);
-        assertThat(store.schedules().getFirst().definition().paused()).isFalse();
+        assertThat(store.schedules(null, Integer.MAX_VALUE)
+                        .getFirst()
+                        .definition()
+                        .paused())
+                .isFalse();
         assertThat(status.issues()).isEmpty();
         assertThat(events).containsExactly(leaseExpired(id, 1, 3, false));
     }
@@ -383,7 +391,11 @@ class MaintenanceServiceTest {
         cycle();
 
         assertThat(state(id)).isEqualTo(TaskState.CANCELLED);
-        assertThat(store.schedules().getFirst().definition().paused()).isTrue();
+        assertThat(store.schedules(null, Integer.MAX_VALUE)
+                        .getFirst()
+                        .definition()
+                        .paused())
+                .isTrue();
         assertThat(status.issues()).singleElement().satisfies(i -> {
             assertThat(i.kind()).isEqualTo(Issue.Kind.SCHEDULE_PAUSED);
             assertThat(i.detail()).isEqualTo("schedule sched paused: occurrence ended CANCELLED");

@@ -36,7 +36,8 @@ admin.cancel(id, revision, "reason");              // CANCELLED, REQUESTED, NOT_
 admin.cancelByKey("welcome-42", "reason");         // the holder of the key: the outcomes of cancel, with NOT_FOUND also for a removed holder
 admin.delete(id, revision);                        // any state but LEASED: DELETED, NOT_FOUND, STALE or LEASED
 admin.pauseQueue("mail", true);
-admin.schedules();                                 // ScheduleView: revision, cron, zone id, misfire, fixed delay, paused, next fire
+admin.schedules(null, 100);                        // a page of ScheduleView (revision, cron, zone id, misfire, fixed delay, paused, next fire), by id; next() is the cursor of the following page or null
+admin.upcomingSchedules(8);                        // the 8 that fire next: not paused, soonest first
 admin.pauseSchedule("poll-feed", revision, false); // resume a paused one; a fixed-delay definition is re-armed one delay from now
 admin.triggerSchedule("nightly-report", revision); // fires at the next recurring check
 admin.deleteSchedule("nightly-report", revision);  // each of the three: ScheduleOutcome.APPLIED, NOT_FOUND or STALE
@@ -302,7 +303,9 @@ Task ids and revisions are JSON strings.
 | `tasks` | A list with `state`, `queue`, `cursor` and `limit` (up to 200). One task, its `payload`, `retry`, `cancel` and delete. Retry and cancel take the `revision` in the JSON body, delete takes it as the query value `revision=`. |
 | `tasks/by-key?key=` | Reads the task that holds a unique key. |
 | `tasks/by-key/cancel?key=` | Cancels the task that holds the key, with a body of `{"reason"}` and no revision. |
-| `schedules` | The schedules, each with its `revision` (a string). `schedules/{id}/pause`, `resume` and `trigger` take the `revision` in the JSON body, `DELETE schedules/{id}` takes it as the query value `revision=`, as the task routes do. A missing or malformed revision is answered 400. |
+| `schedules` | A page of the schedules, `{"items": [...], "next": ...}`, ordered by id, with `cursor` and `limit` (default 100, up to 200) as the task list has them; `next` is null on the last page. Each schedule has its `revision` (a string). |
+| `schedules/upcoming` | A JSON array of the schedules that are not paused, soonest next fire time first, with `limit` (default 8, up to 200). `upcoming` is a route, not a schedule id: `GET schedules/{id}` does not exist, and a schedule with that id is still paused, resumed, triggered and deleted by its own routes. |
+| `schedules/{id}/pause`, `resume`, `trigger` and `DELETE schedules/{id}` | Change one schedule. `pause`, `resume` and `trigger` take the `revision` in the JSON body, `DELETE` takes it as the query value `revision=`, as the task routes do. A missing or malformed revision is answered 400. |
 | `runners` | The runners. |
 | `unserved` | Queued work that no live accepting runner can process. |
 | `issues` | The runner's issues. |
@@ -334,7 +337,7 @@ Viewers may read, and admins may also change (see [Roles](#roles)).
 
 | Status | When |
 |---|---|
-| 400 | A missing or unknown `state`, or a `limit` below 1, on the tasks list. A malformed `cursor`. An unknown queue name in the tasks filter. A missing or blank by-key key, or one over 256 characters. |
+| 400 | A missing or unknown `state` on the tasks list. A `limit` below 1 or that is not a number on the tasks list, the schedules list and the upcoming schedules. A malformed `cursor`. An unknown queue name in the tasks filter. A missing or blank by-key key, or one over 256 characters. |
 | 403 | A viewer sent a mutation. |
 | 404 | An unknown id. An unknown queue name on pause and resume. No task holds the key on a by-key read or cancel. A retry, cancel or delete of a task that does not exist, and a pause, resume, trigger or delete of a schedule that does not exist, answers `{"code":"NOT_FOUND", ...}`. |
 | 409 | A retry, cancel or delete the task's revision or state refuses, and a schedule action whose revision is not the schedule's current one, with a `code` that says which, as listed below. |
@@ -371,7 +374,7 @@ The dashboard is the static Vue 3 app in `dashboard/`. It has no build step. It 
 | Queues | The queues. |
 | Tasks | Tasks with filters, and a detail view: timeline, steps, failures and the payload. |
 | Dead tasks | The dead tasks. |
-| Schedules | The schedules. Every action sends the revision shown; a schedule that changed meanwhile is refused and the page asks for a reload. |
+| Schedules | The schedules, 100 at a time with a "Load more" button. Every action sends the revision shown; a schedule that changed meanwhile is refused and the page asks for a reload. |
 | Runners | The runners, with coverage and quiet status. |
 | Issues | The issues. |
 
@@ -382,7 +385,8 @@ Admins can also retry, cancel (with a reason), delete, pause and trigger.
 | Times | "Late", "silent over 1 min" and every "in 5 s" or "2 min ago" are measured on the server's clock. The dashboard reads the `Date` header of each answer, which has whole seconds, and keeps the offset to the browser's clock as the middle of the bounds the answers allow, so it is right to within about half a second. A page on another origin needs `addCorsOrigin`, which also exposes `Date`. |
 | Polling | Each page asks again every 5 seconds. The overview page and the header share one request: every `/overview` answer feeds the header, and the header asks on its own, every 10 seconds, only when no answer is that recent. |
 | Refresh after an action | A refresh asked for while a poll is in flight makes one more request when that one ends, so the page shows the state after the action. |
-| Next to leave | Asks for the 8 soonest SCHEDULED tasks, which the server lists by due time, and merges them with the next fire of each schedule. |
+| Schedules and "Load more" | Each poll and each refresh after an action reads again every page that has been loaded, one after the other, each from the cursor the page before it answered, so that the pages neither overlap nor leave a gap and a poll does not throw the loaded pages away. The cost of a poll grows with the pages the operator loaded. |
+| Next to leave | Asks for the 8 soonest SCHEDULED tasks, which the server lists by due time, and merges them with the 8 schedules that fire next (`schedules/upcoming`). |
 | Files | Each file carries an `ETag` (a hash of the file's content). The browser asks on every load (`Cache-Control: no-cache`) and the server answers `304 Not Modified` without a body when the file has not changed. |
 
 The files come from the repository checkout. You can serve them in two ways:
