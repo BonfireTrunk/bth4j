@@ -5,21 +5,19 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
-import java.nio.file.attribute.BasicFileAttributes;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Map;
 
 /** Serves files below one directory; unknown paths without an extension fall back to index.html. */
 final class StaticFiles {
 
-    /** A file found but not yet read, so that a request the browser already has answered for does not read it. */
-    record Resource(Path file, String contentType, String etag) {
+    /** A file read once for one request: the tag is the hash of exactly the bytes that are sent. */
+    record Resource(byte[] body, String contentType, String etag) {
         boolean html() {
             return contentType.startsWith("text/html");
-        }
-
-        byte[] body() throws IOException {
-            return Files.readAllBytes(file);
         }
 
         /** True when an If-None-Match header names this resource: a list, {@code *}, and a weak prefix all count. */
@@ -74,10 +72,17 @@ final class StaticFiles {
         if (file == null) {
             return null;
         }
-        var attributes = Files.readAttributes(file, BasicFileAttributes.class);
-        var etag = "\"" + Long.toHexString(attributes.size()) + "-"
-                + Long.toHexString(attributes.lastModifiedTime().toMillis()) + "\"";
-        return new Resource(file, contentType(file), etag);
+        var body = Files.readAllBytes(file);
+        return new Resource(body, contentType(file), etag(body));
+    }
+
+    private static String etag(byte[] body) {
+        try {
+            var digest = MessageDigest.getInstance("SHA-256").digest(body);
+            return "\"" + HexFormat.of().formatHex(digest, 0, 16) + "\"";
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is required by every Java platform", e);
+        }
     }
 
     /** Normalizing and re-checking after toRealPath keeps both ".." and symlinks from leaving the directory. */

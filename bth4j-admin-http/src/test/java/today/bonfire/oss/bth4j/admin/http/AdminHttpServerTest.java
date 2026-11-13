@@ -1206,7 +1206,7 @@ class AdminHttpServerTest {
 
         var js = get("/app.js", null);
         var etag = js.headers().firstValue("ETag").orElseThrow();
-        assertThat(etag).matches("\"[0-9a-f]+-[0-9a-f]+\"");
+        assertThat(etag).matches("\"[0-9a-f]{32}\"");
         assertThat(get("/app.js", null).headers().firstValue("ETag")).contains(etag);
 
         for (var header : List.of(etag, "W/" + etag, "\"other\", " + etag, "*")) {
@@ -1234,23 +1234,26 @@ class AdminHttpServerTest {
     }
 
     @Test
-    void theEtagOfAStaticFileChangesWithItsSizeAndItsModificationTime() throws Exception {
+    void theEtagOfAStaticFileFollowsItsBytesNotItsSizeOrModificationTime() throws Exception {
         var dir = Files.createDirectories(tmp.resolve("site"));
         var file = dir.resolve("app.js");
-        Files.writeString(file, "one");
-        Files.setLastModifiedTime(file, java.nio.file.attribute.FileTime.fromMillis(1_000_000L));
+        var old = java.nio.file.attribute.FileTime.fromMillis(1_000_000L);
+        Files.writeString(file, "version=1");
+        Files.setLastModifiedTime(file, old);
         start(builder().staticDir(dir));
-        var first = get("/app.js", null).headers().firstValue("ETag").orElseThrow();
+        var first = get("/app.js", null);
+        var oldTag = first.headers().firstValue("ETag").orElseThrow();
 
-        Files.setLastModifiedTime(file, java.nio.file.attribute.FileTime.fromMillis(2_000_000L));
-        var touched = get("/app.js", null).headers().firstValue("ETag").orElseThrow();
-        Files.writeString(file, "three");
-        Files.setLastModifiedTime(file, java.nio.file.attribute.FileTime.fromMillis(2_000_000L));
-        var longer = get("/app.js", null).headers().firstValue("ETag").orElseThrow();
+        var unchanged = send("GET", "/app.js", null, null, "If-None-Match", oldTag);
+        assertThat(unchanged.statusCode()).isEqualTo(304);
 
-        assertThat(List.of(first, touched, longer)).doesNotHaveDuplicates();
-        assertThat(send("GET", "/app.js", null, null, "If-None-Match", first).statusCode())
-                .isEqualTo(200);
+        Files.writeString(file, "version=2");
+        Files.setLastModifiedTime(file, old);
+        var replaced = send("GET", "/app.js", null, null, "If-None-Match", oldTag);
+
+        assertThat(replaced.statusCode()).isEqualTo(200);
+        assertThat(replaced.body()).isEqualTo("version=2");
+        assertThat(replaced.headers().firstValue("ETag").orElseThrow()).isNotEqualTo(oldTag);
     }
 
     @Test
@@ -1354,6 +1357,14 @@ class AdminHttpServerTest {
     void aSessionTtlThatIsNotPositiveIsRefused() {
         assertThatThrownBy(() -> builder().sessionTtl(Duration.ZERO).build())
                 .isInstanceOf(TaskConfigurationException.class);
+    }
+
+    @Test
+    void aSessionTtlBelowOneSecondIsRefusedBecauseItsCookieWouldBeDeletedAtOnce() {
+        assertThatThrownBy(() -> builder().sessionTtl(Duration.ofMillis(999)).build())
+                .isInstanceOf(TaskConfigurationException.class)
+                .hasMessageContaining("at least one second");
+        assertThat(builder().sessionTtl(Duration.ofSeconds(1)).build()).isNotNull();
     }
 
     @Test
