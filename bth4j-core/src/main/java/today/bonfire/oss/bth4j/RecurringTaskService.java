@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.ArrayDeque;
+import java.util.HashMap;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -83,6 +84,17 @@ class RecurringTaskService extends CustomThread {
     private final Duration checkInterval;
     private final Duration misfireThreshold;
     private final int batchSize;
+    /** What the scan of a catch-up established, per definition, so that its later rounds do not scan again. */
+    private final Map<String, CatchUpWindow> catchUpWindows = new HashMap<>();
+
+    private long cycle;
+
+    /** The fires one scan found missed, for a revision; {@code cycle} is the last check that used it. */
+    private record CatchUpWindow(long revision, Instant first, Instant last, long cycle) {
+        boolean covers(long revision, Instant fire) {
+            return this.revision == revision && !fire.isBefore(first) && !fire.isAfter(last);
+        }
+    }
 
     RecurringTaskService(Builder b) {
         super(b.group, b.threadName);
@@ -136,6 +148,7 @@ class RecurringTaskService extends CustomThread {
 
     void queueDueOccurrences() {
         var queued = 0;
+        cycle++;
         try {
             for (var round = 0; round < MAX_ROUNDS_PER_CYCLE && this.canContinueProcessing; round++) {
                 var due = store.dueSchedules(clock.instant().plus(checkInterval), batchSize);
@@ -158,6 +171,9 @@ class RecurringTaskService extends CustomThread {
                 }
             }
         } finally {
+            // a definition that stopped catching up (deleted, paused, or its fires no longer late) was not used
+            // in this check, so its window goes now instead of staying for good
+            if (!catchUpWindows.isEmpty()) catchUpWindows.values().removeIf(w -> w.cycle() != cycle);
             if (queued > 0) {
                 log.info("Recurring task service queued {} tasks", queued);
             }
@@ -253,10 +269,19 @@ class RecurringTaskService extends CustomThread {
      * Walks the missed fires keeping the last {@code maxFires}. When more were missed the next fire moves to the
      * first of those at once, in one step whatever the downtime; the following rounds create their occurrences.
      * Past the scan limit the missed fires are not counted: the definition fires once now, like
-     * {@code FireOnceNow}.
+     * {@code FireOnceNow}. The scan is kept for the rounds that create the fires it found, so that a catch-up
+     * walks the fires once; fires that fall due meanwhile are counted by the scan after it.
      */
     private Progress catchUp(DueSchedule d, Instant now, ZoneId zone, Duration late, int maxFires) {
         var def = d.definition();
+        var kept = catchUpWindows.remove(d.scheduleId());
+        if (kept != null && kept.covers(def.revision(), d.fireAt())) {
+            if (!d.fireAt().equals(kept.last())) {
+                catchUpWindows.put(
+                        d.scheduleId(), new CatchUpWindow(kept.revision(), kept.first(), kept.last(), cycle));
+            }
+            return commitOccurrence(d, nextOrPark(def, d.fireAt(), zone, d.fireAt()));
+        }
         var window = new ArrayDeque<Instant>(Math.min(maxFires, MAX_CATCH_UP_SCAN) + 1);
         var fire = d.fireAt();
         int scanned = 0;
@@ -273,12 +298,17 @@ class RecurringTaskService extends CustomThread {
         if (scanned > maxFires) {
             var resume = window.getFirst();
             if (store.setNextFire(d.scheduleId(), def.revision(), d.fireAt(), resume)) {
+                catchUpWindows.put(d.scheduleId(), new CatchUpWindow(def.revision(), resume, window.getLast(), cycle));
                 misfireIssue(d, late, "catching up the last " + maxFires + " fires from " + resume);
                 return Progress.ADVANCED;
             }
             return Progress.NONE;
         }
         // each missed fire gets its own occurrence; the next round picks the following one up
+        if (!d.fireAt().equals(window.getLast())) {
+            catchUpWindows.put(
+                    d.scheduleId(), new CatchUpWindow(def.revision(), window.getFirst(), window.getLast(), cycle));
+        }
         return commitOccurrence(d, nextOrPark(def, d.fireAt(), zone, d.fireAt()));
     }
 
