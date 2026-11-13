@@ -606,7 +606,6 @@ class SqliteTransactionTest {
                 assertThat(quick.releaseKeys(10)).isZero();
                 assertThat(quick.expire(10)).isEmpty();
                 assertThat(quick.purgeRunners(Duration.ofDays(1))).isZero();
-                assertThat(quick.nextDue()).isNull();
                 assertThat(quick.queueId("default")).isEqualTo(queue);
                 assertThat(quick.typeId("send-mail")).isEqualTo(type);
                 assertThat(quick.counts()).containsKey(queue);

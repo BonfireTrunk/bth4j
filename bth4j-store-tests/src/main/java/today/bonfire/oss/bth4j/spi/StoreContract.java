@@ -1077,7 +1077,7 @@ public abstract class StoreContract {
         assertThat(get(scheduled).startBy()).isEqualTo(ahead);
         assertThat(store.promote(10).moved()).isZero();
         assertThat(store.expire(10)).isEmpty();
-        assertThat(store.nextDue()).isEqualTo(ahead);
+        assertThat(store.promote(10).nextDue()).isEqualTo(ahead);
 
         long overdue = put(task().dueAt(back));
         assertThat(get(overdue).dueAt()).isEqualTo(back);
@@ -3716,17 +3716,6 @@ public abstract class StoreContract {
         }
     }
 
-    @Test
-    void nextDueIsTheEarliestScheduledDue() {
-        assertThat(store.nextDue()).isNull();
-        putNew();
-        assertThat(store.nextDue()).isNull();
-        Instant soon = millis(now().plus(Duration.ofMinutes(5)));
-        put(task().dueAt(millis(now().plus(Duration.ofHours(2)))));
-        put(task().dueAt(soon));
-        assertThat(store.nextDue()).isEqualTo(soon);
-    }
-
     // recurring
 
     private StoredSchedule definition(String id, String cron) {
@@ -4524,7 +4513,7 @@ public abstract class StoreContract {
         assertThat(get(id).state()).isEqualTo(TaskState.CANCELLED);
         assertThat(counts().scheduled()).isZero();
         assertThat(counts().cancelled()).isEqualTo(1);
-        assertThat(store.nextDue()).isNull();
+        assertThat(store.promote(10).nextDue()).isNull();
     }
 
     @Test
@@ -4682,7 +4671,7 @@ public abstract class StoreContract {
             assertThat(store.task(id)).isEmpty();
         }
         assertThat(counts()).isEqualTo(StateCounts.ZERO);
-        assertThat(store.nextDue()).isNull();
+        assertThat(store.promote(10).nextDue()).isNull();
         assertThat(store.expire(10)).isEmpty();
         assertThat(store.taskByKey("kx")).isEmpty();
         put(task().uniqueKey("kx"));
@@ -4829,7 +4818,7 @@ public abstract class StoreContract {
         assertThat(counts().expired()).isEqualTo(2);
         assertThat(counts().queued()).isEqualTo(2);
         assertThat(counts().scheduled()).isZero();
-        assertThat(store.nextDue()).isNull();
+        assertThat(store.promote(10).nextDue()).isNull();
         assertThat(store.expire(10)).isEmpty();
         put(task().uniqueKey("q"));
         put(task().uniqueKey("s"));
@@ -5291,7 +5280,7 @@ public abstract class StoreContract {
         assertThat(counts()).isEqualTo(new StateCounts(perQueue, 1, 0, 0, 0, 0, 0));
         assertThat(store.counts().getOrDefault(idle, StateCounts.ZERO))
                 .isEqualTo(new StateCounts(perQueue, 0, 0, 0, 0, 0, 0));
-        assertThat(store.nextDue()).isEqualTo(get(later).dueAt());
+        assertThat(store.promote(10).nextDue()).isEqualTo(get(later).dueAt());
         assertThat(claim(100, LEASE, null, queue, idle))
                 .extracting(TaskRecord::id)
                 .containsExactlyInAnyOrderElementsOf(due);
@@ -5620,7 +5609,6 @@ public abstract class StoreContract {
         assertStoredAsGiven(occurrence, TaskState.SCHEDULED, "a commit for a fire in the past");
         assertThat(get(occurrence.id()).stateChangedAt()).isBetween(millis(before), after.plusMillis(1));
         assertThat(counts()).isEqualTo(new StateCounts(0, 1, 0, 0, 0, 0, 0));
-        assertThat(store.nextDue()).isEqualTo(fire);
         assertThat(store.nextFireTimes()).containsOnly(Map.entry("late", next));
         assertThat(revisionOf("late")).isEqualTo(revision);
         assertThat(store.dueSchedules(now(), 10)).isEmpty();

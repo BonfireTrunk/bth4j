@@ -1358,17 +1358,6 @@ public final class PostgresTaskStore implements FullStore {
         });
     }
 
-    @Override
-    public Instant nextDue() {
-        return withConnection(c -> {
-            try (var ps = c.prepareStatement(nextDueSql);
-                    var rs = ps.executeQuery()) {
-                rs.next();
-                return getInstant(rs, 1);
-            }
-        });
-    }
-
     // ---- recurring definitions -----------------------------------------------------------------------
 
     /**

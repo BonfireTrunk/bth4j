@@ -442,7 +442,7 @@ class RedisTaskStoreIT {
         assertThat(store.task(1).orElseThrow().dueAt()).isEqualTo(future);
         assertThat(store.task(2).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
         assertThat(jedis.zscore(keys.scheduled(queue), "1")).isEqualTo((double) future.toEpochMilli());
-        assertThat(store.nextDue()).isEqualTo(future);
+        assertThat(store.promote(10).nextDue()).isEqualTo(future);
         assertThat(counts().scheduled()).isEqualTo(1);
     }
 
@@ -1430,7 +1430,7 @@ class RedisTaskStoreIT {
 
     @Test
     void promoteHonoursTheLimitAndNextDueIsNullWhenNothingIsScheduled() {
-        assertThat(store.nextDue()).isNull();
+        assertThat(store.promote(10).nextDue()).isNull();
         var due = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MILLIS);
         for (var i = 1; i <= 3; i++) {
             store.enqueue(task(i).dueAt(Instant.now().plusSeconds(3600)).build());

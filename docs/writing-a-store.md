@@ -50,7 +50,7 @@ An arrow means "extends".
 |---|---|
 | `TaskStore` | `info`, `init`, `allocateIds`, `allocateRunnerId`, `queueId`, `typeId`, `queueNames`, `typeNames` |
 | `ExecutionStore` | `enqueue`, `enqueueAll`, `claim`, `renew`, `ack`, `ackAll`, `fail`, `failExpired`, `finishCancelled`, `finishCancelledExpired`, `reschedule`, `unclaim`, `saveSteps`, `progress` |
-| `MaintenanceStore` | `promote`, `reclaim`, `expire`, `purge`, `purgeRunners`, `releaseKeys`, `nextDue` |
+| `MaintenanceStore` | `promote`, `reclaim`, `expire`, `purge`, `purgeRunners`, `releaseKeys` |
 | `ScheduleStore` | `putSchedule`, `deleteSchedule`, `nextFireTimes`, `schedules`, `dueSchedules`, `commitSchedule`, `pauseSchedule`, `resumeSchedule`, `triggerSchedule`, `setNextFire` |
 | `InspectionStore` | `task`, `idHighWaterMark`, `taskByKey`, `holdsKey`, `counts`, `queuedByType`, `tasks` (by state, paged by an opaque cursor on `(dueAt, id)` for QUEUED and SCHEDULED and on `(stateChangedAt, id)` for the other states) |
 | `AdminStore` | `cancel`, `retry`, `delete`, `pauseQueue`, `queues`, `heartbeat`, `runners` |

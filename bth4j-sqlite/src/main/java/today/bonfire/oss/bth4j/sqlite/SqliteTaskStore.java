@@ -1126,8 +1126,7 @@ public final class SqliteTaskStore implements FullStore {
         return inTransaction(c -> releaseSelected(c, clock.millis(), select, (long) limit));
     }
 
-    @Override
-    public Instant nextDue() {
+    private Instant nextDue() {
         return withConnection(c -> queryOne(c, nextDueSql, rs -> instant(rs, 1)));
     }
 

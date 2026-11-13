@@ -726,16 +726,6 @@ public final class InMemoryStore implements FullStore {
         }
     }
 
-    @Override
-    public Instant nextDue() {
-        lock.lock();
-        try {
-            return nextDueLocked();
-        } finally {
-            lock.unlock();
-        }
-    }
-
     private Instant nextDueLocked() {
         return tasks.values().stream()
                 .filter(t -> t.state() == TaskState.SCHEDULED)

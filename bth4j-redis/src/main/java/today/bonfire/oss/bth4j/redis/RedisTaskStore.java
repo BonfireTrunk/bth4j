@@ -27,7 +27,6 @@ import redis.clients.jedis.Response;
 import redis.clients.jedis.UnifiedJedis;
 import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.jedis.exceptions.JedisException;
-import redis.clients.jedis.resps.Tuple;
 import today.bonfire.oss.bth4j.CancelOutcome;
 import today.bonfire.oss.bth4j.DeleteOutcome;
 import today.bonfire.oss.bth4j.FailureInfo;
@@ -761,28 +760,6 @@ public final class RedisTaskStore implements FullStore {
     public int releaseKeys(int limit) {
         StoreArguments.requireLimit(limit);
         return 0;
-    }
-
-    @Override
-    public Instant nextDue() {
-        return guard(() -> {
-            var heads = new ArrayList<Response<List<Tuple>>>();
-            try (var pipeline = jedis.pipelined()) {
-                for (var qid : sortedQueueIds()) {
-                    heads.add(pipeline.zrangeWithScores(keys.scheduled(qid), 0, 0));
-                }
-                pipeline.sync();
-            }
-            Instant next = null;
-            for (var head : heads) {
-                var h = head.get();
-                if (!h.isEmpty()) {
-                    var due = Instant.ofEpochMilli((long) h.getFirst().getScore());
-                    if (next == null || due.isBefore(next)) next = due;
-                }
-            }
-            return next;
-        });
     }
 
     // ---- schedules -----------------------------------------------------------------------------------

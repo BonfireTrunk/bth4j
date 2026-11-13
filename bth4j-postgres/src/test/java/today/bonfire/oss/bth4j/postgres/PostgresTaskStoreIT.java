@@ -709,7 +709,7 @@ class PostgresTaskStoreIT {
         assertThat(r.runnerId()).isNull();
         assertThat(r.leaseUntil()).isNull();
         assertThat(r.failures()).containsExactly(f);
-        assertThat(store.nextDue()).isEqualTo(retryAt);
+        assertThat(store.promote(10).nextDue()).isEqualTo(retryAt);
     }
 
     @Test
@@ -831,12 +831,11 @@ class PostgresTaskStoreIT {
         assertThat(r.dueAt()).isEqualTo(past);
         assertThat(r.revision()).isEqualTo(claimed.revision() + 2);
         assertThat(store.promote(10).moved()).isZero();
-        assertThat(store.nextDue()).isEqualTo(future);
+        assertThat(store.promote(10).nextDue()).isEqualTo(future);
     }
 
     @Test
     void nextDueIsNullWithoutScheduledTasks() {
-        assertThat(store.nextDue()).isNull();
         assertThat(store.promote(10).nextDue()).isNull();
     }
 
