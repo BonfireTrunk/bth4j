@@ -19,6 +19,7 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
@@ -194,6 +195,70 @@ class MicrometerRunnerMetricsTest {
 
             assertThat(state("q", "queued")).isEqualTo(9);
         }
+    }
+
+    private MicrometerRunnerMetrics bindWithClock(AtomicLong nanos) {
+        return MicrometerRunnerMetrics.bind(
+                admin, () -> 0, OptionalInt::empty, registry, Tags.empty(), Duration.ofHours(1), nanos::get);
+    }
+
+    @Test
+    void countsAgeIsAboutZeroAfterAReadThatWorkedAndGrowsWithTheClock() {
+        var nanos = new AtomicLong(5_000_000_000L);
+        try (var metrics = bindWithClock(nanos)) {
+            assertThat(gauge("bth4j.runner.counts.age")).isEqualTo(0);
+            assertThat(registry.get("bth4j.runner.counts.age").gauge().getId().getBaseUnit())
+                    .isEqualTo("seconds");
+
+            nanos.addAndGet(Duration.ofSeconds(90).toNanos());
+            assertThat(gauge("bth4j.runner.counts.age")).isEqualTo(90);
+
+            metrics.refresh();
+            assertThat(gauge("bth4j.runner.counts.age")).isEqualTo(0);
+        }
+    }
+
+    @Test
+    void countsAgeKeepsGrowingOverFailingReadsAndDropsBackAfterOneThatWorks() {
+        var nanos = new AtomicLong();
+        try (var metrics = bindWithClock(nanos)) {
+            countsFailure.set(new IllegalStateException("store down"));
+            nanos.addAndGet(Duration.ofSeconds(30).toNanos());
+            metrics.refresh();
+            nanos.addAndGet(Duration.ofSeconds(30).toNanos());
+            metrics.refresh();
+
+            assertThat(gauge("bth4j.runner.counts.age")).isEqualTo(60);
+
+            countsFailure.set(null);
+            metrics.refresh();
+
+            assertThat(gauge("bth4j.runner.counts.age")).isEqualTo(0);
+        }
+    }
+
+    @Test
+    void countsAgeCountsFromBindingWhenTheFirstReadFails() {
+        var nanos = new AtomicLong(1_000L);
+        countsFailure.set(new IllegalStateException("store down"));
+        try (var metrics = bindWithClock(nanos)) {
+            assertThat(gauge("bth4j.runner.counts.age")).isEqualTo(0);
+
+            nanos.addAndGet(Duration.ofSeconds(10).toNanos());
+
+            assertThat(gauge("bth4j.runner.counts.age")).isEqualTo(10);
+        }
+    }
+
+    @Test
+    void closeRemovesTheCountsAgeGaugeAndItHasTheCommonTags() {
+        var metrics = MicrometerRunnerMetrics.bind(
+                admin, () -> 0, OptionalInt::empty, registry, Tags.of("runner", "a"), Duration.ofHours(1), () -> 0L);
+        assertThat(gauge("bth4j.runner.counts.age", "runner", "a")).isEqualTo(0);
+
+        metrics.close();
+
+        assertThat(registry.find("bth4j.runner.counts.age").gauge()).isNull();
     }
 
     @Test
