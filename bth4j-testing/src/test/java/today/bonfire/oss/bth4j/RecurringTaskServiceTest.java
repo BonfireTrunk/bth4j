@@ -103,7 +103,7 @@ class RecurringTaskServiceTest {
         var nextHour = T0.plus(Duration.ofHours(1));
         register(definition("0 * * * *", StoredSchedule.MISFIRE_SKIP, 0), nextHour);
         var asked = T0.plus(Duration.ofMinutes(5));
-        store.triggerSchedule(ID, asked);
+        store.triggerSchedule(ID, null, asked);
         clock.set(T0.plus(Duration.ofMinutes(30)));
 
         round();

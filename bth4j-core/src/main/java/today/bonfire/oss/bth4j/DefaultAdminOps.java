@@ -202,6 +202,7 @@ final class DefaultAdminOps implements AdminOps {
         var d = s.definition();
         return new ScheduleView(
                 d.scheduleId(),
+                d.revision(),
                 names.typeName(d.typeId()),
                 names.queueName(d.queueId()),
                 d.account(),
@@ -217,9 +218,9 @@ final class DefaultAdminOps implements AdminOps {
     }
 
     @Override
-    public boolean pauseSchedule(String id, boolean paused) {
+    public ScheduleOutcome pauseSchedule(String id, long revision, boolean paused) {
         StoredText.requirePresent("schedule id", id);
-        if (paused) return store.pauseSchedule(id);
+        if (paused) return store.pauseSchedule(id, revision);
         // a fixed-delay definition parks its next fire while paused, so it resumes one delay from now; the store
         // applies that only to a paused definition whose occurrence is not still running
         var next = store.schedules().stream()
@@ -228,19 +229,19 @@ final class DefaultAdminOps implements AdminOps {
                 .findFirst()
                 .map(s -> clock.instant().plus(s.definition().fixedDelay()))
                 .orElse(null);
-        return store.resumeSchedule(id, next);
+        return store.resumeSchedule(id, revision, next);
     }
 
     @Override
-    public boolean triggerSchedule(String id) {
+    public ScheduleOutcome triggerSchedule(String id, long revision) {
         StoredText.requirePresent("schedule id", id);
-        return store.triggerSchedule(id, clock.instant());
+        return store.triggerSchedule(id, revision, clock.instant());
     }
 
     @Override
-    public boolean deleteSchedule(String id) {
+    public ScheduleOutcome deleteSchedule(String id, long revision) {
         StoredText.requirePresent("schedule id", id);
-        return store.deleteSchedule(id);
+        return store.deleteSchedule(id, revision);
     }
 
     @Override

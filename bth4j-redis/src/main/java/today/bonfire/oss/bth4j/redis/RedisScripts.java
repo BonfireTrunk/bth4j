@@ -846,11 +846,22 @@ final class RedisScripts {
             return {existed and 'CHANGED' or 'CREATED', nextFire}
             """;
 
-    /** ARGV: schedule id. Returns 1 when a definition was removed. */
-    static final String CRON_DELETE = PRELUDE + """
+    /**
+     * The start of every operator write on a definition: ARGV is the schedule id, then the revision the operator
+     * saw or '' for any. Answers NOT_FOUND or STALE without writing, so that the check and the write are one step.
+     */
+    private static final String SCHEDULE_GUARD = """
+            local ckey = P .. 'cron:' .. ARGV[2]
+            if redis.call('EXISTS', ckey) == 0 then return 'NOT_FOUND' end
+            if ARGV[3] ~= '' and redis.call('HGET', ckey, 'rev') ~= ARGV[3] then return 'STALE' end
+            """;
+
+    /** ARGV: schedule id, revision or ''. Returns APPLIED, NOT_FOUND or STALE. */
+    static final String CRON_DELETE = PRELUDE + SCHEDULE_GUARD + """
             redis.call('ZREM', P .. 'cron', ARGV[2])
             redis.call('SREM', P .. 'crondefs', ARGV[2])
-            return redis.call('DEL', P .. 'cron:' .. ARGV[2])
+            redis.call('DEL', ckey)
+            return 'APPLIED'
             """;
 
     /**
@@ -1131,56 +1142,50 @@ final class RedisScripts {
             """;
 
     /**
-     * ARGV: schedule id. A paused definition leaves the {@code cron} zset; its next fire stays in the hash and
-     * returns to the zset on resume. Returns 1, or 0 when there is no such definition.
+     * ARGV: schedule id, revision or ''. A paused definition leaves the {@code cron} zset; its next fire stays in
+     * the hash and returns to the zset on resume. Keeps the revision. Returns APPLIED, NOT_FOUND or STALE.
      */
-    static final String CRON_PAUSE = PRELUDE + """
-            local ckey = P .. 'cron:' .. ARGV[2]
-            if redis.call('EXISTS', ckey) == 0 then return 0 end
+    static final String CRON_PAUSE = PRELUDE + SCHEDULE_GUARD + """
             redis.call('HSET', ckey, 'paused', 1)
             redis.call('ZREM', P .. 'cron', ARGV[2])
-            return 1
+            return 'APPLIED'
             """;
 
     /**
-     * ARGV: schedule id, next fire ms or ''. Resumes a paused definition; a next fire time replaces the stored one
-     * under a new revision and is not a triggered one, unless the task named by the occ field is not finished. A
-     * definition that is not paused is left alone. Returns 1, or 0 when there is no such definition.
+     * ARGV: schedule id, revision or '', next fire ms or ''. Resumes a paused definition; a next fire time replaces
+     * the stored one under a new revision and is not a triggered one, unless the task named by the occ field is not
+     * finished. A definition that is not paused is left alone. Returns APPLIED, NOT_FOUND or STALE.
      */
-    static final String CRON_RESUME = PRELUDE + """
-            local ckey = P .. 'cron:' .. ARGV[2]
-            if redis.call('EXISTS', ckey) == 0 then return 0 end
-            if redis.call('HGET', ckey, 'paused') ~= '1' then return 1 end
+    static final String CRON_RESUME = PRELUDE + SCHEDULE_GUARD + """
+            if redis.call('HGET', ckey, 'paused') ~= '1' then return 'APPLIED' end
             redis.call('HDEL', ckey, 'paused')
-            if ARGV[3] ~= '' then
+            if ARGV[4] ~= '' then
               local occ = redis.call('HGET', ckey, 'occ')
               local st = occ and redis.call('HGET', P .. 't:' .. occ, 'state')
               if not (st and tonumber(st) < 3) then
                 redis.call('INCR', P .. 'cronrev')
-                redis.call('HSET', ckey, 'next', ARGV[3], 'rev', redis.call('GET', P .. 'cronrev'))
+                redis.call('HSET', ckey, 'next', ARGV[4], 'rev', redis.call('GET', P .. 'cronrev'))
                 redis.call('HDEL', ckey, 'trg')
               end
             end
             redis.call('ZADD', P .. 'cron', redis.call('HGET', ckey, 'next'), ARGV[2])
-            return 1
+            return 'APPLIED'
             """;
 
     /**
-     * ARGV: schedule id, fire ms. Operator write: assigns a new revision, so that a runner write based on
-     * the old one does nothing, and drops occ, so that the effect of an occurrence still running does nothing
-     * either. The {@code trg} field marks the fire time as triggered until another write replaces it. Returns 1,
-     * or 0 when there is no such definition.
+     * ARGV: schedule id, revision or '', fire ms. Operator write: assigns a new revision, so that a runner write
+     * based on the old one does nothing, and drops occ, so that the effect of an occurrence still running does
+     * nothing either. The {@code trg} field marks the fire time as triggered until another write replaces it.
+     * Returns APPLIED, NOT_FOUND or STALE.
      */
-    static final String CRON_TRIGGER = PRELUDE + """
-            local ckey = P .. 'cron:' .. ARGV[2]
-            if redis.call('EXISTS', ckey) == 0 then return 0 end
+    static final String CRON_TRIGGER = PRELUDE + SCHEDULE_GUARD + """
             redis.call('INCR', P .. 'cronrev')
-            redis.call('HSET', ckey, 'next', ARGV[3], 'rev', redis.call('GET', P .. 'cronrev'), 'trg', 1)
+            redis.call('HSET', ckey, 'next', ARGV[4], 'rev', redis.call('GET', P .. 'cronrev'), 'trg', 1)
             redis.call('HDEL', ckey, 'occ')
             if redis.call('HGET', ckey, 'paused') ~= '1' then
-              redis.call('ZADD', P .. 'cron', ARGV[3], ARGV[2])
+              redis.call('ZADD', P .. 'cron', ARGV[4], ARGV[2])
             end
-            return 1
+            return 'APPLIED'
             """;
 
     /**

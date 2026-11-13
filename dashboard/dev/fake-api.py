@@ -69,9 +69,9 @@ def counts():
 
 schedules = {
     "nightly-report": {"id": "nightly-report", "type": "build-report", "queue": "reports", "account": None, "cron": "0 2 * * *", "zone": "Europe/Berlin",
-                       "misfire": "CATCH_UP", "catchUpMaxFires": 3, "fixedDelay": None, "overlap": "SKIP", "paused": False, "nextFireAt": iso(7200), "maxAttempts": 3},
+                       "misfire": "CATCH_UP", "catchUpMaxFires": 3, "fixedDelay": None, "overlap": "SKIP", "paused": False, "nextFireAt": iso(7200), "maxAttempts": 3, "revision": "41"},
     "mail-pump": {"id": "mail-pump", "type": "send-mail", "queue": "mail", "account": None, "cron": None, "zone": None,
-                  "misfire": "SKIP", "fixedDelay": "PT30S", "overlap": "ALLOW", "paused": True, "nextFireAt": iso(25), "maxAttempts": 5},
+                  "misfire": "SKIP", "fixedDelay": "PT30S", "overlap": "ALLOW", "paused": True, "nextFireAt": iso(25), "maxAttempts": 5, "revision": "42"},
 }
 runners = [
     {"id": 7, "label": "host-a/1234", "startedAt": iso(-7200), "lastSeenAt": iso(-2), "running": 3, "accepting": True, "queues": ["default", "mail"], "types": ["send-mail"]},
@@ -217,13 +217,20 @@ class Handler(BaseHTTPRequestHandler):
         if head == "schedules":
             if len(segs) == 1:
                 return self.send_json(200, list(schedules.values()))
-            sc = schedules[segs[1]]
+            sc = schedules.get(segs[1])
+            if sc is None:
+                return self.send_json(404, {"error": "there is no such schedule", "code": "NOT_FOUND"})
+            rev = (self.body().get("revision") if method == "POST" else q.get("revision"))
+            if str(rev) != sc["revision"]:
+                return self.send_json(409, {"error": "the schedule changed since it was loaded", "code": "STALE"})
             if method == "DELETE":
                 del schedules[segs[1]]
             elif segs[2] == "pause":
                 sc["paused"] = True
             elif segs[2] == "resume":
                 sc["paused"] = False
+            elif segs[2] == "trigger":
+                sc.update(nextFireAt=iso(0), revision=str(int(sc["revision"]) + 1))
             return self.send_json(204, None)
         if head == "tasks":
             return self.tasks_api(method, segs, q)

@@ -11,6 +11,7 @@ A recurring definition creates one task for each of its fire times, from a cron 
 - [Overlap](#overlap)
 - [Fixed-delay definitions](#fixed-delay-definitions)
 - [Pausing, resuming and triggering](#pausing-resuming-and-triggering)
+- [Changing a schedule that someone else changed](#changing-a-schedule-that-someone-else-changed)
 - [Definitions that cannot be evaluated](#definitions-that-cannot-be-evaluated)
 - [Issues recurring tasks record](#issues-recurring-tasks-record)
 - [Related pages](#related-pages)
@@ -172,6 +173,22 @@ Pausing, resuming and triggering a definition are `AdminOps` operations (see [Ad
 | Trigger | Moves the next fire time to now. The next recurring check creates the task, however late it comes: a triggered fire is never handled as a missed one. A paused definition creates nothing until it is resumed; a paused cron definition then fires the trigger it was given. |
 
 A trigger also forgets the occurrence in flight. When that task ends, it neither re-arms nor pauses the definition.
+
+## Changing a schedule that someone else changed
+
+Every schedule has a revision, which the store assigns and `admin.schedules()` shows. A pause, resume, trigger or delete from the operator names the revision the operator saw, and the store refuses it as `STALE` when the schedule has another one by then. Nothing is changed in that case, and the operator reloads and looks again.
+
+Example: an operator opens `nightly-report`, a deploy replaces its definition with a different cron expression, and the operator clicks delete on what they saw. The delete is refused instead of removing the new definition.
+
+| The revision changes when | The revision stays when |
+|---|---|
+| `putSchedule` replaces the definition with a different one | `putSchedule` finds the same definition and writes nothing |
+| An operator triggers the schedule | An operator pauses it |
+| An operator resumes it with a new fire time (a fixed-delay definition) | The runner fires it and moves it to the next fire time |
+
+So the revision protects against a replaced or re-timed definition. It does not protect against a pause or against a runner fire in between: a click on a schedule that fired meanwhile is applied, because the definition the operator looked at is still the one stored. A pause, and pausing a paused schedule, never makes a later click stale.
+
+`TaskClient.deleteSchedule(id)` is the application's own call. It names no revision and removes the definition whatever its revision is.
 
 ## Definitions that cannot be evaluated
 

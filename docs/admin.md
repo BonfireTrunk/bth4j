@@ -36,10 +36,10 @@ admin.cancel(id, revision, "reason");              // CANCELLED, REQUESTED, NOT_
 admin.cancelByKey("welcome-42", "reason");         // the holder of the key: the outcomes of cancel, with NOT_FOUND also for a removed holder
 admin.delete(id, revision);                        // any state but LEASED: DELETED, NOT_FOUND, STALE or LEASED
 admin.pauseQueue("mail", true);
-admin.schedules();                                 // ScheduleView: cron, zone id, misfire, fixed delay, paused, next fire
-admin.pauseSchedule("poll-feed", false);           // resume a paused one; a fixed-delay definition is re-armed one delay from now
-admin.triggerSchedule("nightly-report");           // fires at the next recurring check
-admin.deleteSchedule("nightly-report");
+admin.schedules();                                 // ScheduleView: revision, cron, zone id, misfire, fixed delay, paused, next fire
+admin.pauseSchedule("poll-feed", revision, false); // resume a paused one; a fixed-delay definition is re-armed one delay from now
+admin.triggerSchedule("nightly-report", revision); // fires at the next recurring check
+admin.deleteSchedule("nightly-report", revision);  // each of the three: ScheduleOutcome.APPLIED, NOT_FOUND or STALE
 admin.runners();
 admin.unservedWork();
 admin.purgeStaleRunners(Duration.ofMinutes(10));
@@ -61,6 +61,22 @@ Every change to a task takes the revision the operator saw. A refusal changes no
 | `cancel(id, revision, reason)` | `CancelOutcome.CANCELLED` or `REQUESTED`, or `NOT_FOUND`, `STALE` or `FINISHED` (the task is already in a final state). See [Cancelling tasks](retries-and-cancelling.md#cancelling-tasks). |
 | `cancelByKey(key, reason)` | `NOT_FOUND` when no task holds the key (also when the holder was removed), `FINISHED` when the holder has finished, else the outcome of `cancel` for the holder. `STALE` only when the holder changed between the read and the cancel. |
 | `delete(id, revision)` | `DeleteOutcome.DELETED`, or `NOT_FOUND`, `STALE` or `LEASED` (a running task cannot be deleted). |
+
+Changes to a schedule work the same way, with the `revision` of the `ScheduleView` the operator saw. A schedule has no state, so there are three outcomes, answered in this order:
+
+| Order | `ScheduleOutcome` | Meaning |
+|---|---|---|
+| 1 | `NOT_FOUND` | No schedule has this id, whatever the revision. |
+| 2 | `STALE` | The revision is not the schedule's current one: its definition was replaced or its fire time was set again since the operator loaded it. |
+| 3 | `APPLIED` | The change was made, or there was nothing to change (pausing a paused schedule). |
+
+| Call | Possible results |
+|---|---|
+| `pauseSchedule(id, revision, paused)` | `ScheduleOutcome.APPLIED`, `NOT_FOUND` or `STALE`; `paused` false resumes. |
+| `triggerSchedule(id, revision)` | The same. |
+| `deleteSchedule(id, revision)` | The same. |
+
+What the revision protects against, and what it does not, is on [Recurring tasks](recurring-tasks.md#changing-a-schedule-that-someone-else-changed). `TaskClient.deleteSchedule(id)` is the application's own call: it names no revision and removes the definition whatever its revision is.
 
 ## Retrying a task
 
@@ -283,7 +299,7 @@ Task ids and revisions are JSON strings.
 | `tasks` | A list with `state`, `queue`, `cursor` and `limit` (up to 200). One task, its `payload`, `retry`, `cancel` and delete. Retry and cancel take the `revision` in the JSON body, delete takes it as the query value `revision=`. |
 | `tasks/by-key?key=` | Reads the task that holds a unique key. |
 | `tasks/by-key/cancel?key=` | Cancels the task that holds the key, with a body of `{"reason"}` and no revision. |
-| `schedules` | The schedules, with `pause`, `resume`, `trigger` and delete. |
+| `schedules` | The schedules, each with its `revision` (a string). `schedules/{id}/pause`, `resume` and `trigger` take the `revision` in the JSON body, `DELETE schedules/{id}` takes it as the query value `revision=`, as the task routes do. A missing or malformed revision is answered 400. |
 | `runners` | The runners. |
 | `unserved` | Queued work that no live accepting runner can process. |
 | `issues` | The runner's issues. |
@@ -317,12 +333,12 @@ Viewers may read, and admins may also change (see [Roles](#roles)).
 |---|---|
 | 400 | A missing or unknown `state`, or a `limit` below 1, on the tasks list. A malformed `cursor`. An unknown queue name in the tasks filter. A missing or blank by-key key, or one over 256 characters. |
 | 403 | A viewer sent a mutation. |
-| 404 | An unknown id. An unknown queue name on pause and resume. No task holds the key on a by-key read or cancel. A retry, cancel or delete of a task that does not exist answers `{"code":"NOT_FOUND", ...}`. |
-| 409 | A retry, cancel or delete the task's revision or state refuses, with a `code` that says which, as listed below. |
+| 404 | An unknown id. An unknown queue name on pause and resume. No task holds the key on a by-key read or cancel. A retry, cancel or delete of a task that does not exist, and a pause, resume, trigger or delete of a schedule that does not exist, answers `{"code":"NOT_FOUND", ...}`. |
+| 409 | A retry, cancel or delete the task's revision or state refuses, and a schedule action whose revision is not the schedule's current one, with a `code` that says which, as listed below. |
 | 422 | A task whose stored value cannot be read, with `code: "UNREADABLE_TASK"`. |
 | 429 | Too many failed logins from one address or for one user name. |
 
-A retry, cancel or delete that is refused answers the code the store decided on, without a second lookup:
+A retry, cancel or delete that is refused answers the code the store decided on, without a second lookup. A refused schedule action answers `NOT_FOUND` and `STALE` the same way, with "schedule" in the message:
 
 | Outcome | Status | `code` | The message says |
 |---|---|---|---|
@@ -352,7 +368,7 @@ The dashboard is the static Vue 3 app in `dashboard/`. It has no build step. It 
 | Queues | The queues. |
 | Tasks | Tasks with filters, and a detail view: timeline, steps, failures and the payload. |
 | Dead tasks | The dead tasks. |
-| Schedules | The schedules. |
+| Schedules | The schedules. Every action sends the revision shown; a schedule that changed meanwhile is refused and the page asks for a reload. |
 | Runners | The runners, with coverage and quiet status. |
 | Issues | The issues. |
 

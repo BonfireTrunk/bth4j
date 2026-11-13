@@ -366,10 +366,10 @@ class DefaultAdminOpsTest {
 
     @Test
     void aMissingScheduleIdIsRejectedBeforeTheStore() {
-        assertThatThrownBy(() -> ops.pauseSchedule(null, true)).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> ops.pauseSchedule(null, false)).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> ops.triggerSchedule(null)).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> ops.deleteSchedule(null)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.pauseSchedule(null, 1, true)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.pauseSchedule(null, 1, false)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.triggerSchedule(null, 1)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.deleteSchedule(null, 1)).isInstanceOf(TaskValidationException.class);
         assertThat(calls).isEmpty();
     }
 
@@ -384,10 +384,10 @@ class DefaultAdminOpsTest {
 
     @Test
     void aScheduleIdWithAU0000IsRejectedBeforeTheStore() {
-        assertThatThrownBy(() -> ops.pauseSchedule("s\u0000", true)).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> ops.pauseSchedule("s\u0000", false)).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> ops.triggerSchedule("s\u0000")).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> ops.deleteSchedule("s\u0000")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.pauseSchedule("s\u0000", 1, true)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.pauseSchedule("s\u0000", 1, false)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.triggerSchedule("s\u0000", 1)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.deleteSchedule("s\u0000", 1)).isInstanceOf(TaskValidationException.class);
         assertThat(calls).isEmpty();
     }
 
@@ -637,6 +637,7 @@ class DefaultAdminOpsTest {
         assertThat(views).hasSize(2);
         var nightly = views.get(0);
         assertThat(nightly.id()).isEqualTo("nightly");
+        assertThat(nightly.revision()).isEqualTo(3);
         assertThat(nightly.typeName()).isEqualTo("send-mail");
         assertThat(nightly.queue()).isEqualTo("Q:OTHER");
         assertThat(nightly.account()).isEqualTo("acme");
@@ -691,27 +692,27 @@ class DefaultAdminOpsTest {
     }
 
     @Test
-    void pausingAScheduleOnlyTellsTheStore() {
-        handlers.put("pauseSchedule", a -> true);
+    void pausingAScheduleOnlyTellsTheStoreTheRevisionTheOperatorSaw() {
+        handlers.put("pauseSchedule", a -> ScheduleOutcome.APPLIED);
 
-        assertThat(ops.pauseSchedule("poll", true)).isTrue();
+        assertThat(ops.pauseSchedule("poll", 7, true)).isEqualTo(ScheduleOutcome.APPLIED);
 
-        assertThat(calls).containsExactly("pauseSchedule[poll]");
+        assertThat(calls).containsExactly("pauseSchedule[poll, 7]");
     }
 
     @Test
-    void resumingAnUnknownScheduleReturnsFalseAndDoesNothingElse() {
-        handlers.put("resumeSchedule", a -> false);
+    void resumingAnUnknownScheduleReturnsTheStoreAnswerAndDoesNothingElse() {
+        handlers.put("resumeSchedule", a -> ScheduleOutcome.NOT_FOUND);
         handlers.put("schedules", a -> List.of());
 
-        assertThat(ops.pauseSchedule("missing", false)).isFalse();
+        assertThat(ops.pauseSchedule("missing", 3, false)).isEqualTo(ScheduleOutcome.NOT_FOUND);
 
-        assertThat(calls).containsExactly("schedules[]", "resumeSchedule[missing, null]");
+        assertThat(calls).containsExactly("schedules[]", "resumeSchedule[missing, 3, null]");
     }
 
     @Test
     void resumingAFixedDelayScheduleRearmsItsNextFireFromNowInTheSameStoreCall() {
-        handlers.put("resumeSchedule", a -> true);
+        handlers.put("resumeSchedule", a -> ScheduleOutcome.APPLIED);
         handlers.put(
                 "schedules",
                 a -> List.of(
@@ -719,44 +720,56 @@ class DefaultAdminOpsTest {
                         new ScheduleEntry(
                                 definition("poll", null, Duration.ofMillis(90_000), false), NOW.plusSeconds(999))));
 
-        assertThat(ops.pauseSchedule("poll", false)).isTrue();
+        assertThat(ops.pauseSchedule("poll", 5, false)).isEqualTo(ScheduleOutcome.APPLIED);
 
-        assertThat(calls).containsExactly("schedules[]", "resumeSchedule[poll, " + NOW.plusSeconds(90) + "]");
+        assertThat(calls).containsExactly("schedules[]", "resumeSchedule[poll, 5, " + NOW.plusSeconds(90) + "]");
     }
 
     @Test
     void resumingACronScheduleKeepsItsNextFire() {
-        handlers.put("resumeSchedule", a -> true);
+        handlers.put("resumeSchedule", a -> ScheduleOutcome.APPLIED);
         handlers.put(
                 "schedules", a -> List.of(new ScheduleEntry(definition("nightly", "0 2 * * *", null, false), NOW)));
 
-        assertThat(ops.pauseSchedule("nightly", false)).isTrue();
+        assertThat(ops.pauseSchedule("nightly", 2, false)).isEqualTo(ScheduleOutcome.APPLIED);
 
-        assertThat(calls).containsExactly("schedules[]", "resumeSchedule[nightly, null]");
+        assertThat(calls).containsExactly("schedules[]", "resumeSchedule[nightly, 2, null]");
     }
 
     @Test
-    void triggeringAScheduleSetsItsNextFireToNow() {
-        handlers.put("triggerSchedule", a -> true);
+    void aStaleResumeIsTheStoreAnswer() {
+        handlers.put("resumeSchedule", a -> ScheduleOutcome.STALE);
+        handlers.put("schedules", a -> List.of());
 
-        assertThat(ops.triggerSchedule("nightly")).isTrue();
-
-        assertThat(calls).containsExactly("triggerSchedule[nightly, " + NOW + "]");
+        assertThat(ops.pauseSchedule("nightly", 2, false)).isEqualTo(ScheduleOutcome.STALE);
     }
 
     @Test
-    void triggeringAnUnknownScheduleReturnsTheStoreAnswer() {
-        handlers.put("triggerSchedule", a -> false);
+    void triggeringAScheduleSetsItsNextFireToNowAndSendsTheRevision() {
+        handlers.put("triggerSchedule", a -> ScheduleOutcome.APPLIED);
 
-        assertThat(ops.triggerSchedule("missing")).isFalse();
+        assertThat(ops.triggerSchedule("nightly", 4)).isEqualTo(ScheduleOutcome.APPLIED);
+
+        assertThat(calls).containsExactly("triggerSchedule[nightly, 4, " + NOW + "]");
     }
 
     @Test
-    void deletingAScheduleDelegatesToTheStore() {
-        handlers.put("deleteSchedule", a -> a[0].equals("nightly"));
+    void triggeringAnUnknownOrStaleScheduleReturnsTheStoreAnswer() {
+        handlers.put(
+                "triggerSchedule", a -> a[0].equals("missing") ? ScheduleOutcome.NOT_FOUND : ScheduleOutcome.STALE);
 
-        assertThat(ops.deleteSchedule("nightly")).isTrue();
-        assertThat(ops.deleteSchedule("missing")).isFalse();
+        assertThat(ops.triggerSchedule("missing", 1)).isEqualTo(ScheduleOutcome.NOT_FOUND);
+        assertThat(ops.triggerSchedule("nightly", 1)).isEqualTo(ScheduleOutcome.STALE);
+    }
+
+    @Test
+    void deletingAScheduleDelegatesToTheStoreWithTheRevision() {
+        handlers.put(
+                "deleteSchedule", a -> a[0].equals("nightly") ? ScheduleOutcome.APPLIED : ScheduleOutcome.NOT_FOUND);
+
+        assertThat(ops.deleteSchedule("nightly", 9)).isEqualTo(ScheduleOutcome.APPLIED);
+        assertThat(ops.deleteSchedule("missing", 9)).isEqualTo(ScheduleOutcome.NOT_FOUND);
+        assertThat(calls).containsExactly("deleteSchedule[nightly, 9]", "deleteSchedule[missing, 9]");
     }
 
     @Test

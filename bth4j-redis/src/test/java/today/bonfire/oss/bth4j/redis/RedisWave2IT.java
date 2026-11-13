@@ -27,6 +27,7 @@ import today.bonfire.oss.bth4j.DeleteOutcome;
 import today.bonfire.oss.bth4j.FailureInfo;
 import today.bonfire.oss.bth4j.QueueInfo;
 import today.bonfire.oss.bth4j.RetryOutcome;
+import today.bonfire.oss.bth4j.ScheduleOutcome;
 import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
@@ -684,20 +685,20 @@ class RedisWave2IT {
         var fire = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MILLIS);
         store.putSchedule(cron("s"), fire, fire);
 
-        assertThat(store.pauseSchedule("s")).isTrue();
+        assertThat(store.pauseSchedule("s", null)).isEqualTo(ScheduleOutcome.APPLIED);
 
         assertThat(store.dueSchedules(Instant.now(), 10)).isEmpty();
         assertThat(jedis.zscore(keys.cron, "s")).isNull();
         assertThat(store.schedules().getFirst().definition().paused()).isTrue();
         assertThat(store.schedules().getFirst().nextFireAt()).isEqualTo(fire);
 
-        assertThat(store.resumeSchedule("s", null)).isTrue();
+        assertThat(store.resumeSchedule("s", null, null)).isEqualTo(ScheduleOutcome.APPLIED);
 
         var due = store.dueSchedules(Instant.now(), 10);
         assertThat(due).hasSize(1);
         assertThat(due.getFirst().fireAt()).isEqualTo(fire);
         assertThat(due.getFirst().definition().paused()).isFalse();
-        assertThat(store.pauseSchedule("missing")).isFalse();
+        assertThat(store.pauseSchedule("missing", null)).isEqualTo(ScheduleOutcome.NOT_FOUND);
     }
 
     @Test
@@ -759,7 +760,7 @@ class RedisWave2IT {
         assertThat(store.schedules().getFirst().definition().paused()).isTrue();
         assertThat(jedis.zscore(keys.cron, "s")).isNull();
 
-        store.resumeSchedule("s", null);
+        store.resumeSchedule("s", null, null);
         store.putSchedule(cron("s").withPaused(true), fire, fire);
 
         assertThat(store.schedules().getFirst().definition().paused()).isFalse();
@@ -772,7 +773,7 @@ class RedisWave2IT {
         var fire = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MILLIS);
         store.putSchedule(cron("s"), fire, fire);
         var due = store.dueSchedules(Instant.now(), 10).getFirst();
-        store.pauseSchedule("s");
+        store.pauseSchedule("s", null);
 
         assertThat(store.commitSchedule(due, fire.plusSeconds(60), task(80).build())
                         .isCommitted())
@@ -780,7 +781,7 @@ class RedisWave2IT {
 
         assertThat(store.task(80)).isEmpty();
         assertThat(store.schedules().getFirst().nextFireAt()).isEqualTo(fire);
-        store.resumeSchedule("s", null);
+        store.resumeSchedule("s", null, null);
         assertThat(store.commitSchedule(due, fire.plusSeconds(60), task(80).build())
                         .isCommitted())
                 .isTrue();
@@ -808,16 +809,16 @@ class RedisWave2IT {
         store.putSchedule(cron("s"), fire, fire);
         var now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
 
-        assertThat(store.triggerSchedule("s", now)).isTrue();
+        assertThat(store.triggerSchedule("s", null, now)).isEqualTo(ScheduleOutcome.APPLIED);
 
         assertThat(store.nextFireTimes()).containsEntry("s", now);
         assertThat(store.dueSchedules(now.plusSeconds(1), 10)).hasSize(1);
-        assertThat(store.triggerSchedule("missing", now)).isFalse();
+        assertThat(store.triggerSchedule("missing", null, now)).isEqualTo(ScheduleOutcome.NOT_FOUND);
 
-        store.pauseSchedule("s");
-        assertThat(store.triggerSchedule("s", fire)).isTrue();
+        store.pauseSchedule("s", null);
+        assertThat(store.triggerSchedule("s", null, fire)).isEqualTo(ScheduleOutcome.APPLIED);
         assertThat(store.dueSchedules(fire.plusSeconds(1), 10)).isEmpty();
-        store.resumeSchedule("s", null);
+        store.resumeSchedule("s", null, null);
         assertThat(store.nextFireTimes()).containsEntry("s", fire);
     }
 
@@ -826,7 +827,7 @@ class RedisWave2IT {
         store.putSchedule(
                 cron("s"), Instant.now().plusSeconds(60), Instant.now().plusSeconds(60));
 
-        assertThat(store.deleteSchedule("s")).isTrue();
+        assertThat(store.deleteSchedule("s", null)).isEqualTo(ScheduleOutcome.APPLIED);
 
         assertThat(store.schedules()).isEmpty();
         assertThat(jedis.scard(keys.cronDefinitions)).isZero();

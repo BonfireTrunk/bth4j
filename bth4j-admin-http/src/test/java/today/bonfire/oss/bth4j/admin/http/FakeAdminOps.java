@@ -17,6 +17,7 @@ import today.bonfire.oss.bth4j.QueueInfo;
 import today.bonfire.oss.bth4j.RetryOutcome;
 import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.RunnerView;
+import today.bonfire.oss.bth4j.ScheduleOutcome;
 import today.bonfire.oss.bth4j.ScheduleView;
 import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.TaskState;
@@ -187,21 +188,27 @@ final class FakeAdminOps implements AdminOps {
     }
 
     @Override
-    public boolean pauseSchedule(String id, boolean paused) {
-        calls.add("pauseSchedule " + id + ' ' + paused);
-        return schedules.stream().anyMatch(s -> s.id().equals(id));
+    public ScheduleOutcome pauseSchedule(String id, long revision, boolean paused) {
+        calls.add("pauseSchedule " + id + ' ' + revision + ' ' + paused);
+        return scheduleOutcome(id, revision);
     }
 
     @Override
-    public boolean triggerSchedule(String id) {
-        calls.add("triggerSchedule " + id);
-        return schedules.stream().anyMatch(s -> s.id().equals(id));
+    public ScheduleOutcome triggerSchedule(String id, long revision) {
+        calls.add("triggerSchedule " + id + ' ' + revision);
+        return scheduleOutcome(id, revision);
     }
 
     @Override
-    public boolean deleteSchedule(String id) {
-        calls.add("deleteSchedule " + id);
-        return schedules.stream().anyMatch(s -> s.id().equals(id));
+    public ScheduleOutcome deleteSchedule(String id, long revision) {
+        calls.add("deleteSchedule " + id + ' ' + revision);
+        return scheduleOutcome(id, revision);
+    }
+
+    private ScheduleOutcome scheduleOutcome(String id, long revision) {
+        var found = schedules.stream().filter(s -> s.id().equals(id)).findFirst();
+        if (found.isEmpty()) return ScheduleOutcome.NOT_FOUND;
+        return found.get().revision() == revision ? ScheduleOutcome.APPLIED : ScheduleOutcome.STALE;
     }
 
     @Override

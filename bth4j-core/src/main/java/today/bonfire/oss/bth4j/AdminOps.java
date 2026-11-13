@@ -130,18 +130,33 @@ public interface AdminOps {
 
     List<ScheduleView> schedules();
 
-    boolean pauseSchedule(String id, boolean paused);
+    /**
+     * Pauses or resumes a definition. Every schedule write takes the {@link ScheduleView#revision()} the operator
+     * saw, and is refused as {@link ScheduleOutcome#STALE} when a write that is not the runner's replaced or
+     * re-timed the definition meanwhile. A pause and a runner fire keep the revision.
+     *
+     * @return {@link ScheduleOutcome#APPLIED} on success, else {@link ScheduleOutcome#NOT_FOUND} or
+     *         {@link ScheduleOutcome#STALE}
+     */
+    ScheduleOutcome pauseSchedule(String id, long revision, boolean paused);
 
     /**
      * Fires the definition at the next recurring check, whatever its next fire time was and however late that
      * check comes: the misfire policy does not apply to a triggered fire. A paused definition fires nothing
      * until it is resumed.
      *
-     * @return false when no definition with that id exists
+     * @return {@link ScheduleOutcome#APPLIED} on success, else {@link ScheduleOutcome#NOT_FOUND} or
+     *         {@link ScheduleOutcome#STALE}
      */
-    boolean triggerSchedule(String id);
+    ScheduleOutcome triggerSchedule(String id, long revision);
 
-    boolean deleteSchedule(String id);
+    /**
+     * Removes a definition.
+     *
+     * @return {@link ScheduleOutcome#APPLIED} on success, else {@link ScheduleOutcome#NOT_FOUND} or
+     *         {@link ScheduleOutcome#STALE}
+     */
+    ScheduleOutcome deleteSchedule(String id, long revision);
 
     /** @return the health of the runner this instance belongs to, or empty for a client-only instance */
     Optional<RunnerHealth> health();

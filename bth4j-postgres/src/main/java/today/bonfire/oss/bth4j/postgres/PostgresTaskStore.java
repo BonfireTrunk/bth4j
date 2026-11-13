@@ -31,6 +31,7 @@ import today.bonfire.oss.bth4j.PutScheduleOutcome;
 import today.bonfire.oss.bth4j.PutScheduleResult;
 import today.bonfire.oss.bth4j.QueueInfo;
 import today.bonfire.oss.bth4j.RetryOutcome;
+import today.bonfire.oss.bth4j.ScheduleOutcome;
 import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.StepResult;
 import today.bonfire.oss.bth4j.TaskState;
@@ -1369,12 +1370,25 @@ public final class PostgresTaskStore implements FullStore {
 
     /** @return false when there is no row to lock */
     private boolean lockSchedule(Connection c, String scheduleId) throws SQLException {
-        try (var ps = c.prepareStatement("SELECT 1 FROM " + schedule + " WHERE id = ? FOR UPDATE")) {
+        return lockedRevision(c, scheduleId) != null;
+    }
+
+    /** @return the revision of the row, which stays locked until the transaction ends; null when there is no row */
+    private Long lockedRevision(Connection c, String scheduleId) throws SQLException {
+        try (var ps = c.prepareStatement("SELECT rev FROM " + schedule + " WHERE id = ? FOR UPDATE")) {
             ps.setString(1, scheduleId);
             try (var rs = ps.executeQuery()) {
-                return rs.next();
+                return rs.next() ? rs.getLong(1) : null;
             }
         }
+    }
+
+    /** Locks the row first. @return null when the definition exists and has the expected revision or none is expected */
+    private ScheduleOutcome scheduleRefusal(Connection c, String scheduleId, Long expectedRevision)
+            throws SQLException {
+        var revision = lockedRevision(c, scheduleId);
+        if (revision == null) return ScheduleOutcome.NOT_FOUND;
+        return expectedRevision != null && !expectedRevision.equals(revision) ? ScheduleOutcome.STALE : null;
     }
 
     private static void bindSchedule(PreparedStatement ps, StoredSchedule d, Instant nextFire) throws SQLException {
@@ -1425,8 +1439,16 @@ public final class PostgresTaskStore implements FullStore {
     }
 
     @Override
-    public boolean deleteSchedule(String scheduleId) {
-        return update("DELETE FROM " + schedule + " WHERE id = ?", ps -> ps.setString(1, scheduleId));
+    public ScheduleOutcome deleteSchedule(String scheduleId, Long expectedRevision) {
+        return inTransaction(c -> {
+            var refused = scheduleRefusal(c, scheduleId, expectedRevision);
+            if (refused != null) return refused;
+            try (var ps = c.prepareStatement("DELETE FROM " + schedule + " WHERE id = ?")) {
+                ps.setString(1, scheduleId);
+                ps.executeUpdate();
+            }
+            return ScheduleOutcome.APPLIED;
+        });
     }
 
     @Override
@@ -2175,32 +2197,38 @@ public final class PostgresTaskStore implements FullStore {
     }
 
     @Override
-    public boolean pauseSchedule(String scheduleId) {
-        return update("UPDATE " + schedule + " SET paused = true WHERE id = ?", ps -> ps.setString(1, scheduleId));
+    public ScheduleOutcome pauseSchedule(String scheduleId, Long expectedRevision) {
+        return inTransaction(c -> {
+            var refused = scheduleRefusal(c, scheduleId, expectedRevision);
+            if (refused != null) return refused;
+            try (var ps = c.prepareStatement("UPDATE " + schedule + " SET paused = true WHERE id = ?")) {
+                ps.setString(1, scheduleId);
+                ps.executeUpdate();
+            }
+            return ScheduleOutcome.APPLIED;
+        });
     }
 
-    /** Only a paused row is written; the existence check reads the same statement's snapshot. */
+    /** Only a paused row is written. */
     @Override
-    public boolean resumeSchedule(String scheduleId, Instant nextFire) {
-        return withConnection(c -> {
-            try (var ps = c.prepareStatement("WITH u AS (UPDATE " + schedule + " SET paused = false,"
+    public ScheduleOutcome resumeSchedule(String scheduleId, Long expectedRevision, Instant nextFire) {
+        return inTransaction(c -> {
+            var refused = scheduleRefusal(c, scheduleId, expectedRevision);
+            if (refused != null) return refused;
+            try (var ps = c.prepareStatement("UPDATE " + schedule + " SET paused = false,"
                     + "   next_fire = CASE WHEN " + occurrenceRunning() + " THEN next_fire"
                     + "     ELSE COALESCE(?::timestamptz, next_fire) END,"
                     + "   triggered = triggered AND (?::timestamptz IS NULL OR " + occurrenceRunning() + "),"
                     + "   rev = CASE WHEN ?::timestamptz IS NULL OR " + occurrenceRunning() + " THEN rev"
                     + "     ELSE nextval('" + scheduleSeq + "') END"
-                    + "   WHERE id = ? AND paused RETURNING 1)"
-                    + " SELECT EXISTS (SELECT 1 FROM u) OR EXISTS (SELECT 1 FROM " + schedule + " WHERE id = ?)")) {
+                    + "   WHERE id = ? AND paused")) {
                 setInstant(ps, 1, nextFire);
                 setInstant(ps, 2, nextFire);
                 setInstant(ps, 3, nextFire);
                 ps.setString(4, scheduleId);
-                ps.setString(5, scheduleId);
-                try (var rs = ps.executeQuery()) {
-                    rs.next();
-                    return rs.getBoolean(1);
-                }
+                ps.executeUpdate();
             }
+            return ScheduleOutcome.APPLIED;
         });
     }
 
@@ -2211,14 +2239,18 @@ public final class PostgresTaskStore implements FullStore {
 
     /** A commit already in flight for the old definition fails, because it checks the revision and fire time it read. */
     @Override
-    public boolean triggerSchedule(String scheduleId, Instant fireAt) {
-        return update(
-                "UPDATE " + schedule + " SET next_fire = ?, triggered = true, rev = nextval('" + scheduleSeq
-                        + "'), occurrence_id = NULL WHERE id = ?",
-                ps -> {
-                    setInstant(ps, 1, fireAt);
-                    ps.setString(2, scheduleId);
-                });
+    public ScheduleOutcome triggerSchedule(String scheduleId, Long expectedRevision, Instant fireAt) {
+        return inTransaction(c -> {
+            var refused = scheduleRefusal(c, scheduleId, expectedRevision);
+            if (refused != null) return refused;
+            try (var ps = c.prepareStatement("UPDATE " + schedule + " SET next_fire = ?, triggered = true,"
+                    + " rev = nextval('" + scheduleSeq + "'), occurrence_id = NULL WHERE id = ?")) {
+                setInstant(ps, 1, fireAt);
+                ps.setString(2, scheduleId);
+                ps.executeUpdate();
+            }
+            return ScheduleOutcome.APPLIED;
+        });
     }
 
     @Override

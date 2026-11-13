@@ -438,7 +438,7 @@ public final class TaskClient {
     /** @return true when a definition with that id existed */
     public boolean deleteSchedule(String id) {
         StoredText.requirePresent("schedule id", id);
-        return store.deleteSchedule(id);
+        return store.deleteSchedule(id, null) == ScheduleOutcome.APPLIED;
     }
 
     /** @return every definition's id with its next fire time; {@link AdminOps#schedules()} lists the definitions */

@@ -60,14 +60,16 @@ the login page.
 - **Viewer**: can look at everything, including task payloads. Every action button
   (retry, cancel, delete, pause/resume, trigger, retry-all) is visible but disabled.
 - **Admin**: all of the above. Every mutation asks for confirmation; cancel also requires a reason.
-  Task actions send the revision shown on screen. If the task changed meanwhile the server answers `409`
-  with the code `STALE` and the dashboard shows a "changed meanwhile, reload" prompt instead of overwriting.
+  Task and schedule actions send the revision shown on screen. If the task or schedule changed meanwhile the
+  server answers `409` with the code `STALE` and the dashboard shows a "changed meanwhile, reload" prompt
+  instead of overwriting. A schedule's revision changes when its definition is replaced or its fire time is set
+  again (a trigger); a pause and a runner fire keep it.
   A task whose state refuses the action (`WRONG_STATE`) shows the server's message, and a task that is gone
-  (`NOT_FOUND`) is reported as no longer existing.
+  (`NOT_FOUND`) is reported as no longer existing; the same holds for a schedule.
   Trigger moves a schedule's next fire time to now, and the runner creates the task on its next scheduling
   round; it is disabled for a paused schedule, which does not fire (resume it first).
 
-Task ids and revisions are handled as strings and never parsed to numbers (they can exceed 2^53).
+Task ids and task and schedule revisions are handled as strings and never parsed to numbers (they can exceed 2^53).
 
 ## Trying it without Java
 

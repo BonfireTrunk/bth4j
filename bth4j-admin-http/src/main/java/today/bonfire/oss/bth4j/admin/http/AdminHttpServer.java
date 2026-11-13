@@ -33,6 +33,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.AdminOps;
 import today.bonfire.oss.bth4j.Loggers;
+import today.bonfire.oss.bth4j.ScheduleOutcome;
 import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.TaskRequest;
 import today.bonfire.oss.bth4j.TaskState;
@@ -380,10 +381,25 @@ public final class AdminHttpServer implements AutoCloseable {
             case "POST tasks/{}/cancel" -> cancel(ex, taskId(param));
             case "DELETE tasks/{}" -> delete(ex, taskId(param));
             case "GET schedules" -> sendJson(ex, 200, Views.list(admin.schedules(), Views::schedule));
-            case "POST schedules/{}/pause" -> scheduleChange(ex, admin.pauseSchedule(param, true));
-            case "POST schedules/{}/resume" -> scheduleChange(ex, admin.pauseSchedule(param, false));
-            case "POST schedules/{}/trigger" -> scheduleChange(ex, admin.triggerSchedule(param));
-            case "DELETE schedules/{}" -> scheduleChange(ex, admin.deleteSchedule(param));
+            case "POST schedules/{}/pause" -> {
+                var revision = scheduleRevision(readObject(ex).get("revision"));
+                scheduleChange(ex, admin.pauseSchedule(param, revision, true));
+            }
+            case "POST schedules/{}/resume" -> {
+                var revision = scheduleRevision(readObject(ex).get("revision"));
+                scheduleChange(ex, admin.pauseSchedule(param, revision, false));
+            }
+            case "POST schedules/{}/trigger" -> {
+                var revision = scheduleRevision(readObject(ex).get("revision"));
+                scheduleChange(ex, admin.triggerSchedule(param, revision));
+            }
+            case "DELETE schedules/{}" -> {
+                var raw = query(ex).get("revision");
+                if (raw == null) {
+                    throw new HttpError(400, "revision is required");
+                }
+                scheduleChange(ex, admin.deleteSchedule(param, scheduleRevision(raw)));
+            }
             case "GET runners" -> sendJson(ex, 200, Views.list(admin.runners(), Views::runner));
             case "GET unserved" -> sendJson(ex, 200, Views.list(admin.unservedWork(), Views::unserved));
             case "GET issues" -> sendJson(ex, 200, Views.list(admin.issues(), Views::issue));
@@ -661,18 +677,23 @@ public final class AdminHttpServer implements AutoCloseable {
     }
 
     private static HttpError stale() {
-        return new HttpError(409, "the task changed since it was loaded", "STALE");
+        return stale("task");
+    }
+
+    private static HttpError stale(String what) {
+        return new HttpError(409, "the " + what + " changed since it was loaded", "STALE");
     }
 
     private static HttpError wrongState(String message) {
         return new HttpError(409, message, "WRONG_STATE");
     }
 
-    private void scheduleChange(HttpExchange ex, boolean found) throws IOException {
-        if (!found) {
-            throw new HttpError(404, "unknown schedule");
+    private void scheduleChange(HttpExchange ex, ScheduleOutcome outcome) throws IOException {
+        switch (outcome) {
+            case NOT_FOUND -> throw notFound("there is no such schedule");
+            case STALE -> throw stale("schedule");
+            case APPLIED -> sendJson(ex, 200, Views.obj("ok", true));
         }
-        sendJson(ex, 200, Views.obj("ok", true));
     }
 
     private today.bonfire.oss.bth4j.TaskView requireTask(long id) {
@@ -697,13 +718,22 @@ public final class AdminHttpServer implements AutoCloseable {
 
     private static int revision(Object raw) {
         try {
+            return Math.toIntExact(scheduleRevision(raw));
+        } catch (ArithmeticException e) {
+            throw new HttpError(400, "revision is not a valid number");
+        }
+    }
+
+    /** A task's revision is a 32-bit integer and a schedule's a 64-bit one; both come as a string or a number. */
+    private static long scheduleRevision(Object raw) {
+        try {
             if (raw instanceof String s) {
-                return Integer.parseInt(s);
+                return Long.parseLong(s);
             }
             if (raw instanceof Long l) {
-                return Math.toIntExact(l);
+                return l;
             }
-        } catch (NumberFormatException | ArithmeticException e) {
+        } catch (NumberFormatException e) {
             throw new HttpError(400, "revision is not a valid number");
         }
         throw new HttpError(400, "revision is required");
