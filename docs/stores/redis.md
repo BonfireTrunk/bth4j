@@ -128,7 +128,7 @@ Other details:
 | Task and recurring-definition hashes, field `ty` | the type id |
 | Recurring-definition hash, field `trg` | set to 1 while the next fire time is one an operator triggered |
 | Runner hash, field `accepting` | set to 1 on registration; the heartbeat script updates it |
-| `ts:<digest>` lifetime | expires a day after the last claim that named it; a claim writes it again when it is missing |
+| `ts:<digest>` lifetime | a claim that finds less than half a day left on it extends it to a day, so a runner that polls an idle queue writes nothing; it expires between twelve and twenty-four hours after the last claim that named it, and a claim writes it again when it is missing |
 | Work per call | lease renewals and batched acknowledgements go in groups of 256 leases, and one call removes at most 500 stale runners, so that no call blocks the server for long |
 | Zset writes | are collected per key and sent as one command per key at the end of a script |
 | Task ids in scripts | travel as text, because a Lua number is a double and keeps 53 bits; revisions, attempts and times are numbers |

@@ -199,6 +199,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Admin HTTP: a static file carries an `ETag` made from its size and modification time, and a request whose `If-None-Match` names it is answered `304 Not Modified` without reading the file. The dashboard asks on every page load (`Cache-Control: no-cache` stays) and no longer downloads about 230 KB each time.
 - The dashboard polls `/overview` once for the page and the header together: an open overview page makes 12 requests a minute where it made 18.
 - Redis and Valkey: a page of the task listing is one script call and one round trip, where it made one call per queue and type (a page of QUEUED tasks over 20 queues with 50 types made 1,001 round trips). The script merges the sets on the server in the same order, with the same cursor.
+- Redis and Valkey: a claim that finds nothing no longer writes. It extended the lifetime of the runner's type set on every call, so an idle runner wrote twice a second to the append-only file and to every replica; now it extends it once less than half of its day is left.
 
 ### Fixed
 

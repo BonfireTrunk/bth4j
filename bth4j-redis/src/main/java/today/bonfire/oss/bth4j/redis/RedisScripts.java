@@ -333,7 +333,8 @@ final class RedisScripts {
     /**
      * ARGV: count, lease ms, runner id, the digest naming the {@code ts:<digest>} set of known type ids ('' for
      * every type), then queue/share/cap triples. Returns {-1} when that set is missing, so that the caller writes
-     * it and calls again; each call extends its life by {@link #TYPE_SET_TTL_MS}. A queue's eligible types are
+     * it and calls again; a call that finds less than half of {@link #TYPE_SET_TTL_MS} left on it extends its life to
+     * the whole time, so that polls of an idle runner do not write. A queue's eligible types are
      * the intersection of {@code active:<qid>} and that set, which Redis computes from the smaller one, so types
      * without queued tasks cost nothing. Both passes share each queue's scan budget of min(count*4, 1000).
      * Eligible type heads are merged by (due, lexical id). Deferred zset writes let each type page by offset
@@ -348,7 +349,11 @@ final class RedisScripts {
             local count = tonumber(ARGV[2])
             local lease = at + tonumber(ARGV[3])
             local tset = ARGV[5] ~= '' and P .. 'ts:' .. ARGV[5] or nil
-            if tset and redis.call('PEXPIRE', tset, @TTL@) == 0 then return {-1} end
+            if tset then
+              local left = redis.call('PTTL', tset)
+              if left == -2 then return {-1} end
+              if left < @TTL@ / 2 then redis.call('PEXPIRE', tset, @TTL@) end
+            end
             local remaining, result, grants = count, {at}, {}
             local function advance(source, size)
               if source.pos > #source.page then

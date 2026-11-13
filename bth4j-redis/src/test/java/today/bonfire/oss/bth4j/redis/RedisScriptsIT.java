@@ -746,4 +746,76 @@ class RedisScriptsIT {
         assertThat(page.get().next()).isNull();
         assertThat(counts.calls("evalsha")).isEqualTo(3);
     }
+
+    // ---- idle claim ------------------------------------------------------------------------------------
+
+    private static final long HALF_TYPE_SET_TTL_MS = RedisScripts.TYPE_SET_TTL_MS / 2;
+
+    private String typeSetAfterOneClaim(Set<Integer> known) {
+        store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, 1, known));
+        return jedis.keys(keys.prefix + "ts:*").iterator().next();
+    }
+
+    @Test
+    void aClaimThatFindsNothingDoesNotWriteWhileTheTypeSetHasMoreThanHalfItsTimeLeft() {
+        var known = Set.of(type, store.typeId("idle"));
+        var set = typeSetAfterOneClaim(known);
+        var left = jedis.pttl(set);
+
+        var counts = ServerCounters.measure(jedis, () -> {
+            for (var i = 0; i < 5; i++) {
+                assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, 1, known)))
+                        .isEmpty();
+            }
+        });
+
+        assertThat(counts.calls("evalsha")).isEqualTo(5);
+        assertThat(counts.calls("pexpire")).isZero();
+        assertThat(jedis.pttl(set)).isLessThanOrEqualTo(left).isGreaterThan(HALF_TYPE_SET_TTL_MS);
+    }
+
+    @Test
+    void aClaimExtendsTheTypeSetToTheWholeTimeOnceLessThanHalfIsLeft() {
+        var known = Set.of(type, store.typeId("idle"));
+        var set = typeSetAfterOneClaim(known);
+        jedis.pexpire(set, HALF_TYPE_SET_TTL_MS - 5_000);
+
+        store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, 1, known));
+
+        assertThat(jedis.pttl(set))
+                .isGreaterThan(RedisScripts.TYPE_SET_TTL_MS - 5_000)
+                .isLessThanOrEqualTo(RedisScripts.TYPE_SET_TTL_MS);
+    }
+
+    @Test
+    void aClaimLeavesTheTypeSetAtHalfItsTimeAloneAndNeverLetsItRunOutWhileItKeepsClaiming() {
+        var known = Set.of(type, store.typeId("idle"));
+        var set = typeSetAfterOneClaim(known);
+        jedis.pexpire(set, HALF_TYPE_SET_TTL_MS + 60_000);
+
+        store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, 1, known));
+
+        assertThat(jedis.pttl(set))
+                .isGreaterThan(HALF_TYPE_SET_TTL_MS)
+                .isLessThanOrEqualTo(HALF_TYPE_SET_TTL_MS + 60_000);
+        for (var step = 0; step < 4; step++) {
+            jedis.pexpire(set, HALF_TYPE_SET_TTL_MS - 1);
+            store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, 1, known));
+            assertThat(jedis.pttl(set)).isGreaterThan(HALF_TYPE_SET_TTL_MS);
+        }
+    }
+
+    @Test
+    void aTypeSetNoClaimTouchesAnymoreKeepsItsExpiryAndIsGoneWhenItEnds() {
+        var known = Set.of(type, store.typeId("idle"));
+        var set = typeSetAfterOneClaim(known);
+
+        assertThat(jedis.pttl(set)).isPositive().isLessThanOrEqualTo(RedisScripts.TYPE_SET_TTL_MS);
+        jedis.pexpireAt(set, 1);
+
+        assertThat(jedis.exists(set)).isFalse();
+        assertThat(store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, 1, known)))
+                .isEmpty();
+        assertThat(jedis.pttl(set)).isPositive();
+    }
 }

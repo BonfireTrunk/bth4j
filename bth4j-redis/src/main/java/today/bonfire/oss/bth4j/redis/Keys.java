@@ -33,8 +33,9 @@ package today.bonfire.oss.bth4j.redis;
  * {@code leased} zset scored by lease expiry ms. The type id is stored in task and recurring-definition hashes as
  * {@code ty}</li>
  * <li>{@code ts:<digest>} set of the type ids one runner handles, named by a digest of the sorted ids and written
- * by the store when a claim finds it missing; a claim intersects it with {@code active:<qid>}. It expires a day
- * after the last claim that named it</li>
+ * by the store when a claim finds it missing; a claim intersects it with {@code active:<qid>}. A claim that finds
+ * less than half a day left on it extends it to a day, so it expires between twelve and twenty-four hours after
+ * the last claim that named it</li>
  * <li>{@code idx:<state>:<qid>} zset scored by stateChanged ms, for LEASED and terminal tasks, which purge reads.
  * Counts are the cardinalities of these zsets, so they cannot drift</li>
  * <li>{@code k:<key>} string holding the id of the task that owns a unique key, with a PEXPIREAT when the key
