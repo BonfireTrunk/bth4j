@@ -76,6 +76,11 @@ final class RedisFaults implements AutoCloseable {
                 .build();
     }
 
+    /** The client that reaches the server directly, for checks that must not be cut. */
+    RedisClient direct() {
+        return direct;
+    }
+
     Faulty faulty(String namespace) {
         var plain = RedisTaskStore.builder().client(direct).namespace(namespace).build();
         var store =

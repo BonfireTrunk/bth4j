@@ -46,7 +46,7 @@ Every store writes a new schema version, and `init` refuses everything written b
 | Redis | a new namespace, or delete the keys of the old one |
 | SQLite | a new database file, or a new namespace in the same file |
 
-The schema versions are 4 for PostgreSQL, 6 for Redis and 2 for SQLite.
+The schema versions are 4 for PostgreSQL, 8 for Redis and 2 for SQLite.
 
 ## Changes the compiler does not show
 

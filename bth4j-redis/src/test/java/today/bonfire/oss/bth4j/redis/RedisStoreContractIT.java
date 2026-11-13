@@ -3,6 +3,7 @@ package today.bonfire.oss.bth4j.redis;
 import java.time.Duration;
 import java.util.Comparator;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -26,6 +27,7 @@ class RedisStoreContractIT extends StoreContract {
             .waitingFor(Wait.forLogMessage(".*Ready to accept connections.*\\n", 1));
 
     private static RedisClient jedis;
+    private final RedisFixtures.UsedNamespaces used = new RedisFixtures.UsedNamespaces();
 
     @BeforeAll
     static void connect() {
@@ -53,6 +55,11 @@ class RedisStoreContractIT extends StoreContract {
         }
     }
 
+    @AfterEach
+    void queueSetsAgree() {
+        used.assertQueueSetsAgree(jedis);
+    }
+
     @Override
     protected boolean releasesKeysOnItsOwn() {
         return true;
@@ -65,6 +72,7 @@ class RedisStoreContractIT extends StoreContract {
 
     @Override
     protected FullStore newStore(String namespace) {
+        used.add(namespace);
         return RedisTaskStore.builder().client(jedis).namespace(namespace).build();
     }
 

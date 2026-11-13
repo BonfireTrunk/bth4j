@@ -22,6 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -82,6 +83,7 @@ class RedisTaskStoreIT {
 
     private RedisTaskStore store;
     private String namespace;
+    private boolean layoutCorrupted;
     private Keys keys;
     private int queue;
     private int type;
@@ -114,12 +116,18 @@ class RedisTaskStoreIT {
 
     @BeforeEach
     void fresh() {
+        layoutCorrupted = false;
         namespace = "T" + NAMESPACES.incrementAndGet();
         store = RedisTaskStore.builder().client(jedis).namespace(namespace).build();
         keys = store.keys();
         store.init();
         queue = store.queueId("default");
         type = store.typeId("send");
+    }
+
+    @AfterEach
+    void queueSetsAgree() {
+        if (!layoutCorrupted) RedisFixtures.assertQueueSetsAgree(jedis, namespace);
     }
 
     private TaskRecord.Builder task(long id) {
@@ -672,6 +680,7 @@ class RedisTaskStoreIT {
         store.enqueue(task(3).startBy(startBy).build());
         store.enqueue(task(4).startBy(startBy).build());
         store.enqueue(task(5).startBy(startBy).build());
+        layoutCorrupted = true;
         jedis.hset(keys.task(1), "q", "x");
         jedis.hset(keys.task(2), "ty", "y");
         jedis.hset(keys.task(3), "q", "x");
@@ -960,15 +969,37 @@ class RedisTaskStoreIT {
         store.enqueue(task(2).dueAt(Instant.ofEpochMilli(2)).build());
         var stale = new java.util.HashMap<String, Double>();
         for (var id = 1000; id < 2100; id++) stale.put(String.valueOf(id), 1d);
-        jedis.zadd(keys.queue(queue, type), stale);
+        jedis.zadd(keys.queueAll(queue), stale);
 
         var claimed = store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 300)), 300, LEASE, 1, null));
 
         assertThat(claimed).extracting(TaskRecord::id).containsExactly(1L);
-        assertThat(jedis.zcard(keys.queue(queue, type))).isEqualTo(102);
+        assertThat(jedis.zcard(keys.queueAll(queue))).isEqualTo(102);
         assertThat(queuedTypes()).containsExactly(type);
         assertThat(claim(300)).extracting(TaskRecord::id).containsExactly(2L);
         assertThat(queuedTypes()).isEmpty();
+    }
+
+    @Test
+    void scanBudgetIsSharedAcrossPassesAndCleansStaleEntriesOfATypeSetToo() {
+        var foreign = store.typeId("foreign");
+        store.enqueue(task(1).dueAt(Instant.EPOCH).build());
+        store.enqueue(task(2).dueAt(Instant.ofEpochMilli(2)).build());
+        store.enqueue(task(3).typeId(foreign).dueAt(Instant.ofEpochMilli(3)).build());
+        var stale = new java.util.HashMap<String, Double>();
+        for (var id = 1000; id < 2100; id++) stale.put(String.valueOf(id), 1d);
+        jedis.zadd(keys.queue(queue, type), stale);
+        jedis.zadd(keys.queueAll(queue), stale);
+        var known = Set.of(type);
+
+        var claimed = store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 300)), 300, LEASE, 1, known));
+
+        assertThat(claimed).extracting(TaskRecord::id).containsExactly(1L);
+        assertThat(jedis.zcard(keys.queue(queue, type))).isEqualTo(102);
+        assertThat(jedis.zcard(keys.queueAll(queue))).isEqualTo(103);
+        var rest = store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 300, 300)), 300, LEASE, 1, known));
+        assertThat(rest).extracting(TaskRecord::id).containsExactly(2L);
+        assertThat(queuedTypes()).containsExactly(foreign);
     }
 
     @Test
@@ -1605,6 +1636,7 @@ class RedisTaskStoreIT {
         for (var id : ids) {
             var typeId = Integer.parseInt(jedis.hget(keys.task(id), "ty"));
             jedis.zadd(keys.queue(queue, typeId), 5_000, String.valueOf(id));
+            jedis.zadd(keys.queueAll(queue), 5_000, String.valueOf(id));
             jedis.hset(keys.task(id), "due", "5000");
         }
     }

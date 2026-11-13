@@ -30,7 +30,9 @@ package today.bonfire.oss.bth4j.redis;
  * <li>{@code q:<qid>:<tid>} zset of QUEUED ids of one queue and type scored by due ms; {@code active:<qid>} set
  * of the type ids whose zset in that queue is not empty, kept in step by every script that writes one, so that
  * readers never look at types without queued tasks; {@code sched:<qid>} zset of SCHEDULED ids scored by due ms;
- * {@code leased} zset scored by lease expiry ms. The type id is stored in task and recurring-definition hashes as
+ * {@code leased} zset scored by lease expiry ms. {@code qa:<qid>} zset of every QUEUED id of the queue, scored like
+ * its type zset and written with it by {@code enter} and {@code leave}: a claim whose runner handles every type
+ * that waits in the queue, the queued listing and the queued count read it alone. The type id is stored in task and recurring-definition hashes as
  * {@code ty}</li>
  * <li>{@code ts:<digest>} set of the type ids one runner handles, named by a digest of the sorted ids and written
  * by the store when a claim finds it missing; a claim intersects it with {@code active:<qid>}. A claim that finds
@@ -156,6 +158,10 @@ final class Keys {
 
     public String activeTypes(int qid) {
         return prefix + "active:" + qid;
+    }
+
+    public String queueAll(int qid) {
+        return prefix + "qa:" + qid;
     }
 
     public String typeSet(String digest) {

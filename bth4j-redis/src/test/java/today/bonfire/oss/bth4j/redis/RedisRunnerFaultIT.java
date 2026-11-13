@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j.redis;
 
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -19,6 +20,7 @@ class RedisRunnerFaultIT extends RunnerFaultContract {
             .waitingFor(Wait.forLogMessage(".*Ready to accept connections.*\\n", 1));
 
     private static RedisFaults faults;
+    private final RedisFixtures.UsedNamespaces used = new RedisFixtures.UsedNamespaces();
 
     @BeforeAll
     static void connect() {
@@ -30,8 +32,14 @@ class RedisRunnerFaultIT extends RunnerFaultContract {
         faults.close();
     }
 
+    @AfterEach
+    void queueSetsAgree() {
+        used.assertQueueSetsAgree(faults.direct());
+    }
+
     @Override
     protected Faulty newFaulty(String namespace) {
+        used.add(namespace);
         return faults.faulty(namespace);
     }
 }
