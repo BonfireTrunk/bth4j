@@ -380,11 +380,12 @@ final class RedisScripts {
                 g.heap = {}
                 local eligible, single = nil, true
                 if tset then
+                  -- a queue without queued tasks costs this one read
                   local active = P .. 'active:' .. g.qid
-                  eligible = redis.call('SINTER', active, tset)
                   local waiting = redis.call('SCARD', active)
-                  single = #eligible == waiting
                   if waiting == 0 then return 0 end
+                  eligible = redis.call('SINTER', active, tset)
+                  single = #eligible == waiting
                 end
                 if single then
                   -- the runner handles every type that waits here: qa:<qid> is the only source
@@ -423,7 +424,13 @@ final class RedisScripts {
                   if source.tid then zrem(queueKey(id, g.qid, source.tid), id) end
                   if not belongs then
                     zrem(P .. 'qa:' .. g.qid, id)
-                    if v[@ty@] and v[@ty@] ~= source.tid then zrem(queueKey(id, g.qid, v[@ty@]), id) end
+                    if v[@ty@] then
+                      if v[@ty@] ~= source.tid then zrem(queueKey(id, g.qid, v[@ty@]), id) end
+                    elseif not source.tid then
+                      -- nothing names the type of this entry, so it goes from every type zset of the queue
+                      g.types = g.types or redis.call('SMEMBERS', P .. 'active:' .. g.qid)
+                      for _, t in ipairs(g.types) do zrem(queueKey(id, g.qid, t), id) end
+                    end
                   end
                 elseif not (sb and sb <= at) then
                   -- a task past its start-by deadline stays queued: maintenance expires it and reports the expiry

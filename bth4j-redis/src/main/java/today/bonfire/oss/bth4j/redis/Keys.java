@@ -32,8 +32,8 @@ package today.bonfire.oss.bth4j.redis;
  * readers never look at types without queued tasks; {@code sched:<qid>} zset of SCHEDULED ids scored by due ms;
  * {@code leased} zset scored by lease expiry ms. {@code qa:<qid>} zset of every QUEUED id of the queue, scored like
  * its type zset and written with it by {@code enter} and {@code leave}: a claim whose runner handles every type
- * that waits in the queue, the queued listing and the queued count read it alone. The type id is stored in task and recurring-definition hashes as
- * {@code ty}</li>
+ * that waits in the queue, the queued listing and the queued count read it alone. The type id is stored in task
+ * and recurring-definition hashes as {@code ty}</li>
  * <li>{@code ts:<digest>} set of the type ids one runner handles, named by a digest of the sorted ids and written
  * by the store when a claim finds it missing; a claim intersects it with {@code active:<qid>}. A claim that finds
  * less than half a day left on it extends it to a day, so it expires between twelve and twenty-four hours after

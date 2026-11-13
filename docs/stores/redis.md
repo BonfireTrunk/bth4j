@@ -138,7 +138,7 @@ Other details:
 | Zset writes | are collected per key and sent as one command per key at the end of a script |
 | Task ids in scripts | travel as text, because a Lua number is a double and keeps 53 bits; revisions, attempts and times are numbers |
 | Time | every script reads `TIME` itself, so due times, leases and retention follow the Redis server; reading the clock before a write needs effect replication, the default since Redis 7.0 |
-| Claim | takes the intersection of the `active:<queue-id>` set and the `ts:<digest>` set. When the intersection is the whole `active:<queue-id>` set (or the runner names no types), the runner handles every type that waits in the queue and the claim reads `qa:<queue-id>` alone; otherwise it reads the type zsets of the intersection, so its cost then grows with the types that have queued tasks, not with the types registered |
+| Claim | reads the size of the `active:<queue-id>` set first, so a queue without queued tasks costs one read, and then takes the intersection of that set and the `ts:<digest>` set. When the intersection is the whole `active:<queue-id>` set (or the runner names no types), the runner handles every type that waits in the queue and the claim reads `qa:<queue-id>` alone; otherwise it reads the type zsets of the intersection, so its cost then grows with the types that have queued tasks, not with the types registered |
 | Queued task | is in two zsets, its type zset and `qa:<queue-id>`, under the same score; the scripts write both in the same call, in one place (the helpers that enter and leave the queued state), so they do not drift |
 
 ### Memory encodings

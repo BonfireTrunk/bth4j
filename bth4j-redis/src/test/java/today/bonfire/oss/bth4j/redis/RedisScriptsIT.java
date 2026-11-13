@@ -1028,10 +1028,24 @@ class RedisScriptsIT {
         assertThat(counts.calls("hmget"))
                 .as("the stale member is not read again")
                 .isZero();
-        // the type of a task whose hash is gone is unknown, so its entry stays in its type set until a claim of a
-        // runner that lacks one of the types reads that set; the check of the layout would see it
-        jedis.zrem(keys.queue(queue, type), "2");
-        jedis.srem(keys.activeTypes(queue), String.valueOf(type));
+        assertThat(jedis.zscore(keys.queue(queue, type), "2"))
+                .as("nothing names the type of the stale member, so it left every type set of the queue")
+                .isNull();
+        assertThat(jedis.smembers(keys.activeTypes(queue))).isEmpty();
+    }
+
+    @Test
+    void aClaimOfAQueueWithoutQueuedTasksReadsOnlyTheNumberOfItsWaitingTypes() {
+        var request = request(queue, 5, Set.of(type));
+        store.claim(request);
+        var claimed = new ArrayList<TaskRecord>();
+
+        var counts = ServerCounters.measure(jedis, () -> claimed.addAll(store.claim(request)));
+
+        assertThat(claimed).isEmpty();
+        assertThat(counts.calls("scard")).isEqualTo(1);
+        assertThat(counts.calls("sinter")).isZero();
+        assertThat(counts.calls("zrange")).isZero();
     }
 
     @Test
