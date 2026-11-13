@@ -1979,15 +1979,50 @@ public final class SqliteTaskStore implements FullStore {
     }
 
     @Override
-    public List<ScheduleEntry> schedules() {
+    public List<ScheduleEntry> schedules(String afterId, int limit) {
+        StoreArguments.requireLimit(limit);
         return withConnection(c -> {
             var result = new ArrayList<ScheduleEntry>();
-            queryEach(c, "SELECT " + SCHEDULE_COLUMNS + " FROM " + schedule + " ORDER BY id", rs -> {
-                var row = readSchedule(rs);
-                result.add(new ScheduleEntry(row.definition(), row.nextFireAt()));
-            });
+            var select = "SELECT " + SCHEDULE_COLUMNS + " FROM " + schedule;
+            if (afterId == null) {
+                queryEach(c, select + " ORDER BY id LIMIT ?", rs -> addEntry(result, rs), limit);
+            } else {
+                queryEach(c, select + " WHERE id > ? ORDER BY id LIMIT ?", rs -> addEntry(result, rs), afterId, limit);
+            }
             return result;
         });
+    }
+
+    @Override
+    public List<ScheduleEntry> upcomingSchedules(int limit) {
+        StoreArguments.requireLimit(limit);
+        return withConnection(c -> {
+            var result = new ArrayList<ScheduleEntry>();
+            queryEach(
+                    c,
+                    "SELECT " + SCHEDULE_COLUMNS + " FROM " + schedule
+                            + " WHERE paused = 0 ORDER BY next_fire, id LIMIT ?",
+                    rs -> addEntry(result, rs),
+                    limit);
+            return result;
+        });
+    }
+
+    @Override
+    public Optional<ScheduleEntry> schedule(String scheduleId) {
+        return withConnection(c -> Optional.ofNullable(queryOne(
+                c,
+                "SELECT " + SCHEDULE_COLUMNS + " FROM " + schedule + " WHERE id = ?",
+                rs -> {
+                    var row = readSchedule(rs);
+                    return new ScheduleEntry(row.definition(), row.nextFireAt());
+                },
+                scheduleId)));
+    }
+
+    private static void addEntry(List<ScheduleEntry> into, ResultSet rs) throws SQLException {
+        var row = readSchedule(rs);
+        into.add(new ScheduleEntry(row.definition(), row.nextFireAt()));
     }
 
     @Override

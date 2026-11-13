@@ -618,7 +618,7 @@ class DefaultAdminOpsTest {
                                 NOW),
                         new ScheduleEntry(definition("nightly", "0 2 * * *", null, false), NOW)));
 
-        var views = ops.schedules();
+        var views = ops.schedules(null, 100).items();
 
         assertThat(views).extracting(ScheduleView::id).containsExactly("lost-zone", "nightly");
         assertThat(views.get(0).zone()).isEqualTo("Mars/Olympus_Mons");
@@ -632,7 +632,7 @@ class DefaultAdminOpsTest {
                         new ScheduleEntry(definition("nightly", "0 2 * * *", null, false), NOW.plusSeconds(60)),
                         new ScheduleEntry(definition("poll", null, Duration.ofMillis(90_000), true), NOW)));
 
-        var views = ops.schedules();
+        var views = ops.schedules(null, 100).items();
 
         assertThat(views).hasSize(2);
         var nightly = views.get(0);
@@ -681,7 +681,7 @@ class DefaultAdminOpsTest {
                                         true),
                                 NOW)));
 
-        var views = ops.schedules();
+        var views = ops.schedules(null, 100).items();
 
         assertThat(views.get(0).zone()).isEqualTo("Europe/Berlin");
         assertThat(views.get(0).misfire()).isEqualTo(Misfire.catchUp(4));
@@ -703,43 +703,114 @@ class DefaultAdminOpsTest {
     @Test
     void resumingAnUnknownScheduleReturnsTheStoreAnswerAndDoesNothingElse() {
         handlers.put("resumeSchedule", a -> ScheduleOutcome.NOT_FOUND);
-        handlers.put("schedules", a -> List.of());
+        handlers.put("schedule", a -> Optional.empty());
+        failWhenListed();
 
         assertThat(ops.pauseSchedule("missing", 3, false)).isEqualTo(ScheduleOutcome.NOT_FOUND);
 
-        assertThat(calls).containsExactly("schedules[]", "resumeSchedule[missing, 3, null]");
+        assertThat(calls).containsExactly("schedule[missing]", "resumeSchedule[missing, 3, null]");
     }
 
     @Test
     void resumingAFixedDelayScheduleRearmsItsNextFireFromNowInTheSameStoreCall() {
         handlers.put("resumeSchedule", a -> ScheduleOutcome.APPLIED);
         handlers.put(
-                "schedules",
-                a -> List.of(
-                        new ScheduleEntry(definition("other", null, Duration.ofMillis(1_000), false), NOW),
-                        new ScheduleEntry(
-                                definition("poll", null, Duration.ofMillis(90_000), false), NOW.plusSeconds(999))));
+                "schedule",
+                a -> Optional.of(new ScheduleEntry(
+                        definition("poll", null, Duration.ofMillis(90_000), false), NOW.plusSeconds(999))));
+        failWhenListed();
 
         assertThat(ops.pauseSchedule("poll", 5, false)).isEqualTo(ScheduleOutcome.APPLIED);
 
-        assertThat(calls).containsExactly("schedules[]", "resumeSchedule[poll, 5, " + NOW.plusSeconds(90) + "]");
+        assertThat(calls).containsExactly("schedule[poll]", "resumeSchedule[poll, 5, " + NOW.plusSeconds(90) + "]");
     }
 
     @Test
     void resumingACronScheduleKeepsItsNextFire() {
         handlers.put("resumeSchedule", a -> ScheduleOutcome.APPLIED);
         handlers.put(
-                "schedules", a -> List.of(new ScheduleEntry(definition("nightly", "0 2 * * *", null, false), NOW)));
+                "schedule", a -> Optional.of(new ScheduleEntry(definition("nightly", "0 2 * * *", null, false), NOW)));
+        failWhenListed();
 
         assertThat(ops.pauseSchedule("nightly", 2, false)).isEqualTo(ScheduleOutcome.APPLIED);
 
-        assertThat(calls).containsExactly("schedules[]", "resumeSchedule[nightly, 2, null]");
+        assertThat(calls).containsExactly("schedule[nightly]", "resumeSchedule[nightly, 2, null]");
+    }
+
+    private void failWhenListed() {
+        handlers.put("schedules", a -> {
+            throw new AssertionError("a resume must not list the schedules");
+        });
+        handlers.put("upcomingSchedules", a -> {
+            throw new AssertionError("a resume must not list the schedules");
+        });
+    }
+
+    @Test
+    void aSchedulePageHoldsTheLimitAndNamesTheLastIdWhenMoreFollow() {
+        handlers.put("schedules", a -> {
+            var after = (String) a[0];
+            var all = List.of("a", "b", "c", "d", "e");
+            return all.stream()
+                    .filter(id -> after == null || id.compareTo(after) > 0)
+                    .limit((int) a[1])
+                    .map(id -> new ScheduleEntry(definition(id, "0 2 * * *", null, false), NOW))
+                    .toList();
+        });
+
+        var first = ops.schedules(null, 2);
+        assertThat(first.items()).extracting(ScheduleView::id).containsExactly("a", "b");
+        assertThat(first.next()).isEqualTo("b");
+        var second = ops.schedules(first.next(), 2);
+        assertThat(second.items()).extracting(ScheduleView::id).containsExactly("c", "d");
+        assertThat(second.next()).isEqualTo("d");
+        var last = ops.schedules(second.next(), 2);
+        assertThat(last.items()).extracting(ScheduleView::id).containsExactly("e");
+        assertThat(last.next()).isNull();
+    }
+
+    @Test
+    void aFullLastSchedulePageHasNoNextCursor() {
+        handlers.put("schedules", a -> {
+            var all = List.of("a", "b");
+            return all.stream()
+                    .limit((int) a[1])
+                    .map(id -> new ScheduleEntry(definition(id, "0 2 * * *", null, false), NOW))
+                    .toList();
+        });
+
+        var page = ops.schedules(null, 2);
+
+        assertThat(page.items()).hasSize(2);
+        assertThat(page.next()).isNull();
+        assertThat(calls).containsExactly("schedules[null, 3]");
+    }
+
+    @Test
+    void aScheduleLimitBelowOneIsRefusedBeforeTheStoreIsAsked() {
+        for (var limit : new int[] {0, -1, Integer.MIN_VALUE}) {
+            assertThatThrownBy(() -> ops.schedules(null, limit)).isInstanceOf(TaskValidationException.class);
+            assertThatThrownBy(() -> ops.upcomingSchedules(limit)).isInstanceOf(TaskValidationException.class);
+        }
+        assertThat(calls).isEmpty();
+    }
+
+    @Test
+    void upcomingSchedulesAreViewedInTheStoreOrder() {
+        handlers.put(
+                "upcomingSchedules",
+                a -> List.of(
+                        new ScheduleEntry(definition("soon", "0 2 * * *", null, false), NOW),
+                        new ScheduleEntry(definition("later", "0 2 * * *", null, false), NOW.plusSeconds(5))));
+
+        assertThat(ops.upcomingSchedules(8)).extracting(ScheduleView::id).containsExactly("soon", "later");
+        assertThat(calls).containsExactly("upcomingSchedules[8]");
     }
 
     @Test
     void aStaleResumeIsTheStoreAnswer() {
         handlers.put("resumeSchedule", a -> ScheduleOutcome.STALE);
-        handlers.put("schedules", a -> List.of());
+        handlers.put("schedule", a -> Optional.empty());
 
         assertThat(ops.pauseSchedule("nightly", 2, false)).isEqualTo(ScheduleOutcome.STALE);
     }

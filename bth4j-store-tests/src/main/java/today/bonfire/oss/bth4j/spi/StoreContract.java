@@ -349,7 +349,7 @@ public abstract class StoreContract {
         ids.forEach(id -> all.add(store.task(id)));
         keys.forEach(key -> all.add(store.taskByKey(key)));
         all.add(store.counts());
-        all.add(store.schedules());
+        all.add(allSchedules());
         all.add(store.nextFireTimes());
         all.add(store.idHighWaterMark());
         all.add(store.queueNames());
@@ -3229,7 +3229,7 @@ public abstract class StoreContract {
         StateCounts counts = counts();
         Instant parked = nextFireOf("a");
         long scheduleRevision = revisionOf("a");
-        List<ScheduleEntry> definitions = store.schedules();
+        List<ScheduleEntry> definitions = allSchedules();
         assertThat(expected.steps()).isEqualTo(bSteps);
         assertThat(expected.failures()).hasSize(1);
 
@@ -3240,7 +3240,7 @@ public abstract class StoreContract {
         assertThat(counts()).isEqualTo(counts);
         assertThat(nextFireOf("a")).isEqualTo(parked);
         assertThat(revisionOf("a")).isEqualTo(scheduleRevision);
-        assertThat(store.schedules()).isEqualTo(definitions);
+        assertThat(allSchedules()).isEqualTo(definitions);
         assertThat(pausedOf("a")).isFalse();
 
         Instant rearmed = millis(now().plusSeconds(90));
@@ -3976,8 +3976,12 @@ public abstract class StoreContract {
         }
     }
 
+    private List<ScheduleEntry> allSchedules() {
+        return store.schedules(null, Integer.MAX_VALUE);
+    }
+
     private StoredSchedule storedDefinition(String scheduleId) {
-        return store.schedules().stream()
+        return allSchedules().stream()
                 .map(ScheduleEntry::definition)
                 .filter(d -> d.scheduleId().equals(scheduleId))
                 .findFirst()
@@ -6199,9 +6203,143 @@ public abstract class StoreContract {
                 new String[] {beyondTheBasicPlane, "b", "A", privateUse, "a", "B", "a" + beyondTheBasicPlane}) {
             store.putSchedule(definition(id, "0 3 * * *"), fire, fire);
         }
-        assertThat(store.schedules())
+        assertThat(allSchedules())
                 .extracting(s -> s.definition().scheduleId())
                 .containsExactly("A", "B", "a", "a" + beyondTheBasicPlane, "b", privateUse, beyondTheBasicPlane);
+    }
+
+    private static List<String> scheduleIds(List<ScheduleEntry> entries) {
+        return entries.stream().map(e -> e.definition().scheduleId()).toList();
+    }
+
+    private static final String PRIVATE_USE = "\uE000";
+    private static final String BEYOND_THE_BASIC_PLANE = "\uD83D\uDE00";
+
+    private void putFiveSchedules() {
+        Instant fire = millis(now().plusSeconds(60));
+        for (String id : new String[] {BEYOND_THE_BASIC_PLANE, "b", "A", PRIVATE_USE, "a"}) {
+            store.putSchedule(definition(id, "0 3 * * *"), fire, fire);
+        }
+    }
+
+    @Test
+    void schedulesPageThroughEveryDefinitionOnceInIdOrder() {
+        putFiveSchedules();
+
+        List<String> seen = new ArrayList<>();
+        List<Integer> sizes = new ArrayList<>();
+        String after = null;
+        for (int round = 0; round < 10; round++) {
+            List<ScheduleEntry> page = store.schedules(after, 2);
+            if (page.isEmpty()) break;
+            sizes.add(page.size());
+            seen.addAll(scheduleIds(page));
+            after = page.getLast().definition().scheduleId();
+        }
+
+        assertThat(sizes).containsExactly(2, 2, 1);
+        assertThat(seen).containsExactly("A", "a", "b", PRIVATE_USE, BEYOND_THE_BASIC_PLANE);
+    }
+
+    @Test
+    void aSchedulePageCarriesTheDefinitionAndItsNextFireTime() {
+        Instant fire = millis(now().plusSeconds(60));
+        store.putSchedule(definition("only", "0 3 * * *"), fire, fire);
+
+        List<ScheduleEntry> page = store.schedules(null, 10);
+
+        assertThat(page).hasSize(1);
+        assertThat(page.getFirst().nextFireAt()).isEqualTo(fire);
+        assertThat(page.getFirst().definition().scheduleId()).isEqualTo("only");
+        assertThat(page).isEqualTo(allSchedules());
+    }
+
+    @Test
+    void schedulesAfterAnIdThatDoesNotExistStartBehindWhereItWouldBe() {
+        putFiveSchedules();
+
+        assertThat(scheduleIds(store.schedules("B", 10)))
+                .containsExactly("a", "b", PRIVATE_USE, BEYOND_THE_BASIC_PLANE);
+        assertThat(scheduleIds(store.schedules("a" + BEYOND_THE_BASIC_PLANE, 10)))
+                .containsExactly("b", PRIVATE_USE, BEYOND_THE_BASIC_PLANE);
+        assertThat(scheduleIds(store.schedules("", 10)))
+                .containsExactly("A", "a", "b", PRIVATE_USE, BEYOND_THE_BASIC_PLANE);
+        assertThat(store.schedules(BEYOND_THE_BASIC_PLANE, 10)).isEmpty();
+        assertThat(store.schedules(BEYOND_THE_BASIC_PLANE + "z", 10)).isEmpty();
+    }
+
+    @Test
+    void schedulesAreEmptyWithoutDefinitionsAndTheLimitIsHonoured() {
+        assertThat(store.schedules(null, 3)).isEmpty();
+        assertThat(store.upcomingSchedules(3)).isEmpty();
+        putFiveSchedules();
+
+        assertThat(store.schedules(null, 1)).hasSize(1);
+        assertThat(store.schedules(null, 4)).hasSize(4);
+        assertThat(store.schedules(null, 5)).hasSize(5);
+        assertThat(store.schedules(null, 6)).hasSize(5);
+    }
+
+    @Test
+    void aScheduleListingWithALimitBelowOneIsRefused() {
+        putFiveSchedules();
+        for (int bad : new int[] {0, -1}) {
+            assertThatThrownBy(() -> store.schedules(null, bad)).isInstanceOf(TaskValidationException.class);
+            assertThatThrownBy(() -> store.upcomingSchedules(bad)).isInstanceOf(TaskValidationException.class);
+        }
+    }
+
+    @Test
+    void upcomingSchedulesAreOrderedByNextFireThenByIdAndLeavePausedOnesOut() {
+        Instant base = millis(now().plusSeconds(600));
+        Instant tie = base.plusSeconds(10);
+        store.putSchedule(definition("late", "0 3 * * *"), base.plusSeconds(60), base.plusSeconds(60));
+        store.putSchedule(definition(BEYOND_THE_BASIC_PLANE, "0 3 * * *"), tie, tie);
+        store.putSchedule(definition("b", "0 3 * * *"), tie, tie);
+        store.putSchedule(definition(PRIVATE_USE, "0 3 * * *"), tie, tie);
+        store.putSchedule(definition("first", "0 3 * * *"), base, base);
+        store.putSchedule(definition("paused", "0 3 * * *"), base.minusSeconds(60), base.minusSeconds(60));
+        assertThat(store.pauseSchedule("paused", null)).isEqualTo(ScheduleOutcome.APPLIED);
+
+        assertThat(scheduleIds(store.upcomingSchedules(10)))
+                .containsExactly("first", "b", PRIVATE_USE, BEYOND_THE_BASIC_PLANE, "late");
+        assertThat(scheduleIds(store.upcomingSchedules(3))).containsExactly("first", "b", PRIVATE_USE);
+        assertThat(scheduleIds(store.upcomingSchedules(1))).containsExactly("first");
+        assertThat(store.upcomingSchedules(10))
+                .extracting(ScheduleEntry::nextFireAt)
+                .startsWith(base, tie);
+    }
+
+    @Test
+    void aResumedScheduleIsUpcomingAgain() {
+        Instant fire = millis(now().plusSeconds(600));
+        store.putSchedule(definition("a", "0 3 * * *"), fire, fire);
+        assertThat(store.pauseSchedule("a", null)).isEqualTo(ScheduleOutcome.APPLIED);
+        assertThat(store.upcomingSchedules(10)).isEmpty();
+
+        assertThat(store.resumeSchedule("a", null, null)).isEqualTo(ScheduleOutcome.APPLIED);
+
+        assertThat(scheduleIds(store.upcomingSchedules(10))).containsExactly("a");
+    }
+
+    @Test
+    void scheduleFindsOneDefinitionWithItsNextFireTime() {
+        Instant fire = millis(now().plusSeconds(60));
+        store.putSchedule(definition("a", "0 3 * * *"), fire, fire);
+        store.putSchedule(definition("b", "0 4 * * *"), fire.plusSeconds(5), fire.plusSeconds(5));
+        assertThat(store.pauseSchedule("b", null)).isEqualTo(ScheduleOutcome.APPLIED);
+
+        ScheduleEntry a = store.schedule("a").orElseThrow();
+        assertThat(a.nextFireAt()).isEqualTo(fire);
+        assertThat(a.definition().cron()).isEqualTo("0 3 * * *");
+        assertThat(a.definition().paused()).isFalse();
+        ScheduleEntry b = store.schedule("b").orElseThrow();
+        assertThat(b.nextFireAt()).isEqualTo(fire.plusSeconds(5));
+        assertThat(b.definition().paused()).isTrue();
+        assertThat(List.of(a, b)).isEqualTo(allSchedules());
+        assertThat(store.schedule("c")).isEmpty();
+        assertThat(store.schedule("")).isEmpty();
+        assertThat(store.schedule("A")).isEmpty();
     }
 
     @Test
@@ -6227,7 +6365,7 @@ public abstract class StoreContract {
                         "cron", type, 1, queue, null, "0 3 * * *", null, null, 0, null, false, null, 3, null, false, 0),
                 fire.plusSeconds(5),
                 fire.plusSeconds(5));
-        List<ScheduleEntry> all = store.schedules();
+        List<ScheduleEntry> all = allSchedules();
         assertThat(all).extracting(s -> s.definition().scheduleId()).containsExactly("cron", "fixed");
         ScheduleEntry fixed = all.get(1);
         assertThat(fixed.nextFireAt()).isEqualTo(fire);
@@ -6261,14 +6399,14 @@ public abstract class StoreContract {
     void putScheduleStoresTheGivenPausedFlagOnlyForANewDefinitionAndReplacesEveryOtherField() {
         Instant fire = millis(now().plusSeconds(60));
         store.putSchedule(fullDefinition("a").withPaused(true), fire, fire);
-        assertThat(store.schedules().get(0).definition().paused()).isTrue();
+        assertThat(allSchedules().get(0).definition().paused()).isTrue();
         store.putSchedule(definition("a", "* * * * *"), fire, fire);
-        StoredSchedule d = store.schedules().get(0).definition();
+        StoredSchedule d = allSchedules().get(0).definition();
         assertThat(d.cron()).isEqualTo("* * * * *");
         assertThat(d.fixedDelay()).isNull();
         assertThat(d.zone()).isNull();
         assertThat(d.paused()).isTrue();
-        assertThat(store.schedules()).hasSize(1);
+        assertThat(allSchedules()).hasSize(1);
     }
 
     @Test
@@ -6277,11 +6415,11 @@ public abstract class StoreContract {
         store.putSchedule(definition("a", "* * * * *"), fire, fire);
         assertThat(store.pauseSchedule("a", null)).isEqualTo(ScheduleOutcome.APPLIED);
         store.putSchedule(definition("a", "* * * * *"), fire, fire);
-        assertThat(store.schedules().get(0).definition().paused()).isTrue();
+        assertThat(allSchedules().get(0).definition().paused()).isTrue();
         assertThat(store.dueSchedules(fire, 10)).isEmpty();
         assertThat(store.resumeSchedule("a", null, null)).isEqualTo(ScheduleOutcome.APPLIED);
         store.putSchedule(definition("a", "* * * * *").withPaused(true), fire, fire);
-        assertThat(store.schedules().get(0).definition().paused()).isFalse();
+        assertThat(allSchedules().get(0).definition().paused()).isFalse();
         assertThat(store.dueSchedules(fire, 10)).hasSize(1);
     }
 
@@ -6318,7 +6456,7 @@ public abstract class StoreContract {
         assertThat(store.dueSchedules(fire, 10))
                 .extracting(DueSchedule::scheduleId)
                 .containsExactly("b");
-        ScheduleEntry paused = store.schedules().get(0);
+        ScheduleEntry paused = allSchedules().get(0);
         assertThat(paused.definition().paused()).isTrue();
         assertThat(paused.nextFireAt()).isEqualTo(fire);
         assertThat(store.nextFireTimes()).containsEntry("a", fire);
@@ -6326,7 +6464,7 @@ public abstract class StoreContract {
         assertThat(store.dueSchedules(fire, 10))
                 .extracting(DueSchedule::scheduleId)
                 .containsExactlyInAnyOrder("a", "b");
-        assertThat(store.schedules().get(0).definition().paused()).isFalse();
+        assertThat(allSchedules().get(0).definition().paused()).isFalse();
     }
 
     @Test
@@ -6372,13 +6510,13 @@ public abstract class StoreContract {
         Instant fire = millis(now().plusSeconds(60));
         store.putSchedule(definition("a", "* * * * *"), fire, fire);
         long revision = revisionOf("a");
-        List<ScheduleEntry> before = store.schedules();
+        List<ScheduleEntry> before = allSchedules();
 
         assertThat(store.deleteSchedule("a", revision + 1)).isEqualTo(ScheduleOutcome.STALE);
-        assertThat(store.schedules()).isEqualTo(before);
+        assertThat(allSchedules()).isEqualTo(before);
         assertThat(store.deleteSchedule("missing", revision)).isEqualTo(ScheduleOutcome.NOT_FOUND);
         assertThat(store.deleteSchedule("a", revision)).isEqualTo(ScheduleOutcome.APPLIED);
-        assertThat(store.schedules()).isEmpty();
+        assertThat(allSchedules()).isEmpty();
     }
 
     @Test
@@ -6396,13 +6534,13 @@ public abstract class StoreContract {
         Instant fire = millis(now().plusSeconds(60));
         store.putSchedule(definition("a", "* * * * *"), fire, fire);
         long revision = revisionOf("a");
-        List<ScheduleEntry> before = store.schedules();
+        List<ScheduleEntry> before = allSchedules();
 
         assertThat(store.pauseSchedule("a", revision + 1)).isEqualTo(ScheduleOutcome.STALE);
-        assertThat(store.schedules()).isEqualTo(before);
+        assertThat(allSchedules()).isEqualTo(before);
         assertThat(store.pauseSchedule("missing", revision)).isEqualTo(ScheduleOutcome.NOT_FOUND);
         assertThat(store.pauseSchedule("a", revision)).isEqualTo(ScheduleOutcome.APPLIED);
-        assertThat(store.schedules().get(0).definition().paused()).isTrue();
+        assertThat(allSchedules().get(0).definition().paused()).isTrue();
         assertThat(revisionOf("a")).isEqualTo(revision);
         assertThat(store.pauseSchedule("a", revision)).isEqualTo(ScheduleOutcome.APPLIED);
         assertThat(store.pauseSchedule("a", revision + 1)).isEqualTo(ScheduleOutcome.STALE);
@@ -6415,7 +6553,7 @@ public abstract class StoreContract {
         store.triggerSchedule("a", null, fire.plusSeconds(5));
 
         assertThat(store.pauseSchedule("a", null)).isEqualTo(ScheduleOutcome.APPLIED);
-        assertThat(store.schedules().get(0).definition().paused()).isTrue();
+        assertThat(allSchedules().get(0).definition().paused()).isTrue();
     }
 
     @Test
@@ -6424,14 +6562,14 @@ public abstract class StoreContract {
         store.putSchedule(definition("a", "* * * * *"), fire, fire);
         long revision = revisionOf("a");
         store.pauseSchedule("a", null);
-        List<ScheduleEntry> before = store.schedules();
+        List<ScheduleEntry> before = allSchedules();
         Instant later = millis(now().plusSeconds(500));
 
         assertThat(store.resumeSchedule("a", revision + 1, later)).isEqualTo(ScheduleOutcome.STALE);
-        assertThat(store.schedules()).isEqualTo(before);
+        assertThat(allSchedules()).isEqualTo(before);
         assertThat(store.resumeSchedule("missing", revision, later)).isEqualTo(ScheduleOutcome.NOT_FOUND);
         assertThat(store.resumeSchedule("a", revision, later)).isEqualTo(ScheduleOutcome.APPLIED);
-        assertThat(store.schedules().get(0).definition().paused()).isFalse();
+        assertThat(allSchedules().get(0).definition().paused()).isFalse();
         assertThat(store.nextFireTimes()).containsEntry("a", later);
         assertThat(revisionOf("a")).isNotEqualTo(revision);
     }
@@ -6441,11 +6579,11 @@ public abstract class StoreContract {
         Instant fire = millis(now().plusSeconds(60));
         store.putSchedule(definition("a", "* * * * *"), fire, fire);
         long revision = revisionOf("a");
-        List<ScheduleEntry> before = store.schedules();
+        List<ScheduleEntry> before = allSchedules();
 
         assertThat(store.resumeSchedule("a", revision + 1, null)).isEqualTo(ScheduleOutcome.STALE);
         assertThat(store.resumeSchedule("a", revision, null)).isEqualTo(ScheduleOutcome.APPLIED);
-        assertThat(store.schedules()).isEqualTo(before);
+        assertThat(allSchedules()).isEqualTo(before);
     }
 
     @Test
@@ -6456,7 +6594,7 @@ public abstract class StoreContract {
         store.triggerSchedule("a", null, fire.plusSeconds(5));
 
         assertThat(store.resumeSchedule("a", null, null)).isEqualTo(ScheduleOutcome.APPLIED);
-        assertThat(store.schedules().get(0).definition().paused()).isFalse();
+        assertThat(allSchedules().get(0).definition().paused()).isFalse();
     }
 
     @Test
@@ -6464,11 +6602,11 @@ public abstract class StoreContract {
         Instant fire = millis(now().plusSeconds(3600));
         store.putSchedule(definition("a", "* * * * *"), fire, fire);
         long revision = revisionOf("a");
-        List<ScheduleEntry> before = store.schedules();
+        List<ScheduleEntry> before = allSchedules();
         Instant sooner = millis(now().plusSeconds(1));
 
         assertThat(store.triggerSchedule("a", revision + 1, sooner)).isEqualTo(ScheduleOutcome.STALE);
-        assertThat(store.schedules()).isEqualTo(before);
+        assertThat(allSchedules()).isEqualTo(before);
         assertThat(store.dueSchedules(sooner, 10)).isEmpty();
         assertThat(store.triggerSchedule("missing", revision, sooner)).isEqualTo(ScheduleOutcome.NOT_FOUND);
         assertThat(store.triggerSchedule("a", revision, sooner)).isEqualTo(ScheduleOutcome.APPLIED);
@@ -6499,9 +6637,9 @@ public abstract class StoreContract {
         assertThat(store.resumeSchedule("a", seen, null)).isEqualTo(ScheduleOutcome.STALE);
         assertThat(store.triggerSchedule("a", seen, fire)).isEqualTo(ScheduleOutcome.STALE);
         assertThat(store.deleteSchedule("a", seen)).isEqualTo(ScheduleOutcome.STALE);
-        assertThat(store.schedules()).hasSize(1);
-        assertThat(store.schedules().get(0).definition().encodedPayload()).isEqualTo("{\"v\":2}");
-        assertThat(store.schedules().get(0).definition().paused()).isFalse();
+        assertThat(allSchedules()).hasSize(1);
+        assertThat(allSchedules().get(0).definition().encodedPayload()).isEqualTo("{\"v\":2}");
+        assertThat(allSchedules().get(0).definition().paused()).isFalse();
     }
 
     @Test
@@ -6733,7 +6871,7 @@ public abstract class StoreContract {
     }
 
     private long revisionOf(String scheduleId) {
-        return store.schedules().stream()
+        return allSchedules().stream()
                 .filter(r -> r.definition().scheduleId().equals(scheduleId))
                 .findFirst()
                 .orElseThrow()
@@ -6860,7 +6998,7 @@ public abstract class StoreContract {
     }
 
     private boolean pausedOf(String scheduleId) {
-        return store.schedules().stream()
+        return allSchedules().stream()
                 .filter(r -> r.definition().scheduleId().equals(scheduleId))
                 .findFirst()
                 .orElseThrow()
@@ -7020,7 +7158,7 @@ public abstract class StoreContract {
                         ScheduleEffect.rearm("a", running.id(), millis(now().plusSeconds(90)))))
                 .isTrue();
         assertThat(store.nextFireTimes()).isEmpty();
-        assertThat(store.schedules()).isEmpty();
+        assertThat(allSchedules()).isEmpty();
     }
 
     @Test
@@ -8248,7 +8386,7 @@ public abstract class StoreContract {
                     .isEqualTo(new PutScheduleResult(PutScheduleOutcome.CREATED, fire));
         }
         Map<String, Instant> schedules = store.nextFireTimes();
-        List<ScheduleEntry> stored = store.schedules();
+        List<ScheduleEntry> stored = allSchedules();
         assertThat(schedules).hasSize(n);
         assertThat(stored).hasSize(n);
         Map<String, Long> revisions = new LinkedHashMap<>();
@@ -8306,7 +8444,7 @@ public abstract class StoreContract {
             assertThat(store.deleteSchedule(text, null)).as("delete %s", text).isEqualTo(ScheduleOutcome.APPLIED);
         }
         assertThat(store.nextFireTimes()).isEmpty();
-        assertThat(store.schedules()).isEmpty();
+        assertThat(allSchedules()).isEmpty();
     }
 
     @Test

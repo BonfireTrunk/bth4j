@@ -7,7 +7,7 @@ public enum TaskState {
     /**
      * waiting for its due time: a task enqueued with a delay, a task waiting for its next attempt after a
      * failure or a reschedule, or an occurrence of a schedule created ahead of its fire time. The schedules
-     * themselves are not tasks and have no state; {@link today.bonfire.oss.bth4j.AdminOps#schedules()} lists
+     * themselves are not tasks and have no state; {@link today.bonfire.oss.bth4j.AdminOps#schedules} lists
      * them.
      */
     SCHEDULED(1),

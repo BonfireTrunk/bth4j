@@ -441,7 +441,7 @@ public final class TaskClient {
         return store.deleteSchedule(id, null) == ScheduleOutcome.APPLIED;
     }
 
-    /** @return every definition's id with its next fire time; {@link AdminOps#schedules()} lists the definitions */
+    /** @return every definition's id with its next fire time; {@link AdminOps#schedules} lists the definitions */
     public Map<String, Instant> nextFireTimes() {
         return store.nextFireTimes();
     }

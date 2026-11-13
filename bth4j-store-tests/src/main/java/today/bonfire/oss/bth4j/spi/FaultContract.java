@@ -260,7 +260,7 @@ public abstract class FaultContract {
         }
 
         long revisionOf(String scheduleId) {
-            return plain.schedules().stream()
+            return plain.schedules(null, Integer.MAX_VALUE).stream()
                     .filter(s -> s.definition().scheduleId().equals(scheduleId))
                     .findFirst()
                     .orElseThrow()
@@ -285,7 +285,7 @@ public abstract class FaultContract {
             rest.put("queues", plain.queues());
             rest.put(
                     "schedules",
-                    plain.schedules().stream()
+                    plain.schedules(null, Integer.MAX_VALUE).stream()
                             .map(e -> new ScheduleEntry(withoutRevision(e.definition()), e.nextFireAt()))
                             .toList());
             rest.put("highWaterMark", plain.idHighWaterMark());

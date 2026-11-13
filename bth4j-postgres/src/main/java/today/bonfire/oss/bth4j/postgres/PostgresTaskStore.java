@@ -491,7 +491,7 @@ public final class PostgresTaskStore implements FullStore {
                 "CREATE INDEX IF NOT EXISTS " + task + "_start_by ON " + task
                         + " (start_by) WHERE start_by IS NOT NULL AND state < 2",
                 "CREATE TABLE IF NOT EXISTS " + schedule + " ("
-                        + " id text PRIMARY KEY,"
+                        + " id text COLLATE \"C\" PRIMARY KEY,"
                         + " type_id smallint NOT NULL,"
                         + " payload_version integer NOT NULL,"
                         + " queue_id smallint NOT NULL,"
@@ -2231,15 +2231,47 @@ public final class PostgresTaskStore implements FullStore {
     }
 
     @Override
-    public List<ScheduleEntry> schedules() {
+    public List<ScheduleEntry> schedules(String afterId, int limit) {
+        StoreArguments.requireLimit(limit);
         return withConnection(c -> {
-            var result = new ArrayList<ScheduleEntry>();
-            try (var ps = c.prepareStatement("SELECT * FROM " + schedule + " ORDER BY id COLLATE \"C\"");
-                    var rs = ps.executeQuery()) {
-                while (rs.next()) result.add(new ScheduleEntry(readDefinition(rs), getInstant(rs, "next_fire")));
+            var sql = "SELECT * FROM " + schedule + (afterId == null ? "" : " WHERE id > ?") + " ORDER BY id LIMIT ?";
+            try (var ps = c.prepareStatement(sql)) {
+                var at = 1;
+                if (afterId != null) ps.setString(at++, afterId);
+                ps.setInt(at, limit);
+                return readEntries(ps);
             }
-            return result;
         });
+    }
+
+    @Override
+    public List<ScheduleEntry> upcomingSchedules(int limit) {
+        StoreArguments.requireLimit(limit);
+        return withConnection(c -> {
+            try (var ps = c.prepareStatement(
+                    "SELECT * FROM " + schedule + " WHERE NOT paused ORDER BY next_fire, id LIMIT ?")) {
+                ps.setInt(1, limit);
+                return readEntries(ps);
+            }
+        });
+    }
+
+    @Override
+    public Optional<ScheduleEntry> schedule(String scheduleId) {
+        return withConnection(c -> {
+            try (var ps = c.prepareStatement("SELECT * FROM " + schedule + " WHERE id = ?")) {
+                ps.setString(1, scheduleId);
+                return readEntries(ps).stream().findFirst();
+            }
+        });
+    }
+
+    private List<ScheduleEntry> readEntries(PreparedStatement ps) throws SQLException {
+        var result = new ArrayList<ScheduleEntry>();
+        try (var rs = ps.executeQuery()) {
+            while (rs.next()) result.add(new ScheduleEntry(readDefinition(rs), getInstant(rs, "next_fire")));
+        }
+        return result;
     }
 
     @Override

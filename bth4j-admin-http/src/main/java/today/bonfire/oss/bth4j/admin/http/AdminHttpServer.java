@@ -71,6 +71,8 @@ public final class AdminHttpServer implements AutoCloseable {
     private static final int MAX_BODY = 64 * 1024;
     private static final int MAX_SESSIONS = 1000;
     private static final int DEFAULT_LIMIT = 50;
+    private static final int SCHEDULES_LIMIT = 100;
+    private static final int UPCOMING_LIMIT = 8;
     private static final int MAX_LIMIT = 200;
     private static final String HTML_CSP = "default-src 'self'; script-src 'self' 'unsafe-eval'; "
             + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; "
@@ -385,7 +387,14 @@ public final class AdminHttpServer implements AutoCloseable {
             case "POST tasks/{}/retry" -> retry(ex, taskId(param));
             case "POST tasks/{}/cancel" -> cancel(ex, taskId(param));
             case "DELETE tasks/{}" -> delete(ex, taskId(param));
-            case "GET schedules" -> sendJson(ex, 200, Views.list(admin.schedules(), Views::schedule));
+            case "GET schedules" -> sendJson(ex, 200, schedules(ex));
+            case "GET schedules/{}" -> {
+                if (!"upcoming".equals(param)) {
+                    throw new HttpError(404, "not found");
+                }
+                var limit = limit(query(ex), UPCOMING_LIMIT);
+                sendJson(ex, 200, Views.list(admin.upcomingSchedules(limit), Views::schedule));
+            }
             case "POST schedules/{}/pause" -> {
                 var revision = scheduleRevision(readObject(ex).get("revision"));
                 scheduleChange(ex, admin.pauseSchedule(param, revision, true));
@@ -626,13 +635,7 @@ public final class AdminHttpServer implements AutoCloseable {
         } catch (IllegalArgumentException e) {
             throw new HttpError(400, "unknown state");
         }
-        var limit = DEFAULT_LIMIT;
-        if (query.containsKey("limit")) {
-            limit = (int) Math.min(parseLong(query.get("limit"), "limit"), MAX_LIMIT);
-            if (limit < 1) {
-                throw new HttpError(400, "limit must be at least 1");
-            }
-        }
+        var limit = limit(query, DEFAULT_LIMIT);
         var queue = query.get("queue");
         var cursor = query.get("cursor");
         var cursorOrNull = cursor == null || cursor.isEmpty() ? null : cursor;
@@ -640,6 +643,25 @@ public final class AdminHttpServer implements AutoCloseable {
                 ? admin.tasks(state, cursorOrNull, limit)
                 : admin.tasks(state, queue, cursorOrNull, limit);
         return Views.obj("items", Views.list(page.items(), Views::task), "next", page.next());
+    }
+
+    private Object schedules(HttpExchange ex) {
+        var query = query(ex);
+        var limit = limit(query, SCHEDULES_LIMIT);
+        var cursor = query.get("cursor");
+        var page = admin.schedules(cursor == null || cursor.isEmpty() ? null : cursor, limit);
+        return Views.obj("items", Views.list(page.items(), Views::schedule), "next", page.next());
+    }
+
+    private static int limit(Map<String, String> query, int fallback) {
+        if (!query.containsKey("limit")) {
+            return fallback;
+        }
+        var limit = (int) Math.min(parseLong(query.get("limit"), "limit"), MAX_LIMIT);
+        if (limit < 1) {
+            throw new HttpError(400, "limit must be at least 1");
+        }
+        return limit;
     }
 
     private Map<String, Object> payload(long id) {

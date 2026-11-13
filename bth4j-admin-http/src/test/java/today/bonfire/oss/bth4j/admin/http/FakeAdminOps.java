@@ -3,6 +3,7 @@ package today.bonfire.oss.bth4j.admin.http;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -19,12 +20,14 @@ import today.bonfire.oss.bth4j.RunnerHealth;
 import today.bonfire.oss.bth4j.RunnerView;
 import today.bonfire.oss.bth4j.ScheduleOutcome;
 import today.bonfire.oss.bth4j.ScheduleView;
+import today.bonfire.oss.bth4j.ScheduleViewPage;
 import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.TaskView;
 import today.bonfire.oss.bth4j.TaskViewPage;
 import today.bonfire.oss.bth4j.UnservedWork;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.spi.ScheduleStore;
 
 final class FakeAdminOps implements AdminOps {
 
@@ -183,8 +186,25 @@ final class FakeAdminOps implements AdminOps {
     }
 
     @Override
-    public List<ScheduleView> schedules() {
-        return schedules;
+    public ScheduleViewPage schedules(String cursor, int limit) {
+        calls.add("schedules cursor=" + cursor + ' ' + limit);
+        var behind = schedules.stream()
+                .filter(s -> cursor == null || ScheduleStore.ID_ORDER.compare(s.id(), cursor) > 0)
+                .sorted(Comparator.comparing(ScheduleView::id, ScheduleStore.ID_ORDER))
+                .toList();
+        var page = behind.stream().limit(limit).toList();
+        return new ScheduleViewPage(page, behind.size() > limit ? page.getLast().id() : null);
+    }
+
+    @Override
+    public List<ScheduleView> upcomingSchedules(int limit) {
+        calls.add("upcomingSchedules " + limit);
+        return schedules.stream()
+                .filter(s -> !s.paused())
+                .sorted(Comparator.comparing(ScheduleView::nextFireAt)
+                        .thenComparing(ScheduleView::id, ScheduleStore.ID_ORDER))
+                .limit(limit)
+                .toList();
     }
 
     @Override

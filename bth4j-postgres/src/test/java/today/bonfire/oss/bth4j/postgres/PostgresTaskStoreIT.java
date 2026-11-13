@@ -1386,7 +1386,7 @@ class PostgresTaskStoreIT {
         store.putSchedule(fullDefinition("b-cron"), at, at);
         store.putSchedule(fixedDelay("a-delay", 60_000), at.plusSeconds(1), at.plusSeconds(1));
 
-        var all = store.schedules();
+        var all = store.schedules(null, Integer.MAX_VALUE);
         assertThat(all).extracting(x -> x.definition().scheduleId()).containsExactly("a-delay", "b-cron");
         var delay = all.getFirst();
         assertThat(delay.definition().withRevision(0)).isEqualTo(fixedDelay("a-delay", 60_000));
@@ -1412,8 +1412,13 @@ class PostgresTaskStoreIT {
 
         assertThat(store.pauseSchedule("p", null)).isEqualTo(ScheduleOutcome.APPLIED);
         assertThat(store.dueSchedules(Instant.now(), 10)).isEmpty();
-        assertThat(store.schedules().getFirst().definition().paused()).isTrue();
-        assertThat(store.schedules().getFirst().nextFireAt()).isEqualTo(fireAt);
+        assertThat(store.schedules(null, Integer.MAX_VALUE)
+                        .getFirst()
+                        .definition()
+                        .paused())
+                .isTrue();
+        assertThat(store.schedules(null, Integer.MAX_VALUE).getFirst().nextFireAt())
+                .isEqualTo(fireAt);
         assertThat(store.commitSchedule(
                                 due, fireAt.plusSeconds(3600), task(newId()).build())
                         .isCommitted())
@@ -1432,16 +1437,24 @@ class PostgresTaskStoreIT {
         store.pauseSchedule("kept", null);
 
         store.putSchedule(definition("kept", "0 * * * *"), fireAt, fireAt);
-        assertThat(store.schedules().getFirst().definition().paused()).isTrue();
+        assertThat(store.schedules(null, Integer.MAX_VALUE)
+                        .getFirst()
+                        .definition()
+                        .paused())
+                .isTrue();
         assertThat(store.dueSchedules(Instant.now(), 10)).isEmpty();
 
         store.resumeSchedule("kept", null, null);
         store.putSchedule(definition("kept", "0 * * * *").withPaused(true), fireAt, fireAt);
-        assertThat(store.schedules().getFirst().definition().paused()).isFalse();
+        assertThat(store.schedules(null, Integer.MAX_VALUE)
+                        .getFirst()
+                        .definition()
+                        .paused())
+                .isFalse();
         assertThat(store.dueSchedules(Instant.now(), 10)).hasSize(1);
 
         store.putSchedule(definition("new", "0 * * * *").withPaused(true), fireAt, fireAt);
-        assertThat(store.schedules())
+        assertThat(store.schedules(null, Integer.MAX_VALUE))
                 .filteredOn(s -> s.definition().scheduleId().equals("new"))
                 .singleElement()
                 .satisfies(s -> assertThat(s.definition().paused()).isTrue());
@@ -1673,13 +1686,21 @@ class PostgresTaskStoreIT {
         assertThat(task.revision()).isEqualTo(o.leased().revision());
         assertThat(task.failures()).isNullOrEmpty();
         assertThat(occurrenceOf("dies")).isEqualTo(o.leased().id());
-        assertThat(store.schedules().getFirst().definition().paused()).isFalse();
+        assertThat(store.schedules(null, Integer.MAX_VALUE)
+                        .getFirst()
+                        .definition()
+                        .paused())
+                .isFalse();
         assertThat(effect.isApplied()).isFalse();
 
         assertThat(store.fail(o.leased().id(), o.leased().revision(), failure(1), null, true, effect))
                 .isEqualTo(FailOutcome.DEAD);
         assertThat(effect.isApplied()).isTrue();
-        assertThat(store.schedules().getFirst().definition().paused()).isTrue();
+        assertThat(store.schedules(null, Integer.MAX_VALUE)
+                        .getFirst()
+                        .definition()
+                        .paused())
+                .isTrue();
         assertThat(occurrenceOf("dies")).isZero();
     }
 

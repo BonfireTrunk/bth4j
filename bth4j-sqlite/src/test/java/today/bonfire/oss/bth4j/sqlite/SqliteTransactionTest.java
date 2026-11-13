@@ -441,13 +441,21 @@ class SqliteTransactionTest {
         assertThat(after.revision()).isEqualTo(o.leased().revision());
         assertThat(after.failures()).isNull();
         assertThat(occurrenceOf("dies")).isEqualTo(o.leased().id());
-        assertThat(store.schedules().getFirst().definition().paused()).isFalse();
+        assertThat(store.schedules(null, Integer.MAX_VALUE)
+                        .getFirst()
+                        .definition()
+                        .paused())
+                .isFalse();
         assertThat(effect.isApplied()).isFalse();
 
         assertThat(store.fail(o.leased().id(), o.leased().revision(), failure(1), null, true, effect))
                 .isEqualTo(FailOutcome.DEAD);
         assertThat(effect.isApplied()).isTrue();
-        assertThat(store.schedules().getFirst().definition().paused()).isTrue();
+        assertThat(store.schedules(null, Integer.MAX_VALUE)
+                        .getFirst()
+                        .definition()
+                        .paused())
+                .isTrue();
         assertThat(occurrenceOf("dies")).isNull();
     }
 
