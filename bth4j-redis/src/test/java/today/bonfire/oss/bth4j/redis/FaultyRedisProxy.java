@@ -114,6 +114,7 @@ final class FaultyRedisProxy implements AutoCloseable {
         }
 
         private void commands() {
+            var cutAfter = false;
             try {
                 var in = new BufferedInputStream(client.getInputStream(), 1 << 16);
                 var out = server.getOutputStream();
@@ -126,11 +127,17 @@ final class FaultyRedisProxy implements AutoCloseable {
                     replies.add(cut == FaultPlan.Cut.AFTER ? Reply.DROP : Reply.PASS);
                     out.write(raw.toByteArray());
                     out.flush();
+                    if (cut == FaultPlan.Cut.AFTER) {
+                        // the commands of a pipeline behind the cut one must not reach the server; the reply thread
+                        // closes both sockets when the server has answered the cut one
+                        cutAfter = true;
+                        return;
+                    }
                 }
             } catch (IOException e) {
                 // a side closed
             } finally {
-                endBoth();
+                if (!cutAfter) endBoth();
             }
         }
 
