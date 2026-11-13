@@ -22,6 +22,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Pattern;
 import javax.sql.DataSource;
 import today.bonfire.oss.bth4j.CancelOutcome;
@@ -72,11 +73,12 @@ import today.bonfire.oss.bth4j.spi.TaskRecord;
  * <p>
  * SQLite allows one writer at a time, so every write runs in a {@code BEGIN IMMEDIATE} transaction that the
  * store issues itself, whatever the pool does to the connection: a transaction that reads first and writes
- * later can fail with SQLITE_BUSY instead of waiting for the lock. A claim is several small statements in one
- * such transaction. The fenced transitions are {@code UPDATE ... WHERE id = ? AND revision = ? AND state = 2},
- * and {@link #fail} reads the failures it appends to inside the same transaction. A task removed while its
- * unique key's keep window is open leaves a key-only row, which holds the key until the window ends and is
- * invisible to every read.
+ * later can fail with SQLITE_BUSY instead of waiting for the lock. The writers of one store instance take an
+ * in-process lock first and wait in line there; a second instance or process on the file waits by the busy
+ * timeout. A claim is several small statements in one such transaction. The fenced transitions are
+ * {@code UPDATE ... WHERE id = ? AND revision = ? AND state = 2}, and {@link #fail} reads the failures it
+ * appends to inside the same transaction. A task removed while its unique key's keep window is open leaves a
+ * key-only row, which holds the key until the window ends and is invisible to every read.
  * <p>
  * {@link #init()} refuses connections that are not in WAL mode or whose busy timeout is below
  * {@value #MIN_BUSY_TIMEOUT_MS} ms, because without them concurrent runners fail with SQLITE_BUSY. The
@@ -138,6 +140,7 @@ public final class SqliteTaskStore implements FullStore {
 
     private final DataSource dataSource;
     private final Clock clock;
+    private final ReentrantLock writeLock = new ReentrantLock();
     private final String namespace;
     private final String meta;
     private final String queue;
@@ -385,19 +388,24 @@ public final class SqliteTaskStore implements FullStore {
      */
     @Override
     public void init() {
-        withConnection(c -> {
-            checkConnectionSettings(c);
-            if (schemaPresent(c)) return null;
-            return immediate(c, tx -> {
-                if (schemaPresent(tx)) return null;
-                try (var st = tx.createStatement()) {
-                    for (var sql : schemaStatements()) {
-                        st.execute(sql);
+        writeLock.lock();
+        try {
+            withConnection(c -> {
+                checkConnectionSettings(c);
+                if (schemaPresent(c)) return null;
+                return immediate(c, tx -> {
+                    if (schemaPresent(tx)) return null;
+                    try (var st = tx.createStatement()) {
+                        for (var sql : schemaStatements()) {
+                            st.execute(sql);
+                        }
                     }
-                }
-                return null;
+                    return null;
+                });
             });
-        });
+        } finally {
+            writeLock.unlock();
+        }
     }
 
     private static void checkConnectionSettings(Connection c) throws SQLException {
@@ -1549,9 +1557,20 @@ public final class SqliteTaskStore implements FullStore {
         }
     }
 
-    /** A write transaction: the write lock is taken at the start, waiting for it up to the busy timeout. */
+    /**
+     * A write transaction. The writers of this store instance take {@link #writeLock} before they fetch a
+     * connection and give it back after the connection is returned, so that they wait in line in the process:
+     * SQLite's busy handler only polls, and a waiter can lose every round until the busy timeout. The lock is
+     * not taken on a caller's own connection, where the caller's transaction owns the write lock. A writer in
+     * another process or in another store instance still waits for the write lock up to the busy timeout.
+     */
     private <T> T inTransaction(SqlFunction<T> fn) {
-        return withConnection(c -> immediate(c, fn));
+        writeLock.lock();
+        try {
+            return withConnection(c -> immediate(c, fn));
+        } finally {
+            writeLock.unlock();
+        }
     }
 
     /** One read transaction, so that the statements of {@code fn} see one snapshot of the database. */

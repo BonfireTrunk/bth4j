@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- SQLite: the writers of one `SqliteTaskStore` instance wait in line in the process before they start a write transaction. Before, they polled SQLite's write lock through its busy timeout, and a writer could lose every round and fail with `SQLITE_BUSY` after the timeout for a write that takes milliseconds. A second store instance or process on the same file, and `enqueue(Connection, TaskRecord)`, still wait by the busy timeout.
 - Breaking: every store is made by a builder, and the public constructors are gone. A setting can be added to a builder later without another constructor.
 
   | Before | Now |
