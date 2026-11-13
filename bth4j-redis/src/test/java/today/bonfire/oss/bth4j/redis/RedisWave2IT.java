@@ -863,7 +863,7 @@ class RedisWave2IT {
     }
 
     @Test
-    void schedulePagesFollowTheCodePointOrderOfTheIdsAndSkipADefinitionRemovedUnderneath() {
+    void schedulePagesFollowTheCodePointOrderOfTheIdsAndFillTheGapOfADefinitionRemovedUnderneath() {
         var fire = Instant.now().plusSeconds(60);
         var ids = List.of("\uD83D\uDE00", "b", "A", "\uE000", "a");
         for (var id : ids) store.putSchedule(cron(id), fire, fire);
@@ -879,9 +879,12 @@ class RedisWave2IT {
                 .containsExactly("\uD83D\uDE00");
 
         jedis.del(keys.cronDefinition("a"));
-        assertThat(store.schedules(null, 4))
+        assertThat(store.schedules(null, 3))
                 .extracting(e -> e.definition().scheduleId())
                 .containsExactly("A", "b", "\uE000");
+        assertThat(store.schedules(null, 5))
+                .extracting(e -> e.definition().scheduleId())
+                .containsExactly("A", "b", "\uE000", "\uD83D\uDE00");
     }
 
     @Test

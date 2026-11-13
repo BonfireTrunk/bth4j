@@ -15,7 +15,8 @@ header of every answer, keeps the bounds it gives on the offset to the browser's
 browser's time plus the middle of those bounds. A dashboard on another origin can read `Date` only because the
 server sends `Access-Control-Expose-Headers: Date` to an allowed origin.
 
-Pages poll every 5 s. `/overview` is asked once for the overview page and the header together: the header takes
+The overview, queues, schedules, runners and issues pages poll every 5 s; the task lists and the task page are read
+when they are opened and when their Refresh or Reload button is pressed. `/overview` is asked once for the overview page and the header together: the header takes
 every answer, and asks on its own every 10 s only when no answer is that recent. A refresh asked for while a poll
 is in flight makes one more request when that one ends.
 

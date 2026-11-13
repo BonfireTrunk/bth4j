@@ -45,7 +45,7 @@ The namespace prefixes every key and carries the Redis Cluster hash tag, so all 
 | Finished tasks | Are listed and purged from one zset per state and queue. |
 | `upcomingSchedules(limit)` | One `ZRANGE` of the `cron` zset (its score is the next fire time, and equal scores are in byte order of the id, the order of `ScheduleStore.ID_ORDER`), then the hashes of those schedules in one pipeline. |
 | `schedule(id)` | One `HGETALL`. |
-| `schedules(afterId, limit)` | One `ZRANGE crondefs <min> + BYLEX LIMIT 0 limit` (`min` is `-`, or `(` and the id after which the page starts), then the hashes of that page in one pipeline: 101 commands in 2 round trips for a page of 100, whatever the number of schedules. `nextFireTimes()` reads all ids with one `ZRANGE 0 -1` and every hash, as many commands as there are schedules plus one. |
+| `schedules(afterId, limit)` | One `ZRANGE crondefs <min> + BYLEX LIMIT 0 limit` (`min` is `-`, or `(` and the id after which the page starts), then the hashes of that page in one pipeline: 101 commands in 2 round trips for a page of 100, whatever the number of schedules. A schedule deleted between the two reads leaves a gap, which one more such pair of reads fills from behind it, so a page below the limit always means the end of the listing. `nextFireTimes()` reads all ids with one `ZRANGE 0 -1` and every hash, as many commands as there are schedules plus one. |
 | Removing a task whose unique key window is open | Leaves only a key string, which expires at the end of the window. |
 | Runner registration | Sets `accepting` to 1. |
 | Runner heartbeat | One script atomically updates the runner's time, running count and accepting flag. It also writes the hash of a removed runner again, with its label, queues and types. |

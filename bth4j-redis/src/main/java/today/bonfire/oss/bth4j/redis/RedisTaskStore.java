@@ -1272,10 +1272,20 @@ public final class RedisTaskStore implements FullStore {
     public List<ScheduleEntry> schedules(String afterId, int limit) {
         StoreArguments.requireLimit(limit);
         return guard(() -> {
+            // a definition deleted between the read of the ids and the read of its hash leaves a gap, which is
+            // filled from behind it, so that a page below the limit always means the end of the listing
+            var page = new ArrayList<ScheduleEntry>();
             var from = afterId == null ? "-" : "(" + afterId;
-            return entries(jedis.zrange(
-                    keys.cronDefinitions,
-                    ZRangeParams.zrangeByLexParams(from, "+").limit(0, limit)));
+            while (page.size() < limit) {
+                var asked = limit - page.size();
+                var ids = jedis.zrange(
+                        keys.cronDefinitions,
+                        ZRangeParams.zrangeByLexParams(from, "+").limit(0, asked));
+                page.addAll(entries(ids));
+                if (ids.size() < asked) break;
+                from = "(" + ids.getLast();
+            }
+            return page;
         });
     }
 
