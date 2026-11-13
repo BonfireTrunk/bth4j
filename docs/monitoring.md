@@ -93,6 +93,42 @@ The runner's own log lines go to the logger names in `Loggers`:
 
 The names follow the class names below `Loggers.ROOT` (`today.bonfire.oss.bth4j`). A level set on that prefix covers all of them except `TASKS`. The names do not change when an internal class moves.
 
+### While the store is unreachable
+
+Each loop of the runner (claiming tasks, renewing leases, promoting delayed tasks, queueing recurring occurrences, and the heartbeat, lease recovery, expiry and purge jobs of maintenance) logs a failed round at ERROR. A loop that fails every round for minutes would write hundreds of identical stack traces, so each loop keeps its own count of failed rounds in a row and logs three kinds of line:
+
+| Kind of line | Level | When | Example |
+|---|---|---|---|
+| The failure with its stack trace | ERROR | The first failure after a success, and any later failure of another kind | `Task processor error, waiting PT0.5S before the next attempt` and the stack trace |
+| The failure without a stack trace | ERROR | Every other failed round, with no success in between | `Task processor error, waiting PT0.5S before the next attempt (failure 12 in a row: today.bonfire.oss.bth4j.exceptions.TaskStoreException: connection refused)` |
+| The store answers again | INFO | The first success after one or more failures | `Task processor: the store answers again after 12 failed attempts over 6.0 seconds` |
+
+The kind of a failure is the exception class plus the class of its root cause. The message is not compared, because it carries addresses and counters. So a store that first refuses connections and then times out logs a new stack trace at the change, and a store that keeps refusing logs one.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Working
+    Working --> Failing: failure, logged with stack trace
+    Failing --> Failing: same kind, one line with the count
+    Failing --> Failing: other kind, stack trace again
+    Failing --> Working: success, one INFO line
+```
+
+To find an outage in the log of one loop, look for the first ERROR line with a stack trace after the last INFO line "the store answers again" (or after the start). The outage ends at the next INFO line "the store answers again" of that loop; it carries the number of failed rounds and the seconds from the first failure to the first success. Each loop counts on its own, so the loops report their recoveries separately and not at the same moment. A loop that has nothing to do makes no store call and reports nothing; for example, lease renewal reports its recovery with the first renewal after the outage, which needs a running task.
+
+| Loop | Logger | Name in the recovery line |
+|---|---|---|
+| Claiming tasks | `PROCESSOR` | `Task processor` |
+| Lease renewal | `PROCESSOR` | `Lease renewal` |
+| Promotion of delayed tasks | `PROMOTION` | `Scheduled task promotion` |
+| Recurring schedules | `RECURRING` | `Recurring task service` |
+| Heartbeat | `MAINTENANCE` | `Maintenance heartbeat` |
+| Expired leases | `MAINTENANCE` | `Maintenance lease reclaim` |
+| Start-by expiry | `MAINTENANCE` | `Maintenance expiry of missed starts` |
+| Purge | `MAINTENANCE` | `Maintenance purge` |
+
+Lines about one task or one schedule definition, such as a lease that could not be handled or a schedule that cannot be evaluated, are not counted: each is logged as it happens.
+
 ## Inspection
 
 These calls read tasks through a client:

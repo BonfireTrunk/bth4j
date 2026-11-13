@@ -682,6 +682,68 @@ class RecurringTaskServiceTest {
     }
 
     @Test
+    void anOutageOfTheRecurringLoopLogsOneStackTraceThenOneLinePerFailureAndTheRecovery() throws Exception {
+        checkInterval = Duration.ofMillis(10);
+        var calls = new AtomicInteger();
+        var running = new AtomicReference<RecurringTaskService>();
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("dueSchedules")) {
+                int call = calls.incrementAndGet();
+                if (call <= 3) throw new TaskStoreException("store down");
+                if (call == 5) running.get().stopThread();
+            }
+            return real.proceed();
+        });
+        var service = service();
+        running.set(service);
+
+        try (var logs = new LogCapture(Loggers.RECURRING)) {
+            service.run();
+
+            var lines = logs.lines();
+            assertThat(lines).hasSize(4);
+            assertThat(lines.get(0)).isEqualTo("ERROR Recurring task service Thread error [trace]");
+            assertThat(lines.get(1))
+                    .isEqualTo("ERROR Recurring task service Thread error (failure 2 in a row: "
+                            + "today.bonfire.oss.bth4j.exceptions.TaskStoreException: store down)");
+            assertThat(lines.get(2)).contains("failure 3 in a row").doesNotContain("[trace]");
+            assertThat(lines.get(3))
+                    .startsWith("INFO Recurring task service: the store answers again after 3 failed attempts over ")
+                    .endsWith(" seconds");
+        }
+    }
+
+    @Test
+    void aStoreFailureWhileCommittingIsLoggedLikeAnOutageAndARoundThatCommitsEndsIt() throws Exception {
+        register(definition("0 * * * *", null, 0), T0);
+        var commits = new AtomicInteger();
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            if (method.equals("commitSchedule") && commits.incrementAndGet() <= 2)
+                throw new TaskStoreException("store down");
+            return real.proceed();
+        });
+        var service = service();
+
+        try (var logs = new LogCapture(Loggers.RECURRING)) {
+            service.queueDueOccurrences();
+            service.queueDueOccurrences();
+            service.queueDueOccurrences();
+
+            var lines = logs.lines();
+            assertThat(lines.get(0))
+                    .isEqualTo("ERROR Recurring task service could not reach the store, ending this round [trace]");
+            assertThat(lines.get(1))
+                    .isEqualTo(
+                            "ERROR Recurring task service could not reach the store, ending this round "
+                                    + "(failure 2 in a row: today.bonfire.oss.bth4j.exceptions.TaskStoreException: store down)");
+            assertThat(lines.get(2))
+                    .startsWith("INFO Recurring task service: the store answers again after 2 failed attempts over ");
+            assertThat(lines.get(3)).isEqualTo("INFO Recurring task service queued 1 tasks");
+            assertThat(lines).hasSize(4);
+        }
+    }
+
+    @Test
     void aFatalErrorEndsTheLoopWithoutBeingRecordedAsAStoreError() throws Exception {
         checkInterval = Duration.ofMillis(10);
         var calls = new AtomicInteger();

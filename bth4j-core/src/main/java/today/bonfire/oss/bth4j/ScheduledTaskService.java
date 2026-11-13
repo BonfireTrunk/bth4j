@@ -25,6 +25,8 @@ class ScheduledTaskService extends CustomThread {
      */
     private Duration overdueWait = SHORTEST_WAIT;
 
+    private final OutageLog outage = new OutageLog(log, "Scheduled task promotion", System::nanoTime);
+
     ScheduledTaskService(Builder builder) {
         super(builder.group, builder.threadName);
         this.store = builder.store;
@@ -40,6 +42,7 @@ class ScheduledTaskService extends CustomThread {
             while (this.canContinueProcessing) {
                 try {
                     var r = store.promote(batchSize);
+                    outage.succeeded();
                     if (r.moved() > 0) {
                         log.trace("Moved {} scheduled tasks to their queues", r.moved());
                         overdueWait = SHORTEST_WAIT;
@@ -56,7 +59,7 @@ class ScheduledTaskService extends CustomThread {
                     }
                 } catch (Exception e) {
                     status.storeError(e);
-                    log.error("Scheduled task service Thread error", e);
+                    outage.failed(e, "Scheduled task service Thread error");
                     sleepAfterError();
                 }
             }

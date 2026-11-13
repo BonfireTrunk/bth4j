@@ -58,6 +58,11 @@ class TaskProcessorService extends CustomThread {
     private final QueueReservations reservations;
     /** the last shared claim skipped a queue at its cap; written and read by the processor thread only */
     private boolean capBlocked;
+
+    private final OutageLog claimOutage;
+    private final OutageLog renewalOutage;
+    /** the store failure of the last claim; written and read by the processor thread only */
+    private RuntimeException claimFailure;
     /**
      * What each queue of {@code distinctQueueIds} is owed of the slots shared so far. Kept from claim to claim, so
      * the weights also hold when slots free up one at a time; written and read by the processor thread only.
@@ -93,6 +98,8 @@ class TaskProcessorService extends CustomThread {
         this.idlePollInterval = b.idlePollInterval;
         this.claimBatchSize = b.claimBatchSize;
         this.nanoTime = b.nanoTime;
+        this.claimOutage = new OutageLog(log, "Task processor", nanoTime);
+        this.renewalOutage = new OutageLog(log, "Lease renewal", nanoTime);
         this.group = b.group;
         this.renewerName = b.threadName + "-lease";
         this.renewer = newRenewer();
@@ -148,7 +155,14 @@ class TaskProcessorService extends CustomThread {
                         log.debug("Task processor thread interrupted while stopping");
                     }
                 } catch (Exception e) {
-                    log.error("Task processor error, waiting {} before the next attempt", idlePollInterval, e);
+                    var failure = claimFailure;
+                    claimFailure = null;
+                    if (e == failure) {
+                        claimOutage.failed(
+                                e, "Task processor error, waiting {} before the next attempt", idlePollInterval);
+                    } else {
+                        log.error("Task processor error, waiting {} before the next attempt", idlePollInterval, e);
+                    }
                     sleepQuietly(idlePollInterval);
                 }
             }
@@ -203,9 +217,11 @@ class TaskProcessorService extends CustomThread {
             try {
                 reservations.drainSignal();
                 tasks = policed ? claimShared(slots) : claim(rotatedQueues(), slots);
+                claimOutage.succeeded();
                 settings.status().claimed();
             } catch (RuntimeException e) {
                 settings.status().storeError(e);
+                claimFailure = e;
                 throw e;
             }
             if (tasks.size() > slots) tasks = withinSlots(tasks, slots);
@@ -468,6 +484,7 @@ class TaskProcessorService extends CustomThread {
         for (var e : executions) refs.add(new LeaseRef(e.taskId(), e.revision()));
         try {
             var statuses = settings.store().renew(refs, lease);
+            renewalOutage.succeeded();
             int lost = 0;
             for (int i = 0; i < statuses.size() && i < executions.size(); i++) {
                 var status = statuses.get(i);
@@ -487,7 +504,7 @@ class TaskProcessorService extends CustomThread {
             }
         } catch (RuntimeException e) {
             settings.status().storeError(e);
-            log.error("Lease renewal failed for {} running tasks", refs.size(), e);
+            renewalOutage.failed(e, "Lease renewal failed for {} running tasks", refs.size());
         }
     }
 
