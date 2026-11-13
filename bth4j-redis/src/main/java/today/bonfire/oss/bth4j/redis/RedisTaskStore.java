@@ -8,7 +8,6 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -1079,15 +1078,18 @@ public final class RedisTaskStore implements FullStore {
     }
 
     private List<Entry> listing(TaskState state, Integer queueId, Entry after, int limit) {
-        var entries = new ArrayList<Entry>();
-        var qids = queueId == null ? sortedQueueIds() : List.of(queueId);
-        for (var qid : qids) {
-            for (var zset : stateZsets(state, qid)) {
-                entries.addAll(page(zset, after, limit));
+        var out = new ArrayList<Entry>();
+        var position = after;
+        while (out.size() < limit) {
+            var size = Math.min(PAGE_CHUNK, limit - out.size());
+            var chunk = page(state, queueId, position, size);
+            out.addAll(chunk);
+            if (chunk.size() < size) {
+                break;
             }
+            position = out.getLast();
         }
-        var ordered = entries.stream().sorted(ORDER).toList();
-        return ordered.subList(0, Math.min(limit, ordered.size()));
+        return out;
     }
 
     /** A zset entry: the member is the id as the decimal text Redis orders equal scores by. */
@@ -1097,44 +1099,31 @@ public final class RedisTaskStore implements FullStore {
         }
     }
 
-    private static final Comparator<Entry> ORDER =
-            Comparator.comparingDouble(Entry::score).thenComparing(Entry::member);
-
-    private List<String> stateZsets(TaskState state, int qid) {
-        return switch (state) {
-            case QUEUED ->
-                jedis.smembers(keys.activeTypes(qid)).stream()
-                        .map(tid -> keys.queue(qid, Integer.parseInt(tid)))
-                        .toList();
-            case SCHEDULED -> List.of(keys.scheduled(qid));
-            default -> List.of(keys.index(state.code(), qid));
-        };
-    }
-
     /**
-     * Reads one zset after the cursor in the order Redis keeps it: score, then the id as text. The script finds
-     * the cursor's place by rank, so tasks that share a score are never read as a whole group, however many they
-     * are. A chunk is no longer than the page needs.
+     * One script call that merges the zsets of the state, of every queue or of the given one, in the order Redis
+     * keeps them (score, then the id as text) and returns the next {@code size} entries after the cursor. A chunk
+     * is no longer than the page needs, which bounds the time the script blocks the server.
      */
     @SuppressWarnings("unchecked")
-    private List<Entry> page(String zset, Entry after, int limit) {
-        var out = new ArrayList<Entry>();
-        var position = after;
-        while (out.size() < limit) {
-            var size = Math.min(PAGE_CHUNK, limit - out.size());
-            var args = List.of(
-                    zset,
-                    position == null ? "" : String.valueOf((long) position.score()),
-                    position == null ? "" : position.member(),
-                    String.valueOf(size));
-            var chunk = (List<Object>) scripts.run(RedisScripts.LIST, args);
-            for (var i = 0; i < chunk.size(); i += 2) {
-                out.add(new Entry(Double.parseDouble((String) chunk.get(i + 1)), (String) chunk.get(i)));
-            }
-            if (chunk.size() < size * 2) {
-                break;
-            }
-            position = out.getLast();
+    private List<Entry> page(TaskState state, Integer queueId, Entry after, int size) {
+        var args = new ArrayList<String>();
+        args.add(
+                switch (state) {
+                    case QUEUED -> "q";
+                    case SCHEDULED -> "s";
+                    default -> "i";
+                });
+        args.add(String.valueOf(state.code()));
+        args.add(after == null ? "" : String.valueOf((long) after.score()));
+        args.add(after == null ? "" : after.member());
+        args.add(String.valueOf(size));
+        if (queueId != null) {
+            args.add(String.valueOf(queueId));
+        }
+        var reply = (List<Object>) scripts.run(RedisScripts.LIST, args);
+        var out = new ArrayList<Entry>(reply.size() / 2);
+        for (var i = 0; i < reply.size(); i += 2) {
+            out.add(new Entry(Double.parseDouble((String) reply.get(i + 1)), (String) reply.get(i)));
         }
         return out;
     }

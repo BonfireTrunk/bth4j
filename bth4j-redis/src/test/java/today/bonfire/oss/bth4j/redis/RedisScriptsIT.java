@@ -639,4 +639,111 @@ class RedisScriptsIT {
         assertThat(store.promote(2).moved()).isEqualTo(1);
         assertThat(store.promote(2).nextDue()).isNull();
     }
+
+    // ---- listing ---------------------------------------------------------------------------------------
+
+    private List<Long> listedIds(TaskState state, Integer queueId, int limit) {
+        var ids = new ArrayList<Long>();
+        String cursor = null;
+        do {
+            var page = store.tasks(state, queueId, cursor, limit);
+            page.items().forEach(t -> ids.add(t.id()));
+            cursor = page.next();
+        } while (cursor != null);
+        return ids;
+    }
+
+    @Test
+    void aListingPageOfQueuedTasksIsOneScriptCallForAnyNumberOfQueuesAndTypes() {
+        for (var q = 0; q < 4; q++) {
+            for (var t = 0; t < 5; t++) {
+                store.enqueue(task(q * 10 + t + 1)
+                        .queueId(store.queueId("q" + q))
+                        .typeId(store.typeId("t" + t))
+                        .build());
+            }
+        }
+        store.tasks(TaskState.QUEUED, null, null, 5);
+
+        var first = ServerCounters.measure(jedis, () -> store.tasks(TaskState.QUEUED, null, null, 5));
+        var all = ServerCounters.measure(jedis, () -> store.tasks(TaskState.QUEUED, null, null, 100));
+        var one = ServerCounters.measure(jedis, () -> store.tasks(TaskState.QUEUED, store.queueId("q1"), null, 5));
+
+        assertThat(first.calls("evalsha")).isEqualTo(1);
+        assertThat(all.calls("evalsha")).isEqualTo(1);
+        assertThat(one.calls("evalsha")).isEqualTo(1);
+        assertThat(first.roundTrips()).isEqualTo(2);
+    }
+
+    @Test
+    void aListingPageOfTheOtherStatesIsOneScriptCallForAnyNumberOfQueues() {
+        for (var q = 0; q < 4; q++) {
+            store.enqueue(task(q + 1)
+                    .queueId(store.queueId("q" + q))
+                    .dueAt(Instant.now().plusSeconds(3600))
+                    .build());
+        }
+        store.claim(new ClaimRequest(List.of(new QueueGrant(store.queueId("q0"), 1, 1)), 1, LEASE, 1, null));
+        store.enqueue(task(10).queueId(store.queueId("q2")).build());
+        var claimed =
+                store.claim(new ClaimRequest(List.of(new QueueGrant(store.queueId("q2"), 1, 1)), 1, LEASE, 1, null));
+        store.ack(claimed.getFirst().id(), claimed.getFirst().revision(), true, true, null);
+        store.tasks(TaskState.SCHEDULED, null, null, 5);
+
+        for (var state : List.of(TaskState.SCHEDULED, TaskState.LEASED, TaskState.SUCCEEDED)) {
+            var counts = ServerCounters.measure(jedis, () -> store.tasks(state, null, null, 5));
+            assertThat(counts.calls("evalsha")).as(state.name()).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void aMergedListingKeepsScoreThenIdTextOrderAcrossQueuesTypesAndPages() {
+        var queues = List.of(queue, store.queueId("b"), store.queueId("c"));
+        var types = List.of(type, store.typeId("u"), store.typeId("v"), store.typeId("w"));
+        var expected = new ArrayList<Long>();
+        var due = new HashMap<Long, Long>();
+        for (var id = 90L; id <= 130; id++) {
+            var at = 1_700_000_000_000L + (id % 3) * 1000;
+            store.enqueue(task(id).queueId(queues.get((int) (id % 3)))
+                    .typeId(types.get((int) (id % 4)))
+                    .dueAt(Instant.ofEpochMilli(at))
+                    .build());
+            due.put(id, at);
+            expected.add(id);
+        }
+        expected.sort(java.util.Comparator.<Long>comparingLong(due::get).thenComparing(String::valueOf));
+
+        assertThat(listedIds(TaskState.QUEUED, null, 7)).isEqualTo(expected);
+        assertThat(listedIds(TaskState.QUEUED, null, 1)).isEqualTo(expected);
+        assertThat(listedIds(TaskState.QUEUED, null, 100)).isEqualTo(expected);
+        var inQueue = expected.stream().filter(id -> id % 3 == 1).toList();
+        assertThat(listedIds(TaskState.QUEUED, queues.get(1), 4)).isEqualTo(inQueue);
+    }
+
+    @Test
+    void aListingLongerThanOneChunkTakesOneScriptCallPerChunkAndKeepsTheOrder() {
+        var other = store.queueId("other");
+        var tasks = new ArrayList<TaskRecord>();
+        for (var id = 1L; id <= 1100; id++) {
+            tasks.add(task(id).queueId(id % 2 == 0 ? queue : other)
+                    .typeId(store.typeId("t" + id % 3))
+                    .dueAt(Instant.ofEpochMilli(1_700_000_000_000L + id % 5))
+                    .build());
+        }
+        store.enqueueAll(tasks);
+        var expected = tasks.stream()
+                .sorted(java.util.Comparator.<TaskRecord>comparingLong(
+                                t -> t.dueAt().toEpochMilli())
+                        .thenComparing(t -> String.valueOf(t.id())))
+                .map(TaskRecord::id)
+                .toList();
+        store.tasks(TaskState.QUEUED, null, null, 1);
+        var page = new java.util.concurrent.atomic.AtomicReference<today.bonfire.oss.bth4j.spi.TaskPage>();
+
+        var counts = ServerCounters.measure(jedis, () -> page.set(store.tasks(TaskState.QUEUED, null, null, 1100)));
+
+        assertThat(page.get().items()).extracting(TaskRecord::id).isEqualTo(expected);
+        assertThat(page.get().next()).isNull();
+        assertThat(counts.calls("evalsha")).isEqualTo(3);
+    }
 }

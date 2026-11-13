@@ -198,6 +198,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation: [Upgrading](docs/upgrading.md) covers 4.x to 5.0, with every old name beside its new one. [Writing a store](docs/writing-a-store.md) has the rules of the fence, the time fields, ids, unique keys, the ways a task ends and schedules, each with its reason. The design record of 3.0, which described storage that no longer exists, the roadmap whose findings are done, and the 2.x upgrade page are removed; they are in the git history.
 - Admin HTTP: a static file carries an `ETag` made from its size and modification time, and a request whose `If-None-Match` names it is answered `304 Not Modified` without reading the file. The dashboard asks on every page load (`Cache-Control: no-cache` stays) and no longer downloads about 230 KB each time.
 - The dashboard polls `/overview` once for the page and the header together: an open overview page makes 12 requests a minute where it made 18.
+- Redis and Valkey: a page of the task listing is one script call and one round trip, where it made one call per queue and type (a page of QUEUED tasks over 20 queues with 50 types made 1,001 round trips). The script merges the sets on the server in the same order, with the same cursor.
 
 ### Fixed
 
