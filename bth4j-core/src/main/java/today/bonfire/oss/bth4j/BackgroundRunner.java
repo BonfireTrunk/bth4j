@@ -827,7 +827,10 @@ public final class BackgroundRunner implements AutoCloseable {
             return this;
         }
 
-        /** Tasks removed per purge call; the purge loops until a call removes fewer. Default 500. */
+        /**
+         * Tasks removed per purge call; the purge loops until a call removes fewer. Default 500. There is no upper
+         * limit today; a later release may refuse values above about 10,000.
+         */
         public Builder purgeBatchSize(int size) {
             if (size < 1) throw new TaskConfigurationException("purgeBatchSize must be at least 1");
             this.purgeBatchSize = size;
@@ -875,7 +878,10 @@ public final class BackgroundRunner implements AutoCloseable {
             return this;
         }
 
-        /** The most tasks claimed in one call, bounded by free executor slots. Default 32. */
+        /**
+         * The most tasks claimed in one call, bounded by free executor slots. Default 32. There is no upper limit
+         * today; a later release may refuse values above about 10,000.
+         */
         public Builder claimBatchSize(int size) {
             if (size < 1) throw new TaskConfigurationException("claimBatchSize must be at least 1");
             this.claimBatchSize = size;

@@ -69,7 +69,7 @@ How long a claimed task is leased, how often the runner polls and how often each
 |---|---|---|
 | `leaseDuration` | 60 s (1 s to 100 years) | how long a claimed task stays leased without renewal; renewed every third of its length while running. A lapsed lease cannot be renewed any more, so keep it well above the worst pause (GC, container freeze, slow store round trip); a few seconds is fragile |
 | `idlePollInterval` | 500 ms (at least 10 ms) | sleep after a claim that found nothing (cut short when a queue at its `maxConcurrent` frees a slot), and the wait for a free executor slot |
-| `claimBatchSize` | 32 | most tasks claimed in one call, bounded by free executor slots. There is no upper limit; one call is one Redis script or one SQLite write transaction, so a very large value makes other callers wait |
+| `claimBatchSize` | 32 | most tasks claimed in one call, bounded by free executor slots. There is no upper limit today; one call is one Redis script or one SQLite write transaction, so a very large value makes other callers wait. A later release may refuse values above about 10,000, so stay below that |
 | `shutdownTimeout` | 30 s | how long `stop()` takes at most, waiting for services and running tasks |
 | `serviceCheckInterval` | 10 s (at least 1 ms) | how often a dead service thread is restarted |
 | `maintenanceCheckInterval` | 5 s (at least 1 s) | how often expired leases are looked for, tasks past `startBy` are expired and the runner heartbeat is written |
@@ -88,7 +88,7 @@ How long finished tasks stay readable and how the purge removes them. See [Reten
 | `expiredRetention` | 48 hours (at most 100 years) | how long expired tasks are kept; zero removes them at the next purge |
 | `keepSucceededPayload` | false | keep the payload of succeeded tasks (dropped on success by default) |
 | `purgeInterval` | 1 minute (at least 1 ms) | time between purge runs |
-| `purgeBatchSize` | 500 | tasks removed per purge call; the purge loops until a call removes fewer. There is no upper limit; one call is one Redis script or one SQLite write transaction, so a very large value makes other callers wait |
+| `purgeBatchSize` | 500 | tasks removed per purge call; the purge loops until a call removes fewer. There is no upper limit today; one call is one Redis script or one SQLite write transaction, so a very large value makes other callers wait. A later release may refuse values above about 10,000, so stay below that |
 | `runnerStaleTimeout` | 10 minutes (at least three times `maintenanceCheckInterval`, at most 100 years) | runner registry rows without a heartbeat for this long are deleted by the purge |
 
 ## Task ids
