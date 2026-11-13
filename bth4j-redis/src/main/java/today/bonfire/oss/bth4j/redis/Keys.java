@@ -43,7 +43,7 @@ package today.bonfire.oss.bth4j.redis;
  * and keeps the key taken on its own. The {@code uk}, {@code kk} and {@code ku} fields of a kept task carry the
  * same expiry (HPEXPIREAT), so the store needs Redis 7.4 or Valkey 9 at least</li>
  * <li>{@code cron} zset of next fire ms of the definitions that are not paused, {@code cron:<sid>} hash (field
- * {@code next} always holds the next fire, also while paused), {@code crondefs} set of every definition id,
+ * {@code next} always holds the next fire, also while paused), {@code crondefs} sorted set of every definition id (all scores 0, so it is ordered by the bytes of the id),
  * {@code cronrev} counter</li>
  * </ul>
  */

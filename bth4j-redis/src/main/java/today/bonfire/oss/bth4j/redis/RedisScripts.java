@@ -861,7 +861,7 @@ final class RedisScripts {
             if existed then
               if old.paused then redis.call('HSET', ckey, 'paused', old.paused) else redis.call('HDEL', ckey, 'paused') end
             end
-            redis.call('SADD', P .. 'crondefs', ARGV[2])
+            redis.call('ZADD', P .. 'crondefs', 0, ARGV[2])
             if redis.call('HGET', ckey, 'paused') == '1' then
               redis.call('ZREM', P .. 'cron', ARGV[2])
             else
@@ -883,7 +883,7 @@ final class RedisScripts {
     /** ARGV: schedule id, revision or ''. Returns APPLIED, NOT_FOUND or STALE. */
     static final String CRON_DELETE = PRELUDE + SCHEDULE_GUARD + """
             redis.call('ZREM', P .. 'cron', ARGV[2])
-            redis.call('SREM', P .. 'crondefs', ARGV[2])
+            redis.call('ZREM', P .. 'crondefs', ARGV[2])
             redis.call('DEL', ckey)
             return 'APPLIED'
             """;

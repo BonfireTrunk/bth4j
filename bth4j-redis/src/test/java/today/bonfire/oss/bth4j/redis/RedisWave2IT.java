@@ -39,6 +39,7 @@ import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.RunnerRecord;
+import today.bonfire.oss.bth4j.spi.ScheduleEntry;
 import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
 
@@ -842,6 +843,48 @@ class RedisWave2IT {
     }
 
     @Test
+    void aSchedulePageReadsOnePageOfIdsAndNoMoreThanItsHashes() {
+        var fire = Instant.now().plusSeconds(60);
+        for (var n = 0; n < 300; n++) {
+            store.putSchedule(cron(String.format("s%03d", n)), fire, fire);
+        }
+        assertThat(jedis.type(keys.cronDefinitions)).isEqualTo("zset");
+        var page = new java.util.concurrent.atomic.AtomicReference<List<ScheduleEntry>>();
+
+        var counts = ServerCounters.measure(jedis, () -> page.set(store.schedules("s100", 10)));
+
+        assertThat(page.get())
+                .extracting(e -> e.definition().scheduleId())
+                .containsExactly("s101", "s102", "s103", "s104", "s105", "s106", "s107", "s108", "s109", "s110");
+        assertThat(counts.calls("zrange")).isEqualTo(1);
+        assertThat(counts.calls("smembers")).isZero();
+        assertThat(counts.calls("hgetall")).isEqualTo(10);
+        assertThat(counts.roundTrips()).isEqualTo(2);
+    }
+
+    @Test
+    void schedulePagesFollowTheCodePointOrderOfTheIdsAndSkipADefinitionRemovedUnderneath() {
+        var fire = Instant.now().plusSeconds(60);
+        var ids = List.of("\uD83D\uDE00", "b", "A", "\uE000", "a");
+        for (var id : ids) store.putSchedule(cron(id), fire, fire);
+
+        assertThat(store.schedules(null, 2))
+                .extracting(e -> e.definition().scheduleId())
+                .containsExactly("A", "a");
+        assertThat(store.schedules("a", 2))
+                .extracting(e -> e.definition().scheduleId())
+                .containsExactly("b", "\uE000");
+        assertThat(store.schedules("\uE000", 5))
+                .extracting(e -> e.definition().scheduleId())
+                .containsExactly("\uD83D\uDE00");
+
+        jedis.del(keys.cronDefinition("a"));
+        assertThat(store.schedules(null, 4))
+                .extracting(e -> e.definition().scheduleId())
+                .containsExactly("A", "b", "\uE000");
+    }
+
+    @Test
     void deleteScheduleRemovesItFromTheListing() {
         store.putSchedule(
                 cron("s"), Instant.now().plusSeconds(60), Instant.now().plusSeconds(60));
@@ -849,7 +892,7 @@ class RedisWave2IT {
         assertThat(store.deleteSchedule("s", null)).isEqualTo(ScheduleOutcome.APPLIED);
 
         assertThat(store.schedules(null, Integer.MAX_VALUE)).isEmpty();
-        assertThat(jedis.scard(keys.cronDefinitions)).isZero();
+        assertThat(jedis.zcard(keys.cronDefinitions)).isZero();
     }
 
     @Test

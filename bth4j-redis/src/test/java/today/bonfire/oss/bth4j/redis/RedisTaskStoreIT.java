@@ -161,6 +161,16 @@ class RedisTaskStoreIT {
     }
 
     @Test
+    void initRefusesTheSchemaVersionOfTheReleaseBefore() {
+        var previous = String.valueOf(RedisTaskStore.SCHEMA_VERSION - 1);
+        jedis.hset(keys.meta, "schema", previous);
+
+        assertThatThrownBy(store::init)
+                .isInstanceOf(TaskStoreException.class)
+                .hasMessageContaining("schema version " + previous + ", expected " + RedisTaskStore.SCHEMA_VERSION);
+    }
+
+    @Test
     void initWritesSchemaAndRefusesAnotherVersion() {
         assertThat(store.info().engine()).isEqualTo("redis");
         assertThat(jedis.hget(keys.meta, "schema")).isEqualTo(String.valueOf(RedisTaskStore.SCHEMA_VERSION));

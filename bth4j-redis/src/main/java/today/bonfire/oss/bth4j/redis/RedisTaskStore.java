@@ -27,6 +27,7 @@ import redis.clients.jedis.Response;
 import redis.clients.jedis.UnifiedJedis;
 import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.jedis.exceptions.JedisException;
+import redis.clients.jedis.params.ZRangeParams;
 import today.bonfire.oss.bth4j.CancelOutcome;
 import today.bonfire.oss.bth4j.DeleteOutcome;
 import today.bonfire.oss.bth4j.FailureInfo;
@@ -59,7 +60,6 @@ import today.bonfire.oss.bth4j.spi.RecordJson;
 import today.bonfire.oss.bth4j.spi.RunnerRecord;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.ScheduleEntry;
-import today.bonfire.oss.bth4j.spi.ScheduleStore;
 import today.bonfire.oss.bth4j.spi.StoreArguments;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
 import today.bonfire.oss.bth4j.spi.StoredSchedule;
@@ -82,7 +82,7 @@ public final class RedisTaskStore implements FullStore {
      * The version of the keys this class writes, stored in the namespace's {@code meta} hash. {@link #init}
      * refuses a namespace with any other version.
      */
-    public static final int SCHEMA_VERSION = 6;
+    public static final int SCHEMA_VERSION = 7;
 
     private static final int PAGE_CHUNK = 500;
 
@@ -827,9 +827,7 @@ public final class RedisTaskStore implements FullStore {
     @Override
     public Map<String, Instant> nextFireTimes() {
         var result = new LinkedHashMap<String, Instant>();
-        guard(() -> entries(jedis.smembers(keys.cronDefinitions).stream()
-                        .sorted(ScheduleStore.ID_ORDER)
-                        .toList()))
+        guard(() -> entries(jedis.zrange(keys.cronDefinitions, 0, -1)))
                 .forEach(r -> result.put(r.definition().scheduleId(), r.nextFireAt()));
         return result;
     }
@@ -1274,12 +1272,10 @@ public final class RedisTaskStore implements FullStore {
     public List<ScheduleEntry> schedules(String afterId, int limit) {
         StoreArguments.requireLimit(limit);
         return guard(() -> {
-            var ids = jedis.smembers(keys.cronDefinitions).stream()
-                    .sorted(ScheduleStore.ID_ORDER)
-                    .filter(id -> afterId == null || ScheduleStore.ID_ORDER.compare(id, afterId) > 0)
-                    .limit(limit)
-                    .toList();
-            return entries(ids);
+            var from = afterId == null ? "-" : "(" + afterId;
+            return entries(jedis.zrange(
+                    keys.cronDefinitions,
+                    ZRangeParams.zrangeByLexParams(from, "+").limit(0, limit)));
         });
     }
 
