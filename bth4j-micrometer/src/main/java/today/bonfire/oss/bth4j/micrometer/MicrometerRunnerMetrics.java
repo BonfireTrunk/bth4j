@@ -20,6 +20,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,7 +32,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 
 /**
  * Gauges for one runner: running tasks, health, abandoned attempts, concurrency limit when available, and
- * task counts by state and queue. Health and counts are read by a single daemon every {@code refresh}, so
+ * task counts by state and queue, and the age of those counts. Health and counts are read by a single daemon every {@code refresh}, so
  * scraping never touches the store. Call {@link #close()} to stop polling and remove the meters.
  */
 public final class MicrometerRunnerMetrics implements AutoCloseable {
@@ -43,6 +44,7 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
     static final String UP = "bth4j.runner.up";
     static final String ABANDONED = "bth4j.runner.abandoned";
     static final String TASKS_STATE = "bth4j.tasks.state";
+    static final String COUNTS_AGE = "bth4j.runner.counts.age";
 
     /**
      * The tag sets bound per registry. A registry hands a second gauge with the same name and tags the first
@@ -54,6 +56,8 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
     private final AdminOps admin;
     private final Tags commonTags;
     private final Supplier<OptionalInt> concurrencyLimit;
+    private final LongSupplier nanoTime;
+    private final AtomicLong countsReadAtNanos;
     private boolean limitRegistered;
     private boolean limitFailureLogged;
     private final AtomicInteger up = new AtomicInteger();
@@ -72,8 +76,11 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
             Supplier<OptionalInt> concurrencyLimit,
             MeterRegistry registry,
             Tags commonTags,
-            Duration refresh) {
+            Duration refresh,
+            LongSupplier nanoTime) {
         this.concurrencyLimit = concurrencyLimit;
+        this.nanoTime = nanoTime;
+        this.countsReadAtNanos = new AtomicLong(nanoTime.getAsLong());
         this.admin = admin;
         this.registry = registry;
         this.commonTags = commonTags;
@@ -97,6 +104,13 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
             meters.add(Gauge.builder(ABANDONED, abandoned, AtomicInteger::get)
                     .tags(commonTags)
                     .description("Attempts past their maximum run time that still hold a slot")
+                    .strongReference(true)
+                    .register(registry));
+            meters.add(Gauge.builder(COUNTS_AGE, this, MicrometerRunnerMetrics::countsAgeSeconds)
+                    .tags(commonTags)
+                    .baseUnit("seconds")
+                    .description("Time since the task counts were last read successfully; counts from binding "
+                            + "until the first successful read")
                     .strongReference(true)
                     .register(registry));
             refresh();
@@ -165,6 +179,17 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
             MeterRegistry registry,
             Tags commonTags,
             Duration refresh) {
+        return bind(admin, running, limit, registry, commonTags, refresh, System::nanoTime);
+    }
+
+    static MicrometerRunnerMetrics bind(
+            AdminOps admin,
+            Supplier<Integer> running,
+            Supplier<OptionalInt> limit,
+            MeterRegistry registry,
+            Tags commonTags,
+            Duration refresh,
+            LongSupplier nanoTime) {
         if (refresh.isZero() || refresh.isNegative()) {
             throw new TaskConfigurationException("refresh must be positive");
         }
@@ -176,7 +201,7 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
             }
         }
         try {
-            return new MicrometerRunnerMetrics(admin, running, limit, registry, tags, refresh);
+            return new MicrometerRunnerMetrics(admin, running, limit, registry, tags, refresh, nanoTime);
         } catch (RuntimeException | Error e) {
             unbind(registry, tags);
             throw e;
@@ -230,12 +255,17 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
                 stateValues.forEach((key, value) -> {
                     if (!counts.containsKey(key.queue())) value.set(0);
                 });
+                countsReadAtNanos.set(nanoTime.getAsLong());
             } finally {
                 metersLock.unlock();
             }
         } catch (RuntimeException e) {
             // keep the last known counts; the next tick retries
         }
+    }
+
+    private double countsAgeSeconds() {
+        return (nanoTime.getAsLong() - countsReadAtNanos.get()) / 1e9;
     }
 
     private void registerLimitGauge() {

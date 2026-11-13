@@ -241,6 +241,7 @@ The observer's tags are only names and results, never ids or messages, so the nu
 | `bth4j.runner.abandoned` | gauge | none | Attempts past their maximum run time that still hold a slot. |
 | `bth4j.runner.up` | gauge | none | 1 while the runner is RUNNING. |
 | `bth4j.runner.concurrency.limit` | gauge | none | The executor's concurrency limit. It is registered only when the executor exposes a limit. |
-| `bth4j.tasks.state` | gauge | `state`, `queue` | |
+| `bth4j.tasks.state` | gauge | `state`, `queue` | When reading the counts fails, the last values stay; use `bth4j.runner.counts.age` to see how old they are. |
+| `bth4j.runner.counts.age` | gauge | none | Seconds since the counts were last read successfully, computed when scraped. Counts from the moment of binding until the first successful read, so a store that is down from the start shows a growing age, not `NaN`. |
 
 One daemon thread refreshes the gauges every `refresh`, so a scrape never reads the store.

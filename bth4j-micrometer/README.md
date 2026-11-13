@@ -23,6 +23,7 @@ Written by `MicrometerRunnerMetrics` (gauges, refreshed by one daemon thread):
 | `bth4j.runner.abandoned` | gauge | none | Attempts past their maximum run time that were abandoned and still hold a slot. |
 | `bth4j.runner.up` | gauge | none | 1 while the runner health status is `RUNNING`, otherwise 0. |
 | `bth4j.tasks.state` | gauge | `state`, `queue` | Tasks per state and queue as of the last refresh. A queue that disappears drops to 0. |
+| `bth4j.runner.counts.age` | gauge | none | Seconds since the counts were last read successfully, computed when scraped. Counts from the moment of binding until the first successful read, so a store that is down from the start shows a growing age, not `NaN`. |
 
 Any common tags you pass are added to every meter. Tags only ever hold type, queue, state, result and outcome
 names; task ids and messages are never used, so the number of meters is bounded.
@@ -51,4 +52,4 @@ The runner overload also binds its concurrency limit, with an optional common-ta
 taking `AdminOps` and a running-task supplier do not expose a concurrency limit. `admin` is the runner's
 `AdminOps` (the one that reports the runner's health). The poller reads `admin.counts()`
 and `admin.health()` every refresh interval, so scraping never queries the store. If reading the counts fails, the last
-counts stay; if reading health fails, `bth4j.runner.up` becomes 0.
+counts stay and `bth4j.runner.counts.age` keeps growing until a read works; if reading health fails, `bth4j.runner.up` becomes 0.
