@@ -349,7 +349,7 @@ public final class TaskClient {
                 .retryPolicy(request.retryPolicy())
                 .startBy(request.startBy())
                 .maxRunTime(request.maxRunTime());
-        if (request.uniqueKey() != null && request.uniqueness() instanceof Uniqueness.KeepFor k) {
+        if (request.uniqueKey() != null && request.uniqueness() instanceof Uniqueness.KeepAfterDone k) {
             b.keyKeep(k.duration());
         }
         return b.build();

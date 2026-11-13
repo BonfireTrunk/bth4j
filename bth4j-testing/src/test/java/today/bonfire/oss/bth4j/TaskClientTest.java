@@ -1475,12 +1475,12 @@ class TaskClientTest {
         var client = builder().build();
         var request = TaskRequest.of(VOID)
                 .id(client.nextId())
-                .uniqueKey("order-7", Uniqueness.keepFor(Duration.ofHours(1)))
+                .uniqueKey("order-7", Uniqueness.keepAfterDone(Duration.ofHours(1)))
                 .startBy(clock.instant().plusSeconds(5))
                 .build();
         var otherKey = TaskRequest.of(VOID)
                 .id(request.id())
-                .uniqueKey("order-8", Uniqueness.keepFor(Duration.ofHours(1)))
+                .uniqueKey("order-8", Uniqueness.keepAfterDone(Duration.ofHours(1)))
                 .startBy(clock.instant().plusSeconds(5))
                 .build();
         assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(request.id(), true));

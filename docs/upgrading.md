@@ -75,7 +75,7 @@ The schema versions are 4 for PostgreSQL, 6 for Redis and 2 for SQLite.
 | The admin server logged nothing about sign-ins and changes. | It writes one INFO line per sign-in, refused sign-in and POST or DELETE; see [What the server logs](admin.md#what-the-server-logs). Lower the level of its logger if you do not want them. |
 | PostgreSQL cuts the server's clock to the millisecond. It rounded, which put its clock up to half a millisecond ahead of the server's. | Nothing, unless a test relied on a task due in the next millisecond being queued at once. |
 | Redis `init` refuses a namespace that holds keys of the store but no schema version, for example one restored without its `meta` key. It wrote the current version and worked on whatever was there. | Restore the `meta` key, or use a new namespace. |
-| `TaskRequest.Builder.uniqueKey(key)` sets the key to be taken until the task is done. After `uniqueKey(key, Uniqueness.keepFor(...))` on the same builder it kept the earlier keep window. | Call the version with the keep window last when you want it. |
+| `TaskRequest.Builder.uniqueKey(key)` sets the key to be taken until the task is done. After `uniqueKey(key, Uniqueness.keepAfterDone(...))` on the same builder it kept the earlier keep window. | Call the version with the keep window last when you want it. |
 | `RetryPolicy.exponential` keeps doubling up to the cap. It stopped at base x 2^20, which is 2.9 hours for a 10 ms base. | Nothing, unless you set a cap above that and relied on the stop. |
 
 ## Queues
@@ -131,11 +131,12 @@ The process that runs tasks is a runner everywhere. 4.x also called it a worker.
 | `TaskType.payloadVersion(int)`, `TaskType.interruptOnCancel()` | `withPayloadVersion(int)`, `withInterruptOnCancel()` |
 | `TaskRequest.Builder.header(name, value)`, `headers(map)` | `addHeader(name, value)`, `addHeaders(map)` |
 | `EnqueueResult.accepted()` | `isAccepted()` |
+| `Uniqueness.keepFor(d)`, `Uniqueness.KeepFor`, `Uniqueness.MAX_KEEP_FOR` | `keepAfterDone(d)`, `KeepAfterDone`, `MAX_KEEP_AFTER_DONE`: the time counts from the end of the task, as before |
 | `TaskView.due()` | `dueAt()` |
 | `TaskView.type()` | `typeName()` |
 | `TaskView.record()`, `new TaskView(record, queue, type)` | gone; `TaskView.builder()` makes a view for a test |
 | `TaskState`, `StateCounts`, `QueueInfo`, `CancelOutcome`, `RetryOutcome`, `FailureInfo`, `StepResult` in `today.bonfire.oss.bth4j.spi` | the same names in `today.bonfire.oss.bth4j` |
-| a `maxRunTime` or a `Uniqueness.keepFor` below one millisecond | refused with `TaskValidationException` |
+| a `maxRunTime` or a `Uniqueness.keepAfterDone` below one millisecond | refused with `TaskValidationException` |
 
 ## Schedules
 
@@ -166,7 +167,7 @@ Everything bth4j throws to refuse a call or to report a failure of its own exten
 
 | 4.x | 5.0 |
 |---|---|
-| `IllegalArgumentException` for data that is sent or stored (a malformed cursor, `Uniqueness.keepFor`, and others) | `TaskValidationException` |
+| `IllegalArgumentException` for data that is sent or stored (a malformed cursor, `Uniqueness.keepAfterDone`, and others) | `TaskValidationException` |
 | `IllegalStateException` or `IllegalArgumentException` for a setting of the runner, the admin server, an executor or the metrics binding | `TaskConfigurationException` |
 | `TaskStoreException`, `UnreadableTaskException` in `today.bonfire.oss.bth4j.spi` | in `today.bonfire.oss.bth4j.exceptions` |
 | `UnreadableTaskException` is a `TaskStoreException` | it is not: the store works, and the same call fails until the task is repaired or deleted |

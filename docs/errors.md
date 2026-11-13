@@ -56,7 +56,7 @@ The rule is what the value belongs to, not where the check runs.
 | Mistake | Throws |
 |---|---|
 | `TaskRequest` with a negative delay, a unique key that is too long, an id that was never allocated | `TaskValidationException` |
-| `Uniqueness.keepFor(Duration.ZERO)`, `Misfire.catchUp(0)` | `TaskValidationException` |
+| `Uniqueness.keepAfterDone(Duration.ZERO)`, `Misfire.catchUp(0)` | `TaskValidationException` |
 | A cron expression that cannot be parsed, a cron schedule without an overlap rule | `TaskValidationException` |
 | A malformed listing cursor, a `limit` below 1, an unknown queue name in an admin call | `TaskValidationException` |
 | `new TaskRescheduleException(Duration.ofSeconds(-1))` | `TaskValidationException` |

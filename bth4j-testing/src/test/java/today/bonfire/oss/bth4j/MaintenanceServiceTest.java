@@ -575,7 +575,7 @@ class MaintenanceServiceTest {
     void aTaskPastRetentionIsPurgedWhileItsKeyStaysTakenUntilTheWindowEnds() throws Exception {
         retention = Map.of(TaskState.SUCCEEDED, Duration.ofMinutes(1));
         long id = succeeded(request()
-                .uniqueKey("k", Uniqueness.keepFor(Duration.ofHours(1)))
+                .uniqueKey("k", Uniqueness.keepAfterDone(Duration.ofHours(1)))
                 .build());
         clock.advance(Duration.ofMinutes(2));
 
@@ -596,7 +596,7 @@ class MaintenanceServiceTest {
     @Test
     void aUniqueKeyIsReleasedWhenItsWindowPassedEvenWithoutRetention() throws Exception {
         long id = succeeded(request()
-                .uniqueKey("k", Uniqueness.keepFor(Duration.ofHours(1)))
+                .uniqueKey("k", Uniqueness.keepAfterDone(Duration.ofHours(1)))
                 .build());
         assertThat(client.enqueue(request().uniqueKey("k").build()).isAccepted())
                 .isFalse();
@@ -619,7 +619,7 @@ class MaintenanceServiceTest {
         var ids = new ArrayList<Long>();
         for (int i = 0; i < 5; i++) {
             ids.add(succeeded(request()
-                    .uniqueKey("k" + i, Uniqueness.keepFor(Duration.ofHours(1)))
+                    .uniqueKey("k" + i, Uniqueness.keepAfterDone(Duration.ofHours(1)))
                     .build()));
         }
         clock.advance(Duration.ofHours(1).plusSeconds(1));
@@ -657,7 +657,7 @@ class MaintenanceServiceTest {
     @Test
     void aFailedKeyReleaseIsRepeatedByTheNextCycle() throws Exception {
         long id = succeeded(request()
-                .uniqueKey("k", Uniqueness.keepFor(Duration.ofHours(1)))
+                .uniqueKey("k", Uniqueness.keepAfterDone(Duration.ofHours(1)))
                 .build());
         clock.advance(Duration.ofHours(1).plusSeconds(1));
         var failing = new AtomicInteger(1);

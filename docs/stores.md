@@ -121,7 +121,7 @@ sequenceDiagram
 3. After the commit, enqueue `TaskRequest.of(type, payload).id(id).build()` and delete the outbox row.
 4. A periodic sweep enqueues the outbox rows a crash or an `EnqueueFailedException` left behind. The same id is stored once and answered `Accepted` either way.
 
-When a succeeded task can be removed before the sweep comes (a short succeeded retention), also give the request a unique key with a `keepFor` longer than the sweep's reach, so that a resend cannot run it again. The resend is answered `Accepted` on every store.
+When a succeeded task can be removed before the sweep comes (a short succeeded retention), also give the request a unique key with a `keepAfterDone` longer than the sweep's reach, so that a resend cannot run it again. The resend is answered `Accepted` on every store.
 
 Enqueueing first and cancelling the task when your transaction rolls back does not work. A runner can start the task before the rollback, and a crash between the two leaves a task for data that was never committed.
 
@@ -136,7 +136,7 @@ A listing of tasks follows the same order on each store. The runner promises no 
 
 ## Unique keys after a task ended
 
-A unique key with a keep window (`Uniqueness.keepFor`) stays taken for that long after its task ended. Whether a key is taken, and for how long, is the same on every store. Two things around it differ:
+A unique key with a keep window (`Uniqueness.keepAfterDone`) stays taken for that long after its task ended. Whether a key is taken, and for how long, is the same on every store. Two things around it differ:
 
 | Case | PostgreSQL and SQLite | Redis | In-memory |
 |---|---|---|---|

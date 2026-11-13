@@ -1029,7 +1029,7 @@ public abstract class StoreContract {
 
     @Test
     void theLongestKeepWindowHoldsTheKeyOnEveryWayATaskEnds() {
-        Duration longest = Uniqueness.MAX_KEEP_FOR;
+        Duration longest = Uniqueness.MAX_KEEP_AFTER_DONE;
         TaskRecord acked = leased(task().uniqueKey("acked").keyKeep(longest));
         assertThat(store.ack(acked.id(), acked.revision(), true, true, null)).isTrue();
         TaskRecord dead = leased(task().uniqueKey("dead").keyKeep(longest));
