@@ -221,9 +221,9 @@ public abstract class RunnerContract {
     void callerIdIsComparedWithTheStoredTask() {
         long id = client.nextId();
         var request = TaskRequest.of(PAYLOAD_TYPE, new Payload("one", 1)).id(id).build();
-        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id, true));
 
-        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id, false));
         assertThatThrownBy(() -> client.enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("two", 1))
                         .id(id)
                         .build()))
@@ -242,11 +242,11 @@ public abstract class RunnerContract {
         startRunner(r -> r.register(PAYLOAD_TYPE, (ctx, payload) -> {}));
         var done = awaitState(id, TaskState.SUCCEEDED);
         assertThat(done.encodedPayload()).isNull();
-        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id, false));
         assertThat(client.enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("two", 1))
                         .id(id)
                         .build()))
-                .isEqualTo(new EnqueueResult.Accepted(id));
+                .isEqualTo(new EnqueueResult.Accepted(id, false));
         assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID_TYPE).id(id).build()))
                 .isInstanceOf(TaskIdReusedException.class);
     }
@@ -266,8 +266,8 @@ public abstract class RunnerContract {
         assertThat(client.task(id).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
         assertThat(client.task(id).orElseThrow().uniqueKey()).isNull();
 
-        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
-        assertThat(client.enqueueAll(List.of(request))).containsExactly(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id, false));
+        assertThat(client.enqueueAll(List.of(request))).containsExactly(new EnqueueResult.Accepted(id, false));
         assertThat(client.counts().get("Q:DEF").queued()).isEqualTo(1);
     }
 
@@ -286,7 +286,7 @@ public abstract class RunnerContract {
 
             var result = batch ? producer.enqueueAll(List.of(request)).getFirst() : producer.enqueue(request);
 
-            assertThat(result).isEqualTo(new EnqueueResult.Accepted(first + 4));
+            assertThat(result).isEqualTo(new EnqueueResult.Accepted(first + 4, true));
             assertThat(store.task(occupied)).isPresent();
             assertThat(store.task(result.id())).isPresent();
         }

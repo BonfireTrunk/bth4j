@@ -140,11 +140,46 @@ class TaskClientTest {
         var first = client.enqueue(request);
         var second = client.enqueue(request);
 
-        assertThat(first).isEqualTo(new EnqueueResult.Accepted(id));
-        assertThat(second).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(first).isEqualTo(new EnqueueResult.Accepted(id, true));
+        assertThat(second).isEqualTo(new EnqueueResult.Accepted(id, false));
         assertThat(client.tasks(TaskState.QUEUED, null, null, 100).items())
                 .extracting(TaskView::id)
                 .containsExactly(id);
+    }
+
+    @Test
+    void aFirstWriteAnswersCreatedAndAResendWithTheSameContentDoesNot() {
+        var client = builder().build();
+        long id = client.nextId();
+        var request = TaskRequest.of(TYPED, new Payload("once")).id(id).build();
+
+        assertThat(client.enqueue(TaskRequest.of(VOID).build()))
+                .isInstanceOfSatisfying(
+                        EnqueueResult.Accepted.class,
+                        a -> assertThat(a.created()).isTrue());
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id, true));
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id, false));
+    }
+
+    @Test
+    void aBatchAnswersCreatedPerRequestWhenItMixesFirstWritesWithResends() {
+        var client = builder().build();
+        long sent = client.nextId();
+        long fresh = client.nextId();
+        client.enqueue(TaskRequest.of(VOID).id(sent).build());
+
+        var results = client.enqueueAll(List.of(
+                TaskRequest.of(VOID).id(sent).build(),
+                TaskRequest.of(VOID).id(fresh).build(),
+                TaskRequest.of(VOID).build()));
+
+        assertThat(results).hasSize(3);
+        assertThat(results.get(0)).isEqualTo(new EnqueueResult.Accepted(sent, false));
+        assertThat(results.get(1)).isEqualTo(new EnqueueResult.Accepted(fresh, true));
+        assertThat(results.get(2))
+                .isInstanceOfSatisfying(
+                        EnqueueResult.Accepted.class,
+                        a -> assertThat(a.created()).isTrue());
     }
 
     @Test
@@ -159,7 +194,7 @@ class TaskClientTest {
 
         client.enqueue(request);
 
-        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id, false));
     }
 
     @Test
@@ -191,7 +226,7 @@ class TaskClientTest {
         var same = client.enqueueAll(List.of(
                 TaskRequest.of(TYPED, new Payload("a")).id(id).build(),
                 TaskRequest.of(VOID).build()));
-        assertThat(same.getFirst()).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(same.getFirst()).isEqualTo(new EnqueueResult.Accepted(id, false));
         assertThatThrownBy(() ->
                         client.enqueueAll(List.of(TaskRequest.of(VOID).id(id).build())))
                 .isInstanceOf(TaskIdReusedException.class);
@@ -390,10 +425,10 @@ class TaskClientTest {
         assertThat(client.task(id).orElseThrow().uniqueKey()).isNull();
 
         assertThat(client.enqueue(TaskRequest.of(VOID).uniqueKey("k").id(id).build()))
-                .isEqualTo(new EnqueueResult.Accepted(id));
+                .isEqualTo(new EnqueueResult.Accepted(id, false));
         assertThat(client.enqueueAll(
                         List.of(TaskRequest.of(VOID).uniqueKey("k").id(id).build())))
-                .containsExactly(new EnqueueResult.Accepted(id));
+                .containsExactly(new EnqueueResult.Accepted(id, false));
     }
 
     @Test
@@ -403,10 +438,10 @@ class TaskClientTest {
         client.enqueue(TaskRequest.of(VOID).id(id).build());
 
         assertThat(client.enqueue(TaskRequest.of(VOID).uniqueKey("k").id(id).build()))
-                .isEqualTo(new EnqueueResult.Accepted(id));
+                .isEqualTo(new EnqueueResult.Accepted(id, false));
         assertThat(client.enqueueAll(
                         List.of(TaskRequest.of(VOID).uniqueKey("k").id(id).build())))
-                .containsExactly(new EnqueueResult.Accepted(id));
+                .containsExactly(new EnqueueResult.Accepted(id, false));
     }
 
     @Test
@@ -483,8 +518,8 @@ class TaskClientTest {
         assertThat(store.task(id).orElseThrow().encodedPayload()).isNull();
         var retry = TaskRequest.of(TYPED, new Payload("different")).id(id).build();
 
-        assertThat(client.enqueue(retry)).isEqualTo(new EnqueueResult.Accepted(id));
-        assertThat(client.enqueueAll(List.of(retry))).containsExactly(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueue(retry)).isEqualTo(new EnqueueResult.Accepted(id, false));
+        assertThat(client.enqueueAll(List.of(retry))).containsExactly(new EnqueueResult.Accepted(id, false));
         assertThat(client.counts().get("Q:DEF").succeeded()).isEqualTo(1);
         assertThat(client.counts().get("Q:DEF").queued()).isZero();
     }
@@ -750,7 +785,7 @@ class TaskClientTest {
                     assertThat(e.ids()).containsExactly(1L);
                     assertThat(e.storedCount()).isZero();
                     assertThat(healthy.enqueue(TaskRequest.of(VOID).id(e.id()).build()))
-                            .isEqualTo(new EnqueueResult.Accepted(1));
+                            .isEqualTo(new EnqueueResult.Accepted(1, false));
                 });
         assertThat(healthy.counts().get("Q:DEF").queued()).isEqualTo(1);
     }
@@ -1060,7 +1095,7 @@ class TaskClientTest {
         var result = client.enqueueAll(List.of(
                 TaskRequest.of(type, "payload").delay(Duration.ofHours(1)).build()));
 
-        assertThat(result).containsExactly(new EnqueueResult.Accepted(65));
+        assertThat(result).containsExactly(new EnqueueResult.Accepted(65, true));
         var task = store.task(result.getFirst().id()).orElseThrow();
         assertThat(task.encodedPayload()).isEqualTo("payload1");
         assertThat(task.dueAt()).isEqualTo(due);
@@ -1371,15 +1406,17 @@ class TaskClientTest {
                 .id(client.nextId())
                 .startBy(clock.instant().plusSeconds(5))
                 .build();
-        assertThat(client.enqueue(atOnce)).isEqualTo(new EnqueueResult.Accepted(atOnce.id()));
-        assertThat(client.enqueue(delayed)).isEqualTo(new EnqueueResult.Accepted(delayed.id()));
+        assertThat(client.enqueue(atOnce)).isEqualTo(new EnqueueResult.Accepted(atOnce.id(), true));
+        assertThat(client.enqueue(delayed)).isEqualTo(new EnqueueResult.Accepted(delayed.id(), true));
 
         clock.advance(Duration.ofSeconds(45));
 
-        assertThat(client.enqueue(atOnce)).isEqualTo(new EnqueueResult.Accepted(atOnce.id()));
-        assertThat(client.enqueue(delayed)).isEqualTo(new EnqueueResult.Accepted(delayed.id()));
+        assertThat(client.enqueue(atOnce)).isEqualTo(new EnqueueResult.Accepted(atOnce.id(), false));
+        assertThat(client.enqueue(delayed)).isEqualTo(new EnqueueResult.Accepted(delayed.id(), false));
         assertThat(client.enqueueAll(List.of(atOnce, delayed)))
-                .containsExactly(new EnqueueResult.Accepted(atOnce.id()), new EnqueueResult.Accepted(delayed.id()));
+                .containsExactly(
+                        new EnqueueResult.Accepted(atOnce.id(), false),
+                        new EnqueueResult.Accepted(delayed.id(), false));
         assertThatThrownBy(() -> client.enqueue(neverSent))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessage("startBy is before the run time");
@@ -1398,7 +1435,7 @@ class TaskClientTest {
                 .uniqueKey("order-8", Uniqueness.keepFor(Duration.ofHours(1)))
                 .startBy(clock.instant().plusSeconds(5))
                 .build();
-        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(request.id()));
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(request.id(), true));
         var leased = store.claim(new ClaimRequest(
                         List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)),
                         1,
@@ -1412,8 +1449,9 @@ class TaskClientTest {
 
         clock.advance(Duration.ofSeconds(45));
 
-        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(request.id()));
-        assertThat(client.enqueueAll(List.of(request))).containsExactly(new EnqueueResult.Accepted(request.id()));
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(request.id(), false));
+        assertThat(client.enqueueAll(List.of(request)))
+                .containsExactly(new EnqueueResult.Accepted(request.id(), false));
         assertThat(store.task(request.id())).as("not stored again").isEmpty();
         assertThatThrownBy(() -> client.enqueue(otherKey))
                 .as("the same id with a key it does not hold")

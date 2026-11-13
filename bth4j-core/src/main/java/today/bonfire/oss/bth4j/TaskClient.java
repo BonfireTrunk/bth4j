@@ -269,10 +269,10 @@ public final class TaskClient {
 
     private EnqueueResult result(TaskRecord sent, EnqueueOutcome outcome, boolean verified) {
         return switch (outcome) {
-            case EnqueueOutcome.Stored s -> new EnqueueResult.Accepted(sent.id());
+            case EnqueueOutcome.Stored s -> new EnqueueResult.Accepted(sent.id(), true);
             case EnqueueOutcome.Exists e -> {
                 if (!verified) requireSameContent(sent);
-                yield new EnqueueResult.Accepted(sent.id());
+                yield new EnqueueResult.Accepted(sent.id(), false);
             }
             case EnqueueOutcome.DuplicateKey d -> new EnqueueResult.Duplicate(d.existingId());
         };
