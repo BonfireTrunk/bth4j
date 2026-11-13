@@ -215,7 +215,7 @@ These rules apply to both counts:
 - A blocked login is answered 429 with `Retry-After`. It is not counted, its password is not looked at, and it does not make the block longer.
 - A repeated block is twice as long as the one before it for the same address or the same user name: 10 s, 20 s, 40 s, 80 s, and so on up to 15 minutes. An address or a name starts again at 10 seconds when it had no failed login for 15 minutes after its last block ended.
 - A successful login takes back only its own attempt, on its own address and its own user name. It does not clear the failures counted before it, and it cannot shorten the block of another name.
-- Failures are forgotten when no attempt followed them for 10 minutes.
+- Failures are forgotten when no attempt followed them for 15 minutes. That is as long as the longest block, so staying just under five failures (four tries per 15 minutes) is no faster than being blocked.
 - Once a block has grown, someone who knows a user name and has many addresses can try about 5 passwords per 15 minutes for it, about 480 a day, down from about 43,000 a day with a block that stays at 10 seconds. Give every account a long random password (see [Passwords](#passwords)).
 - The same growth lets someone who knows a user name keep that user out. After the attack on a name stops, the real user may have to wait up to 15 minutes for the block to end. Keep the server off networks where that is a concern.
 

@@ -325,19 +325,19 @@ class AdminHttpServerTest {
     }
 
     @Test
-    void failuresAreForgottenWhenNoAttemptFollowedForTenMinutes() {
+    void failuresAreForgottenWhenNoAttemptFollowedForFifteenMinutes() {
         var throttle = new LoginThrottle(clock);
         for (var i = 0; i < 4; i++) assertThat(throttle.attempt("a")).isZero();
-        clock.advance(Duration.ofMinutes(10).plusMillis(1));
+        clock.advance(Duration.ofMinutes(15).plusMillis(1));
 
         for (var i = 0; i < 4; i++) {
             assertThat(throttle.attempt("a"))
                     .as("attempt %d after the pause", i + 1)
                     .isZero();
         }
-        clock.advance(Duration.ofMinutes(10));
+        clock.advance(Duration.ofMinutes(15));
         assertThat(throttle.attempt("a"))
-                .as("the fifth within ten minutes of the fourth")
+                .as("the fifth within fifteen minutes of the fourth")
                 .isZero();
         assertThat(throttle.attempt("a")).isPositive();
     }

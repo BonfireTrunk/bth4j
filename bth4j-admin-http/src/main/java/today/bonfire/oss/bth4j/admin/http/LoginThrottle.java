@@ -9,7 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * Blocks a key for a while after repeated failed logins. The server keeps one throttle keyed by where a login
  * comes from and one keyed by the user it names. A successful login takes back only its own attempt, so logging
  * in with one account does not clear the failures counted against another. Failures are forgotten when no
- * attempt followed them for ten minutes.
+ * attempt followed them for fifteen minutes.
  *
  * <p>The first block of a key lasts ten seconds and each further block twice as long as the one before, up to
  * fifteen minutes. A key starts again at ten seconds when no attempt of it followed its last block for fifteen
@@ -29,7 +29,8 @@ final class LoginThrottle {
     private static final long BLOCK_MILLIS = 10_000;
     private static final long MAX_BLOCK_MILLIS = 900_000;
     private static final int MAX_BLOCKS = 7;
-    private static final long FORGET_MILLIS = 600_000;
+    // not shorter than the longest block: four attempts per window must not allow more guesses than five and a block
+    private static final long FORGET_MILLIS = 900_000;
     private static final long RESET_MILLIS = 900_000;
     private static final int MAX_ENTRIES = 10_000;
     private static final int EVICT_AT_CAP = MAX_ENTRIES / 10;
