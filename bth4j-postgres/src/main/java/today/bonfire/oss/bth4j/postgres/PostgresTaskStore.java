@@ -511,7 +511,7 @@ public final class PostgresTaskStore implements FullStore {
                         + " next_fire timestamptz(3) NOT NULL,"
                         + " triggered boolean NOT NULL DEFAULT false)",
                 "CREATE SEQUENCE IF NOT EXISTS " + scheduleSeq,
-                "CREATE INDEX IF NOT EXISTS " + schedule + "_due ON " + schedule + " (next_fire) WHERE NOT paused",
+                "CREATE INDEX IF NOT EXISTS " + schedule + "_due ON " + schedule + " (next_fire, id) WHERE NOT paused",
                 "INSERT INTO " + meta + " (key, value) VALUES ('schema_version', '" + SCHEMA_VERSION + "')"
                         + " ON CONFLICT (key) DO NOTHING");
     }
@@ -2234,7 +2234,8 @@ public final class PostgresTaskStore implements FullStore {
     public List<ScheduleEntry> schedules(String afterId, int limit) {
         StoreArguments.requireLimit(limit);
         return withConnection(c -> {
-            var sql = "SELECT * FROM " + schedule + (afterId == null ? "" : " WHERE id > ?") + " ORDER BY id LIMIT ?";
+            var sql = "SELECT * FROM " + schedule + (afterId == null ? "" : " WHERE id COLLATE \"C\" > ?")
+                    + " ORDER BY id COLLATE \"C\" LIMIT ?";
             try (var ps = c.prepareStatement(sql)) {
                 var at = 1;
                 if (afterId != null) ps.setString(at++, afterId);
@@ -2249,7 +2250,7 @@ public final class PostgresTaskStore implements FullStore {
         StoreArguments.requireLimit(limit);
         return withConnection(c -> {
             try (var ps = c.prepareStatement(
-                    "SELECT * FROM " + schedule + " WHERE NOT paused ORDER BY next_fire, id LIMIT ?")) {
+                    "SELECT * FROM " + schedule + " WHERE NOT paused ORDER BY next_fire, id COLLATE \"C\" LIMIT ?")) {
                 ps.setInt(1, limit);
                 return readEntries(ps);
             }
