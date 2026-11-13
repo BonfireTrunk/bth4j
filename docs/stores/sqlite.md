@@ -25,7 +25,7 @@ source.setUrl("jdbc:sqlite:/var/lib/my-app/tasks.db");
 
 var pool = new HikariConfig();
 pool.setDataSource(source);
-var store = new SqliteTaskStore(new HikariDataSource(pool), "bth");   // tables bth_task, bth_queue, bth_type, bth_worker, bth_schedule, bth_meta
+var store = SqliteTaskStore.builder().dataSource(new HikariDataSource(pool)).namespace("bth").build();   // tables bth_task, bth_queue, bth_type, bth_worker, bth_schedule, bth_meta
 ```
 
 The store is for one or more runners in one process, or in several processes on one machine, with the database file on a local disk.
@@ -46,7 +46,7 @@ The tables are created when the runner or client is built. Or run `store.schemaS
 | `synchronous` | Your choice. It is not checked. |
 | Namespace | Lower case letters, digits and underscores, starting with a letter, at most 41 characters, and neither `sqlite` nor starting with `sqlite_`, because SQLite reserves table names that start with `sqlite_` |
 | Schema version | 2, stored in `<namespace>_meta`. `init` refuses tables with another version, which includes every database written by bth4j 4.2, and tables that have no `<namespace>_meta`; there is no migration. When the version matches, it only reads. |
-| Clock | The store's `java.time.Clock`: the third constructor argument, `Clock.systemUTC()` by default |
+| Clock | The store's `java.time.Clock`: set with `clock(...)` on the builder, `Clock.systemUTC()` by default |
 | JDK 25 | The JVM prints a warning when sqlite-jdbc loads its native library, unless the application starts with `--enable-native-access=ALL-UNNAMED` |
 
 ## Settings on every connection

@@ -10,7 +10,7 @@ class RunnerConcurrencyTest {
     @Test
     void fixedLimitIsAvailableBeforeStart() {
         var runner = BackgroundRunner.builder()
-                .store(new InMemoryStore())
+                .store(InMemoryStore.builder().build())
                 .concurrency(Concurrency.fixed(7))
                 .build();
         try {
@@ -24,7 +24,7 @@ class RunnerConcurrencyTest {
     void adaptiveExecutorReceivesAllRecordSettings() throws Exception {
         var settings = Concurrency.adaptive(3, 37, 0.6, 0.7).withMemorySignal(MemorySignal.HEAP_AND_SYSTEM);
         var runner = BackgroundRunner.builder()
-                .store(new InMemoryStore())
+                .store(InMemoryStore.builder().build())
                 .concurrency(settings)
                 .build();
         try {

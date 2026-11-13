@@ -15,7 +15,7 @@ On this page:
 Create the store from a Jedis client and a namespace:
 
 ```java
-var store = new RedisTaskStore(jedis, "my-app");   // UnifiedJedis (for example a RedisClient) and a namespace
+var store = RedisTaskStore.builder().client(jedis).namespace("my-app").build();   // UnifiedJedis (for example a RedisClient) and a namespace
 ```
 
 The namespace prefixes every key and carries the Redis Cluster hash tag, so all keys of a store share one slot. The store does not close the Jedis client.

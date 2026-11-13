@@ -114,7 +114,7 @@ class RedisTaskStoreIT {
     @BeforeEach
     void fresh() {
         namespace = "T" + NAMESPACES.incrementAndGet();
-        store = new RedisTaskStore(jedis, namespace);
+        store = RedisTaskStore.builder().client(jedis).namespace(namespace).build();
         keys = store.keys();
         store.init();
         queue = store.queueId("default");
@@ -185,7 +185,10 @@ class RedisTaskStoreIT {
                         "ERR unknown command 'HPEXPIREAT', with args beginning with: 'k' '1' 'FIELDS' '1' 'f'");
             }
         }) {
-            var other = new RedisTaskStore(old, "T" + NAMESPACES.incrementAndGet());
+            var other = RedisTaskStore.builder()
+                    .client(old)
+                    .namespace("T" + NAMESPACES.incrementAndGet())
+                    .build();
 
             assertThatThrownBy(other::init)
                     .isInstanceOf(TaskConfigurationException.class)
@@ -210,7 +213,11 @@ class RedisTaskStoreIT {
                 return super.pipelined();
             }
         }) {
-            var page = new RedisTaskStore(racing, namespace).tasks(TaskState.QUEUED, queue, null, 10);
+            var page = RedisTaskStore.builder()
+                    .client(racing)
+                    .namespace(namespace)
+                    .build()
+                    .tasks(TaskState.QUEUED, queue, null, 10);
 
             assertThat(raced).isTrue();
             assertThat(page.items())
@@ -245,7 +252,10 @@ class RedisTaskStoreIT {
                 .hostAndPort(new HostAndPort(REDIS.getHost(), REDIS.getMappedPort(6379)))
                 .clientConfig(config)
                 .build()) {
-            var other = new RedisTaskStore(limited, "T" + NAMESPACES.incrementAndGet());
+            var other = RedisTaskStore.builder()
+                    .client(limited)
+                    .namespace("T" + NAMESPACES.incrementAndGet())
+                    .build();
 
             assertThat(storeLog(other::init)).singleElement().satisfies(e -> {
                 assertThat(e.getLevel()).isEqualTo(Level.WARN);
@@ -271,7 +281,10 @@ class RedisTaskStoreIT {
                 return "# Memory\r\nused_memory:1024\r\n";
             }
         }) {
-            var other = new RedisTaskStore(proxy, "T" + NAMESPACES.incrementAndGet());
+            var other = RedisTaskStore.builder()
+                    .client(proxy)
+                    .namespace("T" + NAMESPACES.incrementAndGet())
+                    .build();
 
             assertThat(storeLog(other::init)).singleElement().satisfies(e -> {
                 assertThat(e.getLevel()).isEqualTo(Level.WARN);
@@ -321,7 +334,12 @@ class RedisTaskStoreIT {
 
         assertThat(store.queueId("default")).isEqualTo(queue);
         assertThat(other).isNotEqualTo(queue);
-        assertThat(new RedisTaskStore(jedis, keys.namespace).queueId("other")).isEqualTo(other);
+        assertThat(RedisTaskStore.builder()
+                        .client(jedis)
+                        .namespace(keys.namespace)
+                        .build()
+                        .queueId("other"))
+                .isEqualTo(other);
         assertThat(store.queueNames()).containsEntry(queue, "default").containsEntry(other, "other");
         assertThat(store.typeNames()).containsEntry(type, "send");
         assertThat(jedis.hvals(keys.registry("queue"))).contains(String.valueOf(queue), String.valueOf(other));
@@ -1761,7 +1779,7 @@ class RedisTaskStoreIT {
         try (var dead = RedisClient.builder()
                 .hostAndPort(new HostAndPort("localhost", 1))
                 .build()) {
-            var broken = new RedisTaskStore(dead, "x");
+            var broken = RedisTaskStore.builder().client(dead).namespace("x").build();
 
             assertThatThrownBy(() -> broken.allocateIds(1)).isInstanceOf(TaskStoreException.class);
         }
@@ -1769,9 +1787,15 @@ class RedisTaskStoreIT {
 
     @Test
     void namespaceIsValidated() {
-        assertThatThrownBy(() -> new RedisTaskStore(null, "ok")).isInstanceOf(TaskConfigurationException.class);
-        assertThatThrownBy(() -> new RedisTaskStore(jedis, " ")).isInstanceOf(TaskConfigurationException.class);
-        assertThatThrownBy(() -> new RedisTaskStore(jedis, "a{b")).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() ->
+                        RedisTaskStore.builder().client(null).namespace("ok").build())
+                .isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() ->
+                        RedisTaskStore.builder().client(jedis).namespace(" ").build())
+                .isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() ->
+                        RedisTaskStore.builder().client(jedis).namespace("a{b").build())
+                .isInstanceOf(TaskConfigurationException.class);
     }
 
     private static void awaitExpiry(BooleanSupplier expired) {

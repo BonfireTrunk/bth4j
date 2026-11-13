@@ -65,10 +65,18 @@ class SqliteSharedFileTest {
     @BeforeEach
     void setUp() {
         var prefix = SqliteTestSupport.prefix("shared" + NAMESPACES.incrementAndGet());
-        first = new SqliteTaskStore(database.dataSource(), prefix, clock);
+        first = SqliteTaskStore.builder()
+                .dataSource(database.dataSource())
+                .namespace(prefix)
+                .clock(clock)
+                .build();
         first.init();
         otherPool = database.anotherPool();
-        second = new SqliteTaskStore(otherPool, prefix, clock);
+        second = SqliteTaskStore.builder()
+                .dataSource(otherPool)
+                .namespace(prefix)
+                .clock(clock)
+                .build();
         second.init();
         queue = first.queueId("default");
         type = first.typeId("send-mail");

@@ -54,7 +54,7 @@ import today.bonfire.oss.bth4j.spi.TaskRecord;
 
 /**
  * A {@link FullStore} that keeps everything in memory, for tests of applications that use bth4j. Every
- * operation runs under one lock; all store time comes from the {@link Clock} given at construction.
+ * operation runs under one lock; all store time comes from the {@link Clock} set on the builder.
  */
 public final class InMemoryStore implements FullStore {
 
@@ -107,17 +107,35 @@ public final class InMemoryStore implements FullStore {
     private int nextRunnerId = 1;
     private long recurringRevision;
 
-    public InMemoryStore() {
-        this(Clock.systemUTC());
-    }
-
-    public InMemoryStore(Clock clock) {
-        this(clock, 32767);
-    }
-
-    InMemoryStore(Clock clock, int registryBound) {
+    private InMemoryStore(Clock clock, int registryBound) {
         this.clock = Clock.tick(clock, Duration.ofMillis(1));
         this.registryBound = registryBound;
+    }
+
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    public static final class Builder {
+        private Clock clock = Clock.systemUTC();
+        private int registryBound = 32767;
+
+        private Builder() {}
+
+        /** The time source of the store; tests pass a clock they control. Default: the system clock in UTC. */
+        public Builder clock(Clock clock) {
+            this.clock = clock;
+            return this;
+        }
+
+        Builder registryBound(int registryBound) {
+            this.registryBound = registryBound;
+            return this;
+        }
+
+        public InMemoryStore build() {
+            return new InMemoryStore(clock, registryBound);
+        }
     }
 
     @Override

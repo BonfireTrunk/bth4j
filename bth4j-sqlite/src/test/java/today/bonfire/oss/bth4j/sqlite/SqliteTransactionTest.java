@@ -212,7 +212,11 @@ class SqliteTransactionTest {
     @Test
     void aPoolWithoutAutoCommitGetsItsConnectionBackAsItWasAndHoldsNoLock() throws SQLException {
         try (var pool = SqliteTestSupport.pool(SqliteTestSupport.url(database.file(), WAL), false, 1)) {
-            var pooled = new SqliteTaskStore(pool, prefix, clock);
+            var pooled = SqliteTaskStore.builder()
+                    .dataSource(pool)
+                    .namespace(prefix)
+                    .clock(clock)
+                    .build();
 
             roundTrip(pooled);
             roundTrip(pooled);
@@ -227,7 +231,11 @@ class SqliteTransactionTest {
     @Test
     void aPoolWithAutoCommitGetsItsConnectionBackAsItWasAndHoldsNoLock() throws SQLException {
         try (var pool = SqliteTestSupport.pool(SqliteTestSupport.url(database.file(), WAL), true, 1)) {
-            var pooled = new SqliteTaskStore(pool, prefix, clock);
+            var pooled = SqliteTaskStore.builder()
+                    .dataSource(pool)
+                    .namespace(prefix)
+                    .clock(clock)
+                    .build();
 
             roundTrip(pooled);
             roundTrip(pooled);
@@ -242,7 +250,11 @@ class SqliteTransactionTest {
     @Test
     void aPooledConnectionWithoutAutoCommitDoesNotKeepAReadSnapshot() throws SQLException {
         try (var pool = SqliteTestSupport.pool(SqliteTestSupport.url(database.file(), WAL), false, 1)) {
-            var pooled = new SqliteTaskStore(pool, prefix, clock);
+            var pooled = SqliteTaskStore.builder()
+                    .dataSource(pool)
+                    .namespace(prefix)
+                    .clock(clock)
+                    .build();
             assertThat(pooled.counts().get(queue).queued()).isZero();
 
             var stored = task().build();
@@ -257,7 +269,11 @@ class SqliteTransactionTest {
     void aPoolInImmediateTransactionModeWithAutoCommitHoldsNoLock() throws SQLException {
         var url = SqliteTestSupport.url(database.file(), WAL + "&transaction_mode=IMMEDIATE");
         try (var pool = SqliteTestSupport.pool(url, true, 1)) {
-            roundTrip(new SqliteTaskStore(pool, prefix, clock));
+            roundTrip(SqliteTaskStore.builder()
+                    .dataSource(pool)
+                    .namespace(prefix)
+                    .clock(clock)
+                    .build());
 
             try (Connection c = pool.getConnection()) {
                 assertThat(c.getAutoCommit()).isTrue();
@@ -275,7 +291,11 @@ class SqliteTransactionTest {
                     .as("the driver begins an IMMEDIATE transaction as soon as the pool turns auto-commit off")
                     .isInstanceOf(AssertionError.class);
 
-            roundTrip(new SqliteTaskStore(pool, prefix, clock));
+            roundTrip(SqliteTaskStore.builder()
+                    .dataSource(pool)
+                    .namespace(prefix)
+                    .clock(clock)
+                    .build());
 
             try (Connection c = pool.getConnection()) {
                 assertThat(c.getAutoCommit()).isFalse();
@@ -287,7 +307,11 @@ class SqliteTransactionTest {
     void aFailedWriteRollsBackAndLeavesTheConnectionUsable() throws SQLException {
         for (var autoCommit : new boolean[] {true, false}) {
             try (var pool = SqliteTestSupport.pool(SqliteTestSupport.url(database.file(), WAL), autoCommit, 1)) {
-                var pooled = new SqliteTaskStore(pool, prefix, clock);
+                var pooled = SqliteTaskStore.builder()
+                        .dataSource(pool)
+                        .namespace(prefix)
+                        .clock(clock)
+                        .build();
                 var a = task().build();
                 var b = task().build();
                 assertThat(pooled.enqueueAll(List.of(a, b)))
@@ -565,7 +589,11 @@ class SqliteTransactionTest {
                         SqliteTestSupport.url(database.file(), "journal_mode=WAL&busy_timeout=1000"), true, 2);
                 var holder = database.dataSource().getConnection();
                 var hold = holder.createStatement()) {
-            var quick = new SqliteTaskStore(quickPool, prefix, clock);
+            var quick = SqliteTaskStore.builder()
+                    .dataSource(quickPool)
+                    .namespace(prefix)
+                    .clock(clock)
+                    .build();
             hold.execute("BEGIN IMMEDIATE");
             try {
                 assertThat(claim(5)).isEmpty();

@@ -61,7 +61,7 @@ The rule is what the value belongs to, not where the check runs.
 | A malformed listing cursor, a `limit` below 1, an unknown queue name in an admin call | `TaskValidationException` |
 | `new TaskRescheduleException(Duration.ofSeconds(-1))` | `TaskValidationException` |
 | A runner interval below its shortest value, `concurrency` together with `taskExecutor`, a blank queue name | `TaskConfigurationException` |
-| `new PostgresTaskStore(null, "x")`, `new FixedExecutor(0)` | `TaskConfigurationException` |
+| `PostgresTaskStore.builder().dataSource(null).namespace("x").build()`, `new FixedExecutor(0)` | `TaskConfigurationException` |
 | `AdminHttpServer.builder().build()` without a user, a trusted proxy that is not an address | `TaskConfigurationException` |
 | A second `MicrometerRunnerMetrics.bind` with the same tags on one registry | `TaskConfigurationException` |
 | A runner started without a processor, or with a JSON task type and no `jsonMapper` | `TaskConfigurationException` |

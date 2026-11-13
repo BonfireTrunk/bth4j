@@ -157,17 +157,44 @@ public final class PostgresTaskStore implements FullStore {
 
     private record SortedTypes(Set<Integer> ids, Integer[] sorted) {}
 
-    /**
-     * @param dataSource connections to the database; the store does not close it
-     * @param namespace  the name every table starts with, lower case letters, digits and underscores, starting with a letter, at
-     *                   most 41 characters.
-     *                   Runners with the same namespace on the same database share the work.
-     */
-    public PostgresTaskStore(DataSource dataSource, String namespace) {
-        if (dataSource == null) throw new TaskConfigurationException("DataSource is required");
-        if (namespace == null || !NAMESPACE.matcher(namespace).matches()) {
-            throw new TaskConfigurationException("namespace must match " + NAMESPACE.pattern());
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    public static final class Builder {
+        private DataSource dataSource;
+        private String namespace;
+
+        private Builder() {}
+
+        /** Connections to the database; the store does not close it. Required. */
+        public Builder dataSource(DataSource dataSource) {
+            this.dataSource = dataSource;
+            return this;
         }
+
+        /**
+         * The name every table starts with, lower case letters, digits and underscores, starting with a letter, at
+         * most 41 characters. Runners with the same namespace on the same database share the work. Required.
+         */
+        public Builder namespace(String namespace) {
+            this.namespace = namespace;
+            return this;
+        }
+
+        /**
+         * @throws TaskConfigurationException when the data source is null or the namespace is not allowed
+         */
+        public PostgresTaskStore build() {
+            if (dataSource == null) throw new TaskConfigurationException("DataSource is required");
+            if (namespace == null || !NAMESPACE.matcher(namespace).matches()) {
+                throw new TaskConfigurationException("namespace must match " + NAMESPACE.pattern());
+            }
+            return new PostgresTaskStore(dataSource, namespace);
+        }
+    }
+
+    private PostgresTaskStore(DataSource dataSource, String namespace) {
         this.dataSource = dataSource;
         this.namespace = namespace;
         this.meta = namespace + "_meta";

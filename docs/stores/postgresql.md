@@ -15,7 +15,7 @@ On this page:
 Create the store from a pooled `DataSource` and a namespace, the name every table starts with:
 
 ```java
-var store = new PostgresTaskStore(dataSource, "bth");   // tables bth_task, bth_queue, bth_type, bth_worker, bth_schedule, bth_meta
+var store = PostgresTaskStore.builder().dataSource(dataSource).namespace("bth").build();   // tables bth_task, bth_queue, bth_type, bth_worker, bth_schedule, bth_meta
 ```
 
 The tables are created when the runner or client is built. Or run `store.schemaStatements()` from your migration tool.

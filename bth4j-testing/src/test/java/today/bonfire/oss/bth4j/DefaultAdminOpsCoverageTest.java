@@ -19,7 +19,7 @@ import today.bonfire.oss.bth4j.testing.MutableClock;
 
 class DefaultAdminOpsCoverageTest {
     private final MutableClock clock = new MutableClock();
-    private final InMemoryStore store = new InMemoryStore(clock);
+    private final InMemoryStore store = InMemoryStore.builder().clock(clock).build();
     private final int queue = store.queueId("main");
     private final int otherQueue = store.queueId("other");
     private final int type = store.typeId("mail");

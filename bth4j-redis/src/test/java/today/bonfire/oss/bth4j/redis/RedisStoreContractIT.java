@@ -65,7 +65,7 @@ class RedisStoreContractIT extends StoreContract {
 
     @Override
     protected FullStore newStore(String namespace) {
-        return new RedisTaskStore(jedis, namespace);
+        return RedisTaskStore.builder().client(jedis).namespace(namespace).build();
     }
 
     @Override
