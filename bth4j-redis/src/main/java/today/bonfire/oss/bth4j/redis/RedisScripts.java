@@ -695,41 +695,52 @@ final class RedisScripts {
     /**
      * ARGV: limit. Walks the {@code sched} zset of every queue. Returns {moved, next due ms over all queues or
      * -1}. Ids whose task is gone or no longer SCHEDULED are dropped. Each queue costs one command when nothing
-     * in it is due: the head read that decides whether to read a batch is also the next due time. Only queues
-     * that were read for a batch have their head read again after the flush.
+     * in it is due: the head read that decides whether to read a batch is also the next due time. The queue whose
+     * first task has been due longest is read first, so a queue with more due tasks than the limit cannot hold the
+     * limit call after call while older tasks of another queue wait. Only queues that were read for a batch have
+     * their head read again after the flush.
      */
     static final String PROMOTE = PRELUDE + """
             local at = now()
             local remaining = tonumber(ARGV[2])
-            local qids = redis.call('HVALS', P .. 'reg:queue')
             local moved = 0
             local nextDue = -1
-            local worked = {}
-            for _, qid in ipairs(qids) do
-              local skey = P .. 'sched:' .. qid
-              local head = redis.call('ZRANGE', skey, 0, 0, 'WITHSCORES')[2]
+            local due = {}
+            for _, qid in ipairs(redis.call('HVALS', P .. 'reg:queue')) do
+              local head = redis.call('ZRANGE', P .. 'sched:' .. qid, 0, 0, 'WITHSCORES')[2]
               if head then
                 head = tonumber(head)
-                if remaining > 0 and head <= at then
-                  worked[#worked + 1] = qid
-                  local ids = redis.call('ZRANGE', skey, '-inf', at, 'BYSCORE', 'LIMIT', 0, remaining)
-                  for _, id in ipairs(ids) do
-                    local tkey = P .. 't:' .. id
-                    local v = redis.call('HMGET', tkey, 'state', 'due', 'rev', 'ty')
-                    -- an unreadable due is promoted as due now and an unreadable revision restarts at 1, as a
-                    -- claim does, so that one corrupt task cannot stop promotion for every queue
-                    if v[1] == '1' and v[4] then
-                      move(id, qid, 1, 0, at, tonumber(v[2]) or at, v[4])
-                      redis.call('HSET', tkey, 'state', 0, 'sc', at, 'rev', (tonumber(v[3]) or 0) + 1)
-                      moved = moved + 1
-                    else
-                      zrem(skey, id)
-                    end
-                  end
-                  remaining = remaining - #ids
+                if head <= at then
+                  due[#due + 1] = {qid = qid, head = head}
                 elseif nextDue < 0 or head < nextDue then
                   nextDue = head
                 end
+              end
+            end
+            table.sort(due, function(a, b) return a.head < b.head end)
+            local worked = {}
+            for _, q in ipairs(due) do
+              if remaining > 0 then
+                local qid = q.qid
+                local skey = P .. 'sched:' .. qid
+                worked[#worked + 1] = qid
+                local ids = redis.call('ZRANGE', skey, '-inf', at, 'BYSCORE', 'LIMIT', 0, remaining)
+                for _, id in ipairs(ids) do
+                  local tkey = P .. 't:' .. id
+                  local v = redis.call('HMGET', tkey, 'state', 'due', 'rev', 'ty')
+                  -- an unreadable due is promoted as due now and an unreadable revision restarts at 1, as a
+                  -- claim does, so that one corrupt task cannot stop promotion for every queue
+                  if v[1] == '1' and v[4] then
+                    move(id, qid, 1, 0, at, tonumber(v[2]) or at, v[4])
+                    redis.call('HSET', tkey, 'state', 0, 'sc', at, 'rev', (tonumber(v[3]) or 0) + 1)
+                    moved = moved + 1
+                  else
+                    zrem(skey, id)
+                  end
+                end
+                remaining = remaining - #ids
+              elseif nextDue < 0 or q.head < nextDue then
+                nextDue = q.head
               end
             end
             flush()

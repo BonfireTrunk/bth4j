@@ -640,6 +640,25 @@ class RedisScriptsIT {
         assertThat(store.promote(2).nextDue()).isNull();
     }
 
+    @Test
+    void promoteReadsTheQueueWhoseFirstTaskHasBeenDueLongestFirst() {
+        var other = store.queueId("other");
+        for (long id = 1; id <= 3; id++) {
+            store.enqueue(task(id).dueAt(Instant.now().plusSeconds(1800)).build());
+            RedisFixtures.ageDue(jedis, keys, queue, id, Instant.now().minusSeconds(5));
+        }
+        store.enqueue(
+                task(4).queueId(other).dueAt(Instant.now().plusSeconds(1800)).build());
+        RedisFixtures.ageDue(jedis, keys, other, 4, Instant.now().minusSeconds(60));
+
+        assertThat(store.promote(2).moved()).isEqualTo(2);
+
+        assertThat(store.task(4).orElseThrow().state())
+                .as("the oldest due task, in the queue registered last")
+                .isEqualTo(TaskState.QUEUED);
+        assertThat(store.promote(2).moved()).isEqualTo(2);
+    }
+
     // ---- listing ---------------------------------------------------------------------------------------
 
     private List<Long> listedIds(TaskState state, Integer queueId, int limit) {
