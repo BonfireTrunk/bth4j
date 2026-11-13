@@ -907,8 +907,8 @@ public final class AdminHttpServer implements AutoCloseable {
         }
 
         /**
-         * How long a session lasts, counted from the sign-in; the default is 12 hours. Requests do not make it last
-         * longer.
+         * How long a session lasts, counted from the sign-in; the default is 12 hours and the shortest is one second.
+         * Requests do not make it last longer.
          */
         public Builder sessionTtl(Duration ttl) {
             this.sessionTtl = ttl;
@@ -987,6 +987,9 @@ public final class AdminHttpServer implements AutoCloseable {
             }
             if (sessionTtl == null || sessionTtl.isZero() || sessionTtl.isNegative()) {
                 throw new TaskConfigurationException("sessionTtl must be positive");
+            }
+            if (sessionTtl.compareTo(Duration.ofSeconds(1)) < 0) {
+                throw new TaskConfigurationException("sessionTtl must be at least one second");
             }
             return new AdminHttpServer(this);
         }
