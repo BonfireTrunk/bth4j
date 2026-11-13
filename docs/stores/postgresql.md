@@ -73,6 +73,27 @@ Without them, a half-open connection can block a runner thread for as long as th
 
 A write whose reply was lost to a timeout may or may not have committed. The runner treats it as `UNKNOWN` (see [Event outcomes](../monitoring.md#event-outcomes)).
 
+### Dead rows and long transactions
+
+Every state change of a task writes a new row version, so a queue table is mostly dead rows between vacuums. A dead row is removed only when no transaction that is still open could need it. One open transaction that began long ago therefore keeps the dead rows of every table in the database, the queue table included, and the table and its indexes grow until it ends. Claims get slower while that lasts.
+
+| What holds dead rows back | How to see it | What to do |
+|---|---|---|
+| A long transaction anywhere in the database, also one that is only idle in its transaction | `pg_stat_activity`: the oldest `xact_start`, and `age(backend_xmin)` | Find the application that holds it and fix it. Set `idle_in_transaction_session_timeout` so that PostgreSQL ends a session that sits idle inside a transaction. It is `0` (off) by default. |
+| A prepared transaction that was never committed | `pg_prepared_xacts` | Commit or roll it back |
+| A replication slot nobody reads, such as one left from a replica that no longer exists | `pg_replication_slots`: `age(xmin)` and `age(catalog_xmin)` | Drop slots that are not in use |
+| A standby with `hot_standby_feedback = on`, which reports its running queries to the primary | `pg_stat_replication`: `backend_xmin` | Know that a long query on the standby holds dead rows on the primary |
+
+Watch the oldest open transaction in your monitoring, for example the largest `now() - xact_start` in `pg_stat_activity`, and alert when it passes a few minutes.
+
+One measurement from a test with a single other session holding a `REPEATABLE READ` snapshot, with the queue under constant churn: after 90 seconds the median time of a claim had risen from 5 to 7 ms to 46 ms, and the table kept growing.
+
+The store sets no per-table storage parameters. How to tune autovacuum for a busy queue table is your decision; the [PostgreSQL documentation on routine vacuuming](https://www.postgresql.org/docs/current/routine-vacuuming.html) covers it.
+
+### Keep server-side prepared statements on
+
+The pgjdbc driver sends a statement as a server-side prepared statement from its `prepareThreshold`-th execution on; the default is 5. Leave it at the default. With `prepareThreshold=0` the driver never prepares, so PostgreSQL plans every claim again: 1 to 5 ms of planning per claim, measured on a table of 1,000,000 tasks, where running the claim takes 0.5 to 2 ms.
+
 ### A backlog of a type no runner handles
 
 A claim walks the queued tasks of a queue in due order past those of types it does not handle. A large backlog of a type no live runner handles therefore makes every claim on that queue slower. Give such types their own queue.
