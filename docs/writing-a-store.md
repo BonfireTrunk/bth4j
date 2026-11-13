@@ -24,6 +24,7 @@ On this page:
 |---|---|
 | 1 | Implement the store interface, `today.bonfire.oss.bth4j.spi.FullStore`, on your engine. |
 | 2 | Subclass `StoreContract` and `RunnerContract` from `bth4j-store-tests`. |
+| 3 | Subclass `FaultContract` and `RunnerFaultContract` to check the store through cut calls ([Fault-tolerance tests](fault-tolerance-tests.md)). |
 
 ## The interfaces
 
