@@ -5,15 +5,38 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Locale;
 import java.util.Map;
 
 /** Serves files below one directory; unknown paths without an extension fall back to index.html. */
 final class StaticFiles {
 
-    record Resource(byte[] body, String contentType) {
+    /** A file found but not yet read, so that a request the browser already has answered for does not read it. */
+    record Resource(Path file, String contentType, String etag) {
         boolean html() {
             return contentType.startsWith("text/html");
+        }
+
+        byte[] body() throws IOException {
+            return Files.readAllBytes(file);
+        }
+
+        /** True when an If-None-Match header names this resource: a list, {@code *}, and a weak prefix all count. */
+        boolean matches(String ifNoneMatch) {
+            if (ifNoneMatch == null) {
+                return false;
+            }
+            for (var candidate : ifNoneMatch.split(",")) {
+                var tag = candidate.strip();
+                if (tag.startsWith("W/")) {
+                    tag = tag.substring(2);
+                }
+                if (tag.equals("*") || tag.equals(etag)) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 
@@ -51,7 +74,10 @@ final class StaticFiles {
         if (file == null) {
             return null;
         }
-        return new Resource(Files.readAllBytes(file), contentType(file));
+        var attributes = Files.readAttributes(file, BasicFileAttributes.class);
+        var etag = "\"" + Long.toHexString(attributes.size()) + "-"
+                + Long.toHexString(attributes.lastModifiedTime().toMillis()) + "\"";
+        return new Resource(file, contentType(file), etag);
     }
 
     /** Normalizing and re-checking after toRealPath keeps both ".." and symlinks from leaving the directory. */

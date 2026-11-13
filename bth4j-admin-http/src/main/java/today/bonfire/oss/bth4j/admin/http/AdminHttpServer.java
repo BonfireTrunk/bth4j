@@ -308,6 +308,7 @@ public final class AdminHttpServer implements AutoCloseable {
         var h = ex.getResponseHeaders();
         h.set("Access-Control-Allow-Origin", origin);
         h.set("Access-Control-Allow-Credentials", "true");
+        h.set("Access-Control-Expose-Headers", "Date");
         h.add("Vary", "Origin");
         return origin;
     }
@@ -823,8 +824,14 @@ public final class AdminHttpServer implements AutoCloseable {
         if (resource.html()) {
             h.set("Content-Security-Policy", HTML_CSP);
         }
-        ex.sendResponseHeaders(200, resource.body().length);
-        ex.getResponseBody().write(resource.body());
+        h.set("ETag", resource.etag());
+        if (resource.matches(ex.getRequestHeaders().getFirst("If-None-Match"))) {
+            ex.sendResponseHeaders(304, -1);
+            return;
+        }
+        var body = resource.body();
+        ex.sendResponseHeaders(200, body.length);
+        ex.getResponseBody().write(body);
     }
 
     private void sendJson(HttpExchange ex, int status, Object body) throws IOException {

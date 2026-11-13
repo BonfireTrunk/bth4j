@@ -357,7 +357,7 @@ On the wire an empty or missing `queue` on `GET /api/v1/tasks` still lists every
 | Default | The server speaks plain HTTP unless `https(SSLContext)` is set. Keep it on the loopback interface or behind TLS. |
 | TLS in the server | Set `https(SSLContext)`. It also marks the cookie `Secure`. |
 | A TLS-terminating proxy in front | The server itself speaks plain HTTP, so set `secureCookie(true)` to mark the cookie `Secure`. Also call `addTrustedProxy`, so that [failed logins](#failed-logins) are counted per client. |
-| A browser app on another origin calls the API | Call `addCorsOrigin("https://dashboard.example.com")`. It lets that app call the API with credentials. |
+| A browser app on another origin calls the API | Call `addCorsOrigin("https://dashboard.example.com")`. It lets that app call the API with credentials, and read the `Date` header of the answers (`Access-Control-Expose-Headers: Date`), which the dashboard uses to follow the server's clock. |
 | The server is reachable from other machines | Put a reverse proxy with request timeouts and a connection limit in front, or set the limits of the JDK's HTTP server yourself. The server runs on `com.sun.net.httpserver`, which by default waits for a request without a time limit and accepts any number of connections, so a client that sends its request very slowly on many connections can use up the file descriptors of the process, which the runner's store connections need too. The JVM options are `-Dsun.net.httpserver.maxReqTime=<ms>`, `-Dsun.net.httpserver.maxRspTime=<ms>` and `-Djdk.httpserver.maxConnections=<n>`. The JDK reads them once, when its server is first used. |
 
 ## The dashboard
@@ -375,6 +375,14 @@ The dashboard is the static Vue 3 app in `dashboard/`. It has no build step. It 
 | Issues | The issues. |
 
 Admins can also retry, cancel (with a reason), delete, pause and trigger.
+
+| Behaviour | How it works |
+|---|---|
+| Times | "Late", "silent over 1 min" and every "in 5 s" or "2 min ago" are measured on the server's clock. The dashboard reads the `Date` header of each answer, which has whole seconds, and keeps the offset to the browser's clock as the middle of the bounds the answers allow, so it is right to within about half a second. A page on another origin needs `addCorsOrigin`, which also exposes `Date`. |
+| Polling | Each page asks again every 5 seconds. The overview page and the header share one request: every `/overview` answer feeds the header, and the header asks on its own, every 10 seconds, only when no answer is that recent. |
+| Refresh after an action | A refresh asked for while a poll is in flight makes one more request when that one ends, so the page shows the state after the action. |
+| Next to leave | Asks for the 8 soonest SCHEDULED tasks, which the server lists by due time, and merges them with the next fire of each schedule. |
+| Files | Each file carries an `ETag` (its size and modification time). The browser asks on every load (`Cache-Control: no-cache`) and the server answers `304 Not Modified` without a body when the file has not changed. |
 
 The files come from the repository checkout. You can serve them in two ways:
 

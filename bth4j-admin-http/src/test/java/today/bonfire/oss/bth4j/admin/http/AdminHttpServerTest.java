@@ -1198,6 +1198,79 @@ class AdminHttpServerTest {
     }
 
     @Test
+    void aStaticFileCarriesAnEtagAndAMatchingIfNoneMatchIsAnsweredWithoutABody() throws Exception {
+        var dir = Files.createDirectories(tmp.resolve("site"));
+        Files.writeString(dir.resolve("index.html"), "<html>home</html>");
+        Files.writeString(dir.resolve("app.js"), "console.log(1)");
+        start(builder().staticDir(dir));
+
+        var js = get("/app.js", null);
+        var etag = js.headers().firstValue("ETag").orElseThrow();
+        assertThat(etag).matches("\"[0-9a-f]+-[0-9a-f]+\"");
+        assertThat(get("/app.js", null).headers().firstValue("ETag")).contains(etag);
+
+        for (var header : List.of(etag, "W/" + etag, "\"other\", " + etag, "*")) {
+            var res = send("GET", "/app.js", null, null, "If-None-Match", header);
+            assertThat(res.statusCode()).as(header).isEqualTo(304);
+            assertThat(res.body()).as(header).isEmpty();
+            assertThat(res.headers().firstValue("ETag")).as(header).contains(etag);
+            assertThat(res.headers().firstValue("Cache-Control")).as(header).contains("no-cache");
+        }
+        assertThat(send("GET", "/app.js", null, null, "If-None-Match", "\"other\"")
+                        .statusCode())
+                .isEqualTo(200);
+
+        var index = get("/", null);
+        var html = send(
+                "GET",
+                "/",
+                null,
+                null,
+                "If-None-Match",
+                index.headers().firstValue("ETag").orElseThrow());
+        assertThat(html.statusCode()).isEqualTo(304);
+        assertThat(html.headers().firstValue("Content-Security-Policy"))
+                .isEqualTo(index.headers().firstValue("Content-Security-Policy"));
+    }
+
+    @Test
+    void theEtagOfAStaticFileChangesWithItsSizeAndItsModificationTime() throws Exception {
+        var dir = Files.createDirectories(tmp.resolve("site"));
+        var file = dir.resolve("app.js");
+        Files.writeString(file, "one");
+        Files.setLastModifiedTime(file, java.nio.file.attribute.FileTime.fromMillis(1_000_000L));
+        start(builder().staticDir(dir));
+        var first = get("/app.js", null).headers().firstValue("ETag").orElseThrow();
+
+        Files.setLastModifiedTime(file, java.nio.file.attribute.FileTime.fromMillis(2_000_000L));
+        var touched = get("/app.js", null).headers().firstValue("ETag").orElseThrow();
+        Files.writeString(file, "three");
+        Files.setLastModifiedTime(file, java.nio.file.attribute.FileTime.fromMillis(2_000_000L));
+        var longer = get("/app.js", null).headers().firstValue("ETag").orElseThrow();
+
+        assertThat(List.of(first, touched, longer)).doesNotHaveDuplicates();
+        assertThat(send("GET", "/app.js", null, null, "If-None-Match", first).statusCode())
+                .isEqualTo(200);
+    }
+
+    @Test
+    void apiAnswersCarryADateHeaderAndAnAllowedOriginMayReadIt() throws Exception {
+        start(builder().addCorsOrigin("https://admin.example.com"));
+
+        var plain = get("/api/v1/me", null);
+        assertThat(plain.headers().firstValue("Date")).isPresent();
+        assertThat(plain.headers().firstValue("Access-Control-Expose-Headers")).isEmpty();
+
+        var allowed = send("GET", "/api/v1/me", null, null, "Origin", "https://admin.example.com");
+        assertThat(allowed.headers().firstValue("Date")).isPresent();
+        assertThat(allowed.headers().firstValue("Access-Control-Expose-Headers"))
+                .contains("Date");
+
+        var denied = send("GET", "/api/v1/me", null, null, "Origin", "https://evil.example.com");
+        assertThat(denied.headers().firstValue("Access-Control-Expose-Headers")).isEmpty();
+    }
+
+    @Test
     void pathTraversalNeverLeavesTheStaticDirectory() throws Exception {
         var dir = Files.createDirectories(tmp.resolve("site"));
         Files.writeString(dir.resolve("index.html"), "home");

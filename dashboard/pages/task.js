@@ -1,4 +1,4 @@
-import { api, isAdmin } from '../api.js';
+import { api, isAdmin, serverNow } from '../api.js';
 import { duration, confirmDialog, toast, toastError, indentJson, compareInstants } from '../ui.js';
 
 const { ref, computed, onMounted } = Vue;
@@ -122,7 +122,7 @@ export default {
       if (!t) return [];
       const stops = [
         { label: 'Created', at: t.createdAt, reached: true },
-        { label: 'Due', at: t.dueAt, reached: Date.parse(t.dueAt) <= Date.now() || t.state !== 'SCHEDULED' },
+        { label: 'Due', at: t.dueAt, reached: Date.parse(t.dueAt) <= serverNow() || t.state !== 'SCHEDULED' },
         { label: 'Claimed', at: t.claimedAt, reached: !!t.claimedAt },
       ];
       if (FINISHED[t.state]) stops.push({ label: FINISHED[t.state], at: t.stateChangedAt, reached: true });

@@ -10,6 +10,15 @@ Overview polls `GET /api/v1/unserved` for queued work without a live accepting r
 one minute). Whole-queue and per-type counts are exact at the queued-count read. Quiet runners do not
 contribute coverage, and paused queues are skipped.
 
+Times ("late", "silent over 1 min", "in 5 s", "2 min ago") follow the server's clock. `api.js` reads the `Date`
+header of every answer, keeps the bounds it gives on the offset to the browser's clock, and `serverNow()` returns the
+browser's time plus the middle of those bounds. A dashboard on another origin can read `Date` only because the
+server sends `Access-Control-Expose-Headers: Date` to an allowed origin.
+
+Pages poll every 5 s. `/overview` is asked once for the overview page and the header together: the header takes
+every answer, and asks on its own every 10 s only when no answer is that recent. A refresh asked for while a poll
+is in flight makes one more request when that one ends.
+
 ## Serving it
 
 ### Same origin (recommended): `staticDir`
