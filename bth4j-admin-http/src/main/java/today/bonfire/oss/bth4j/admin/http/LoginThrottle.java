@@ -20,10 +20,17 @@ final class LoginThrottle {
     /**
      * What the throttle knows about a key. {@code blockedUntil} is set only while a block set by the latest
      * attempt may still be taken back. {@code touched} is the last attempt or block end that keeps the key's
-     * number of blocks, and {@code previousTouched} its value before the latest attempt.
+     * number of blocks, and {@code previousTouched} its value before the latest attempt. {@code refusalReported}
+     * says that {@link #firstRefusal} was answered for the block that is in force.
      */
     private record Entry(
-            int attempts, long blockedUntil, long lastAttempt, int blocks, long touched, long previousTouched) {}
+            int attempts,
+            long blockedUntil,
+            long lastAttempt,
+            int blocks,
+            long touched,
+            long previousTouched,
+            boolean refusalReported) {}
 
     private static final int MAX_FAILURES = 5;
     private static final long BLOCK_MILLIS = 10_000;
@@ -64,12 +71,28 @@ final class LoginThrottle {
             var attempts = remembered ? old.attempts + 1 : 1;
             var before = old == null ? 0 : old.touched;
             if (attempts < MAX_FAILURES) {
-                return new Entry(attempts, 0, now, blocks, now, before);
+                return new Entry(attempts, 0, now, blocks, now, before, false);
             }
             var block = Math.min(BLOCK_MILLIS << Math.min(blocks, MAX_BLOCKS), MAX_BLOCK_MILLIS);
-            return new Entry(0, now + block, now, blocks + 1, now + block, before);
+            return new Entry(0, now + block, now, blocks + 1, now + block, before, false);
         });
         return wait[0];
+    }
+
+    /**
+     * Whether this is the first refused attempt of the key's block, for the caller's log line: attempts against
+     * a block come from clients that are not signed in, and one line per attempt would let them fill the log.
+     */
+    boolean firstRefusal(String key) {
+        var first = new boolean[1];
+        entries.computeIfPresent(key, (k, e) -> {
+            if (e.refusalReported) {
+                return e;
+            }
+            first[0] = true;
+            return new Entry(e.attempts, e.blockedUntil, e.lastAttempt, e.blocks, e.touched, e.previousTouched, true);
+        });
+        return first[0];
     }
 
     /**
@@ -81,20 +104,23 @@ final class LoginThrottle {
         entries.computeIfPresent(key, (k, e) -> {
             if (e.blockedUntil > 0) {
                 return new Entry(
-                        MAX_FAILURES - 1, 0, e.lastAttempt, e.blocks - 1, e.previousTouched, e.previousTouched);
+                        MAX_FAILURES - 1, 0, e.lastAttempt, e.blocks - 1, e.previousTouched, e.previousTouched, false);
             }
             var attempts = e.attempts - 1;
             if (attempts <= 0 && e.blocks == 0) {
                 return null;
             }
-            return new Entry(Math.max(attempts, 0), 0, e.lastAttempt, e.blocks, e.previousTouched, e.previousTouched);
+            return new Entry(
+                    Math.max(attempts, 0), 0, e.lastAttempt, e.blocks, e.previousTouched, e.previousTouched, false);
         });
     }
 
     /**
      * Active blocks are kept, so flooding the map with many keys cannot lift one. Of the rest, a key without
      * a block history goes first, so flooding cannot make the throttle forget how often a key was blocked
-     * before it has to forget a key that was never blocked.
+     * before it has to forget a key that was never blocked. Among those, a key with fewer failures goes before
+     * one with more, so a key that is one failure short of a block outlives keys that were tried once. Enough
+     * keys with as many failures still push it out: the map is bounded, and so is what it can remember.
      */
     private void makeRoom(long now) {
         entries.values()
@@ -104,6 +130,7 @@ final class LoginThrottle {
             entries.entrySet().stream()
                     .filter(e -> e.getValue().blockedUntil <= now)
                     .sorted(Comparator.<Map.Entry<String, Entry>>comparingInt(e -> e.getValue().blocks)
+                            .thenComparingInt(e -> e.getValue().attempts)
                             .thenComparingLong(e -> e.getValue().lastAttempt))
                     .limit(EVICT_AT_CAP)
                     .map(Map.Entry::getKey)

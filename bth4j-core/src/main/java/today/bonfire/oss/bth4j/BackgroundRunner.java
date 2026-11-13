@@ -110,7 +110,11 @@ public final class BackgroundRunner implements AutoCloseable {
         return new Builder();
     }
 
-    /** The producer side on the same store. */
+    /**
+     * The producer side on the same store. It does not check the retry policy name of a request against this
+     * runner's policies, because the task can be for a runner that has others; a client of your own with
+     * {@link TaskClient.Builder#addRetryPolicyName} does.
+     */
     public TaskClient client() {
         return client;
     }

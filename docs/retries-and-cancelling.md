@@ -92,7 +92,9 @@ issue (see [Issues](monitoring.md#issues)).
 A process that only enqueues does not know the runners' policy names. Give its client the names with
 `TaskClient.builder().addRetryPolicyName("slow-api")`, and `enqueue` and `enqueueAll` refuse a request that names any
 other policy with a `TaskValidationException`, so a wrong name is found when the task is enqueued and not when it first
-fails. A request that names no policy passes. A client with no names added checks nothing.
+fails. A request that names no policy passes. A client with no names added checks nothing. That includes
+`runner.client()`: a runner does not hold its own client to its own policy names, because the task can be for a runner
+that has others.
 
 ## Cancelling tasks
 

@@ -456,7 +456,9 @@ public final class AdminHttpServer implements AutoCloseable {
         var address = HexFormat.of().formatHex(digest(throttleKeySalt, ClientAddress.throttleKey(client)));
         var wait = addressThrottle.attempt(address);
         if (wait > 0) {
-            securityLog("Admin sign-in refused, too many attempts from {}", client.getHostAddress());
+            if (addressThrottle.firstRefusal(address)) {
+                securityLog("Admin sign-in refused, too many attempts from {}", client.getHostAddress());
+            }
             throw tooManyLogins(ex, wait);
         }
         var body = readObject(ex);
@@ -468,10 +470,12 @@ public final class AdminHttpServer implements AutoCloseable {
         wait = userThrottle.attempt(userKey);
         if (wait > 0) {
             addressThrottle.takeBack(address);
-            securityLog(
-                    "Admin sign-in refused, too many attempts for the user with key {}, from {}",
-                    userKey,
-                    client.getHostAddress());
+            if (userThrottle.firstRefusal(userKey)) {
+                securityLog(
+                        "Admin sign-in refused, too many attempts for the user with key {}, from {}",
+                        userKey,
+                        client.getHostAddress());
+            }
             throw tooManyLogins(ex, wait);
         }
         var user = users.get(name);

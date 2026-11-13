@@ -1450,7 +1450,7 @@ class AdminHttpServerTest {
     }
 
     @Test
-    void aBlockedSignInIsLoggedWithItsAddressAndNeverWithTheName() throws Exception {
+    void aBlockedSignInIsLoggedOncePerBlockWithItsAddressAndNeverWithTheName() throws Exception {
         var logs = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
         logs.start();
         var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(Loggers.ADMIN_AUDIT);
@@ -1461,11 +1461,16 @@ class AdminHttpServerTest {
                 assertThat(loginFrom("203.0.113." + i, "alice", "bad")).isEqualTo(401);
                 assertThat(loginFrom("198.51.100.9", "nobody" + i, "bad")).isEqualTo(401);
             }
-            assertThat(loginFrom("203.0.113.50", "alice", "s3cret")).isEqualTo(429);
-            assertThat(loginFrom("198.51.100.9", "victor", "view")).isEqualTo(429);
+            for (var i = 0; i < 3; i++) {
+                assertThat(loginFrom("203.0.113.5" + i, "alice", "s3cret")).isEqualTo(429);
+                assertThat(loginFrom("198.51.100.9", "victor", "view")).isEqualTo(429);
+            }
 
             var lines = messages(logs);
-            assertThat(lines).contains("Admin sign-in refused, too many attempts from 198.51.100.9");
+            assertThat(lines)
+                    .filteredOn(l -> l.equals("Admin sign-in refused, too many attempts from 198.51.100.9"))
+                    .as("three attempts against the block of the address, one line")
+                    .hasSize(1);
             assertThat(lines)
                     .filteredOn(l -> l.startsWith("Admin sign-in refused, too many attempts for the user with key "))
                     .singleElement()
@@ -1544,25 +1549,60 @@ class AdminHttpServerTest {
     }
 
     @Test
-    void atTheTrackingCapTheOldestUnblockedEntriesAreEvictedAndBlocksStay() {
+    void atTheTrackingCapTheOldestOfTheKeysWithEquallyManyFailuresAreEvictedAndBlocksStay() {
         var throttle = new LoginThrottle(clock);
         for (var i = 0; i < 5; i++) throttle.attempt("blocked");
-        for (var i = 0; i < 4; i++) throttle.attempt("old");
+        throttle.attempt("old");
         clock.advance(Duration.ofMillis(1));
         for (var i = 1; i < 9_998; i++) throttle.attempt("addr-" + i);
         clock.advance(Duration.ofMillis(1));
-        for (var i = 0; i < 4; i++) throttle.attempt("new");
+        throttle.attempt("new");
         clock.advance(Duration.ofMillis(1));
 
         throttle.attempt("one-more");
 
         assertThat(throttle.attempt("blocked")).as("an active block stays").isPositive();
-        assertThat(throttle.attempt("old")).isZero();
-        assertThat(throttle.attempt("old"))
-                .as("the oldest entry went, so its count restarted")
-                .isZero();
-        assertThat(throttle.attempt("new")).as("a recent entry stays").isZero();
+        for (var i = 0; i < 5; i++) {
+            assertThat(throttle.attempt("old"))
+                    .as("the oldest entry went, so its count restarted")
+                    .isZero();
+        }
+        for (var i = 0; i < 4; i++) {
+            assertThat(throttle.attempt("new")).as("a recent entry stays").isZero();
+        }
         assertThat(throttle.attempt("new")).isPositive();
+    }
+
+    @Test
+    void atTheTrackingCapAKeyOneFailureShortOfABlockOutlivesNewerKeysThatWereTriedOnce() {
+        var throttle = new LoginThrottle(clock);
+        for (var i = 0; i < 4; i++) throttle.attempt("guessed");
+        clock.advance(Duration.ofMillis(1));
+        for (var i = 0; i < 9_999; i++) throttle.attempt("made-up-" + i);
+        clock.advance(Duration.ofMillis(1));
+
+        throttle.attempt("one-more");
+
+        assertThat(throttle.attempt("guessed")).as("the fifth failure").isZero();
+        assertThat(throttle.attempt("guessed"))
+                .as("its four failures were kept, so the fifth blocked it")
+                .isEqualTo(10_000);
+    }
+
+    @Test
+    void theFirstRefusalOfABlockIsToldOnceAndAgainForTheNextBlock() {
+        var throttle = new LoginThrottle(clock);
+        assertThat(failFive(throttle, "key")).isEqualTo(10_000);
+
+        assertThat(throttle.firstRefusal("key")).isTrue();
+        assertThat(throttle.attempt("key")).isPositive();
+        assertThat(throttle.firstRefusal("key")).isFalse();
+
+        clock.advance(Duration.ofSeconds(10).plusMillis(1));
+        assertThat(failFive(throttle, "key")).isEqualTo(20_000);
+        assertThat(throttle.firstRefusal("key")).isTrue();
+        assertThat(throttle.firstRefusal("key")).isFalse();
+        assertThat(throttle.firstRefusal("never-seen")).isFalse();
     }
 
     private static long failFive(LoginThrottle throttle, String key) {

@@ -233,6 +233,7 @@ These rules apply to both counts:
 - A successful login takes back only its own attempt, on its own address and its own user name. It does not clear the failures counted before it, and it cannot shorten the block of another name.
 - Failures are forgotten when no attempt followed them for 15 minutes. That is as long as the longest block, so staying just under five failures (four tries per 15 minutes) is no faster than being blocked.
 - Once a block has grown, someone who knows a user name and has many addresses can try about 5 passwords per 15 minutes for it, about 480 a day, down from about 43,000 a day with a block that stays at 10 seconds. Give every account a long random password (see [Passwords](#passwords)).
+- The server remembers at most 10,000 addresses and 10,000 names at a time, and when it is full it first forgets the ones without a block and with the fewest failures. Someone with thousands of addresses can use that: between their guesses at one name they send logins for thousands of made-up names, about 9,000 for each guess, until the failures of that name are forgotten before its fifth. The limit above holds against anyone who sends less than that. A long random password is what holds against the rest.
 - The same growth lets someone who knows a user name keep that user out. After the attack on a name stops, the real user may have to wait up to 15 minutes for the block to end. Keep the server off networks where that is a concern.
 
 #### What the server logs
@@ -250,7 +251,7 @@ A logback example that writes them to `admin-audit.log` and keeps them out of th
 |---|---|---|
 | A sign-in | `Admin sign-in of alice (ADMIN) from 203.0.113.7` | the user, the role and the client address |
 | A wrong password or an unknown user | `Admin sign-in refused for the user with key 5f0c..., from 203.0.113.7` | a keyed hash of the name that was tried, never the name: the line reads the same for a user that exists and one that does not. The key is new on every start |
-| A blocked sign-in | `Admin sign-in refused, too many attempts ...` | the client address, and the keyed hash when the name is blocked |
+| A blocked sign-in, once for each block of an address or a name | `Admin sign-in refused, too many attempts ...` | the client address, and the keyed hash when the name is blocked. Further attempts against the same block are not logged, so a client that is not signed in cannot fill the log with them |
 | A POST or DELETE with a session, also a refused one | `Admin action POST /api/v1/tasks/17/retry by alice (ADMIN) answered 200` | the user, the role, the route and the HTTP status. A task id is shown; a queue name, a schedule id and a unique key are not (`/api/v1/schedules/{}/pause`) |
 
 No line carries a password, a session or CSRF token, a unique key or a request body.
