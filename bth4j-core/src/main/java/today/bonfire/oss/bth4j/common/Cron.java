@@ -5,9 +5,12 @@ import com.cronutils.model.definition.CronDefinitionBuilder;
 import com.cronutils.model.time.ExecutionTime;
 import com.cronutils.parser.CronParser;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.time.zone.ZoneOffsetTransition;
+import java.time.zone.ZoneRules;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -15,23 +18,37 @@ import java.util.Optional;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /**
- * 5-field unix cron expressions. Fire times are computed in a zone: a wall-clock time that a DST change skips
- * fires at the first valid instant after it, and one that repeats fires once.
+ * 5-field unix cron expressions. Fire times are the wall-clock times of a zone that match the expression. Where
+ * the zone's clocks are set forward, the matches in the skipped stretch fire once together, at the moment of the
+ * change. Where they are set back, an expression whose minute or hour field starts with {@code *} fires in both
+ * passes of the repeated stretch and keeps its rhythm, and every other expression fires in the first pass only.
  */
 public final class Cron {
 
     private static final CronParser PARSER = new CronParser(CronDefinitionBuilder.instanceDefinitionFor(CronType.UNIX));
     private static final int MAX_CACHED = 256;
     /** The most recently used parsed expressions; synchronized, an access-ordered map changes on every read. */
-    private static final Map<String, ExecutionTime> EXECUTION_TIMES =
-            Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, ExecutionTime> eldest) {
-                    return size() > MAX_CACHED;
-                }
-            });
-    /** Transitions examined for a gap before giving up; a leap-day expression needs about eight. */
-    private static final int MAX_TRANSITIONS = 64;
+    private static final Map<String, Parsed> PARSED = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Parsed> eldest) {
+            return size() > MAX_CACHED;
+        }
+    });
+
+    /** @param everyMinuteOrHour the minute or the hour field starts with a wildcard */
+    private record Parsed(ExecutionTime time, boolean everyMinuteOrHour) {
+
+        static Parsed of(String normalized) {
+            var time = ExecutionTime.forCron(parse(normalized));
+            var fields = normalized.split(" ");
+            return new Parsed(time, fields[0].startsWith("*") || fields[1].startsWith("*"));
+        }
+
+        /** The next wall-clock time after {@code local} that matches, whatever the zone. */
+        Optional<LocalDateTime> nextMatch(LocalDateTime local) {
+            return time.nextExecution(local.atZone(ZoneOffset.UTC)).map(ZonedDateTime::toLocalDateTime);
+        }
+    }
 
     private Cron() {}
 
@@ -50,37 +67,42 @@ public final class Cron {
      * @throws TaskValidationException when the expression does not parse
      */
     public static Optional<Instant> next(String expression, Instant after, ZoneId zone) {
-        var executionTime =
-                EXECUTION_TIMES.computeIfAbsent(normalize(expression), c -> ExecutionTime.forCron(parse(c)));
-        var z = zone == null ? ZoneOffset.UTC : zone;
-        var next =
-                executionTime.nextExecution(ZonedDateTime.ofInstant(after, z)).map(ZonedDateTime::toInstant);
-        // cron-utils drops a wall-clock match that falls inside a DST gap; every transition before the next
-        // match is examined, because the first one after `after` may be a repeated hour and the gap behind it
-        var rules = z.getRules();
-        var transition = rules.nextTransition(after);
-        for (int i = 0;
-                i < MAX_TRANSITIONS
-                        && transition != null
-                        && (next.isEmpty() || transition.getInstant().isBefore(next.get()));
-                i++, transition = rules.nextTransition(transition.getInstant())) {
-            if (!transition.isGap()) continue;
-            // evaluate the expression in the offset before the gap and, when a match lands in the gap, fire at
-            // the moment the gap ends
-            var gap = transition;
-            var skipped = executionTime
-                    .nextExecution(ZonedDateTime.ofInstant(gap.getInstant(), gap.getOffsetBefore())
-                            .minusNanos(1))
-                    .map(ZonedDateTime::toLocalDateTime)
-                    .filter(t -> !t.isBefore(gap.getDateTimeBefore()) && t.isBefore(gap.getDateTimeAfter()));
-            if (skipped.isPresent()) return Optional.of(gap.getInstant());
+        var parsed = PARSED.computeIfAbsent(normalize(expression), Parsed::of);
+        var rules = (zone == null ? ZoneOffset.UTC : zone).getRules();
+        // the expression is matched against wall-clock times only and the zone's rules place each match: the
+        // stretch of one offset is searched up to the next change of the offset, then the stretch behind it
+        var offset = rules.getOffset(after);
+        var change = rules.nextTransition(after);
+        var match = parsed.nextMatch(LocalDateTime.ofInstant(after, offset));
+        while (match.isPresent()) {
+            var local = match.get();
+            if (change != null && !local.isBefore(change.getDateTimeBefore())) {
+                if (change.isGap() && local.isBefore(change.getDateTimeAfter())) {
+                    return Optional.of(change.getInstant());
+                }
+                offset = change.getOffsetAfter();
+                if (change.isOverlap() && parsed.everyMinuteOrHour()) {
+                    match = parsed.nextMatch(change.getDateTimeAfter().minusNanos(1));
+                }
+                change = rules.nextTransition(change.getInstant());
+                continue;
+            }
+            var repeated = parsed.everyMinuteOrHour() ? null : secondPass(rules, local, offset);
+            if (repeated == null) return Optional.of(local.toInstant(offset));
+            match = parsed.nextMatch(repeated.getDateTimeBefore().minusNanos(1));
         }
-        return next;
+        return Optional.empty();
+    }
+
+    /** The change that set the clocks back to {@code local} at {@code offset}, or null when it is not a repeat. */
+    private static ZoneOffsetTransition secondPass(ZoneRules rules, LocalDateTime local, ZoneOffset offset) {
+        var change = rules.getTransition(local);
+        return change != null && change.isOverlap() && change.getOffsetAfter().equals(offset) ? change : null;
     }
 
     /** The parsed expressions currently cached; for tests. */
     static int cached() {
-        return EXECUTION_TIMES.size();
+        return PARSED.size();
     }
 
     private static com.cronutils.model.Cron parse(String expression) {

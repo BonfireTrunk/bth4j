@@ -84,11 +84,17 @@ stateDiagram-v2
 
 ## Cron definitions and time zones
 
-A cron expression runs in UTC unless you set a zone. A fire time that does not exist in a DST gap moves to the next valid instant. A repeated hour fires once.
+A cron expression runs in UTC unless you set a zone. In a zone, the fire times are the wall-clock times that match the expression. Two cases need a rule:
+
+| The zone's clocks | Example in Europe/Berlin | What fires |
+|---|---|---|
+| Go forward and skip a stretch | 29 March 2026: 02:00 becomes 03:00 | The matches in the skipped stretch fire once together, at the moment of the change. `30 2 * * *` fires at 03:00 that day, and `*/15 2 * * *` fires once at 03:00, not four times. |
+| Go back and repeat a stretch | 25 October 2026: 03:00 becomes 02:00 | An expression whose minute or hour field starts with `*` fires in both passes, so `*/15 * * * *` keeps firing every 15 minutes and `0 * * * *` every hour. Every other expression fires in the first pass only: `30 2 * * *` fires once that day. |
+
+The rule for the repeated stretch reads the expression as written: `0 0-23 * * *` names fixed hours, so it does not fire in the second pass, while `0 * * * *` does.
 
 ```java
-// cron in a time zone (UTC by default); a fire time that does not exist in a DST gap moves to the next valid
-// instant, a repeated hour fires once
+// cron in a time zone (UTC by default)
 client.putSchedule(ScheduleDefinition.of("daily-digest", DIGEST, "0 8 * * *", Overlap.ALLOW)
         .withZone(ZoneId.of("Europe/Berlin")));
 ```
