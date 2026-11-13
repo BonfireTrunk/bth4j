@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -18,6 +19,7 @@ import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
 import today.bonfire.oss.bth4j.spi.ExpiredTask;
+import today.bonfire.oss.bth4j.spi.FailOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
@@ -57,6 +59,7 @@ class MaintenanceServiceTest {
     private boolean accepting = true;
     private Duration runnerStaleTimeout = Duration.ofMinutes(10);
     private Duration checkInterval = Duration.ofSeconds(5);
+    private final AtomicLong nanos = new AtomicLong();
 
     private TaskEvent.LeaseExpired leaseExpired(long id, int attempts, int maxAttempts, boolean dead) {
         return new TaskEvent.LeaseExpired(id, "Q:DEF", TYPE.name(), attempts, maxAttempts, dead);
@@ -994,6 +997,128 @@ class MaintenanceServiceTest {
         });
     }
 
+    /**
+     * A store that answers full batches of one call for a number of calls, then an empty batch, and moves the
+     * fake elapsed time on by a step at every call of it. Every call is logged by name.
+     */
+    private List<String> scriptedStore(String full, int fullBatches, Duration step) {
+        var calls = new ArrayList<String>();
+        var seen = new AtomicInteger();
+        serviceStore = StoreInterceptor.around(store, (method, args, real) -> {
+            calls.add(method);
+            boolean scripted = method.equals(full);
+            if (scripted) nanos.addAndGet(step.toNanos());
+            boolean batch = scripted && seen.incrementAndGet() <= fullBatches;
+            return switch (method) {
+                case "purge" -> batch ? (long) purgeBatchSize : 0L;
+                case "releaseKeys" -> batch ? purgeBatchSize : 0;
+                case "reclaim" ->
+                    batch
+                            ? List.of(
+                                    new ExpiredLease(1, 1, 1, 1, queueId, 0, false),
+                                    new ExpiredLease(2, 1, 1, 1, queueId, 0, false))
+                            : List.of();
+                case "expire" -> List.of();
+                case "purgeRunners" -> 0;
+                case "heartbeat" -> null;
+                case "task" -> java.util.Optional.empty();
+                case "failExpired" -> FailOutcome.LOST;
+                default -> real.proceed();
+            };
+        });
+        return calls;
+    }
+
+    // ---- long jobs do not hold the others back --------------------------------------------------------
+
+    @Test
+    void aLongPurgeRunsACycleBetweenBatchesWheneverACheckIntervalHasPassed() throws Exception {
+        purgeBatchSize = 2;
+        retention = Map.of(TaskState.SUCCEEDED, Duration.ZERO);
+        runnerId = 1;
+        var calls = scriptedStore("purge", 5, Duration.ofSeconds(3));
+
+        purge();
+
+        assertThat(calls)
+                .containsExactly(
+                        "purge",
+                        "purge",
+                        "heartbeat",
+                        "reclaim",
+                        "expire",
+                        "purge",
+                        "purge",
+                        "heartbeat",
+                        "reclaim",
+                        "expire",
+                        "purge",
+                        "purge",
+                        "releaseKeys",
+                        "purgeRunners");
+    }
+
+    @Test
+    void aShortPurgeRunsNoCycleEvenWhenACheckIntervalHasPassed() throws Exception {
+        purgeBatchSize = 2;
+        retention = Map.of(TaskState.SUCCEEDED, Duration.ZERO);
+        runnerId = 1;
+        var calls = scriptedStore("purge", 0, Duration.ofSeconds(30));
+
+        purge();
+
+        assertThat(calls).containsExactly("purge", "releaseKeys", "purgeRunners");
+    }
+
+    @Test
+    void aLongKeyReleaseRunsACycleBetweenBatchesWheneverACheckIntervalHasPassed() throws Exception {
+        purgeBatchSize = 2;
+        runnerId = 1;
+        var calls = scriptedStore("releaseKeys", 5, Duration.ofSeconds(3));
+
+        purge();
+
+        assertThat(calls)
+                .containsExactly(
+                        "releaseKeys",
+                        "releaseKeys",
+                        "heartbeat",
+                        "reclaim",
+                        "expire",
+                        "releaseKeys",
+                        "releaseKeys",
+                        "heartbeat",
+                        "reclaim",
+                        "expire",
+                        "releaseKeys",
+                        "releaseKeys",
+                        "purgeRunners");
+    }
+
+    @Test
+    void aShortKeyReleaseRunsNoCycleEvenWhenACheckIntervalHasPassed() throws Exception {
+        purgeBatchSize = 2;
+        runnerId = 1;
+        var calls = scriptedStore("releaseKeys", 0, Duration.ofSeconds(30));
+
+        purge();
+
+        assertThat(calls).containsExactly("releaseKeys", "purgeRunners");
+    }
+
+    @Test
+    void aBacklogOfExpiredLeasesWritesTheHeartbeatAgainWheneverACheckIntervalHasPassed() throws Exception {
+        batchSize = 2;
+        runnerId = 1;
+        var calls = scriptedStore("reclaim", 5, Duration.ofSeconds(3));
+
+        cycle();
+
+        assertThat(calls.stream().filter("heartbeat"::equals)).hasSize(3);
+        assertThat(calls.indexOf("expire")).isGreaterThan(calls.lastIndexOf("reclaim"));
+        assertThat(status.lastMaintenanceAt()).isNotNull();
+    }
+
     private void cycle() throws Exception {
         service().cycle();
     }
@@ -1020,6 +1145,7 @@ class MaintenanceServiceTest {
                 .accepting(() -> accepting)
                 .runnerStaleTimeout(runnerStaleTimeout)
                 .checkInterval(checkInterval)
+                .nanoTime(nanos::get)
                 .create();
     }
 }
