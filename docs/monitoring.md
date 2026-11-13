@@ -88,6 +88,7 @@ The runner's own log lines go to the logger names in `Loggers`:
 | `EXECUTOR` | `DefaultVtExecutor`, the adaptive executor (see [Concurrency](queues-and-concurrency.md#concurrency)). |
 | `OBSERVERS` | A `TaskObserver` that threw. |
 | `REDIS_STORE` | A Redis setting that `init` could not check. |
+| `ADMIN_AUDIT` | The admin server's sign-in, refused sign-in and change lines (see [Admin server](admin.md#what-the-server-logs)). |
 | `TASKS` | `bth4j.tasks`, the default logger of `LoggingTaskObserver`. |
 
 The names follow the class names below `Loggers.ROOT` (`today.bonfire.oss.bth4j`). A level set on that prefix covers all of them except `TASKS`. The names do not change when an internal class moves.

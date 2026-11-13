@@ -32,6 +32,7 @@ import javax.net.ssl.SSLContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.AdminOps;
+import today.bonfire.oss.bth4j.Loggers;
 import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.TaskRequest;
 import today.bonfire.oss.bth4j.TaskState;
@@ -60,6 +61,7 @@ import today.bonfire.oss.bth4j.internal.Json;
 public final class AdminHttpServer implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(AdminHttpServer.class);
+    private static final Logger auditLog = LoggerFactory.getLogger(Loggers.ADMIN_AUDIT);
 
     private static final String API = "/api/v1";
     private static final String COOKIE = "bth4j_session";
@@ -279,7 +281,7 @@ public final class AdminHttpServer implements AutoCloseable {
      * a token, a unique key or a request body.
      */
     private static void securityLog(String format, Object... arguments) {
-        log.info(format, arguments);
+        auditLog.info(format, arguments);
     }
 
     /** {@link #routeTemplate} that keeps a task id, which is a number and says which task an action changed. */

@@ -21,6 +21,7 @@ class LoggersTest {
         assertThat(Loggers.EXECUTOR).isEqualTo("today.bonfire.oss.bth4j.executor.DefaultVtExecutor");
         assertThat(Loggers.OBSERVERS).isEqualTo("today.bonfire.oss.bth4j.Observers");
         assertThat(Loggers.REDIS_STORE).isEqualTo("today.bonfire.oss.bth4j.redis.RedisTaskStore");
+        assertThat(Loggers.ADMIN_AUDIT).isEqualTo("today.bonfire.oss.bth4j.admin.http.audit");
         assertThat(Loggers.TASKS).isEqualTo("bth4j.tasks");
     }
 

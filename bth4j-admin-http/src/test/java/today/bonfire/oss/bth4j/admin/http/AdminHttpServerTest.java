@@ -29,6 +29,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import today.bonfire.oss.bth4j.Issue;
+import today.bonfire.oss.bth4j.Loggers;
 import today.bonfire.oss.bth4j.Misfire;
 import today.bonfire.oss.bth4j.Overlap;
 import today.bonfire.oss.bth4j.QueueInfo;
@@ -1297,7 +1298,7 @@ class AdminHttpServerTest {
     void signInsAndChangesAreLoggedWithTheirUserAndWithoutSecretsOrGuessedNames() throws Exception {
         var logs = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
         logs.start();
-        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(AdminHttpServer.class);
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(Loggers.ADMIN_AUDIT);
         logger.addAppender(logs);
         try {
             start();
@@ -1342,6 +1343,26 @@ class AdminHttpServerTest {
         }
     }
 
+    @Test
+    void aWarnLevelOnTheServerClassDoesNotSilenceTheAuditLines() throws Exception {
+        var logs = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        logs.start();
+        var audit = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(Loggers.ADMIN_AUDIT);
+        var serverClass = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(AdminHttpServer.class);
+        var before = serverClass.getLevel();
+        audit.addAppender(logs);
+        serverClass.setLevel(ch.qos.logback.classic.Level.WARN);
+        try {
+            start();
+            assertThat(rawLogin("alice", "s3cret").statusCode()).isEqualTo(200);
+
+            assertThat(messages(logs)).contains("Admin sign-in of alice (ADMIN) from 127.0.0.1");
+        } finally {
+            serverClass.setLevel(before);
+            audit.detachAppender(logs);
+        }
+    }
+
     private static List<String> messages(
             ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> logs) {
         return List.copyOf(logs.list).stream()
@@ -1353,7 +1374,7 @@ class AdminHttpServerTest {
     void aBlockedSignInIsLoggedWithItsAddressAndNeverWithTheName() throws Exception {
         var logs = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
         logs.start();
-        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(AdminHttpServer.class);
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(Loggers.ADMIN_AUDIT);
         logger.addAppender(logs);
         try {
             start(builder().addTrustedProxy("127.0.0.1"));
@@ -1462,6 +1483,152 @@ class AdminHttpServerTest {
                 .isZero();
         assertThat(throttle.attempt("new")).as("a recent entry stays").isZero();
         assertThat(throttle.attempt("new")).isPositive();
+    }
+
+    private static long failFive(LoginThrottle throttle, String key) {
+        for (var i = 0; i < 5; i++)
+            assertThat(throttle.attempt(key)).as("attempt %d", i + 1).isZero();
+        return throttle.attempt(key);
+    }
+
+    @Test
+    void eachFurtherBlockOfAKeyLastsTwiceAsLongUpToFifteenMinutes() {
+        var throttle = new LoginThrottle(clock);
+        var expected = List.of(10L, 20L, 40L, 80L, 160L, 320L, 640L, 900L, 900L, 900L);
+        for (var seconds : expected) {
+            assertThat(failFive(throttle, "a")).isEqualTo(seconds * 1000);
+            clock.advance(Duration.ofSeconds(seconds).plusMillis(1));
+        }
+    }
+
+    @Test
+    void aKeyStartsAgainAtTenSecondsAfterFifteenQuietMinutesAndNotBefore() {
+        var throttle = new LoginThrottle(clock);
+        for (var i = 0; i < 3; i++) {
+            failFive(throttle, "a");
+            clock.advance(Duration.ofSeconds(10L << i).plusMillis(1));
+        }
+        failFive(throttle, "a");
+        clock.advance(Duration.ofSeconds(80).plus(Duration.ofMinutes(15)).minusMillis(1));
+        assertThat(failFive(throttle, "a"))
+                .as("a block of 160 s follows the one of 80 s")
+                .isEqualTo(160_000);
+
+        clock.advance(Duration.ofSeconds(160).plus(Duration.ofMinutes(15)).plusMillis(1));
+        assertThat(failFive(throttle, "a")).isEqualTo(10_000);
+    }
+
+    @Test
+    void attemptsAgainstABlockNeitherLengthenItNorMoveTheNextOne() {
+        var throttle = new LoginThrottle(clock);
+        assertThat(failFive(throttle, "a")).isEqualTo(10_000);
+        for (var i = 0; i < 50; i++) {
+            clock.advance(Duration.ofMillis(100));
+            assertThat(throttle.attempt("a")).isEqualTo(10_000 - (i + 1) * 100L);
+        }
+        clock.advance(Duration.ofMillis(5_001));
+
+        assertThat(failFive(throttle, "a")).isEqualTo(20_000);
+    }
+
+    @Test
+    void aSuccessfulLoginNeitherKeepsNorDropsTheStepOfItsKey() {
+        var throttle = new LoginThrottle(clock);
+        failFive(throttle, "a");
+        clock.advance(Duration.ofSeconds(11));
+        assertThat(throttle.attempt("a")).isZero();
+        throttle.takeBack("a");
+        assertThat(failFive(throttle, "a")).as("the step is kept").isEqualTo(20_000);
+
+        clock.advance(Duration.ofSeconds(21));
+        clock.advance(Duration.ofMinutes(14));
+        assertThat(throttle.attempt("a")).isZero();
+        throttle.takeBack("a");
+        clock.advance(Duration.ofMinutes(2));
+        assertThat(failFive(throttle, "a"))
+                .as("a success is no failed login, so it does not hold the step")
+                .isEqualTo(10_000);
+    }
+
+    @Test
+    void aSuccessThatSetTheFifthBlockLeavesTheStepWhereItWas() {
+        var throttle = new LoginThrottle(clock);
+        failFive(throttle, "a");
+        clock.advance(Duration.ofSeconds(11));
+        for (var i = 0; i < 4; i++) assertThat(throttle.attempt("a")).isZero();
+        assertThat(throttle.attempt("a")).as("the fifth sets a block of 20 s").isZero();
+        throttle.takeBack("a");
+
+        assertThat(throttle.attempt("a")).as("the success lifted it").isZero();
+        assertThat(throttle.attempt("a")).isEqualTo(20_000);
+    }
+
+    @Test
+    void aLongBlockOfOneKeyDoesNotTouchAnotherKeyAndASuccessForAnotherKeyDoesNotShortenIt() {
+        var throttle = new LoginThrottle(clock);
+        for (var i = 0; i < 3; i++) {
+            failFive(throttle, "alice");
+            clock.advance(Duration.ofSeconds(10L << i).plusMillis(1));
+        }
+        assertThat(failFive(throttle, "alice")).isEqualTo(80_000);
+
+        assertThat(throttle.attempt("victor")).isZero();
+        throttle.takeBack("victor");
+        assertThat(throttle.attempt("alice")).isEqualTo(80_000);
+        throttle.takeBack("alice-never-seen");
+        assertThat(throttle.attempt("alice")).isEqualTo(80_000);
+    }
+
+    @Test
+    void floodingTheMapWithNewKeysNeitherLiftsABlockNorForgetsABlockedKeysStep() {
+        var throttle = new LoginThrottle(clock);
+        for (var i = 0; i < 2; i++) {
+            failFive(throttle, "history");
+            clock.advance(Duration.ofSeconds(10L << i).plusMillis(1));
+        }
+        assertThat(failFive(throttle, "blocked")).isEqualTo(10_000);
+        clock.advance(Duration.ofSeconds(40).plusMillis(1));
+        assertThat(failFive(throttle, "blocked")).isEqualTo(20_000);
+
+        for (var i = 0; i < 40_000; i++) {
+            throttle.attempt("flood-" + i);
+            if (i % 1_000 == 0) clock.advance(Duration.ofMillis(1));
+        }
+
+        assertThat(throttle.attempt("blocked")).as("an active block stays").isPositive();
+        for (var i = 0; i < 4; i++) assertThat(throttle.attempt("history")).isZero();
+        assertThat(throttle.attempt("history"))
+                .as("it still counts as blocked once already")
+                .isZero();
+        assertThat(throttle.attempt("history")).isEqualTo(40_000);
+    }
+
+    @Test
+    void theRetryAfterOfAGrownBlockGrowsAndOnlyItsOwnUserWaits() throws Exception {
+        start(builder().addTrustedProxy("127.0.0.1"));
+        for (var round = 0; round < 2; round++) {
+            for (var i = 1; i <= 5; i++) {
+                assertThat(loginFrom("203.0.113." + (round * 10 + i), "alice", "bad"))
+                        .isEqualTo(401);
+            }
+            var blocked = send(
+                    "POST",
+                    "/api/v1/session",
+                    null,
+                    Json.write(Map.of("user", "alice", "password", "s3cret")),
+                    "X-Forwarded-For",
+                    "203.0.113.99");
+            assertThat(blocked.statusCode()).isEqualTo(429);
+            assertThat(blocked.headers().firstValue("Retry-After")).hasValue(round == 0 ? "10" : "20");
+            clock.advance(Duration.ofSeconds(11));
+        }
+
+        assertThat(loginFrom("203.0.113.99", "alice", "s3cret"))
+                .as("20 s have not passed")
+                .isEqualTo(429);
+        assertThat(loginFrom("203.0.113.99", "victor", "view")).isEqualTo(200);
+        clock.advance(Duration.ofSeconds(10));
+        assertThat(loginFrom("203.0.113.99", "alice", "s3cret")).isEqualTo(200);
     }
 
     @Test
