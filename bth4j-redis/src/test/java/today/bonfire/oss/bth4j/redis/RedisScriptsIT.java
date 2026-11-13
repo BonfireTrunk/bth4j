@@ -546,7 +546,9 @@ class RedisScriptsIT {
                         EnqueueFailedException.class, e -> assertThat(e.ids()).containsExactly(id));
         assertThat(jedis.exists(keys.task(id))).isTrue();
 
-        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id, true));
+        assertThat(client.enqueue(request))
+                .as("the first call stored the task, so the resend wrote nothing")
+                .isEqualTo(new EnqueueResult.Accepted(id, false));
         assertThat(store.counts().get(store.queueId(Queues.GENERAL)).queued()).isEqualTo(2);
         assertThat(jedis.get(keys.uniqueKey("lost"))).isEqualTo(String.valueOf(id));
     }
