@@ -57,6 +57,11 @@ class TaskProcessorService extends CustomThread {
     private final QueueReservations reservations;
     /** the last shared claim skipped a queue at its cap; written and read by the processor thread only */
     private boolean capBlocked;
+    /**
+     * What each queue of {@code distinctQueueIds} is owed of the slots shared so far. Kept from claim to claim, so
+     * the weights also hold when slots free up one at a time; written and read by the processor thread only.
+     */
+    private final long[] credits;
 
     private final String renewerName;
     private final ThreadGroup group;
@@ -74,6 +79,7 @@ class TaskProcessorService extends CustomThread {
         this.distinctQueueIds = List.copyOf(new LinkedHashSet<>(b.queueIds));
         this.policies = Map.copyOf(b.queuePolicies);
         this.policed = policies.values().stream().anyMatch(p -> !p.equals(QueuePolicy.DEFAULT));
+        this.credits = new long[distinctQueueIds.size()];
         this.knownTypeIds = Set.copyOf(b.knownTypeIds);
         this.runnerId = b.runnerId;
         this.admission = b.admission;
@@ -277,34 +283,42 @@ class TaskProcessorService extends CustomThread {
      * not idle the others.
      */
     private List<TaskRecord> claimShared(int slots) {
-        var order = rotatedDistinctQueues();
-        var caps = new int[order.size()];
+        int queues = distinctQueueIds.size();
+        int first = Math.floorMod(queueOffset.getAndIncrement(), queues);
+        var order = new ArrayList<Integer>(queues);
+        var caps = new int[queues];
+        var weights = new int[queues];
         capBlocked = false;
-        long totalWeight = 0;
-        for (int i = 0; i < order.size(); i++) {
+        boolean open = false;
+        for (int i = 0; i < queues; i++) {
+            order.add(distinctQueueIds.get((first + i) % queues));
             var policy = policies.getOrDefault(order.get(i), QueuePolicy.DEFAULT);
             int cap = policy.maxConcurrent() == 0
                     ? slots
                     : Math.max(0, policy.maxConcurrent() - reservations.running(order.get(i)));
             caps[i] = Math.min(cap, slots);
-            if (caps[i] > 0) totalWeight += policy.weight();
+            weights[i] = policy.weight();
+            if (caps[i] > 0) open = true;
             else capBlocked = true;
         }
-        if (totalWeight == 0) return List.of();
-        var shares = new int[order.size()];
-        int given = 0;
-        for (int i = 0; i < order.size(); i++) {
-            if (caps[i] == 0) continue;
-            int weight =
-                    policies.getOrDefault(order.get(i), QueuePolicy.DEFAULT).weight();
-            shares[i] = (int) Math.min(caps[i], (long) slots * weight / totalWeight);
-            given += shares[i];
-        }
-        for (int i = 0; given < slots && i < order.size(); i++) {
-            if (shares[i] < caps[i]) {
-                shares[i]++;
-                given++;
+        if (!open) return List.of();
+        // smooth weighted round robin, one slot at a time: every queue below its cap earns its weight, the queue
+        // owed most takes the slot and pays what was earned in that round. Shares cut from each claim's own slot
+        // count would give a queue of weight 3 beside one of weight 1 half the slots when one slot frees at a time
+        var shares = new int[queues];
+        for (int given = 0; given < slots; given++) {
+            int winner = -1;
+            long earned = 0;
+            for (int i = 0; i < queues; i++) {
+                if (shares[i] >= caps[i]) continue;
+                int queue = (first + i) % queues;
+                credits[queue] += weights[i];
+                earned += weights[i];
+                if (winner < 0 || credits[queue] > credits[(first + winner) % queues]) winner = i;
             }
+            if (winner < 0) break;
+            credits[(first + winner) % queues] -= earned;
+            shares[winner]++;
         }
         var grants = new ArrayList<QueueGrant>(order.size());
         for (int i = 0; i < order.size(); i++) {
@@ -381,10 +395,6 @@ class TaskProcessorService extends CustomThread {
     /** The queues to process, starting one position later on every call. */
     private List<Integer> rotatedQueues() {
         return rotate(queueIds);
-    }
-
-    private List<Integer> rotatedDistinctQueues() {
-        return rotate(distinctQueueIds);
     }
 
     private List<Integer> rotate(List<Integer> ids) {

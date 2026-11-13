@@ -212,6 +212,67 @@ class TaskProcessorCapacityTest {
         assertThat(leased(lightIds)).isEqualTo(1);
     }
 
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 3, 4, 8})
+    void theWeightsHoldOverManyClaimsHoweverFewSlotsFreeUpAtATime(int slots) throws Exception {
+        int heavy = names.queueId("Q:HEAVY");
+        int light = names.queueId("Q:LIGHT");
+        var executor = new ManualExecutor(slots);
+        var processor = processor(
+                executor,
+                slots,
+                List.of(heavy, light),
+                Map.of(heavy, QueuePolicy.ofWeight(3), light, QueuePolicy.ofWeight(1)));
+        var heavyIds = enqueue(120, "Q:HEAVY");
+        var lightIds = enqueue(120, "Q:LIGHT");
+
+        for (int run = 0; run < 96; run += slots) {
+            processOnce(processor);
+            for (int i = 0; i < slots; i++) executor.runNext();
+        }
+
+        assertThat(heavyIds.stream().filter(id -> state(id) != TaskState.QUEUED))
+                .hasSize(72);
+        assertThat(lightIds.stream().filter(id -> state(id) != TaskState.QUEUED))
+                .hasSize(24);
+    }
+
+    @Test
+    void aQueueHeldAtItsCapDoesNotCollectSlotsForLater() throws Exception {
+        int capped = names.queueId("Q:CAPPED");
+        int open = names.queueId("Q:OPEN");
+        var executor = new ManualExecutor(3);
+        var processor = processor(
+                executor,
+                1,
+                List.of(capped, open),
+                Map.of(capped, new QueuePolicy(3, 1), open, QueuePolicy.ofWeight(1)));
+        var cappedIds = enqueue(40, "Q:CAPPED");
+        var openIds = enqueue(40, "Q:OPEN");
+        // the capped queue's one task stays running, so every further slot goes to the open queue
+        processOnce(processor);
+        processOnce(processor);
+        assertThat(leased(cappedIds)).isEqualTo(1);
+        for (int i = 0; i < 20; i++) {
+            processOnce(processor);
+            executor.runLast();
+        }
+        assertThat(openIds.stream().filter(id -> state(id) != TaskState.QUEUED)).hasSize(21);
+
+        // its task ends: from here on the two queues share three to one again, without a burst for the time missed
+        executor.runNext();
+        executor.runNext();
+        int cappedBefore = (int)
+                cappedIds.stream().filter(id -> state(id) != TaskState.QUEUED).count();
+        for (int i = 0; i < 8; i++) {
+            processOnce(processor);
+            executor.runNext();
+        }
+
+        assertThat(cappedIds.stream().filter(id -> state(id) != TaskState.QUEUED))
+                .hasSize(cappedBefore + 6);
+    }
+
     @Test
     void weightsWhoseSumExceedsAnIntShareTheSlotsInTheirRatio() throws Exception {
         int heavy = names.queueId("Q:HEAVY");

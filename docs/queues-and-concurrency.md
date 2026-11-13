@@ -47,7 +47,7 @@ A `QueuePolicy(weight, maxConcurrent)` shares a runner's free executor slots bet
 
 | Field | Meaning |
 |---|---|
-| `weight` | Free slots are divided in proportion to the weights. The default is 1. |
+| `weight` | Free slots are divided in proportion to the weights. The default is 1. The runner keeps count from claim to claim, so the ratio also holds when slots free up one at a time. |
 | `maxConcurrent` | Each queue is capped at this many tasks of that queue running on this runner at once. 0 means no limit. |
 
 These rules apply:
