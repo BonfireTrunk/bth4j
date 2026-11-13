@@ -40,6 +40,7 @@ import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
+import today.bonfire.oss.bth4j.spi.CommitOutcome;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
@@ -2261,5 +2262,49 @@ class PostgresTaskStoreIT {
         assertThat(get(holder.id()).uniqueKey()).isNull();
         assertThat(store.nextFireTimes()).containsEntry("k", fireAt.plusSeconds(60));
         assertThat(store.dueSchedules(fireAt.plusSeconds(30), 10)).isEmpty();
+    }
+
+    /** A store whose first look for a task by id comes after the task was deleted by someone else. */
+    private PostgresTaskStore storeThatFindsTheTaskDeleted(long id) {
+        return PostgresTaskStore.builder()
+                .dataSource(runningBeforeFirst("SELECT 1 FROM " + prefix + "_task WHERE id", () -> {
+                    sql("DELETE FROM " + prefix + "_task WHERE id = " + id);
+                    return null;
+                }))
+                .namespace(prefix)
+                .build();
+    }
+
+    @Test
+    void aRecurringCommitThatMeetsATaskWithItsIdDoesNotAdvanceTheDefinitionWithoutAnOccurrence() {
+        var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MILLIS);
+        store.putSchedule(definition("k", "* * * * *"), fireAt, fireAt);
+        var due = store.dueSchedules(Instant.now(), 10).getFirst();
+        long id = newId();
+        store.enqueue(task(id).build());
+
+        assertThat(storeThatFindsTheTaskDeleted(id).commitSchedule(due, fireAt.plusSeconds(60), task(id).build()))
+                .isEqualTo(CommitOutcome.NOT_COMMITTED);
+
+        assertThat(store.nextFireTimes()).containsEntry("k", fireAt);
+    }
+
+    @Test
+    void aKeyedRecurringCommitIsMadeAgainWhenTheTaskInItsWayIsGoneBeforeItCanBeLookedAt() {
+        var fireAt = Instant.now().minusSeconds(10).truncatedTo(ChronoUnit.MILLIS);
+        store.putSchedule(definition("k", "* * * * *"), fireAt, fireAt);
+        var due = store.dueSchedules(Instant.now(), 10).getFirst();
+        long id = newId();
+        store.enqueue(task(id).build());
+
+        assertThat(storeThatFindsTheTaskDeleted(id)
+                        .commitSchedule(
+                                due,
+                                fireAt.plusSeconds(60),
+                                task(id).uniqueKey("sched:k").build()))
+                .isEqualTo(CommitOutcome.STORED);
+
+        assertThat(get(id).uniqueKey()).isEqualTo("sched:k");
+        assertThat(store.nextFireTimes()).containsEntry("k", fireAt.plusSeconds(60));
     }
 }

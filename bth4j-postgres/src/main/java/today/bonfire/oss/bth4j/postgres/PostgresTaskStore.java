@@ -1567,13 +1567,23 @@ public final class PostgresTaskStore implements FullStore {
                         rs.next();
                         if (rs.getLong(1) != 1) return CommitOutcome.NOT_COMMITTED;
                         stored = rs.getLong(2) != 0;
-                        if (!stored && taskExists(c, o.id())) {
+                        // without a key only a task with this id can have been in the way, and it may be deleted
+                        // again before a second statement could see it
+                        if (!stored && (o.uniqueKey() == null || taskExists(c, o.id()))) {
                             c.rollback();
                             return CommitOutcome.NOT_COMMITTED;
                         }
                     }
                 }
-                if (stored || o.uniqueKey() == null || releaseFirst || !holderKeyExpired(c, o.uniqueKey())) break;
+                if (stored) break;
+                var holderExpired = keyHolderExpired(c, o.uniqueKey());
+                if (holderExpired == null) {
+                    // the row that was in the way is gone again: whether it held the id or the key cannot be told
+                    // any more, so the advance is undone and the commit made again
+                    c.rollback();
+                    continue;
+                }
+                if (releaseFirst || !holderExpired) break;
                 // the key is held only by a task whose key window has passed: undo the advance, free the key, and
                 // commit again with the schedule row locked first
                 c.rollback();
@@ -1604,12 +1614,13 @@ public final class PostgresTaskStore implements FullStore {
         return inTransaction(commit);
     }
 
-    private boolean holderKeyExpired(Connection c, String key) throws SQLException {
-        try (var ps = c.prepareStatement("SELECT 1 FROM " + task + " WHERE unique_key = ?"
-                + " AND key_until <= date_trunc('milliseconds', statement_timestamp())")) {
+    /** @return whether the key window of the task that holds the key has passed, null when no task holds it */
+    private Boolean keyHolderExpired(Connection c, String key) throws SQLException {
+        try (var ps = c.prepareStatement("SELECT COALESCE(key_until <= date_trunc('milliseconds',"
+                + " statement_timestamp()), false) FROM " + task + " WHERE unique_key = ?")) {
             ps.setString(1, key);
             try (var rs = ps.executeQuery()) {
-                return rs.next();
+                return rs.next() ? rs.getBoolean(1) : null;
             }
         }
     }
