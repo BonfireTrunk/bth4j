@@ -166,7 +166,13 @@ public abstract class RunnerFaultContract {
         runWithRandomFaults(7_351_029L, 0.08, 80);
     }
 
-    private void runWithRandomFaults(long seed, double probability, int maxFaults) throws Exception {
+    /** The seed of a run; {@code -Dbth4j.fault.seed=n} replaces both fixed seeds, to repeat a failing run or to try others. */
+    private static long seed(long fixed) {
+        return Long.getLong("bth4j.fault.seed", fixed);
+    }
+
+    private void runWithRandomFaults(long fixedSeed, double probability, int maxFaults) throws Exception {
+        long seed = seed(fixedSeed);
         var f = faulty();
         var plain = f.plain();
         var client = client(f.store());
