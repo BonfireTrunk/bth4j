@@ -20,7 +20,7 @@ import today.bonfire.oss.bth4j.testing.MutableClock;
 @Timeout(10)
 class ScheduledTaskServiceTest {
     private final MutableClock clock = new MutableClock(Instant.parse("2020-01-01T00:00:00Z"));
-    private final InMemoryStore store = new InMemoryStore(clock);
+    private final InMemoryStore store = InMemoryStore.builder().clock(clock).build();
     private final RunnerStatus status = new RunnerStatus(clock);
 
     private ScheduledTaskService service(FullStore serviceStore, Duration pollInterval) {

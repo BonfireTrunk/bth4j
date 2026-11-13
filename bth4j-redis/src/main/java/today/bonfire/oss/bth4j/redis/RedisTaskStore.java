@@ -109,23 +109,52 @@ public final class RedisTaskStore implements FullStore {
 
     private record TypeSet(Set<Integer> ids, String digest) {}
 
-    /**
-     * @param jedis     client used for all Redis operations, for example a {@code RedisClient}. The store does not
-     *                  close it.
-     * @param namespace prefix of all keys; runners with the same namespace share the work. Must not be blank or
-     *                  contain braces.
-     * @throws TaskConfigurationException when the client is null or the namespace is not allowed
-     */
-    public RedisTaskStore(UnifiedJedis jedis, String namespace) {
-        if (jedis == null) {
-            throw new TaskConfigurationException("Jedis client is required");
-        }
-        if (namespace == null || namespace.isBlank() || namespace.contains("{") || namespace.contains("}")) {
-            throw new TaskConfigurationException("namespace cannot be blank or contain braces");
-        }
+    private RedisTaskStore(UnifiedJedis jedis, String namespace) {
         this.jedis = jedis;
         this.keys = new Keys(namespace);
         this.scripts = new ScriptRunner(jedis, keys.meta, keys.prefix);
+    }
+
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    public static final class Builder {
+        private UnifiedJedis client;
+        private String namespace;
+
+        private Builder() {}
+
+        /**
+         * Client used for all Redis operations, for example a {@code RedisClient}. The store does not close it.
+         * Required.
+         */
+        public Builder client(UnifiedJedis client) {
+            this.client = client;
+            return this;
+        }
+
+        /**
+         * Prefix of all keys; runners with the same namespace share the work. Must not be blank or contain braces.
+         * Required.
+         */
+        public Builder namespace(String namespace) {
+            this.namespace = namespace;
+            return this;
+        }
+
+        /**
+         * @throws TaskConfigurationException when the client is null or the namespace is not allowed
+         */
+        public RedisTaskStore build() {
+            if (client == null) {
+                throw new TaskConfigurationException("Jedis client is required");
+            }
+            if (namespace == null || namespace.isBlank() || namespace.contains("{") || namespace.contains("}")) {
+                throw new TaskConfigurationException("namespace cannot be blank or contain braces");
+            }
+            return new RedisTaskStore(client, namespace);
+        }
     }
 
     Keys keys() {

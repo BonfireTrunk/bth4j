@@ -44,7 +44,11 @@ class SqliteInitTest {
     }
 
     private SqliteTaskStore store(DataSource dataSource) {
-        return new SqliteTaskStore(dataSource, "app", Clock.systemUTC());
+        return SqliteTaskStore.builder()
+                .dataSource(dataSource)
+                .namespace("app")
+                .clock(Clock.systemUTC())
+                .build();
     }
 
     private void sql(DataSource dataSource, String statement) throws SQLException {

@@ -23,7 +23,7 @@ class BackgroundRunnerCoverageTest {
     @Test
     void registersOnlyProcessedQueuesAndRegisteredTypesBeforeServicesStart() {
         var clock = new MutableClock();
-        var store = new InMemoryStore(clock);
+        var store = InMemoryStore.builder().clock(clock).build();
         store.typeId("unregistered");
         var runner = BackgroundRunner.builder()
                 .store(store)
@@ -51,7 +51,7 @@ class BackgroundRunnerCoverageTest {
     @Test
     void aRunnerRowPurgedWhileTheRunnerLivesIsRestoredWithWhatTheRunnerRegistered() throws Exception {
         var clock = new MutableClock();
-        var store = new InMemoryStore(clock);
+        var store = InMemoryStore.builder().clock(clock).build();
         var heartbeats = new LinkedBlockingQueue<Integer>();
         var observed = StoreInterceptor.around(store, (method, args, real) -> {
             var result = real.proceed();
@@ -90,7 +90,7 @@ class BackgroundRunnerCoverageTest {
 
     @Test
     void quietAndResumePublishOnTheMaintenanceThreadWithoutWaitingForTheStore() throws Exception {
-        var store = new InMemoryStore(new MutableClock());
+        var store = InMemoryStore.builder().clock(new MutableClock()).build();
         var heartbeats = new LinkedBlockingQueue<Boolean>();
         var quietHeartbeatEntered = new CountDownLatch(1);
         var releaseQuietHeartbeat = new CountDownLatch(1);
@@ -137,7 +137,7 @@ class BackgroundRunnerCoverageTest {
 
     @Test
     void stopPublishesAtOnceThatTheRunnerTakesNoMoreWork() throws Exception {
-        var store = new InMemoryStore(new MutableClock());
+        var store = InMemoryStore.builder().clock(new MutableClock()).build();
         var published = new LinkedBlockingQueue<Boolean>();
         var observed = StoreInterceptor.around(store, (method, args, real) -> {
             var result = real.proceed();
@@ -161,7 +161,7 @@ class BackgroundRunnerCoverageTest {
 
     @Test
     void quietBeforeStartIsPublishedByTheInitialHeartbeat() throws Exception {
-        var store = new InMemoryStore(new MutableClock());
+        var store = InMemoryStore.builder().clock(new MutableClock()).build();
         var published = new LinkedBlockingQueue<Boolean>();
         var observed = StoreInterceptor.around(store, (method, args, real) -> {
             var result = real.proceed();
@@ -187,7 +187,7 @@ class BackgroundRunnerCoverageTest {
     @Test
     void aStartWithoutProcessorsFailsWithoutBurningTheStartFlag() {
         var runner = BackgroundRunner.builder()
-                .store(new InMemoryStore(new MutableClock()))
+                .store(InMemoryStore.builder().clock(new MutableClock()).build())
                 .build();
         try {
             assertThatThrownBy(runner::start).isInstanceOf(TaskConfigurationException.class);
@@ -203,7 +203,7 @@ class BackgroundRunnerCoverageTest {
 
     @Test
     void aStartWithAJsonTaskTypeAndNoMapperIsRefusedSoThatItsTasksAreNotClaimedAndEndedAsDead() {
-        var store = new InMemoryStore(new MutableClock());
+        var store = InMemoryStore.builder().clock(new MutableClock()).build();
         var runner = BackgroundRunner.builder().store(store).build();
         PayloadCodec<String> codec = new PayloadCodec<>() {
             @Override
@@ -241,7 +241,7 @@ class BackgroundRunnerCoverageTest {
 
     @Test
     void aRunnerKeepsTheSettingsItWasBuiltWithWhenItsBuilderIsUsedAgain() {
-        var store = new InMemoryStore(new MutableClock());
+        var store = InMemoryStore.builder().clock(new MutableClock()).build();
         var builder = BackgroundRunner.builder()
                 .store(store)
                 .queues(Queues.of("main", "mail"))
@@ -266,7 +266,7 @@ class BackgroundRunnerCoverageTest {
 
     @Test
     void settingsThatMustAgreeAreCheckedWhenTheRunnerIsBuilt() {
-        var store = new InMemoryStore(new MutableClock());
+        var store = InMemoryStore.builder().clock(new MutableClock()).build();
 
         assertThatThrownBy(() -> BackgroundRunner.builder()
                         .store(store)
@@ -300,13 +300,14 @@ class BackgroundRunnerCoverageTest {
     void eachFinishedStateIsPurgedWithItsOwnRetention() throws Exception {
         var retentions = new java.util.concurrent.ConcurrentHashMap<TaskState, Duration>();
         var allSeen = new CountDownLatch(1);
-        var observed = StoreInterceptor.around(new InMemoryStore(new MutableClock()), (method, args, real) -> {
-            if (method.equals("purge")) {
-                retentions.put((TaskState) args[0], (Duration) args[1]);
-                if (retentions.size() == 4) allSeen.countDown();
-            }
-            return real.proceed();
-        });
+        var observed = StoreInterceptor.around(
+                InMemoryStore.builder().clock(new MutableClock()).build(), (method, args, real) -> {
+                    if (method.equals("purge")) {
+                        retentions.put((TaskState) args[0], (Duration) args[1]);
+                        if (retentions.size() == 4) allSeen.countDown();
+                    }
+                    return real.proceed();
+                });
         var runner = BackgroundRunner.builder()
                 .store(observed)
                 .succeededRetention(Duration.ofMinutes(1))
@@ -335,10 +336,11 @@ class BackgroundRunnerCoverageTest {
     @Test
     void aStartThatCannotReachTheStoreLeavesTheRunnerNewAndStartsOnTheNextCall() {
         var down = new AtomicBoolean(true);
-        var observed = StoreInterceptor.around(new InMemoryStore(new MutableClock()), (method, args, real) -> {
-            if (method.equals("allocateRunnerId") && down.get()) throw new TaskStoreException("store down");
-            return real.proceed();
-        });
+        var observed = StoreInterceptor.around(
+                InMemoryStore.builder().clock(new MutableClock()).build(), (method, args, real) -> {
+                    if (method.equals("allocateRunnerId") && down.get()) throw new TaskStoreException("store down");
+                    return real.proceed();
+                });
         var runner = BackgroundRunner.builder().store(observed).build();
         runner.registry().register(TaskType.of("work"), (context, payload) -> {});
         try {
@@ -359,10 +361,12 @@ class BackgroundRunnerCoverageTest {
     @Test
     void aStartThatFailsAfterTheServicesStartedStopsThemAndCanBeRepeated() throws Exception {
         var failing = new AtomicBoolean(true);
-        var observed = StoreInterceptor.around(new InMemoryStore(new MutableClock()), (method, args, real) -> {
-            if (method.equals("info") && failing.getAndSet(false)) throw new IllegalStateException("info failed");
-            return real.proceed();
-        });
+        var observed = StoreInterceptor.around(
+                InMemoryStore.builder().clock(new MutableClock()).build(), (method, args, real) -> {
+                    if (method.equals("info") && failing.getAndSet(false))
+                        throw new IllegalStateException("info failed");
+                    return real.proceed();
+                });
         var group = "start-failure-test";
         var runner = BackgroundRunner.builder()
                 .store(observed)
@@ -391,7 +395,7 @@ class BackgroundRunnerCoverageTest {
 
     @Test
     void drainWaitsForAClaimThatWasAdmittedBeforeQuietAndForTheTaskItStarts() throws Exception {
-        var store = new InMemoryStore(new MutableClock());
+        var store = InMemoryStore.builder().clock(new MutableClock()).build();
         var claimEntered = new CountDownLatch(1);
         var claimRelease = new CountDownLatch(1);
         var observed = StoreInterceptor.around(store, (method, args, real) -> {
@@ -428,7 +432,7 @@ class BackgroundRunnerCoverageTest {
 
     @Test
     void stopTakesNoLongerThanOneShutdownTimeoutWhateverNumberOfServicesIsBlocked() throws Exception {
-        var store = new InMemoryStore(new MutableClock());
+        var store = InMemoryStore.builder().clock(new MutableClock()).build();
         var release = new CountDownLatch(1);
         var blocked = new CountDownLatch(3);
         var observed = StoreInterceptor.around(store, (method, args, real) -> {
@@ -470,7 +474,7 @@ class BackgroundRunnerCoverageTest {
         var started = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var runner = BackgroundRunner.builder()
-                .store(new InMemoryStore(new MutableClock()))
+                .store(InMemoryStore.builder().clock(new MutableClock()).build())
                 .shutdownTimeout(Duration.ofMillis(200))
                 .build();
         var type = TaskType.of("work");
@@ -498,13 +502,14 @@ class BackgroundRunnerCoverageTest {
     void theRunnerReportsStoppingWhileOneOfItsServicesIsStillInAStoreCall() throws Exception {
         var release = new CountDownLatch(1);
         var blocked = new CountDownLatch(1);
-        var observed = StoreInterceptor.around(new InMemoryStore(new MutableClock()), (method, args, real) -> {
-            if (method.equals("dueSchedules")) {
-                blocked.countDown();
-                awaitUninterruptibly(release);
-            }
-            return real.proceed();
-        });
+        var observed = StoreInterceptor.around(
+                InMemoryStore.builder().clock(new MutableClock()).build(), (method, args, real) -> {
+                    if (method.equals("dueSchedules")) {
+                        blocked.countDown();
+                        awaitUninterruptibly(release);
+                    }
+                    return real.proceed();
+                });
         var runner = BackgroundRunner.builder()
                 .store(observed)
                 .shutdownTimeout(Duration.ofMillis(300))
@@ -529,13 +534,14 @@ class BackgroundRunnerCoverageTest {
     void theRunnerReportsStoppingWhileAMaintenanceJobIsStillInAStoreCall() throws Exception {
         var release = new CountDownLatch(1);
         var blocked = new CountDownLatch(1);
-        var observed = StoreInterceptor.around(new InMemoryStore(new MutableClock()), (method, args, real) -> {
-            if (method.equals("reclaim")) {
-                blocked.countDown();
-                awaitUninterruptibly(release);
-            }
-            return real.proceed();
-        });
+        var observed = StoreInterceptor.around(
+                InMemoryStore.builder().clock(new MutableClock()).build(), (method, args, real) -> {
+                    if (method.equals("reclaim")) {
+                        blocked.countDown();
+                        awaitUninterruptibly(release);
+                    }
+                    return real.proceed();
+                });
         var runner = BackgroundRunner.builder()
                 .store(observed)
                 .shutdownTimeout(Duration.ofMillis(300))
@@ -557,10 +563,11 @@ class BackgroundRunnerCoverageTest {
 
     @Test
     void aRunnerThatCannotBeBuiltLeavesNoExecutorThreadBehind() {
-        var down = StoreInterceptor.around(new InMemoryStore(new MutableClock()), (method, args, real) -> {
-            if (method.equals("init")) throw new TaskStoreException("the store is down");
-            return real.proceed();
-        });
+        var down = StoreInterceptor.around(
+                InMemoryStore.builder().clock(new MutableClock()).build(), (method, args, real) -> {
+                    if (method.equals("init")) throw new TaskStoreException("the store is down");
+                    return real.proceed();
+                });
         long before = adaptiveExecutorThreads();
 
         assertThatThrownBy(() -> BackgroundRunner.builder()
@@ -580,7 +587,7 @@ class BackgroundRunnerCoverageTest {
 
     @Test
     void aMaxRunTimeFarShorterThanTheLeaseIsNoticedWithinSeconds() throws Exception {
-        var store = new InMemoryStore(java.time.Clock.systemUTC());
+        var store = InMemoryStore.builder().clock(java.time.Clock.systemUTC()).build();
         var runner = BackgroundRunner.builder().store(store).build();
         var type = TaskType.of("work");
         var stopped = new CountDownLatch(1);
@@ -606,7 +613,7 @@ class BackgroundRunnerCoverageTest {
 
     @Test
     void aRunnerWithoutQueuesProcessesTheOneQueueCommon() {
-        var store = new InMemoryStore(new MutableClock());
+        var store = InMemoryStore.builder().clock(new MutableClock()).build();
         var runner = BackgroundRunner.builder().store(store).build();
         var type = TaskType.of("work");
         runner.registry().register(type, (context, payload) -> {});
@@ -625,7 +632,7 @@ class BackgroundRunnerCoverageTest {
 
     @Test
     void theDefaultQueueIsTheOneOfTheQueuesValueAlsoWhenTheRunnerDoesNotProcessIt() {
-        var store = new InMemoryStore(new MutableClock());
+        var store = InMemoryStore.builder().clock(new MutableClock()).build();
         var queues = Queues.of("main", "mail");
         var runner = BackgroundRunner.builder()
                 .store(store)
@@ -648,7 +655,7 @@ class BackgroundRunnerCoverageTest {
 
     @Test
     void aRunnerProcessesOnlyQueuesOfItsQueuesValueAndHasPoliciesOnlyForQueuesItProcesses() {
-        var store = new InMemoryStore(new MutableClock());
+        var store = InMemoryStore.builder().clock(new MutableClock()).build();
         var queues = Queues.of("main", "mail");
 
         assertThatThrownBy(() -> BackgroundRunner.builder()
@@ -677,7 +684,7 @@ class BackgroundRunnerCoverageTest {
     @Test
     void startOnAStartedRunnerDoesNothing() {
         var runner = BackgroundRunner.builder()
-                .store(new InMemoryStore(new MutableClock()))
+                .store(InMemoryStore.builder().clock(new MutableClock()).build())
                 .build();
         runner.registry().register(TaskType.of("work"), (context, payload) -> {});
         try {
@@ -695,7 +702,7 @@ class BackgroundRunnerCoverageTest {
 
     @Test
     void aStoppedRunnerIsStoppedAndCannotBeStartedAgain() {
-        var store = new InMemoryStore(new MutableClock());
+        var store = InMemoryStore.builder().clock(new MutableClock()).build();
         var runner = BackgroundRunner.builder().store(store).build();
         runner.registry().register(TaskType.of("work"), (context, payload) -> {});
         runner.start();
@@ -711,7 +718,7 @@ class BackgroundRunnerCoverageTest {
 
     @Test
     void aRunnerStoppedBeforeItStartedIsStoppedAndCannotBeStarted() {
-        var store = new InMemoryStore(new MutableClock());
+        var store = InMemoryStore.builder().clock(new MutableClock()).build();
         var runner = BackgroundRunner.builder().store(store).build();
         assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.NEW);
 
@@ -727,7 +734,7 @@ class BackgroundRunnerCoverageTest {
     void aRunnerInTryWithResourcesIsStoppedAtTheEndOfTheBlock() {
         BackgroundRunner seen;
         try (var runner = BackgroundRunner.builder()
-                .store(new InMemoryStore(new MutableClock()))
+                .store(InMemoryStore.builder().clock(new MutableClock()).build())
                 .build()) {
             runner.registry().register(TaskType.of("work"), (context, payload) -> {});
             runner.start();
@@ -745,7 +752,7 @@ class BackgroundRunnerCoverageTest {
 
     @Test
     void aShutdownTimeoutTooLongToCountInNanosecondsStillStopsTheRunner() throws Exception {
-        var store = new InMemoryStore(new MutableClock());
+        var store = InMemoryStore.builder().clock(new MutableClock()).build();
         var runner = BackgroundRunner.builder()
                 .store(store)
                 .shutdownTimeout(Duration.ofSeconds(Long.MAX_VALUE))
@@ -761,7 +768,7 @@ class BackgroundRunnerCoverageTest {
 
     @Test
     void aClaimBatchSizeAtTheIntLimitGivesTheServicesTheLargestBatchNotANegativeOne() throws Exception {
-        var store = new InMemoryStore(new MutableClock());
+        var store = InMemoryStore.builder().clock(new MutableClock()).build();
         var limits = new LinkedBlockingQueue<Integer>();
         var observed = StoreInterceptor.around(store, (method, args, real) -> {
             if (method.equals("promote")) limits.add((int) args[0]);

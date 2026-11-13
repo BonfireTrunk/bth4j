@@ -279,7 +279,7 @@ class MicrometerRunnerMetricsTest {
     @Test
     void bindingARunnerIncludesItsExecutorLimit() {
         var runner = BackgroundRunner.builder()
-                .store(new InMemoryStore())
+                .store(InMemoryStore.builder().build())
                 .concurrency(Concurrency.fixed(7))
                 .build();
         try (var metrics = MicrometerRunnerMetrics.bind(runner, registry, Duration.ofHours(1))) {

@@ -147,7 +147,10 @@ class PostgresTaskStoreIT {
                 .hasMessage("namespace " + prefix + " has schema version 99, this library needs "
                         + PostgresTaskStore.SCHEMA_VERSION + " and does not migrate another one");
 
-        var other = new PostgresTaskStore(PostgresTestSupport.dataSource(), prefix + "_other");
+        var other = PostgresTaskStore.builder()
+                .dataSource(PostgresTestSupport.dataSource())
+                .namespace(prefix + "_other")
+                .build();
         sql("CREATE TABLE " + prefix + "_other_meta (key text PRIMARY KEY, value text NOT NULL)");
         sql("INSERT INTO " + prefix + "_other_meta (key, value) VALUES ('schema_version', '99')");
         assertThatThrownBy(other::init).isInstanceOf(TaskStoreException.class);
@@ -156,7 +159,10 @@ class PostgresTaskStoreIT {
 
     @Test
     void initRefusesATaskTableWithoutMeta() throws SQLException {
-        var old = new PostgresTaskStore(PostgresTestSupport.dataSource(), prefix + "_old");
+        var old = PostgresTaskStore.builder()
+                .dataSource(PostgresTestSupport.dataSource())
+                .namespace(prefix + "_old")
+                .build();
         sql("CREATE TABLE " + prefix + "_old_task (id text PRIMARY KEY)");
         assertThatThrownBy(old::init)
                 .isInstanceOf(TaskStoreException.class)
@@ -166,7 +172,10 @@ class PostgresTaskStoreIT {
 
     @Test
     void concurrentInitsDoNotFail() throws Exception {
-        var fresh = new PostgresTaskStore(PostgresTestSupport.dataSource(), prefix + "_c");
+        var fresh = PostgresTaskStore.builder()
+                .dataSource(PostgresTestSupport.dataSource())
+                .namespace(prefix + "_c")
+                .build();
         try (var pool = Executors.newFixedThreadPool(4)) {
             var calls = new ArrayList<Callable<Object>>();
             for (int i = 0; i < 4; i++) calls.add(Executors.callable(fresh::init));
@@ -187,7 +196,11 @@ class PostgresTaskStoreIT {
             }
             restricted.setUser(role);
             restricted.setPassword("test-runner");
-            new PostgresTaskStore(restricted, prefix).init();
+            PostgresTaskStore.builder()
+                    .dataSource(restricted)
+                    .namespace(prefix)
+                    .build()
+                    .init();
         } finally {
             sql("DROP OWNED BY " + role);
             sql("DROP ROLE " + role);
@@ -224,7 +237,10 @@ class PostgresTaskStoreIT {
             }
             restricted.setUser(role);
             restricted.setPassword("test-producer");
-            var producer = new PostgresTaskStore(restricted, prefix);
+            var producer = PostgresTaskStore.builder()
+                    .dataSource(restricted)
+                    .namespace(prefix)
+                    .build();
             try (var c = restricted.getConnection();
                     var st = c.createStatement();
                     var rs = st.executeQuery("SELECT current_user, has_sequence_privilege('" + prefix
@@ -1846,8 +1862,8 @@ class PostgresTaskStoreIT {
         try (var holder = PostgresTestSupport.dataSource().getConnection()) {
             holder.setAutoCommit(false);
             var commits = new ArrayList<Future<Void>>();
-            var late = new PostgresTaskStore(
-                    runningBeforeFirst("INSERT INTO " + prefix + "_schedule", () -> {
+            var late = PostgresTaskStore.builder()
+                    .dataSource(runningBeforeFirst("INSERT INTO " + prefix + "_schedule", () -> {
                         store.putSchedule(fixedDelay("race", 60_000), fireAt, fireAt);
                         try (var ps = holder.prepareStatement("UPDATE " + prefix
                                 + "_schedule SET next_fire = ?, occurrence_id = ? WHERE id = 'race'")) {
@@ -1865,8 +1881,9 @@ class PostgresTaskStoreIT {
                             return null;
                         }));
                         return null;
-                    }),
-                    prefix);
+                    }))
+                    .namespace(prefix)
+                    .build();
 
             assertThat(late.putSchedule(fixedDelay("race", 60_000), fireAt, fireAt))
                     .isEqualTo(new PutScheduleResult(PutScheduleOutcome.UNCHANGED, parked));

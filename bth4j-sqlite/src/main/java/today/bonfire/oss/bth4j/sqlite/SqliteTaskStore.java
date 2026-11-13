@@ -162,31 +162,60 @@ public final class SqliteTaskStore implements FullStore {
     private final String endLeasesSql;
     private final String commitInsertSql;
 
-    /**
-     * @param dataSource connections to the database; the store does not close it
-     * @param namespace  the name every table starts with, lower case letters, digits and underscores, starting with a letter, at
-     *                   most 41 characters.
-     *                   Runners with the same namespace on the same database file share the work.
-     */
-    public SqliteTaskStore(DataSource dataSource, String namespace) {
-        this(dataSource, namespace, Clock.systemUTC());
+    public static Builder builder() {
+        return new Builder();
     }
 
-    /**
-     * @param clock the time source of every due time, lease, retention and key window; tests pass a clock they
-     *              control. Runners that share a database file should agree on the time, which they do when they run
-     *              on one machine
-     */
-    public SqliteTaskStore(DataSource dataSource, String namespace, Clock clock) {
-        if (dataSource == null) throw new TaskConfigurationException("DataSource is required");
-        if (namespace == null || !NAMESPACE.matcher(namespace).matches()) {
-            throw new TaskConfigurationException("namespace must match " + NAMESPACE.pattern());
+    public static final class Builder {
+        private DataSource dataSource;
+        private String namespace;
+        private Clock clock = Clock.systemUTC();
+
+        private Builder() {}
+
+        /** Connections to the database; the store does not close it. Required. */
+        public Builder dataSource(DataSource dataSource) {
+            this.dataSource = dataSource;
+            return this;
         }
-        if (namespace.equals("sqlite") || namespace.startsWith("sqlite_")) {
-            throw new TaskConfigurationException("namespace " + namespace
-                    + " would make table names starting with sqlite_," + " which SQLite reserves for itself");
+
+        /**
+         * The name every table starts with, lower case letters, digits and underscores, starting with a letter, at
+         * most 41 characters. Runners with the same namespace on the same database file share the work. Required.
+         */
+        public Builder namespace(String namespace) {
+            this.namespace = namespace;
+            return this;
         }
-        if (clock == null) throw new TaskConfigurationException("clock is required");
+
+        /**
+         * The time source of every due time, lease, retention and key window; tests pass a clock they control.
+         * Runners that share a database file should agree on the time, which they do when they run on one machine.
+         * Default: the system clock in UTC.
+         */
+        public Builder clock(Clock clock) {
+            this.clock = clock;
+            return this;
+        }
+
+        /**
+         * @throws TaskConfigurationException when the data source or the clock is null or the namespace is not allowed
+         */
+        public SqliteTaskStore build() {
+            if (dataSource == null) throw new TaskConfigurationException("DataSource is required");
+            if (namespace == null || !NAMESPACE.matcher(namespace).matches()) {
+                throw new TaskConfigurationException("namespace must match " + NAMESPACE.pattern());
+            }
+            if (namespace.equals("sqlite") || namespace.startsWith("sqlite_")) {
+                throw new TaskConfigurationException("namespace " + namespace
+                        + " would make table names starting with sqlite_," + " which SQLite reserves for itself");
+            }
+            if (clock == null) throw new TaskConfigurationException("clock is required");
+            return new SqliteTaskStore(dataSource, namespace, clock);
+        }
+    }
+
+    private SqliteTaskStore(DataSource dataSource, String namespace, Clock clock) {
         this.dataSource = dataSource;
         this.clock = clock;
         this.namespace = namespace;

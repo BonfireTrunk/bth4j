@@ -34,7 +34,7 @@ class MaintenanceServiceTest {
     private static final Duration RETRY_DELAY = Duration.ofSeconds(30);
 
     private final MutableClock clock = new MutableClock();
-    private final InMemoryStore store = new InMemoryStore(clock);
+    private final InMemoryStore store = InMemoryStore.builder().clock(clock).build();
     private final Names names = new Names(store);
     private final TaskClient client = TaskClient.builder()
             .queues(Queues.of("Q:DEF"))

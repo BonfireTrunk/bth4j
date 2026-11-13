@@ -148,7 +148,7 @@ var jedis = RedisClient.builder()
         .build();
 
 var runner = BackgroundRunner.builder()
-        .store(new RedisTaskStore(jedis, "my-app"))   // runners with the same namespace share the work
+        .store(RedisTaskStore.builder().client(jedis).namespace("my-app").build())   // runners with the same namespace share the work
         .jsonMapper(new JacksonMapper())
         .queues(Queues.of("general", "mail", "reports"))  // optional: without it there is the one queue "general"
         .build();

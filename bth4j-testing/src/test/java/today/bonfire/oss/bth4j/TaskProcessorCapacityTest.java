@@ -41,7 +41,7 @@ class TaskProcessorCapacityTest {
     private static final Duration WOKEN_WITHIN = Duration.ofSeconds(1);
 
     private final MutableClock clock = new MutableClock();
-    private final InMemoryStore store = new InMemoryStore(clock);
+    private final InMemoryStore store = InMemoryStore.builder().clock(clock).build();
     private final Names names = new Names(store);
     private final TaskClient client = TaskClient.builder()
             .store(store)

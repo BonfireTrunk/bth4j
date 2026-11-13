@@ -43,7 +43,7 @@ class TaskExecutionTest {
     private static final TaskType<Void> TYPE = TaskType.of("lease-loss").withInterruptOnCancel();
 
     private final MutableClock clock = new MutableClock();
-    private final InMemoryStore store = new InMemoryStore(clock);
+    private final InMemoryStore store = InMemoryStore.builder().clock(clock).build();
     private final TaskClient client = TaskClient.builder()
             .queues(Queues.of("Q:DEF"))
             .store(store)

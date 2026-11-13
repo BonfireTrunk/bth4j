@@ -27,7 +27,7 @@ The example below enqueues a task with a one hour delay and moves the clock forw
 
 ```java
 var clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
-var store = new InMemoryStore(clock);
+var store = InMemoryStore.builder().clock(clock).build();
 
 var runner = BackgroundRunner.builder()
         .store(store)
@@ -44,7 +44,7 @@ runner.client().enqueue(TaskRequest.of(SEND_MAIL, new MailRequest("a@example.com
 clock.advance(Duration.ofHours(1));                 // the task is promoted and runs
 ```
 
-- `new InMemoryStore()` uses the system clock.
+- `InMemoryStore.builder().build()` uses the system clock.
 - The in-memory store passes the same `StoreContract` as the Redis, PostgreSQL and SQLite stores, so behavior in tests matches production.
 - The services still wait in real time between their checks. A test that moves the clock should poll for the result (for example with Awaitility) instead of asserting at once.
 

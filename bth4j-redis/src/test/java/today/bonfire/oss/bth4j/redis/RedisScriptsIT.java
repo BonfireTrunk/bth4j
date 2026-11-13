@@ -99,13 +99,16 @@ class RedisScriptsIT {
 
     @BeforeEach
     void fresh() {
-        store = new RedisTaskStore(jedis, "S" + NAMESPACES.incrementAndGet());
+        store = RedisTaskStore.builder()
+                .client(jedis)
+                .namespace("S" + NAMESPACES.incrementAndGet())
+                .build();
         keys = store.keys();
         store.init();
         queue = store.queueId("default");
         type = store.typeId("send");
         spy = RecordingJedis.connect(REDIS.getHost(), REDIS.getMappedPort(6379));
-        spied = new RedisTaskStore(spy, keys.namespace);
+        spied = RedisTaskStore.builder().client(spy).namespace(keys.namespace).build();
     }
 
     @AfterEach

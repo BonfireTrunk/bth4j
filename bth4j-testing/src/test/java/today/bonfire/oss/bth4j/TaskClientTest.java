@@ -41,7 +41,7 @@ class TaskClientTest {
     @BeforeEach
     void setUp() {
         clock = new MutableClock();
-        store = new InMemoryStore(clock);
+        store = InMemoryStore.builder().clock(clock).build();
     }
 
     private static final Queues QUEUES = Queues.of("Q:DEF", "Q:LOW", "Q:MED", "Q:HIGH");

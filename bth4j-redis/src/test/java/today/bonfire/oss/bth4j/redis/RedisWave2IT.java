@@ -91,7 +91,10 @@ class RedisWave2IT {
 
     @BeforeEach
     void fresh() {
-        store = new RedisTaskStore(jedis, "W" + NAMESPACES.incrementAndGet());
+        store = RedisTaskStore.builder()
+                .client(jedis)
+                .namespace("W" + NAMESPACES.incrementAndGet())
+                .build();
         keys = store.keys();
         store.init();
         queue = store.queueId("default");

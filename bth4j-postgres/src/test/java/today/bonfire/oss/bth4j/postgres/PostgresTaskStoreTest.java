@@ -31,23 +31,59 @@ class PostgresTaskStoreTest {
 
     @Test
     void nullDataSourceIsRejected() {
-        assertThatThrownBy(() -> new PostgresTaskStore(null, "bth")).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> PostgresTaskStore.builder()
+                        .dataSource(null)
+                        .namespace("bth")
+                        .build())
+                .isInstanceOf(TaskConfigurationException.class);
+    }
+
+    @Test
+    void dataSourceAndNamespaceAreRequired() {
+        assertThatThrownBy(() -> PostgresTaskStore.builder().namespace("bth").build())
+                .isInstanceOf(TaskConfigurationException.class)
+                .hasMessage("DataSource is required");
+        assertThatThrownBy(() ->
+                        PostgresTaskStore.builder().dataSource(DATA_SOURCE).build())
+                .isInstanceOf(TaskConfigurationException.class)
+                .hasMessageStartingWith("namespace must match ");
+    }
+
+    @Test
+    void oneBuilderBuildsTwoStoresThatDoNotShareItsLaterValues() {
+        var builder = PostgresTaskStore.builder().dataSource(DATA_SOURCE).namespace("first");
+        var first = builder.build();
+        var second = builder.namespace("second").build();
+
+        assertThat(first.schemaStatements().getFirst()).startsWith("CREATE TABLE IF NOT EXISTS first_meta (");
+        assertThat(second.schemaStatements().getFirst()).startsWith("CREATE TABLE IF NOT EXISTS second_meta (");
     }
 
     @Test
     void namespaceMustBeAPlainLowerCaseIdentifier() {
         for (var bad : new String[] {null, "", "Bth", "1bth", "bth-tasks", "bth tasks", "a".repeat(42)}) {
-            assertThatThrownBy(() -> new PostgresTaskStore(DATA_SOURCE, bad))
+            assertThatThrownBy(() -> PostgresTaskStore.builder()
+                            .dataSource(DATA_SOURCE)
+                            .namespace(bad)
+                            .build())
                     .as("namespace %s", bad)
                     .isInstanceOf(TaskConfigurationException.class)
                     .hasMessageStartingWith("namespace must match ");
         }
-        assertThatCode(() -> new PostgresTaskStore(DATA_SOURCE, "bth_2")).doesNotThrowAnyException();
+        assertThatCode(() -> PostgresTaskStore.builder()
+                        .dataSource(DATA_SOURCE)
+                        .namespace("bth_2")
+                        .build())
+                .doesNotThrowAnyException();
     }
 
     @Test
     void schemaStatementsUseThePrefix() {
-        var statements = new PostgresTaskStore(DATA_SOURCE, "app").schemaStatements();
+        var statements = PostgresTaskStore.builder()
+                .dataSource(DATA_SOURCE)
+                .namespace("app")
+                .build()
+                .schemaStatements();
 
         assertThat(statements).hasSize(19);
         assertThat(statements.getFirst()).startsWith("CREATE TABLE IF NOT EXISTS app_meta (");
@@ -76,7 +112,10 @@ class PostgresTaskStoreTest {
     @Test
     void emptyClaimsDoNotOpenAConnection() {
         var dataSource = mock(DataSource.class);
-        var store = new PostgresTaskStore(dataSource, "app");
+        var store = PostgresTaskStore.builder()
+                .dataSource(dataSource)
+                .namespace("app")
+                .build();
         var grants = List.of(new QueueGrant(1, 1, 2));
         assertThat(store.claim(new ClaimRequest(grants, 0, Duration.ofSeconds(30), 1, null)))
                 .isEmpty();
@@ -95,7 +134,10 @@ class PostgresTaskStoreTest {
     private static PostgresTaskStore storeOn(Connection connection) throws SQLException {
         var dataSource = mock(DataSource.class);
         when(dataSource.getConnection()).thenReturn(connection);
-        return new PostgresTaskStore(dataSource, "app");
+        return PostgresTaskStore.builder()
+                .dataSource(dataSource)
+                .namespace("app")
+                .build();
     }
 
     @Test

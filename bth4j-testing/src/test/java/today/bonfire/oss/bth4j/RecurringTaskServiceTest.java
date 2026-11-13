@@ -36,7 +36,7 @@ class RecurringTaskServiceTest {
     private static final Instant T0 = Instant.parse("2030-01-01T00:00:00Z");
 
     private final MutableClock clock = new MutableClock(T0);
-    private final InMemoryStore store = new InMemoryStore(clock);
+    private final InMemoryStore store = InMemoryStore.builder().clock(clock).build();
     private final RunnerStatus status = new RunnerStatus(clock);
     private final List<TaskEvent> events = new ArrayList<>();
     private final int typeId = store.typeId(TYPE.name());
