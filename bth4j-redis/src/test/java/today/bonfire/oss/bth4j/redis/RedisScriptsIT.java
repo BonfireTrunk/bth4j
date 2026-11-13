@@ -818,4 +818,43 @@ class RedisScriptsIT {
                 .isEmpty();
         assertThat(jedis.pttl(set)).isPositive();
     }
+
+    // ---- reclaim ---------------------------------------------------------------------------------------
+
+    @Test
+    void anIdleReclaimIsOneRoundTripAndOneScriptCall() {
+        store.enqueue(task(1).build());
+        claim(1);
+        store.reclaim(10);
+
+        var counts = ServerCounters.measure(
+                jedis, () -> assertThat(store.reclaim(10)).isEmpty());
+
+        assertThat(counts.calls("evalsha")).isEqualTo(1);
+        assertThat(counts.roundTrips()).isEqualTo(1);
+    }
+
+    @Test
+    void aReclaimWithExpiredLeasesIsOneRoundTripAndKeepsTheLimitAndTheOrder() {
+        for (var id = 1L; id <= 60; id++) {
+            store.enqueue(task(id).build());
+        }
+        var claimed = claim(60);
+        for (var t : claimed) {
+            jedis.zadd(keys.leased, 1_000 - t.id(), String.valueOf(t.id()));
+        }
+        store.reclaim(1);
+
+        var counts = ServerCounters.measure(jedis, () -> {
+            var expired = store.reclaim(50);
+            assertThat(expired).hasSize(50);
+            assertThat(expired.getFirst().id()).isEqualTo(60);
+            assertThat(expired.getLast().id()).isEqualTo(11);
+            assertThat(expired.getFirst().attempts()).isEqualTo(1);
+            assertThat(expired.getFirst().maxAttempts()).isEqualTo(30);
+        });
+
+        assertThat(counts.calls("evalsha")).isEqualTo(1);
+        assertThat(counts.roundTrips()).isEqualTo(1);
+    }
 }

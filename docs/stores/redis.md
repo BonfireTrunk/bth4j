@@ -40,6 +40,7 @@ The namespace prefixes every key and carries the Redis Cluster hash tag, so all 
 | Enqueue and acknowledgement batches | Run as one script per group of tasks. |
 | Claim | Runs both grant passes in one atomic script. It merges the eligible types by `(due, lexical id)` and leaves foreign tasks unchanged. Its scan budget is `min(count * 4, 1000)` eligible entries per queue across both passes. Its cost grows with the types that have queued tasks, not with the types registered. A claim leaves a task whose `startBy` has passed in its queue for maintenance to expire. |
 | Queue listings | Merge the active type zsets by `(due, id as text)`, the order a claim takes them in, and retain their position cursors when a type empties. A page is one script call and one round trip for every queue and type, and the script blocks the server for as long as its sets and its page need, not for the number of tasks. A page finds its place by rank, so many tasks due in one millisecond cost a page no more than any others. |
+| Reclaim | One script reads the server's time, the expired leases and the fields maintenance needs of each, so a pass is one round trip whether it finds nothing or a full page of leases. |
 | `queuedByType()` and the counts | Read exact zset cardinalities of the active types in one script, without task hash reads. |
 | Finished tasks | Are listed and purged from one zset per state and queue. |
 | Removing a task whose unique key window is open | Leaves only a key string, which expires at the end of the window. |

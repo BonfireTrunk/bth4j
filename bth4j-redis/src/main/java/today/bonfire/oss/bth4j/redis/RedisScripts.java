@@ -913,6 +913,30 @@ final class RedisScripts {
             return stored[1]
             """;
 
+    /** The hash fields RECLAIM reads of each expired lease, in reply order. */
+    static final String[] RECLAIM_FIELDS = {
+        Keys.F_REVISION, Keys.F_ATTEMPTS, Keys.F_MAX_ATTEMPTS, Keys.F_QUEUE, Keys.F_TYPE, Keys.F_CANCEL_AT
+    };
+
+    /**
+     * ARGV: limit. Returns up to limit leases that expired by the server's clock, oldest first, each as {id, then
+     * RECLAIM_FIELDS as stored}; a field the hash does not hold, or the whole hash, is nil.
+     */
+    static final String RECLAIM = PRELUDE
+            + """
+            local F = {@FIELDS@}
+            local out = {}
+            for _, id in ipairs(redis.call('ZRANGE', P .. 'leased', '-inf', now(), 'BYSCORE', 'LIMIT', 0, ARGV[2])) do
+              local v = redis.call('HMGET', P .. 't:' .. id, unpack(F))
+              local row = {id}
+              for j = 1, #F do row[j + 1] = v[j] end
+              out[#out + 1] = row
+            end
+            return out
+            """.replace(
+                    "@FIELDS@",
+                    Arrays.stream(RECLAIM_FIELDS).map(f -> "'" + f + "'").collect(Collectors.joining(", ")));
+
     /**
      * ARGV: ids. Sets the revision of a LEASED task to 0 when it is not a 32-bit integer, so that reclaim can fence
      * it again; the lease has expired, so no runner holds a revision that 0 could wrongly match. Returns the count.

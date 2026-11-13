@@ -676,24 +676,22 @@ public final class RedisTaskStore implements FullStore {
     public List<ExpiredLease> reclaim(int limit) {
         StoreArguments.requireLimit(limit);
         return guard(() -> {
-            var ids = jedis.zrangeByScore(keys.leased, "-inf", String.valueOf(serverNow()), 0, limit);
-            var fields = new ArrayList<Response<List<String>>>(ids.size());
-            try (var pipeline = jedis.pipelined()) {
-                ids.forEach(id -> fields.add(pipeline.hmget(
-                        keys.task(Long.parseLong(id)),
-                        F_REVISION,
-                        F_ATTEMPTS,
-                        F_MAX_ATTEMPTS,
-                        F_QUEUE,
-                        F_TYPE,
-                        F_CANCEL_AT)));
-                pipeline.sync();
+            var rows = (List<List<Object>>) scripts.run(RedisScripts.RECLAIM, List.of(String.valueOf(limit)));
+            var ids = new ArrayList<String>(rows.size());
+            var fields = new ArrayList<List<String>>(rows.size());
+            for (var row : rows) {
+                ids.add((String) row.getFirst());
+                var v = new ArrayList<String>(row.size() - 1);
+                for (var field : row.subList(1, row.size())) {
+                    v.add((String) field);
+                }
+                fields.add(v);
             }
             var out = new ArrayList<ExpiredLease>(ids.size());
             var orphans = new ArrayList<String>();
             var unfenced = new ArrayList<String>();
             for (var i = 0; i < ids.size(); i++) {
-                var v = fields.get(i).get();
+                var v = fields.get(i);
                 if (v.get(0) == null) {
                     orphans.add(ids.get(i));
                     continue;
