@@ -142,6 +142,9 @@ The queued partial index ends with `type_id`, and a claim walks the queued tasks
 | Foreign keys | none |
 | Times | epoch milliseconds, taken from the store's `java.time.Clock` |
 | Schema version | 2, stored in `<namespace>_meta` |
+| `schedules(afterId, limit)` | the primary key of the schedule table, from the first id after `afterId`; text compares by bytes, which is the order of `ScheduleStore.ID_ORDER`. One page is read. |
+| `upcomingSchedules(limit)` | the `<namespace>_schedule_due` index (`next_fire`, schedules that are not paused); the schedules that share a fire time are put in id order in a small sort, and the read stops after `limit` |
+| `schedule(id)` | the primary key |
 | Claim lease | one `UPDATE` that takes the id list through `json_each` |
 | Key-only row | state code 7, content columns empty |
 | Queued partial index | ends with `type_id` |

@@ -43,6 +43,9 @@ The namespace prefixes every key and carries the Redis Cluster hash tag, so all 
 | Reclaim | One script reads the server's time, the expired leases and the fields maintenance needs of each, so a pass is one round trip whether it finds nothing or a full page of leases. |
 | `queuedByType()` and the counts | Read exact zset cardinalities of the active types in one script, without task hash reads. |
 | Finished tasks | Are listed and purged from one zset per state and queue. |
+| `upcomingSchedules(limit)` | One `ZRANGE` of the `cron` zset (its score is the next fire time, and equal scores are in byte order of the id, the order of `ScheduleStore.ID_ORDER`), then the hashes of those schedules in one pipeline. |
+| `schedule(id)` | One `HGETALL`. |
+| `schedules(afterId, limit)` | Reads the ids of all schedules (`SMEMBERS` of `crondefs`, a set without an order), sorts them in the client and reads the hashes of one page in one pipeline. The cost grows with the number of schedules, not with the page. |
 | Removing a task whose unique key window is open | Leaves only a key string, which expires at the end of the window. |
 | Runner registration | Sets `accepting` to 1. |
 | Runner heartbeat | One script atomically updates the runner's time, running count and accepting flag. It also writes the hash of a removed runner again, with its label, queues and types. |

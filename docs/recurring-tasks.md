@@ -32,7 +32,7 @@ These methods return a copy of the definition with one setting changed:
 | `.withMisfire(...)` | what happens to missed fire times (see [Misfires](#misfires)) |
 | `.withOverlap(...)` | changes the overlap rule; for a fixed-delay definition this is where it is set (see [Overlap](#overlap)) |
 
-`client.deleteSchedule(id)` removes a definition. `client.nextFireTimes()` gives the next fire time of every definition by id, and `admin.schedules()` lists the definitions in full (see [Admin API](admin.md#admin-api)). A definition is not a task and has no state: `tasks(TaskState.SCHEDULED, ...)` lists tasks that wait for their due time, occurrences created ahead of their fire time among them, not definitions.
+`client.deleteSchedule(id)` removes a definition. `client.nextFireTimes()` gives the next fire time of every definition by id, and `admin.schedules(cursor, limit)` lists the definitions in full, a page at a time by id, while `admin.upcomingSchedules(limit)` lists the ones that fire next (see [Admin API](admin.md#admin-api)). A definition is not a task and has no state: `tasks(TaskState.SCHEDULED, ...)` lists tasks that wait for their due time, occurrences created ahead of their fire time among them, not definitions.
 
 ### Registering the same id again
 
@@ -182,7 +182,7 @@ A trigger also forgets the occurrence in flight. When that task ends, it neither
 
 ## Changing a schedule that someone else changed
 
-Every schedule has a revision, which the store assigns and `admin.schedules()` shows. A pause, resume, trigger or delete from the operator names the revision the operator saw, and the store refuses it as `STALE` when the schedule has another one by then. Nothing is changed in that case, and the operator reloads and looks again.
+Every schedule has a revision, which the store assigns and `admin.schedules(cursor, limit)` shows. A pause, resume, trigger or delete from the operator names the revision the operator saw, and the store refuses it as `STALE` when the schedule has another one by then. Nothing is changed in that case, and the operator reloads and looks again.
 
 Example: an operator opens `nightly-report`, a deploy replaces its definition with a different cron expression, and the operator clicks delete on what they saw. The delete is refused instead of removing the new definition.
 
