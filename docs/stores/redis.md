@@ -28,7 +28,7 @@ The namespace prefixes every key and carries the Redis Cluster hash tag, so all 
 | Server | Redis 7.4 or newer, or Valkey 9 or newer. The store expires the key fields of finished tasks with hash field expiry, and `init` refuses a server that does not have it. |
 | Tested on | standalone Redis 8.10 and Valkey 9.1.3 |
 | `maxmemory-policy` | `noeviction`. `init` refuses to start under any other policy (see [Memory eviction](#memory-eviction)). |
-| Schema version | 7, stored in the namespace's `meta` hash. `init` refuses a namespace that holds keys of the store without a schema version, and a namespace with another version, which includes every namespace written by bth4j 4.x or older; there is no migration. Start with a new namespace. |
+| Schema version | 8, stored in the namespace's `meta` hash. `init` refuses a namespace that holds keys of the store without a schema version, and a namespace with another version, which includes every namespace written by bth4j 4.x or older; there is no migration. Start with a new namespace. |
 | Redis Cluster | Not tested. The namespace's slot must not be resharded while runners use it (see [Redis Cluster](#redis-cluster)). |
 
 ## What the store does
@@ -38,10 +38,10 @@ The namespace prefixes every key and carries the Redis Cluster hash tag, so all 
 | Clock | Takes the current time from the Redis server (`TIME`). See [which clock decides](../stores.md#which-clock-decides). |
 | Enqueue | Writes a random per-record token with the other fields of the task. A resend is judged by that token (see the table below). |
 | Enqueue and acknowledgement batches | Run as one script per group of tasks. |
-| Claim | Runs both grant passes in one atomic script. It merges the eligible types by `(due, lexical id)` and leaves foreign tasks unchanged. Its scan budget is `min(count * 4, 1000)` eligible entries per queue across both passes. Its cost grows with the types that have queued tasks, not with the types registered. A claim leaves a task whose `startBy` has passed in its queue for maintenance to expire. |
-| Queue listings | Merge the active type zsets by `(due, id as text)`, the order a claim takes them in, and retain their position cursors when a type empties. A page of up to 500 tasks takes two round trips whatever the number of queues and types, one script call that picks the ids and one pipeline that reads the tasks, and the script blocks the server for as long as its sets and its page need, not for the number of tasks. A page finds its place by rank, so many tasks due in one millisecond cost a page no more than any others. |
+| Claim | Runs both grant passes in one atomic script. When the runner handles every type that has queued tasks in a queue, it reads that queue from one sorted set, `qa:<queue-id>`, which holds every queued task of the queue: one read for a claim of up to 64 tasks from a queue, whatever the number of types, unless it meets stale entries. When the runner handles only some of those types, it reads one sorted set per handled type with queued tasks and merges them, and tasks of the other types stay untouched. Either way the order is `(due, lexical id)`. Its scan budget is `min(count * 4, 1000)` eligible entries per queue across both passes. A claim leaves a task whose `startBy` has passed in its queue for maintenance to expire. |
+| Queue listings | Merge the `qa:<queue-id>` zsets, one per queue, by `(due, id as text)`, the order a claim takes them in, and retain their position cursors when a task leaves a queue. A page of up to 500 tasks takes two round trips whatever the number of queues and types, one script call that picks the ids and one pipeline that reads the tasks, and the script blocks the server for as long as its sets and its page need, not for the number of tasks. A page finds its place by rank, so many tasks due in one millisecond cost a page no more than any others. |
 | Reclaim | One script reads the server's time, the expired leases and the fields maintenance needs of each, so a pass is one round trip whether it finds nothing or a full page of leases. |
-| `queuedByType()` and the counts | Read exact zset cardinalities of the active types in one script, without task hash reads. |
+| `queuedByType()` and the counts | Read exact zset cardinalities in one script, without task hash reads: the queued count of a queue is the size of its `qa:<queue-id>` zset, and `queuedByType()` reads the zsets of the active types. |
 | Finished tasks | Are listed and purged from one zset per state and queue. |
 | `upcomingSchedules(limit)` | One `ZRANGE` of the `cron` zset (its score is the next fire time, and equal scores are in byte order of the id, the order of `ScheduleStore.ID_ORDER`), then the hashes of those schedules in one pipeline. |
 | `schedule(id)` | One `HGETALL`. |
@@ -96,7 +96,7 @@ PostgreSQL, SQLite and the in-memory store skip those tasks in the claim.
 
 ## Inside the Redis store
 
-Schema version 7 uses these keys:
+Schema version 8 uses these keys:
 
 | Key | Type | What it holds |
 |---|---|---|
@@ -109,6 +109,7 @@ Schema version 7 uses these keys:
 | `st:<id>` | string | the steps of a task, as JSON |
 | `f:<id>` | list | the failures of a task, the last 20 |
 | `q:<queue-id>:<type-id>` | zset | queued tasks of one type in one queue, scored by due milliseconds |
+| `qa:<queue-id>` | zset | every queued task of one queue, scored by due milliseconds like its type zset; the claim of a runner that handles every type, the queued listing and the queued count read it |
 | `active:<queue-id>` | set | the types whose zset in that queue is not empty |
 | `sched:<queue-id>` | zset | scheduled tasks of one queue, scored by due milliseconds |
 | `leased` | zset | leased tasks, scored by the end of the lease |
@@ -137,15 +138,25 @@ Other details:
 | Zset writes | are collected per key and sent as one command per key at the end of a script |
 | Task ids in scripts | travel as text, because a Lua number is a double and keeps 53 bits; revisions, attempts and times are numbers |
 | Time | every script reads `TIME` itself, so due times, leases and retention follow the Redis server; reading the clock before a write needs effect replication, the default since Redis 7.0 |
-| Claim | takes the intersection of the `active:<queue-id>` set and the `ts:<digest>` set, so its cost grows with the types that have queued tasks, not with the types registered |
+| Claim | takes the intersection of the `active:<queue-id>` set and the `ts:<digest>` set. When the intersection is the whole `active:<queue-id>` set (or the runner names no types), the runner handles every type that waits in the queue and the claim reads `qa:<queue-id>` alone; otherwise it reads the type zsets of the intersection, so its cost then grows with the types that have queued tasks, not with the types registered |
+| Queued task | is in two zsets, its type zset and `qa:<queue-id>`, under the same score; the scripts write both in the same call, in one place (the helpers that enter and leave the queued state), so they do not drift |
 
 ### Memory encodings
 
 | Structure | Setting | Compact while | Otherwise |
 |---|---|---|---|
 | Task hash | `hash-max-listpack-value` (default 64) | every value is at most that many bytes (a listpack) | a hashtable, about 5 times larger for that task |
-| Zsets (queues, `leased`, the state indexes) | `zset-max-listpack-entries` (default 128) | there are at most that many entries (a listpack) | a skiplist, which costs about 6 times more per entry |
+| Zsets (the type zsets, `qa:<queue-id>`, `leased`, the state indexes) | `zset-max-listpack-entries` (default 128) | there are at most that many entries (a listpack) | a skiplist, which costs about 6 times more per entry |
 
 A header map, account, unique key, progress text or cancel reason longer than that setting (64 bytes by default) makes the task hash a hashtable. Raise `hash-max-listpack-value` if your tasks carry such values.
 
 Raising `zset-max-listpack-entries` trades CPU for memory.
+
+### Memory of queued tasks
+
+A queued task is in two zsets, the zset of its type and `qa:<queue-id>`, so it costs one more zset entry than before. A task that is claimed leaves both. Measured with 100,000 queued tasks of 4 queues and 5 types each, a payload of 200 bytes and the default encodings (every zset a skiplist):
+
+| Server | `used_memory` per queued task, type zsets only | With `qa:<queue-id>` | Of which the `qa` zsets by `MEMORY USAGE` |
+|---|---|---|---|
+| Redis 8.10 | 521 bytes | 589 bytes (13 % more) | 78 bytes per task |
+| Valkey 9.1.3 | 504 bytes | 565 bytes (12 % more) | 62 bytes per task |
