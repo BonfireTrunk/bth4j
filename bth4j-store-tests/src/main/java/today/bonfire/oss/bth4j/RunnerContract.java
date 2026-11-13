@@ -1308,7 +1308,7 @@ public abstract class RunnerContract {
         startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));
         var tick = ScheduleDefinition.every("tick", VOID_TYPE, Duration.ofHours(1));
         client.putSchedule(tick);
-        store.triggerSchedule("tick", Instant.now());
+        store.triggerSchedule("tick", null, Instant.now());
         await("the triggered run", () -> runs.get() >= 1);
         await("the re-arm one delay ahead", () -> {
             var next = client.nextFireTimes().get("tick");
@@ -1316,7 +1316,7 @@ public abstract class RunnerContract {
                     && next.isBefore(Instant.now().plus(Duration.ofHours(2)));
         });
 
-        store.triggerSchedule("tick", Instant.now().plus(Duration.ofDays(36_500)));
+        store.triggerSchedule("tick", null, Instant.now().plus(Duration.ofDays(36_500)));
         client.putSchedule(tick);
 
         assertThat(client.nextFireTimes().get("tick")).isBefore(Instant.now().plus(Duration.ofHours(2)));
@@ -1422,9 +1422,11 @@ public abstract class RunnerContract {
         }));
         client.putSchedule(ScheduleDefinition.of("guarded", VOID_TYPE, "0 0 1 1 *", Overlap.SKIP));
 
-        assertThat(runner.admin().triggerSchedule("guarded")).isTrue();
+        assertThat(runner.admin().triggerSchedule("guarded", revisionOf(runner, "guarded")))
+                .isEqualTo(ScheduleOutcome.APPLIED);
         assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
-        assertThat(runner.admin().triggerSchedule("guarded")).isTrue();
+        assertThat(runner.admin().triggerSchedule("guarded", revisionOf(runner, "guarded")))
+                .isEqualTo(ScheduleOutcome.APPLIED);
         await(
                 "the overlap issue",
                 () -> runner.issues().stream().anyMatch(i -> i.kind() == Issue.Kind.SCHEDULE_OVERLAP));
@@ -1440,7 +1442,8 @@ public abstract class RunnerContract {
         await(
                 "the first occurrence to finish",
                 () -> client.tasks(TaskState.LEASED, null, null, 10).items().isEmpty());
-        assertThat(runner.admin().triggerSchedule("guarded")).isTrue();
+        assertThat(runner.admin().triggerSchedule("guarded", revisionOf(runner, "guarded")))
+                .isEqualTo(ScheduleOutcome.APPLIED);
         await("a second run", () -> runs.get() == 2);
     }
 
@@ -1461,16 +1464,26 @@ public abstract class RunnerContract {
         assertThat(view.nextFireAt().atZone(java.time.ZoneId.of("Asia/Kolkata")).getHour())
                 .isEqualTo(9);
 
-        assertThat(runner.admin().pauseSchedule("kolkata", true)).isTrue();
+        assertThat(runner.admin().pauseSchedule("kolkata", view.revision(), true))
+                .isEqualTo(ScheduleOutcome.APPLIED);
         assertThat(runner.admin().schedules().stream()
                         .filter(s -> s.id().equals("kolkata"))
                         .findFirst()
                         .orElseThrow()
                         .paused())
                 .isTrue();
-        assertThat(runner.admin().pauseSchedule("kolkata", false)).isTrue();
-        assertThat(runner.admin().pauseSchedule("missing", true)).isFalse();
-        assertThat(runner.admin().deleteSchedule("kolkata")).isTrue();
+        assertThat(runner.admin().pauseSchedule("kolkata", view.revision(), false))
+                .isEqualTo(ScheduleOutcome.APPLIED);
+        assertThat(runner.admin().pauseSchedule("missing", 1, true)).isEqualTo(ScheduleOutcome.NOT_FOUND);
+        assertThat(runner.admin().deleteSchedule("kolkata", view.revision())).isEqualTo(ScheduleOutcome.APPLIED);
+    }
+
+    private static long revisionOf(BackgroundRunner runner, String scheduleId) {
+        return runner.admin().schedules().stream()
+                .filter(s -> s.id().equals(scheduleId))
+                .findFirst()
+                .orElseThrow()
+                .revision();
     }
 
     /** Stores a cron definition whose next fire is {@code late} in the past, as a runner that was down would find it. */

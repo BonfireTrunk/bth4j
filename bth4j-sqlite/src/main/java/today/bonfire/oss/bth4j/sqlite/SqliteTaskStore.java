@@ -31,6 +31,7 @@ import today.bonfire.oss.bth4j.PutScheduleOutcome;
 import today.bonfire.oss.bth4j.PutScheduleResult;
 import today.bonfire.oss.bth4j.QueueInfo;
 import today.bonfire.oss.bth4j.RetryOutcome;
+import today.bonfire.oss.bth4j.ScheduleOutcome;
 import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.StepResult;
 import today.bonfire.oss.bth4j.TaskState;
@@ -1196,8 +1197,21 @@ public final class SqliteTaskStore implements FullStore {
     }
 
     @Override
-    public boolean deleteSchedule(String scheduleId) {
-        return inTransaction(c -> update(c, "DELETE FROM " + schedule + " WHERE id = ?", scheduleId) == 1);
+    public ScheduleOutcome deleteSchedule(String scheduleId, Long expectedRevision) {
+        return inTransaction(c -> {
+            var refused = scheduleRefusal(c, scheduleId, expectedRevision);
+            if (refused != null) return refused;
+            update(c, "DELETE FROM " + schedule + " WHERE id = ?", scheduleId);
+            return ScheduleOutcome.APPLIED;
+        });
+    }
+
+    /** Null when the definition exists and has the expected revision or none is expected; the write lock is held. */
+    private ScheduleOutcome scheduleRefusal(Connection c, String scheduleId, Long expectedRevision)
+            throws SQLException {
+        var revision = queryOne(c, "SELECT rev FROM " + schedule + " WHERE id = ?", rs -> rs.getLong(1), scheduleId);
+        if (revision == null) return ScheduleOutcome.NOT_FOUND;
+        return expectedRevision != null && !expectedRevision.equals(revision) ? ScheduleOutcome.STALE : null;
     }
 
     @Override
@@ -1930,14 +1944,21 @@ public final class SqliteTaskStore implements FullStore {
     }
 
     @Override
-    public boolean pauseSchedule(String scheduleId) {
-        return inTransaction(c -> update(c, "UPDATE " + schedule + " SET paused = 1 WHERE id = ?", scheduleId) == 1);
+    public ScheduleOutcome pauseSchedule(String scheduleId, Long expectedRevision) {
+        return inTransaction(c -> {
+            var refused = scheduleRefusal(c, scheduleId, expectedRevision);
+            if (refused != null) return refused;
+            update(c, "UPDATE " + schedule + " SET paused = 1 WHERE id = ?", scheduleId);
+            return ScheduleOutcome.APPLIED;
+        });
     }
 
     /** Only a paused row is written; a definition that is not paused is left as it is. */
     @Override
-    public boolean resumeSchedule(String scheduleId, Instant nextFire) {
+    public ScheduleOutcome resumeSchedule(String scheduleId, Long expectedRevision, Instant nextFire) {
         return inTransaction(c -> {
+            var refused = scheduleRefusal(c, scheduleId, expectedRevision);
+            if (refused != null) return refused;
             boolean replacesFire = nextFire != null
                     && queryOne(
                                     c,
@@ -1957,17 +1978,16 @@ public final class SqliteTaskStore implements FullStore {
             } else {
                 update(c, "UPDATE " + schedule + " SET paused = 0 WHERE id = ? AND paused <> 0", scheduleId);
             }
-            return queryOne(c, "SELECT 1 FROM " + schedule + " WHERE id = ?", rs -> true, scheduleId) != null;
+            return ScheduleOutcome.APPLIED;
         });
     }
 
     /** A commit already in flight for the old definition fails, because it checks the revision and fire time it read. */
     @Override
-    public boolean triggerSchedule(String scheduleId, Instant fireAt) {
+    public ScheduleOutcome triggerSchedule(String scheduleId, Long expectedRevision, Instant fireAt) {
         return inTransaction(c -> {
-            if (queryOne(c, "SELECT 1 FROM " + schedule + " WHERE id = ?", rs -> true, scheduleId) == null) {
-                return false;
-            }
+            var refused = scheduleRefusal(c, scheduleId, expectedRevision);
+            if (refused != null) return refused;
             update(
                     c,
                     "UPDATE " + schedule + " SET next_fire = ?, triggered = 1, rev = ?, occurrence_id = NULL"
@@ -1975,7 +1995,7 @@ public final class SqliteTaskStore implements FullStore {
                     fireAt,
                     nextValue(c, NEXT_SCHEDULE_REV, 1),
                     scheduleId);
-            return true;
+            return ScheduleOutcome.APPLIED;
         });
     }
 

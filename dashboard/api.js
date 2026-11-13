@@ -107,7 +107,7 @@ async function request(method, path, { query, body, noRedirect } = {}) {
       throw new ApiError(409, 'This item changed meanwhile. Reload it and try again.', code);
     }
     if (res.status === 404 && code === 'NOT_FOUND') {
-      throw new ApiError(404, 'This task no longer exists.', code);
+      throw new ApiError(404, 'This ' + (path.startsWith('/schedules') ? 'schedule' : 'task') + ' no longer exists.', code);
     }
     const detail = data && (data.error || data.message);
     if (res.status === 409) throw new ApiError(409, detail || 'Request failed (HTTP 409)', code);
@@ -137,10 +137,10 @@ export const api = {
   cancelTask: (id, revision, reason) => request('POST', '/tasks/' + enc(id) + '/cancel', { body: { revision, reason } }),
   deleteTask: (id, revision) => request('DELETE', '/tasks/' + enc(id), { query: { revision } }),
   schedules: () => request('GET', '/schedules'),
-  pauseSchedule: (id) => request('POST', '/schedules/' + enc(id) + '/pause', { body: {} }),
-  resumeSchedule: (id) => request('POST', '/schedules/' + enc(id) + '/resume', { body: {} }),
-  triggerSchedule: (id) => request('POST', '/schedules/' + enc(id) + '/trigger', { body: {} }),
-  deleteSchedule: (id) => request('DELETE', '/schedules/' + enc(id)),
+  pauseSchedule: (id, revision) => request('POST', '/schedules/' + enc(id) + '/pause', { body: { revision } }),
+  resumeSchedule: (id, revision) => request('POST', '/schedules/' + enc(id) + '/resume', { body: { revision } }),
+  triggerSchedule: (id, revision) => request('POST', '/schedules/' + enc(id) + '/trigger', { body: { revision } }),
+  deleteSchedule: (id, revision) => request('DELETE', '/schedules/' + enc(id), { query: { revision } }),
   runners: () => request('GET', '/runners'),
   unserved: () => request('GET', '/unserved'),
   issues: () => request('GET', '/issues'),

@@ -37,6 +37,7 @@ import today.bonfire.oss.bth4j.PutScheduleOutcome;
 import today.bonfire.oss.bth4j.PutScheduleResult;
 import today.bonfire.oss.bth4j.QueueInfo;
 import today.bonfire.oss.bth4j.RetryOutcome;
+import today.bonfire.oss.bth4j.ScheduleOutcome;
 import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.StepResult;
 import today.bonfire.oss.bth4j.TaskState;
@@ -811,8 +812,13 @@ public final class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public boolean deleteSchedule(String scheduleId) {
-        return num(guard(() -> scripts.run(RedisScripts.CRON_DELETE, List.of(scheduleId)))) == 1;
+    public ScheduleOutcome deleteSchedule(String scheduleId, Long expectedRevision) {
+        var args = List.of(scheduleId, optionalRevision(expectedRevision));
+        return ScheduleOutcome.valueOf((String) guard(() -> scripts.run(RedisScripts.CRON_DELETE, args)));
+    }
+
+    private static String optionalRevision(Long revision) {
+        return revision == null ? "" : revision.toString();
     }
 
     @Override
@@ -1292,20 +1298,21 @@ public final class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public boolean pauseSchedule(String scheduleId) {
-        return num(guard(() -> scripts.run(RedisScripts.CRON_PAUSE, List.of(scheduleId)))) == 1;
+    public ScheduleOutcome pauseSchedule(String scheduleId, Long expectedRevision) {
+        var args = List.of(scheduleId, optionalRevision(expectedRevision));
+        return ScheduleOutcome.valueOf((String) guard(() -> scripts.run(RedisScripts.CRON_PAUSE, args)));
     }
 
     @Override
-    public boolean resumeSchedule(String scheduleId, Instant nextFire) {
-        var args = List.of(scheduleId, nextFire == null ? "" : ms(nextFire));
-        return num(guard(() -> scripts.run(RedisScripts.CRON_RESUME, args))) == 1;
+    public ScheduleOutcome resumeSchedule(String scheduleId, Long expectedRevision, Instant nextFire) {
+        var args = List.of(scheduleId, optionalRevision(expectedRevision), nextFire == null ? "" : ms(nextFire));
+        return ScheduleOutcome.valueOf((String) guard(() -> scripts.run(RedisScripts.CRON_RESUME, args)));
     }
 
     @Override
-    public boolean triggerSchedule(String scheduleId, Instant fireAt) {
-        var args = List.of(scheduleId, ms(fireAt));
-        return num(guard(() -> scripts.run(RedisScripts.CRON_TRIGGER, args))) == 1;
+    public ScheduleOutcome triggerSchedule(String scheduleId, Long expectedRevision, Instant fireAt) {
+        var args = List.of(scheduleId, optionalRevision(expectedRevision), ms(fireAt));
+        return ScheduleOutcome.valueOf((String) guard(() -> scripts.run(RedisScripts.CRON_TRIGGER, args)));
     }
 
     @Override

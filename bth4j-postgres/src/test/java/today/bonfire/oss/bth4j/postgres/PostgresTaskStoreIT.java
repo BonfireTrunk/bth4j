@@ -33,6 +33,7 @@ import today.bonfire.oss.bth4j.PutScheduleOutcome;
 import today.bonfire.oss.bth4j.PutScheduleResult;
 import today.bonfire.oss.bth4j.QueueInfo;
 import today.bonfire.oss.bth4j.RetryOutcome;
+import today.bonfire.oss.bth4j.ScheduleOutcome;
 import today.bonfire.oss.bth4j.StepResult;
 import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
@@ -1393,7 +1394,7 @@ class PostgresTaskStoreIT {
         store.putSchedule(definition("p", "0 * * * *"), fireAt, fireAt);
         var due = store.dueSchedules(Instant.now(), 10).getFirst();
 
-        assertThat(store.pauseSchedule("p")).isTrue();
+        assertThat(store.pauseSchedule("p", null)).isEqualTo(ScheduleOutcome.APPLIED);
         assertThat(store.dueSchedules(Instant.now(), 10)).isEmpty();
         assertThat(store.schedules().getFirst().definition().paused()).isTrue();
         assertThat(store.schedules().getFirst().nextFireAt()).isEqualTo(fireAt);
@@ -1402,23 +1403,23 @@ class PostgresTaskStoreIT {
                         .isCommitted())
                 .isFalse();
 
-        assertThat(store.resumeSchedule("p", null)).isTrue();
+        assertThat(store.resumeSchedule("p", null, null)).isEqualTo(ScheduleOutcome.APPLIED);
         assertThat(store.dueSchedules(Instant.now(), 10)).hasSize(1);
-        assertThat(store.pauseSchedule("missing")).isFalse();
-        assertThat(store.resumeSchedule("missing", null)).isFalse();
+        assertThat(store.pauseSchedule("missing", null)).isEqualTo(ScheduleOutcome.NOT_FOUND);
+        assertThat(store.resumeSchedule("missing", null, null)).isEqualTo(ScheduleOutcome.NOT_FOUND);
     }
 
     @Test
     void reputtingADefinitionKeepsItsPausedFlag() {
         var fireAt = Instant.now().minusSeconds(1).truncatedTo(ChronoUnit.MILLIS);
         store.putSchedule(definition("kept", "0 * * * *"), fireAt, fireAt);
-        store.pauseSchedule("kept");
+        store.pauseSchedule("kept", null);
 
         store.putSchedule(definition("kept", "0 * * * *"), fireAt, fireAt);
         assertThat(store.schedules().getFirst().definition().paused()).isTrue();
         assertThat(store.dueSchedules(Instant.now(), 10)).isEmpty();
 
-        store.resumeSchedule("kept", null);
+        store.resumeSchedule("kept", null, null);
         store.putSchedule(definition("kept", "0 * * * *").withPaused(true), fireAt, fireAt);
         assertThat(store.schedules().getFirst().definition().paused()).isFalse();
         assertThat(store.dueSchedules(Instant.now(), 10)).hasSize(1);
@@ -1437,13 +1438,13 @@ class PostgresTaskStoreIT {
         var due = store.dueSchedules(Instant.now(), 10).getFirst();
         var later = fireAt.plusSeconds(120);
 
-        assertThat(store.triggerSchedule("n", later)).isTrue();
+        assertThat(store.triggerSchedule("n", null, later)).isEqualTo(ScheduleOutcome.APPLIED);
         assertThat(store.nextFireTimes()).containsEntry("n", later);
         assertThat(store.commitSchedule(
                                 due, fireAt.plusSeconds(3600), task(newId()).build())
                         .isCommitted())
                 .isFalse();
-        assertThat(store.triggerSchedule("missing", later)).isFalse();
+        assertThat(store.triggerSchedule("missing", null, later)).isEqualTo(ScheduleOutcome.NOT_FOUND);
     }
 
     @Test

@@ -25,6 +25,7 @@ import today.bonfire.oss.bth4j.PutScheduleOutcome;
 import today.bonfire.oss.bth4j.PutScheduleResult;
 import today.bonfire.oss.bth4j.QueueInfo;
 import today.bonfire.oss.bth4j.RetryOutcome;
+import today.bonfire.oss.bth4j.ScheduleOutcome;
 import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.StepResult;
 import today.bonfire.oss.bth4j.TaskState;
@@ -757,10 +758,15 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public boolean deleteSchedule(String scheduleId) {
+    public ScheduleOutcome deleteSchedule(String scheduleId, Long expectedRevision) {
         lock.lock();
         try {
-            return recurring.remove(scheduleId) != null;
+            ScheduleOutcome refused = refusal(recurring.get(scheduleId), expectedRevision);
+            if (refused != null) {
+                return refused;
+            }
+            recurring.remove(scheduleId);
+            return ScheduleOutcome.APPLIED;
         } finally {
             lock.unlock();
         }
@@ -1251,30 +1257,32 @@ public final class InMemoryStore implements FullStore {
     }
 
     @Override
-    public boolean pauseSchedule(String scheduleId) {
+    public ScheduleOutcome pauseSchedule(String scheduleId, Long expectedRevision) {
         lock.lock();
         try {
             Recurring r = recurring.get(scheduleId);
-            if (r == null) {
-                return false;
+            ScheduleOutcome refused = refusal(r, expectedRevision);
+            if (refused != null) {
+                return refused;
             }
             recurring.put(scheduleId, r.withDefinition(r.definition().withPaused(true)));
-            return true;
+            return ScheduleOutcome.APPLIED;
         } finally {
             lock.unlock();
         }
     }
 
     @Override
-    public boolean resumeSchedule(String scheduleId, Instant nextFire) {
+    public ScheduleOutcome resumeSchedule(String scheduleId, Long expectedRevision, Instant nextFire) {
         lock.lock();
         try {
             Recurring r = recurring.get(scheduleId);
-            if (r == null) {
-                return false;
+            ScheduleOutcome refused = refusal(r, expectedRevision);
+            if (refused != null) {
+                return refused;
             }
             if (!r.definition().paused()) {
-                return true;
+                return ScheduleOutcome.APPLIED;
             }
             StoredSchedule resumed = r.definition().withPaused(false);
             TaskRecord occurrence = r.occurrence() == null ? null : tasks.get(r.occurrence());
@@ -1285,26 +1293,34 @@ public final class InMemoryStore implements FullStore {
                     nextFire == null || occurrenceRunning
                             ? r.withDefinition(resumed)
                             : new Recurring(resumed.withRevision(++recurringRevision), nextFire, r.occurrence()));
-            return true;
+            return ScheduleOutcome.APPLIED;
         } finally {
             lock.unlock();
         }
     }
 
     @Override
-    public boolean triggerSchedule(String scheduleId, Instant fireAt) {
+    public ScheduleOutcome triggerSchedule(String scheduleId, Long expectedRevision, Instant fireAt) {
         lock.lock();
         try {
             Recurring r = recurring.get(scheduleId);
-            if (r == null) {
-                return false;
+            ScheduleOutcome refused = refusal(r, expectedRevision);
+            if (refused != null) {
+                return refused;
             }
             recurring.put(
                     scheduleId, new Recurring(r.definition().withRevision(++recurringRevision), fireAt, null, true));
-            return true;
+            return ScheduleOutcome.APPLIED;
         } finally {
             lock.unlock();
         }
+    }
+
+    private static ScheduleOutcome refusal(Recurring r, Long expectedRevision) {
+        if (r == null) {
+            return ScheduleOutcome.NOT_FOUND;
+        }
+        return expectedRevision != null && r.definition().revision() != expectedRevision ? ScheduleOutcome.STALE : null;
     }
 
     @Override

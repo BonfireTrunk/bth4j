@@ -126,6 +126,7 @@ final class Views {
     static Map<String, Object> schedule(ScheduleView s) {
         var view = obj(
                 "id", s.id(),
+                "revision", text(s.revision()),
                 "type", s.typeName(),
                 "queue", s.queue(),
                 "account", s.account(),

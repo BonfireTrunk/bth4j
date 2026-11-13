@@ -7,6 +7,7 @@ export default {
   setup() {
     const { data, loading, error, reload } = usePoll(() => api.schedules(), 5000);
     const busy = ref('');
+    const stale = ref(false);
     const admin = isAdmin;
 
     async function run(s, spec) {
@@ -19,11 +20,14 @@ export default {
       if (!res) return;
       busy.value = s.id;
       try {
-        await spec.call(s.id);
+        await spec.call(s.id, s.revision);
+        stale.value = false;
         toast('Schedule ' + s.id + ': ' + spec.done, 'ok');
         await reload();
       } catch (e) {
+        if (e.stale) stale.value = true;
         toastError(e);
+        if (e.stale || e.gone) await reload();
       } finally {
         busy.value = '';
       }
@@ -39,11 +43,17 @@ export default {
     const PARKED_AFTER_MS = 50 * 365 * 86400 * 1000;
     const parked = (s) => !!s.fixedDelay && Date.parse(s.nextFireAt) - Date.now() > PARKED_AFTER_MS;
 
-    return { data, loading, error, reload, busy, admin, pause, resume, trigger, remove, duration, parked };
+    function refresh() {
+      stale.value = false;
+      return reload();
+    }
+
+    return { data, loading, error, reload, refresh, stale, busy, admin, pause, resume, trigger, remove, duration, parked };
   },
   template: `
   <section>
-    <div class="page-head"><h1>Schedules</h1><button type="button" @click="reload">Refresh</button></div>
+    <div class="page-head"><h1>Schedules</h1><button type="button" @click="refresh">Refresh</button></div>
+    <p v-if="stale" class="banner" role="alert"><span>This schedule changed meanwhile.</span><button type="button" class="small" @click="refresh">Reload</button><span class="muted">before trying again.</span></p>
     <status-msg :loading="loading" :error="error" :empty="!data || data.length === 0" empty-text="No schedules defined." empty-hint="Schedules are registered by the application with client.putSchedule(...)."></status-msg>
     <div class="table-wrap" v-if="data && data.length">
       <table>

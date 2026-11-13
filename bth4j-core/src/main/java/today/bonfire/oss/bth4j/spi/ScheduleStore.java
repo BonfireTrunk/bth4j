@@ -5,6 +5,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import today.bonfire.oss.bth4j.PutScheduleResult;
+import today.bonfire.oss.bth4j.ScheduleOutcome;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /**
@@ -28,8 +29,16 @@ public interface ScheduleStore extends TaskStore {
      */
     PutScheduleResult putSchedule(StoredSchedule definition, Instant nextFireAt, Instant keepUntil);
 
-    /** @return true when a definition with that id existed */
-    boolean deleteSchedule(String scheduleId);
+    /**
+     * Removes a definition. The revision is checked in the same step as the removal. Every operator write
+     * below takes {@code expectedRevision} the same way: the revision the operator saw, or null to apply the
+     * write whatever the revision is, for an application that removes its own schedule.
+     *
+     * @return {@link ScheduleOutcome#NOT_FOUND} when no definition with that id exists,
+     *         {@link ScheduleOutcome#STALE} when its revision is not {@code expectedRevision}, else
+     *         {@link ScheduleOutcome#APPLIED}
+     */
+    ScheduleOutcome deleteSchedule(String scheduleId, Long expectedRevision);
 
     /** @return every definition's id with its next fire time */
     Map<String, Instant> nextFireTimes();
@@ -80,10 +89,13 @@ public interface ScheduleStore extends TaskStore {
 
     /**
      * Pauses a definition. A paused definition keeps its next fire time but is left out of {@link #dueSchedules}.
+     * A pause keeps the revision. Pausing a paused definition changes nothing and is
+     * {@link ScheduleOutcome#APPLIED}, as the revision check allows.
      *
-     * @return false when no definition with that id exists
+     * @return {@link ScheduleOutcome#NOT_FOUND}, {@link ScheduleOutcome#STALE} or {@link ScheduleOutcome#APPLIED},
+     *         as {@link #deleteSchedule} answers
      */
-    boolean pauseSchedule(String scheduleId);
+    ScheduleOutcome pauseSchedule(String scheduleId, Long expectedRevision);
 
     /**
      * Resumes a paused definition in one step. A {@code nextFireAt} that is not null replaces its next fire time and
@@ -91,11 +103,12 @@ public interface ScheduleStore extends TaskStore {
      * because it parks its next fire while paused. While the recorded occurrence is not finished, {@code nextFireAt}
      * is ignored and the stored time and revision stay: the end of that occurrence sets the next fire, and a time
      * given here would start a second occurrence beside it. The recorded occurrence is kept. A definition that is
-     * not paused is left unchanged.
+     * not paused is left unchanged, and that is {@link ScheduleOutcome#APPLIED} when the revision matches.
      *
-     * @return false when no definition with that id exists
+     * @return {@link ScheduleOutcome#NOT_FOUND}, {@link ScheduleOutcome#STALE} or {@link ScheduleOutcome#APPLIED},
+     *         as {@link #deleteSchedule} answers
      */
-    boolean resumeSchedule(String scheduleId, Instant nextFireAt);
+    ScheduleOutcome resumeSchedule(String scheduleId, Long expectedRevision, Instant nextFireAt);
 
     /**
      * Operator write: makes the definition fire at {@code fireAt} (trigger now). It replaces the next fire time
@@ -111,9 +124,10 @@ public interface ScheduleStore extends TaskStore {
      * {@link #putSchedule} or {@link #resumeSchedule} that stores another time), and a write that keeps the
      * time keeps the mark.
      *
-     * @return false when no definition with that id exists
+     * @return {@link ScheduleOutcome#NOT_FOUND}, {@link ScheduleOutcome#STALE} or {@link ScheduleOutcome#APPLIED},
+     *         as {@link #deleteSchedule} answers
      */
-    boolean triggerSchedule(String scheduleId, Instant fireAt);
+    ScheduleOutcome triggerSchedule(String scheduleId, Long expectedRevision, Instant fireAt);
 
     /**
      * Runner write for a misfire: replaces the next fire time and keeps the revision, but only while the

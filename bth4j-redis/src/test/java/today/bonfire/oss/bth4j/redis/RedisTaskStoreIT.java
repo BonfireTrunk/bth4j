@@ -46,6 +46,7 @@ import today.bonfire.oss.bth4j.FailureInfo;
 import today.bonfire.oss.bth4j.Loggers;
 import today.bonfire.oss.bth4j.PutScheduleOutcome;
 import today.bonfire.oss.bth4j.PutScheduleResult;
+import today.bonfire.oss.bth4j.ScheduleOutcome;
 import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.StepResult;
 import today.bonfire.oss.bth4j.TaskState;
@@ -1681,8 +1682,8 @@ class RedisTaskStoreIT {
         assertThat(d.encodedPayload()).isEqualTo("{\"d\":1}");
         assertThat(d.maxAttempts()).isEqualTo(5);
         assertThat(d.revision()).isPositive();
-        assertThat(store.deleteSchedule("s")).isTrue();
-        assertThat(store.deleteSchedule("s")).isFalse();
+        assertThat(store.deleteSchedule("s", null)).isEqualTo(ScheduleOutcome.APPLIED);
+        assertThat(store.deleteSchedule("s", null)).isEqualTo(ScheduleOutcome.NOT_FOUND);
         assertThat(store.nextFireTimes()).isEmpty();
         assertThat(jedis.exists(keys.cronDefinition("s"))).isFalse();
     }
@@ -1748,7 +1749,7 @@ class RedisTaskStoreIT {
                 .isFalse();
 
         var fresh = store.dueSchedules(Instant.now(), 10).getFirst();
-        store.deleteSchedule("s");
+        store.deleteSchedule("s", null);
         assertThat(store.commitSchedule(fresh, fire.plusSeconds(60), task(61).build())
                         .isCommitted())
                 .isFalse();

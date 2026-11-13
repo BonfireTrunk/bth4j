@@ -408,10 +408,10 @@ class AdminHttpServerTest {
                 mutate("POST", "/api/v1/tasks/1/cancel", login, revisionBody),
                 mutate("POST", "/api/v1/tasks/by-key/cancel?key=order-1", login, "{}"),
                 mutate("DELETE", "/api/v1/tasks/1?revision=7", login, null),
-                mutate("POST", "/api/v1/schedules/nightly/pause", login, null),
-                mutate("POST", "/api/v1/schedules/nightly/resume", login, null),
-                mutate("POST", "/api/v1/schedules/nightly/trigger", login, null),
-                mutate("DELETE", "/api/v1/schedules/nightly", login, null));
+                mutate("POST", "/api/v1/schedules/nightly/pause", login, revisionBody),
+                mutate("POST", "/api/v1/schedules/nightly/resume", login, revisionBody),
+                mutate("POST", "/api/v1/schedules/nightly/trigger", login, revisionBody),
+                mutate("DELETE", "/api/v1/schedules/nightly?revision=5", login, null));
 
         assertThat(responses).extracting(HttpResponse::statusCode).containsOnly(403);
         assertThat(ops.calls).isEmpty();
@@ -740,6 +740,84 @@ class AdminHttpServerTest {
     }
 
     @Test
+    void everyScheduleActionAnswers200404Or409WithTheRevisionItWasSent() throws Exception {
+        ops.schedules.add(schedule("nightly"));
+        start();
+        var login = admin();
+        var applied = "{\"revision\":\"5\"}";
+        var stale = "{\"revision\":\"4\"}";
+
+        var actions = List.of("pause", "resume", "trigger");
+        for (var action : actions) {
+            var path = "/api/v1/schedules/nightly/" + action;
+            assertThat(mutate("POST", path, login, applied).statusCode())
+                    .as(action)
+                    .isEqualTo(200);
+            assertRefusal(mutate("POST", path, login, stale), 409, "STALE", "the schedule changed since it was loaded");
+            assertRefusal(
+                    mutate("POST", "/api/v1/schedules/missing/" + action, login, applied),
+                    404,
+                    "NOT_FOUND",
+                    "there is no such schedule");
+        }
+        assertRefusal(
+                mutate("DELETE", "/api/v1/schedules/nightly?revision=4", login, null),
+                409,
+                "STALE",
+                "the schedule changed since it was loaded");
+        assertRefusal(
+                mutate("DELETE", "/api/v1/schedules/missing?revision=5", login, null),
+                404,
+                "NOT_FOUND",
+                "there is no such schedule");
+        assertThat(mutate("DELETE", "/api/v1/schedules/nightly?revision=5", login, null)
+                        .statusCode())
+                .isEqualTo(200);
+        assertThat(ops.calls)
+                .contains(
+                        "pauseSchedule nightly 5 true",
+                        "pauseSchedule nightly 5 false",
+                        "triggerSchedule nightly 4",
+                        "deleteSchedule nightly 4",
+                        "deleteSchedule nightly 5");
+    }
+
+    @Test
+    void aScheduleActionWithoutAUsableRevisionIs400AndReachesNoOperation() throws Exception {
+        ops.schedules.add(schedule("nightly"));
+        start();
+        var login = admin();
+
+        for (var action : List.of("pause", "resume", "trigger")) {
+            var path = "/api/v1/schedules/nightly/" + action;
+            assertThat(mutate("POST", path, login, "{}").statusCode())
+                    .as(action)
+                    .isEqualTo(400);
+            assertThat(mutate("POST", path, login, "{\"revision\":\"x\"}").statusCode())
+                    .as(action)
+                    .isEqualTo(400);
+        }
+        assertThat(mutate("DELETE", "/api/v1/schedules/nightly", login, null).statusCode())
+                .isEqualTo(400);
+        assertThat(mutate("DELETE", "/api/v1/schedules/nightly?revision=x", login, null)
+                        .statusCode())
+                .isEqualTo(400);
+        assertThat(ops.calls).isEmpty();
+    }
+
+    @Test
+    void aScheduleRevisionBeyond32BitsIsSentToTheOperationUnchanged() throws Exception {
+        ops.schedules.add(schedule("nightly"));
+        start();
+        var login = admin();
+
+        assertThat(mutate("POST", "/api/v1/schedules/nightly/trigger", login, "{\"revision\":\"5000000000\"}")
+                        .statusCode())
+                .isEqualTo(409);
+        assertThat(ops.calls).containsExactly("triggerSchedule nightly 5000000000");
+    }
+
+    @Test
     void aRefusedActionDoesNotLookTheTaskUpAgain() throws Exception {
         start();
         var login = admin();
@@ -770,10 +848,10 @@ class AdminHttpServerTest {
                 .isEqualTo(200);
         assertThat(mutate("POST", "/api/v1/queues/default/pause", login, null).statusCode())
                 .isEqualTo(200);
-        assertThat(mutate("POST", "/api/v1/schedules/nightly/trigger", login, null)
+        assertThat(mutate("POST", "/api/v1/schedules/nightly/trigger", login, "{\"revision\":\"5\"}")
                         .statusCode())
                 .isEqualTo(200);
-        assertThat(mutate("POST", "/api/v1/schedules/missing/pause", login, null)
+        assertThat(mutate("POST", "/api/v1/schedules/missing/pause", login, "{\"revision\":\"5\"}")
                         .statusCode())
                 .isEqualTo(404);
         assertThat(mutate("POST", "/api/v1/queues/missing/pause", login, null).statusCode())
@@ -785,8 +863,8 @@ class AdminHttpServerTest {
                         "cancel 3 1 why",
                         "delete 1 7",
                         "pauseQueue default true",
-                        "triggerSchedule nightly",
-                        "pauseSchedule missing true");
+                        "triggerSchedule nightly 5",
+                        "pauseSchedule missing 5 true");
     }
 
     @Test
@@ -1006,6 +1084,7 @@ class AdminHttpServerTest {
         var schedules = jsonList(get("/api/v1/schedules", login));
         assertThat(schedules.get(0))
                 .containsEntry("id", "nightly")
+                .containsEntry("revision", "5")
                 .containsEntry("fixedDelay", "PT1H")
                 .containsEntry("misfire", "SKIP")
                 .containsEntry("overlap", "SKIP")
@@ -1308,7 +1387,7 @@ class AdminHttpServerTest {
             assertThat(mutate("POST", "/api/v1/tasks/1/retry", admin, "{\"revision\":\"7\"}")
                             .statusCode())
                     .isEqualTo(200);
-            assertThat(mutate("POST", "/api/v1/schedules/nightly/pause", viewer, null)
+            assertThat(mutate("POST", "/api/v1/schedules/nightly/pause", viewer, "{\"revision\":\"5\"}")
                             .statusCode())
                     .isEqualTo(403);
             assertThat(mutate("POST", "/api/v1/tasks/by-key/cancel?key=customer-7", admin, "{}")
@@ -1387,6 +1466,7 @@ class AdminHttpServerTest {
                 .isEqualTo("/api/v1/tasks/by-key/cancel");
         assertThat(AdminHttpServer.auditedRoute("/api/v1/queues/mail/pause")).isEqualTo("/api/v1/queues/{}/pause");
         assertThat(AdminHttpServer.auditedRoute("/api/v1/schedules/7/pause")).isEqualTo("/api/v1/schedules/{}/pause");
+        assertThat(AdminHttpServer.auditedRoute("/api/v1/schedules/7")).isEqualTo("/api/v1/schedules/{}");
     }
 
     @Test
@@ -1527,6 +1607,7 @@ class AdminHttpServerTest {
     private static ScheduleView schedule(String id) {
         return new ScheduleView(
                 id,
+                5,
                 "send-mail",
                 "default",
                 null,
