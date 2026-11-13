@@ -102,6 +102,14 @@ public final class MicrometerRunnerMetrics implements AutoCloseable {
             refresh();
             poller.scheduleWithFixedDelay(this::refresh, millis, millis, TimeUnit.MILLISECONDS);
         } catch (RuntimeException | Error e) {
+            // the tags stay reserved until bind has seen the failure and releases them itself: released here, another
+            // binding could take them and lose them again to that release
+            metersLock.lock();
+            try {
+                closed = true;
+            } finally {
+                metersLock.unlock();
+            }
             try {
                 close();
             } catch (RuntimeException | Error cleanup) {
