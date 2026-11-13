@@ -369,7 +369,7 @@ public final class SqliteTaskStore implements FullStore {
                         + " occurrence_id INTEGER,"
                         + " next_fire INTEGER NOT NULL,"
                         + " triggered INTEGER NOT NULL) STRICT",
-                "CREATE INDEX IF NOT EXISTS " + schedule + "_due ON " + schedule + " (next_fire) WHERE paused = 0",
+                "CREATE INDEX IF NOT EXISTS " + schedule + "_due ON " + schedule + " (next_fire, id) WHERE paused = 0",
                 "INSERT INTO " + meta + " (key, value) VALUES ('schema_version', " + SCHEMA_VERSION + "),"
                         + " ('" + NEXT_TASK_ID + "', 1), ('" + NEXT_RUNNER_ID + "', 1), ('" + NEXT_QUEUE_ID
                         + "', 1), ('" + NEXT_TYPE_ID + "', 1), ('" + NEXT_SCHEDULE_REV + "', 1)"
