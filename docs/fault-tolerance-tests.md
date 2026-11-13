@@ -1,6 +1,6 @@
 # Fault-tolerance tests
 
-bth4j promises that a task is stored once per id and runs at least once, also when a store call fails. The fault tests check this on every store by cutting one store call at a chosen point, either before the server did the work or after it, and then looking at what the call left behind and what a resend answers.
+bth4j promises that a task is stored once per id and is never lost, also when a store call fails: it runs, or it ends in a state that says why. A claim whose answer is lost has used up one attempt, so a task whose last attempt went that way ends `DEAD` without having run (with `maxAttempts(1)` that is the first claim). The fault tests check this on every store by cutting one store call at a chosen point, either before the server did the work or after it, and then looking at what the call left behind and what a resend answers.
 
 On this page:
 
@@ -14,7 +14,7 @@ On this page:
 
 | Level | Class in `bth4j-store-tests` | What it does |
 |---|---|---|
-| Store | `FaultContract` | For every write of the store interface, cuts the call at every fault point, before and after, and checks three rules. |
+| Store | `FaultContract` | For every write of the store interface, cuts the call at every fault point, before and after, and checks three rules. A call with more than ten fault points is cut at six of them: the first two, the last two, and the points at one third and at two thirds. |
 | Runner | `RunnerFaultContract` | Runs a `BackgroundRunner` and a `TaskClient` on a store whose calls fail at random, through a renewal outage, through a runner that loses the store for good, and through a lost enqueue reply that the caller sends again. |
 
 The three rules of the store level, checked after each cut:
@@ -53,7 +53,8 @@ The call either happened as a whole or did not happen. The table shows what the 
 | Call | The resend after a lost answer |
 |---|---|
 | `enqueue`, `enqueueAll` | Answers `EXISTS` for a task that was stored. A task that was not stored is stored. |
-| `allocateIds`, `allocateRunnerId`, queue and type ids | Gives new ids. The lost ids are never used again, which leaves a gap and nothing else. |
+| `allocateIds`, `allocateRunnerId` | Gives new ids. The lost ids are never used again, which leaves a gap and nothing else. |
+| `queueId`, `typeId` | The id the name was given by the call that worked. A name has one id. |
 | `claim` | A claim that worked has leased the tasks, and the caller never saw them. The resend finds nothing for them and the tasks run again after the lease expires. |
 | `renew` | The same answer as a clean call. |
 | `ack`, `ackAll` | `false` for a lease that was acknowledged already. |
@@ -61,14 +62,16 @@ The call either happened as a whole or did not happen. The table shows what the 
 | `reschedule`, `unclaim`, `finishCancelled`, `finishCancelledExpired` | `false` for a lease that has ended already. |
 | `saveSteps`, `progress`, `heartbeat` | The same answer as a clean call. |
 | `cancel` | `STALE` for a task that is not queued any more, and the same answer as a clean call for a leased task. |
-| `delete` | The same answer as a clean call. |
+| `delete` | `NOT_FOUND` for a task that was deleted. |
 | `retry` of a dead task | `STALE`. |
 | `pauseQueue`, `resumeQueue` | The same answer as a clean call. |
 | `promote`, `reclaim`, `expire`, `purge`, `purgeRunners`, `releaseKeys` | The same effect. A resend of `releaseKeys` answers the count of keys it released itself, which can be 0 after a call that released them. |
-| `putSchedule` | The same answer as a clean call. |
-| `commitSchedule` | The fire is committed once. A resend gets the answer of a clean call. |
+| `putSchedule` | `UNCHANGED` for a definition that was stored. |
+| `commitSchedule` | The fire is committed once. A resend answers `NOT_COMMITTED`, because the definition has moved on to its next fire. |
 | `setNextFire` | `false` for a fire that was set already. |
-| `deleteSchedule`, `pauseSchedule`, `resumeSchedule`, `triggerSchedule` | The same answer as a clean call, or `STALE` where the revision the caller expected has moved on. |
+| `deleteSchedule` | `NOT_FOUND` for a definition that was deleted. |
+| `pauseSchedule` | The same answer as a clean call. |
+| `resumeSchedule`, `triggerSchedule` | `STALE`, because the call that worked moved the revision on. A resume that the store did not apply, because the occurrence was still running, answers the same again. |
 
 A call that the contract finds to leave a partial state is a bug, unless the interface says that it is only atomic per task. On Redis `enqueueAll`, `renew` and `ackAll` send a chunk of tasks per script, so a cut between two chunks leaves the earlier chunks done. This is the documented behaviour of the batch calls, and each task is still either done or not.
 
