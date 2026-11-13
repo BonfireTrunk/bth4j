@@ -186,7 +186,7 @@ sequenceDiagram
 | Lifetime | A session ends 12 hours after the sign-in (`sessionTtl`), also while it is used. The dashboard then asks for the sign-in again. |
 | Cookie expiry | The sign-in sets the cookie with `Max-Age` equal to `sessionTtl`. Later responses do not set it again, so the browser drops the cookie when the server ends the session. |
 | Sessions per user | At most 20. A login past that ends that user's oldest session. |
-| Failed logins | Counted by address and by user name. The fifth failure blocks for 10 seconds (HTTP 429). See [Failed logins](#failed-logins). |
+| Failed logins | Counted by address and by user name. The fifth failure blocks for 10 seconds (HTTP 429), and each repeat of a block is twice as long, up to 15 minutes. See [Failed logins](#failed-logins). |
 
 ### Failed logins
 
@@ -194,16 +194,17 @@ The server counts a failed login twice, and either count can block the next logi
 
 | Counted by | What the fifth failure blocks | Notes |
 |---|---|---|
-| Where the login comes from | Logins from there, for 10 seconds | An IPv4 address counts by itself. An IPv6 address counts by its /64 network, because one client usually owns the whole network. |
-| The user name it gives | Logins with that name from anywhere, for 10 seconds | Every name is counted, also one that does not exist, so a block does not show which users exist. |
+| Where the login comes from | Logins from there, for 10 seconds the first time | An IPv4 address counts by itself. An IPv6 address counts by its /64 network, because one client usually owns the whole network. |
+| The user name it gives | Logins with that name from anywhere, for 10 seconds the first time | Every name is counted, also one that does not exist, so a block does not show which users exist. |
 
 These rules apply to both counts:
 
-- A blocked login is answered 429 with `Retry-After`. It is not counted and its password is not looked at.
-- A successful login takes back only its own attempt. It does not clear the failures counted before it.
+- A blocked login is answered 429 with `Retry-After`. It is not counted, its password is not looked at, and it does not make the block longer.
+- A repeated block is twice as long as the one before it for the same address or the same user name: 10 s, 20 s, 40 s, 80 s, and so on up to 15 minutes. An address or a name starts again at 10 seconds when it had no failed login for 15 minutes after its last block ended.
+- A successful login takes back only its own attempt, on its own address and its own user name. It does not clear the failures counted before it, and it cannot shorten the block of another name.
 - Failures are forgotten when no attempt followed them for 10 minutes.
-- Someone who knows a user name can keep that user out by sending five wrong passwords every 10 seconds. Keep the server off networks where that is a concern.
-- The block does not grow with repeats. Someone who knows a user name and has many addresses can still try about five passwords every 10 seconds for it, about 43,000 a day, so give every account a long random password.
+- Once a block has grown, someone who knows a user name and has many addresses can try about 5 passwords per 15 minutes for it, about 480 a day, down from about 43,000 a day with a block that stays at 10 seconds. Give every account a long random password (see [Passwords](#passwords)).
+- The same growth lets someone who knows a user name keep that user out. After the attack on a name stops, the real user may have to wait up to 15 minutes for the block to end. Keep the server off networks where that is a concern.
 
 #### What the server logs
 
@@ -249,7 +250,7 @@ flowchart TD
 
 | Point | What to know |
 |---|---|
-| Without `addTrustedProxy` | The header is ignored and all clients behind the proxy count as one address: five failures from anyone block every login for 10 seconds. The server logs one warning when a login carries the header from an address that is not trusted. |
+| Without `addTrustedProxy` | The header is ignored and all clients behind the proxy count as one address: five failures from anyone block every login for 10 seconds, and for longer when it repeats. The server logs one warning when a login carries the header from an address that is not trusted. |
 | What the proxy must do | Set `X-Forwarded-For` itself, or append the address it saw to the header it received. A proxy that passes a client's header on unchanged lets the client choose the address it is counted by. |
 | What to name | Only proxies. A request from a trusted address can state any client address, so a range must not include clients. |
 | An entry that is not an IP address | It ends the search, and the login counts by the proxy that reported it. An entry may carry a port. |
