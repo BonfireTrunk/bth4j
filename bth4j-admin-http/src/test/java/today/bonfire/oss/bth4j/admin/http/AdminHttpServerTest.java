@@ -29,6 +29,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import today.bonfire.oss.bth4j.Issue;
+import today.bonfire.oss.bth4j.Loggers;
 import today.bonfire.oss.bth4j.Misfire;
 import today.bonfire.oss.bth4j.Overlap;
 import today.bonfire.oss.bth4j.QueueInfo;
@@ -1297,7 +1298,7 @@ class AdminHttpServerTest {
     void signInsAndChangesAreLoggedWithTheirUserAndWithoutSecretsOrGuessedNames() throws Exception {
         var logs = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
         logs.start();
-        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(AdminHttpServer.class);
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(Loggers.ADMIN_AUDIT);
         logger.addAppender(logs);
         try {
             start();
@@ -1342,6 +1343,26 @@ class AdminHttpServerTest {
         }
     }
 
+    @Test
+    void aWarnLevelOnTheServerClassDoesNotSilenceTheAuditLines() throws Exception {
+        var logs = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        logs.start();
+        var audit = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(Loggers.ADMIN_AUDIT);
+        var serverClass = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(AdminHttpServer.class);
+        var before = serverClass.getLevel();
+        audit.addAppender(logs);
+        serverClass.setLevel(ch.qos.logback.classic.Level.WARN);
+        try {
+            start();
+            assertThat(rawLogin("alice", "s3cret").statusCode()).isEqualTo(200);
+
+            assertThat(messages(logs)).contains("Admin sign-in of alice (ADMIN) from 127.0.0.1");
+        } finally {
+            serverClass.setLevel(before);
+            audit.detachAppender(logs);
+        }
+    }
+
     private static List<String> messages(
             ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> logs) {
         return List.copyOf(logs.list).stream()
@@ -1353,7 +1374,7 @@ class AdminHttpServerTest {
     void aBlockedSignInIsLoggedWithItsAddressAndNeverWithTheName() throws Exception {
         var logs = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
         logs.start();
-        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(AdminHttpServer.class);
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(Loggers.ADMIN_AUDIT);
         logger.addAppender(logs);
         try {
             start(builder().addTrustedProxy("127.0.0.1"));

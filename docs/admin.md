@@ -207,7 +207,14 @@ These rules apply to both counts:
 
 #### What the server logs
 
-The server writes one INFO line per sign-in, per refused sign-in and per request that asks for a change, to the logger `today.bonfire.oss.bth4j.admin.http.AdminHttpServer`. Reads are not logged.
+The server writes one INFO line per sign-in, per refused sign-in and per request that asks for a change, to the logger `today.bonfire.oss.bth4j.admin.http.audit` (`Loggers.ADMIN_AUDIT`). It is not the server's class logger, so a level set on `AdminHttpServer` does not hide these lines, and they need no filter on the message text to go to a file of their own. Reads are not logged. Every other line of the server stays on the `AdminHttpServer` logger.
+
+A logback example that writes them to `admin-audit.log` and keeps them out of the main log:
+
+```xml
+<appender name="AUDIT" class="ch.qos.logback.core.FileAppender"><file>admin-audit.log</file><encoder><pattern>%d %m%n</pattern></encoder></appender>
+<logger name="today.bonfire.oss.bth4j.admin.http.audit" level="INFO" additivity="false"><appender-ref ref="AUDIT"/></logger>
+```
 
 | Event | Line | What it names |
 |---|---|---|
