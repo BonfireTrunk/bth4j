@@ -42,7 +42,7 @@ Every store writes a new schema version, and `init` refuses everything written b
 
 | Store | A store without 4.x data |
 |---|---|
-| PostgreSQL | a new namespace (the second constructor argument), or drop the tables and sequences of the old one |
+| PostgreSQL | a new namespace (`namespace(...)` on the store builder), or drop the tables and sequences of the old one |
 | Redis | a new namespace, or delete the keys of the old one |
 | SQLite | a new database file, or a new namespace in the same file |
 
@@ -72,7 +72,7 @@ The schema versions are 4 for PostgreSQL, 6 for Redis and 2 for SQLite.
 | `TaskClient.tasks(state, "", cursor, limit)` listed the default queue. | A blank queue is refused with `TaskValidationException`. Pass the queue's name, or null for every queue. |
 | A null request, definition or listing state was a `NullPointerException`. | It is a `TaskValidationException`. |
 | `RetryPolicy.exponential` could return a delay up to 20 percent above its cap. | The cap is the longest delay. Nothing to do, unless you set the cap lower to make up for it. |
-| The admin server logged nothing about sign-ins and changes. | It writes one INFO line per sign-in, refused sign-in and POST or DELETE; see [What the server logs](admin.md#what-the-server-logs). Lower the level of its logger if you do not want them. |
+| The admin server logged nothing about sign-ins and changes. | It writes one INFO line per sign-in, refused sign-in and POST or DELETE to the logger `today.bonfire.oss.bth4j.admin.http.audit`; see [What the server logs](admin.md#what-the-server-logs). Lower the level of that logger if you do not want them. |
 | PostgreSQL cuts the server's clock to the millisecond. It rounded, which put its clock up to half a millisecond ahead of the server's. | Nothing, unless a test relied on a task due in the next millisecond being queued at once. |
 | Redis `init` refuses a namespace that holds keys of the store but no schema version, for example one restored without its `meta` key. It wrote the current version and worked on whatever was there. | Restore the `meta` key, or use a new namespace. |
 | `TaskRequest.Builder.uniqueKey(key)` sets the key to be taken until the task is done. After `uniqueKey(key, Uniqueness.keepAfterDone(...))` on the same builder it kept the earlier keep window. | Call the version with the keep window last when you want it. |
@@ -131,6 +131,7 @@ The process that runs tasks is a runner everywhere. 4.x also called it a worker.
 | `TaskType.payloadVersion(int)`, `TaskType.interruptOnCancel()` | `withPayloadVersion(int)`, `withInterruptOnCancel()` |
 | `TaskRequest.Builder.header(name, value)`, `headers(map)` | `addHeader(name, value)`, `addHeaders(map)` |
 | `EnqueueResult.accepted()` | `isAccepted()` |
+| `EnqueueResult.Accepted(id)` | `Accepted(id, created)`: `created` is false when the task was already stored under this id and nothing was written. A pattern `case Accepted(var id)` needs the second component. |
 | `Uniqueness.keepFor(d)`, `Uniqueness.KeepFor`, `Uniqueness.MAX_KEEP_FOR` | `keepAfterDone(d)`, `KeepAfterDone`, `MAX_KEEP_AFTER_DONE`: the time counts from the end of the task, as before |
 | `TaskView.due()` | `dueAt()` |
 | `TaskView.type()` | `typeName()` |
@@ -187,6 +188,7 @@ Everything bth4j throws to refuse a call or to report a failure of its own exten
 | `CancelOutcome.STALE` for a missing or finished task too | `NOT_FOUND`, `STALE` and `FINISHED` are told apart |
 | `RetryOutcome.DUPLICATE` | gone; `NOT_FOUND`, `STALE` and `NOT_RETRYABLE` are told apart |
 | `AdminOps.delete` returning a boolean | returning `DeleteOutcome` (`DELETED`, `NOT_FOUND`, `STALE`, `LEASED`) |
+| `AdminOps.pauseSchedule(id, paused)`, `triggerSchedule(id)`, `deleteSchedule(id)` returning a boolean | `pauseSchedule(id, revision, paused)`, `triggerSchedule(id, revision)`, `deleteSchedule(id, revision)` returning `ScheduleOutcome` (`APPLIED`, `NOT_FOUND`, `STALE`); the revision is `ScheduleView.revision()`, see [Changing a schedule that someone else changed](recurring-tasks.md#changing-a-schedule-that-someone-else-changed) |
 
 ## The admin server and its HTTP API
 
@@ -198,8 +200,9 @@ Everything bth4j throws to refuse a call or to report a failure of its own exten
 | `GET tasks/by-key/{key}`, `POST tasks/by-key/{key}/cancel` | `GET tasks/by-key?key=`, `POST tasks/by-key/cancel?key=` |
 | a retry, cancel or delete that is refused for its state answers 409 like a stale revision | every refusal has a `code` in the error body: 404 `NOT_FOUND`, 409 `STALE` or 409 `WRONG_STATE`; the code `KEY_HELD` is gone |
 | JSON `workerId`, `workers`, `due`, `nextFire`, `lastSeen` | `runnerId`, `runners`, `dueAt`, `nextFireAt`, `lastSeenAt` |
+| `POST schedules/{id}/pause`, `resume`, `trigger` without a body, `DELETE schedules/{id}` | each schedule in the listing has a `revision` (a string); the POST routes take it in the JSON body, the DELETE as the query value `revision=`. Missing or malformed: 400. Changed meanwhile: 409 `STALE`. Unknown id: 404 `NOT_FOUND`. |
 
-Failed logins are also counted by the user name they give. Behind a reverse proxy, name the proxy with `addTrustedProxy`, so that failures are counted per client; see [Failed logins](admin.md#failed-logins).
+Failed logins are also counted by the user name they give, and a block that repeats grows from 10 seconds up to 15 minutes. Behind a reverse proxy, name the proxy with `addTrustedProxy`, so that failures are counted per client; see [Failed logins](admin.md#failed-logins).
 
 ## The stores
 
@@ -209,7 +212,11 @@ Failed logins are also counted by the user name they give. Behind a reverse prox
 | "table prefix" of the PostgreSQL and SQLite stores | "namespace", as in the Redis store; the message for a name that is not allowed starts with `namespace must match` |
 | `redis.Keys`, `RedisTaskStore.keys()` | not public; [the Redis store page](stores/redis.md#inside-the-redis-store) lists the keys |
 | the store classes can be subclassed | `RedisTaskStore`, `PostgresTaskStore` and `SqliteTaskStore` are final |
-| `new RedisTaskStore(...)` throws `IllegalArgumentException` for a missing client or a namespace that is not allowed | `TaskConfigurationException` |
+| `new RedisTaskStore(client, namespace)` | `RedisTaskStore.builder().client(client).namespace(namespace).build()` |
+| `new PostgresTaskStore(dataSource, namespace)` | `PostgresTaskStore.builder().dataSource(dataSource).namespace(namespace).build()` |
+| `new SqliteTaskStore(dataSource, namespace)` | `SqliteTaskStore.builder().dataSource(dataSource).namespace(namespace).build()` |
+| `new InMemoryStore()`, `new InMemoryStore(clock)` | `InMemoryStore.builder().build()`, `InMemoryStore.builder().clock(clock).build()` |
+| `RedisTaskStore` throws `IllegalArgumentException` for a missing client or a namespace that is not allowed | `TaskConfigurationException` |
 
 Redis needs hash field expiry (Redis 7.4 or newer, Valkey 9 or newer), and `init` refuses a server without it.
 
@@ -226,7 +233,8 @@ The store SPI says "schedule" and "runner" as the API does, and its record types
 | `dueRecurring`, `commitRecurring` | `dueSchedules`, `commitSchedule` |
 | `commitRecurring` returns `boolean` | `commitSchedule` returns `CommitOutcome`: `STORED`, `SKIPPED` (the definition advanced, the occurrence's unique key is held) or `NOT_COMMITTED` |
 | `recurringDefinitions()`, `recurringSchedules()` | `schedules()`, `nextFireTimes()` |
-| `setNextFire(scheduleId, nextFire)`, the operator's write | `triggerSchedule(scheduleId, fireAt)`; `DueSchedule` has `triggered` |
+| `setNextFire(scheduleId, nextFire)`, the operator's write | `triggerSchedule(scheduleId, expectedRevision, fireAt)`; `DueSchedule` has `triggered` |
+| `deleteSchedule`, `pauseSchedule`, `resumeSchedule` return `boolean` | they take `Long expectedRevision` after the id (null for any) and return `ScheduleOutcome`, as `triggerSchedule` does; see [Writing a store](writing-a-store.md) |
 | `ScheduleEffect.nextFire()`, `pauses()`, `applied()` | `nextFireAt()`, `isPause()`, `isApplied()` |
 | `WorkerInfo` | `RunnerRecord`, with `lastSeenAt` |
 | `allocateWorkerId`, `purgeWorkers`, `AdminStore.workers()` | `allocateRunnerId`, `purgeRunners`, `runners()` |
