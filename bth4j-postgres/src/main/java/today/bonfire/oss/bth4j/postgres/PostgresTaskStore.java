@@ -478,8 +478,10 @@ public final class PostgresTaskStore implements FullStore {
                         + " (state, state_changed, id) WHERE state BETWEEN 3 AND 6",
                 "CREATE INDEX IF NOT EXISTS " + task + "_finished_queue ON " + task
                         + " (queue_id, state, state_changed, id) WHERE state BETWEEN 3 AND 6",
-                "CREATE INDEX IF NOT EXISTS " + task + "_counts ON " + task + " (queue_id, state) WHERE state < "
-                        + KEY_ONLY,
+                // state 0 is left out: the claim's condition would match this index exactly and the planner
+                // could prefer it to _queued, which reads in claim order
+                "CREATE INDEX IF NOT EXISTS " + task + "_counts ON " + task
+                        + " (queue_id, state) WHERE state BETWEEN 1 AND 6",
                 "CREATE UNIQUE INDEX IF NOT EXISTS " + task + "_unique_key ON " + task
                         + " (unique_key) WHERE unique_key IS NOT NULL",
                 "CREATE INDEX IF NOT EXISTS " + task + "_key_until ON " + task
@@ -1624,7 +1626,7 @@ public final class PostgresTaskStore implements FullStore {
         });
     }
 
-    /** Every registered queue appears, with zeros when it has no tasks. Counts by a scan of the {@code _counts} index. */
+    /** Every registered queue appears, with zeros when it has no tasks. Counts by a scan of the {@code _counts} index, and of {@code _queued} for the queued tasks. */
     @Override
     public Map<Integer, StateCounts> counts() {
         int states = TaskState.values().length;
@@ -1634,8 +1636,10 @@ public final class PostgresTaskStore implements FullStore {
                     var rs = ps.executeQuery()) {
                 while (rs.next()) raw.put(rs.getInt(1), new long[states]);
             }
-            try (var ps = c.prepareStatement("SELECT queue_id, state, count(*) FROM " + task + " WHERE state < "
-                            + KEY_ONLY + " GROUP BY queue_id, state");
+            try (var ps = c.prepareStatement("SELECT queue_id, state, count(*) FROM " + task
+                            + " WHERE state BETWEEN 1 AND 6 GROUP BY queue_id, state"
+                            + " UNION ALL SELECT queue_id, 0, count(*) FROM " + task
+                            + " WHERE state = 0 GROUP BY queue_id");
                     var rs = ps.executeQuery()) {
                 while (rs.next()) {
                     raw.computeIfAbsent(rs.getInt(1), k -> new long[states])[rs.getInt(2)] = rs.getLong(3);

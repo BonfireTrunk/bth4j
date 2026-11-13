@@ -2031,4 +2031,41 @@ class PostgresTaskStoreIT {
         assertThat(store.task(id)).isEmpty();
         assertThat(store.enqueue(task(id).uniqueKey("race").build())).isEqualTo(EnqueueOutcome.STORED);
     }
+
+    // ---- counts index, second claim pass, keyed enqueue statements ------------------------------------
+
+    @Test
+    void theCountsIndexLeavesOutQueuedTasksSoTheClaimCannotPickIt() throws SQLException {
+        try (var c = PostgresTestSupport.dataSource().getConnection();
+                var ps = c.prepareStatement("SELECT pg_get_expr(i.indpred, i.indrelid) FROM pg_index i"
+                        + " WHERE i.indexrelid = to_regclass(?)")) {
+            ps.setString(1, prefix + "_task_counts");
+            try (var rs = ps.executeQuery()) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getString(1)).isEqualTo("((state >= 1) AND (state <= 6))");
+            }
+        }
+    }
+
+    @Test
+    void countsOfAQueueWithOnlyQueuedOnlyFinishedOrNoTasks() {
+        int queuedOnly = store.queueId("queued-only");
+        int finishedOnly = store.queueId("finished-only");
+        int none = store.queueId("none");
+        long base = store.allocateIds(3);
+        store.enqueue(task(base).queueId(queuedOnly).build());
+        store.enqueue(task(base + 1).queueId(queuedOnly).build());
+        store.enqueue(task(base + 2).queueId(finishedOnly).build());
+        var done = store.claim(new ClaimRequest(List.of(new QueueGrant(finishedOnly, 1, 1)), 1, LEASE, runner, null))
+                .getFirst();
+        store.ack(done.id(), done.revision(), true, true, null);
+
+        var counts = store.counts();
+        assertThat(counts.get(queuedOnly).queued()).isEqualTo(2);
+        assertThat(counts.get(queuedOnly).of(TaskState.SUCCEEDED)).isZero();
+        assertThat(counts.get(finishedOnly).queued()).isZero();
+        assertThat(counts.get(finishedOnly).of(TaskState.SUCCEEDED)).isEqualTo(1);
+        assertThat(counts.get(none).queued()).isZero();
+        assertThat(counts.get(none).of(TaskState.SUCCEEDED)).isZero();
+    }
 }

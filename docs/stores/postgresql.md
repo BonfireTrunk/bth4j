@@ -44,7 +44,7 @@ Runners with the same namespace on the same database share the work.
 | Claim | One statement that runs both grant passes, each with a bounded per-queue `FOR UPDATE SKIP LOCKED` scan, so a claim is atomic without a transaction. |
 | Enqueue of several tasks | One `INSERT ... SELECT FROM unnest(...) ON CONFLICT DO NOTHING RETURNING id` for the batch. The conflict target is left out, so it covers the id and the unique key alike. |
 | `queuedByType()` | One `GROUP BY` over the queued rows. |
-| `counts()` | Reads an index of the counts per queue and state. |
+| `counts()` | Reads an index of the counts per queue and state for the started, finished and waiting tasks, and the queued index for the queued ones. |
 | Listing one finished state of one queue | Reads an index of the finished tasks of that queue. |
 | Listing QUEUED across all queues | Scans the queued index once per queue and merges by due time and id. |
 | Foreign keys | None. |
@@ -99,7 +99,7 @@ A claim walks the queued tasks of a queue in due order past those of types it do
 |---|---|
 | Claim | the queued tasks of a queue in due order, past those of types it does not handle |
 | `queuedByType()` | one `GROUP BY queue_id, type_id` over the queued rows |
-| `counts()` | the `<namespace>_task_counts` index (`queue_id, state`) |
+| `counts()` | the `<namespace>_task_counts` index (`queue_id, state`, states 1 to 6) for the scheduled, leased and finished tasks, and an index-only scan of the queued index for the queued ones |
 | Listing one finished state of one queue | `<namespace>_task_finished_queue` |
 | Listing QUEUED across all queues | the queued index, once per queue, merged by due time and id |
 
