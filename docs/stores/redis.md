@@ -160,3 +160,17 @@ A queued task is in two zsets, the zset of its type and `qa:<queue-id>`, so it c
 |---|---|---|---|
 | Redis 8.10 | 521 bytes | 589 bytes (13 % more) | 78 bytes per task |
 | Valkey 9.1.3 | 504 bytes | 565 bytes (12 % more) | 62 bytes per task |
+
+### Server CPU of queued tasks
+
+The second zset costs the server one more sorted-set write when a task starts to wait and one more when it is claimed, and it saves a claim one read per type. Measured as the main-thread CPU time of the server (`INFO cpu`) per task, with the `qa:<queue-id>` zsets against the type zsets only, on Redis 8.10 and Valkey 9.1.3 with a payload of 200 bytes:
+
+| Work | Types with queued tasks in a queue | Server CPU per task with `qa:<queue-id>` |
+|---|---|---|
+| Claim and acknowledge | 1 | 0 to 4 % more |
+| Claim and acknowledge | 5 | 4 to 10 % less |
+| Claim and acknowledge, one task at a time from one queue | 50 | 37 to 47 % less |
+| Claim and acknowledge, claims of 32 over 20 queues | 50 | 69 to 77 % less |
+| Enqueue in batches of 200 | 1 to 50 | about 9 % more |
+
+A single enqueue sends 8 commands where it sent 7.
