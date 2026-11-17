@@ -64,7 +64,7 @@ The call either happened as a whole or did not happen. The table shows what the 
 | `cancel` | `STALE` for a task that is not queued any more, and the same answer as a clean call for a leased task. |
 | `delete` | `NOT_FOUND` for a task that was deleted. |
 | `retry` of a dead task | `STALE`. |
-| `pauseQueue`, `resumeQueue` | The same answer as a clean call. |
+| `pauseQueue`, to pause and to resume | The same answer as a clean call. |
 | `promote`, `reclaim`, `expire`, `purge`, `purgeRunners`, `releaseKeys` | The same effect. A resend of `releaseKeys` answers the count of keys it released itself, which can be 0 after a call that released them. |
 | `putSchedule` | `UNCHANGED` for a definition that was stored. |
 | `commitSchedule` | The fire is committed once. A resend answers `NOT_COMMITTED`, because the definition has moved on to its next fire. |
