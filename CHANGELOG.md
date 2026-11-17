@@ -202,6 +202,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PostgreSQL and SQLite: the refusal of another schema version names the namespace and says that the library does not migrate it.
 - The jar of every module carries the licence text as `META-INF/LICENSE`.
 - fastjson2 2.0.66.
+- commons-lang3 3.22.0.
 - Documentation: [Upgrading](docs/upgrading.md) covers 4.x to 5.0, with every old name beside its new one. [Writing a store](docs/writing-a-store.md) has the rules of the fence, the time fields, ids, unique keys, the ways a task ends and schedules, each with its reason. The design record of 3.0, which described storage that no longer exists, the roadmap whose findings are done, and the 2.x upgrade page are removed; they are in the git history.
 - Admin HTTP: a static file carries an `ETag`, a hash of its content, and a request whose `If-None-Match` names it is answered `304 Not Modified` without a body. A file replaced by one of the same size and modification time, as image builds that fix every file's time produce, gets a new tag. The dashboard asks on every page load (`Cache-Control: no-cache` stays) and no longer downloads about 230 KB each time.
 - The dashboard polls `/overview` once for the page and the header together: an open overview page makes 12 requests a minute where it made 18.
