@@ -7,14 +7,14 @@
     <parent>
         <groupId>today.bonfire.oss</groupId>
         <artifactId>bth4j-parent</artifactId>
-        <version>4.2.0</version>
+        <version>5.0.0</version>
     </parent>
 
     <artifactId>bth4j-redis</artifactId>
     <packaging>jar</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>Redis TaskStore for bth4j: one hash per task, atomic Lua transitions, lease tokens. Requires Redis 7.0 or newer.</description>
+    <description>Redis TaskStore for bth4j: one hash per task, atomic Lua transitions, lease tokens. Requires Redis 7.4 or newer, or Valkey 9 or newer.</description>
 
     <properties>
         <module.name>bonfire.oss.bth4j.redis</module.name>
@@ -51,10 +51,6 @@
 
     <build>
         <plugins>
-            <plugin>
-                <groupId>org.apache.felix</groupId>
-                <artifactId>maven-bundle-plugin</artifactId>
-            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>

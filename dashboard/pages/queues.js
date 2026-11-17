@@ -22,8 +22,8 @@ export default {
       const res = await confirmDialog({
         title: (pausing ? 'Pause' : 'Resume') + ' queue ' + q.name,
         message: pausing
-          ? 'Workers stop claiming tasks from this queue. Tasks already running finish; scheduled tasks still become due.'
-          : 'Workers resume claiming tasks from this queue.',
+          ? 'Runners stop claiming tasks from this queue. Tasks already running finish; scheduled tasks still become due.'
+          : 'Runners resume claiming tasks from this queue.',
         confirmLabel: pausing ? 'Pause' : 'Resume',
         danger: pausing,
       });

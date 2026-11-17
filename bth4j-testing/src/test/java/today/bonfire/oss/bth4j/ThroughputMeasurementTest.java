@@ -45,7 +45,7 @@ class ThroughputMeasurementTest {
                 new TaskEvent.Succeeded(task, Duration.ZERO, TaskEvent.Outcome.LOST),
                 new TaskEvent.Died(task, error, "failed", TaskEvent.Outcome.APPLIED),
                 new TaskEvent.Retrying(task, error, Instant.EPOCH, TaskEvent.Outcome.APPLIED),
-                new TaskEvent.Deferred(1, "tp-void", "missing processor"));
+                new TaskEvent.Deferred(1, "q", "tp-void", "missing processor"));
         for (var event : events) {
             var measurement = new ThroughputContract.Measurement(Set.of(1L), 0, () -> 1L);
             measurement.start();

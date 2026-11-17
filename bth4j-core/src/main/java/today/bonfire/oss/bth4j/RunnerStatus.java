@@ -62,14 +62,15 @@ final class RunnerStatus {
             lastRecorded = error;
             var previous = storeErrors.get(text);
             if (previous == null) {
-                var issue = new Issue(now, "store-error", text, null);
+                var issue = new Issue(now, Issue.Kind.STORE_ERROR, text, null);
                 storeErrors.put(text, new StoreErrorIssue(issue, 1));
                 append(issue);
                 return true;
             }
             issues.remove(previous.issue());
             int count = previous.count() + 1;
-            var issue = new Issue(now, "store-error", text + " (" + count + " times, latest at " + now + ")", null);
+            var issue = new Issue(
+                    now, Issue.Kind.STORE_ERROR, text + " (" + count + " times, latest at " + now + ")", null);
             storeErrors.put(text, new StoreErrorIssue(issue, count));
             append(issue);
             return false;
@@ -85,7 +86,7 @@ final class RunnerStatus {
         return error == last || cause != null && (cause == last || cause == last.getCause());
     }
 
-    void issue(String kind, String detail, Long taskId) {
+    void issue(Issue.Kind kind, String detail, Long taskId) {
         var issue = new Issue(clock.instant(), kind, detail, taskId);
         issuesLock.lock();
         try {

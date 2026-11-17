@@ -7,7 +7,7 @@
     <parent>
         <groupId>today.bonfire.oss</groupId>
         <artifactId>bth4j-parent</artifactId>
-        <version>4.2.0</version>
+        <version>5.0.0</version>
     </parent>
 
     <artifactId>bth4j-micrometer</artifactId>
@@ -47,13 +47,4 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
-
-    <build>
-        <plugins>
-            <plugin>
-                <groupId>org.apache.felix</groupId>
-                <artifactId>maven-bundle-plugin</artifactId>
-            </plugin>
-        </plugins>
-    </build>
 </project>

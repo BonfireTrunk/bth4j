@@ -6,14 +6,14 @@ package today.bonfire.oss.bth4j.redis;
  * receive the prefix as an argument and derive every other key from it.
  * <p>
  * Keys, with {@code qid} a queue id, {@code tid} a type id and {@code state} a
- * {@link today.bonfire.oss.bth4j.spi.TaskState} code:
+ * {@link today.bonfire.oss.bth4j.TaskState} code:
  * <ul>
  * <li>{@code meta} hash (field {@code schema}); {@code seq:id}, {@code seq:worker}, {@code seq:queue},
  * {@code seq:type} counters</li>
  * <li>{@code reg:queue} and {@code reg:type} hashes, name to id; listings invert them with one HGETALL and
  * purge walks the queue ids with HVALS</li>
  * <li>{@code w:<id>} hash (label, started, seen, running, accepting, queues, types); {@code workers} zset of
- * worker ids scored by the last heartbeat ms, which {@code purgeWorkers} walks</li>
+ * runner ids scored by the last heartbeat ms, which {@code purgeRunners} walks</li>
  * <li>{@code paused} set of queue ids that CLAIM skips</li>
  * <li>{@code startby} zset of QUEUED and SCHEDULED ids that have a {@code sb}, scored by it, so that expiry finds
  * them without scanning; an id leaves it on claim, cancel, delete and expire and returns when a task goes back to
@@ -30,11 +30,14 @@ package today.bonfire.oss.bth4j.redis;
  * <li>{@code q:<qid>:<tid>} zset of QUEUED ids of one queue and type scored by due ms; {@code active:<qid>} set
  * of the type ids whose zset in that queue is not empty, kept in step by every script that writes one, so that
  * readers never look at types without queued tasks; {@code sched:<qid>} zset of SCHEDULED ids scored by due ms;
- * {@code leased} zset scored by lease expiry ms. The type id is stored in task and recurring-definition hashes as
- * {@code ty}</li>
+ * {@code leased} zset scored by lease expiry ms. {@code qa:<qid>} zset of every QUEUED id of the queue, scored like
+ * its type zset and written with it by {@code enter} and {@code leave}: a claim whose runner handles every type
+ * that waits in the queue, the queued listing and the queued count read it alone. The type id is stored in task
+ * and recurring-definition hashes as {@code ty}</li>
  * <li>{@code ts:<digest>} set of the type ids one runner handles, named by a digest of the sorted ids and written
- * by the store when a claim finds it missing; a claim intersects it with {@code active:<qid>}. It expires a day
- * after the last claim that named it</li>
+ * by the store when a claim finds it missing; a claim intersects it with {@code active:<qid>}. A claim that finds
+ * less than half a day left on it extends it to a day, so it expires between twelve and twenty-four hours after
+ * the last claim that named it</li>
  * <li>{@code idx:<state>:<qid>} zset scored by stateChanged ms, for LEASED and terminal tasks, which purge reads.
  * Counts are the cardinalities of these zsets, so they cannot drift</li>
  * <li>{@code k:<key>} string holding the id of the task that owns a unique key, with a PEXPIREAT when the key
@@ -42,11 +45,11 @@ package today.bonfire.oss.bth4j.redis;
  * and keeps the key taken on its own. The {@code uk}, {@code kk} and {@code ku} fields of a kept task carry the
  * same expiry (HPEXPIREAT), so the store needs Redis 7.4 or Valkey 9 at least</li>
  * <li>{@code cron} zset of next fire ms of the definitions that are not paused, {@code cron:<sid>} hash (field
- * {@code next} always holds the next fire, also while paused), {@code crondefs} set of every definition id,
- * {@code cronrev} counter</li>
+ * {@code next} always holds the next fire, also while paused), {@code crondefs} sorted set of every definition
+ * id (all scores 0, so it is ordered by the bytes of the id), {@code cronrev} counter</li>
  * </ul>
  */
-public final class Keys {
+final class Keys {
     public static final String SCHEMA = "schema";
 
     public static final String F_REVISION = "rev";
@@ -61,7 +64,7 @@ public final class Keys {
     public static final String F_DUE = "due";
     public static final String F_STATE_CHANGED = "sc";
     public static final String F_DATA = "data";
-    public static final String F_WORKER = "wid";
+    public static final String F_RUNNER = "wid";
     public static final String F_LEASE = "lease";
     public static final String F_CLAIMED_AT = "ca";
     public static final String F_ACCOUNT = "acc";
@@ -86,6 +89,7 @@ public final class Keys {
     public static final String F_FIXED_DELAY = "fd";
     public static final String F_OVERLAP_SKIP = "os";
     public static final String F_PAUSED = "paused";
+    public static final String F_TRIGGERED = "trg";
 
     public static final String F_LABEL = "label";
     public static final String F_STARTED = "started";
@@ -99,13 +103,13 @@ public final class Keys {
     public final String prefix;
     public final String meta;
     public final String seqId;
-    public final String seqWorker;
+    public final String seqRunner;
     public final String leased;
     public final String cron;
     public final String cronDefinitions;
     public final String paused;
     public final String startBy;
-    public final String workers;
+    public final String runners;
     /** counter behind recurring definition revisions; it never resets, so a recreated definition cannot reuse one */
     public final String cronRevision;
 
@@ -114,13 +118,13 @@ public final class Keys {
         this.prefix = "{" + namespace + "}:";
         this.meta = prefix + "meta";
         this.seqId = prefix + "seq:id";
-        this.seqWorker = prefix + "seq:worker";
+        this.seqRunner = prefix + "seq:worker";
         this.leased = prefix + "leased";
         this.cron = prefix + "cron";
         this.cronDefinitions = prefix + "crondefs";
         this.paused = prefix + "paused";
         this.startBy = prefix + "startby";
-        this.workers = prefix + "workers";
+        this.runners = prefix + "workers";
         this.cronRevision = prefix + "cronrev";
     }
 
@@ -156,6 +160,10 @@ public final class Keys {
         return prefix + "active:" + qid;
     }
 
+    public String queueAll(int qid) {
+        return prefix + "qa:" + qid;
+    }
+
     public String typeSet(String digest) {
         return prefix + "ts:" + digest;
     }
@@ -164,7 +172,7 @@ public final class Keys {
         return prefix + "k:" + key;
     }
 
-    public String worker(int id) {
+    public String runner(int id) {
         return prefix + "w:" + id;
     }
 

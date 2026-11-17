@@ -5,15 +5,36 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Map;
 
 /** Serves files below one directory; unknown paths without an extension fall back to index.html. */
 final class StaticFiles {
 
-    record Resource(byte[] body, String contentType) {
+    /** A file read once for one request: the tag is the hash of exactly the bytes that are sent. */
+    record Resource(byte[] body, String contentType, String etag) {
         boolean html() {
             return contentType.startsWith("text/html");
+        }
+
+        /** True when an If-None-Match header names this resource: a list, {@code *}, and a weak prefix all count. */
+        boolean matches(String ifNoneMatch) {
+            if (ifNoneMatch == null) {
+                return false;
+            }
+            for (var candidate : ifNoneMatch.split(",")) {
+                var tag = candidate.strip();
+                if (tag.startsWith("W/")) {
+                    tag = tag.substring(2);
+                }
+                if (tag.equals("*") || tag.equals(etag)) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 
@@ -51,7 +72,17 @@ final class StaticFiles {
         if (file == null) {
             return null;
         }
-        return new Resource(Files.readAllBytes(file), contentType(file));
+        var body = Files.readAllBytes(file);
+        return new Resource(body, contentType(file), etag(body));
+    }
+
+    private static String etag(byte[] body) {
+        try {
+            var digest = MessageDigest.getInstance("SHA-256").digest(body);
+            return "\"" + HexFormat.of().formatHex(digest, 0, 16) + "\"";
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is required by every Java platform", e);
+        }
     }
 
     /** Normalizing and re-checking after toRealPath keeps both ".." and symlinks from leaving the directory. */

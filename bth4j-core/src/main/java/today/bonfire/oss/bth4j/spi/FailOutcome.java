@@ -6,6 +6,6 @@ public enum FailOutcome {
     RETRY,
     /** attempts exhausted, or no retry was allowed */
     DEAD,
-    /** the revision no longer matched: the task moved on without this worker */
+    /** the revision no longer matched: the task moved on without this runner */
     LOST
 }

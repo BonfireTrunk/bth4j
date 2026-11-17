@@ -13,18 +13,19 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
-import today.bonfire.oss.bth4j.spi.FailureInfo;
+import today.bonfire.oss.bth4j.FailureInfo;
+import today.bonfire.oss.bth4j.StepResult;
+import today.bonfire.oss.bth4j.TaskState;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.RecordJson;
-import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
 
 class TaskHashesTest {
 
     private static final long AT = 1_800_000_000_000L;
     private static final long LEASE_UNTIL = AT + 30_000;
-    private static final int WORKER = 7;
+    private static final int RUNNER = 7;
 
     /** A queued task with every field set, including those an earlier attempt left behind. */
     private static TaskRecord everyField() {
@@ -38,10 +39,10 @@ class TaskHashesTest {
                 .attempts(1)
                 .maxAttempts(4)
                 .createdAt(Instant.ofEpochMilli(AT - 9_000))
-                .due(Instant.ofEpochMilli(AT - 1_000))
+                .dueAt(Instant.ofEpochMilli(AT - 1_000))
                 .stateChangedAt(Instant.ofEpochMilli(AT - 1_000))
                 .encodedPayload("{\"order\":1}")
-                .workerId(2)
+                .runnerId(2)
                 .leaseUntil(Instant.ofEpochMilli(AT - 2_000))
                 .claimedAt(Instant.ofEpochMilli(AT - 5_000))
                 .account("acct")
@@ -68,7 +69,7 @@ class TaskHashesTest {
         var h = new HashMap<String, String>();
         for (var i = 0; i < pairs.size(); i += 2) h.put(pairs.get(i), pairs.get(i + 1));
         h.put(F_STATE, String.valueOf(t.state().code()));
-        h.put(F_DUE, String.valueOf(t.due().toEpochMilli()));
+        h.put(F_DUE, String.valueOf(t.dueAt().toEpochMilli()));
         h.put(F_STATE_CHANGED, String.valueOf(t.stateChangedAt().toEpochMilli()));
         h.put("hs", t.steps() == null ? "0" : "1");
         h.put("fc", t.failures() == null ? "0" : "1");
@@ -101,7 +102,7 @@ class TaskHashesTest {
                 .stateChangedAt(Instant.ofEpochMilli(AT))
                 .claimedAt(Instant.ofEpochMilli(AT))
                 .leaseUntil(Instant.ofEpochMilli(LEASE_UNTIL))
-                .workerId(WORKER)
+                .runnerId(RUNNER)
                 .build();
     }
 
@@ -109,7 +110,7 @@ class TaskHashesTest {
     void aClaimEntryDecodesToTheLeasedTaskTheHashReadAgrees() {
         var t = everyField();
 
-        var claimed = TaskHashes.fromClaim(entry(t), AT, LEASE_UNTIL, WORKER);
+        var claimed = TaskHashes.fromClaim(entry(t), AT, LEASE_UNTIL, RUNNER);
 
         assertThat(claimed).isEqualTo(leased(t));
         var h = hash(t);
@@ -119,7 +120,7 @@ class TaskHashesTest {
         h.put(F_ATTEMPTS, String.valueOf(t.attempts() + 1));
         h.put(F_CLAIMED_AT, String.valueOf(AT));
         h.put(F_LEASE, String.valueOf(LEASE_UNTIL));
-        h.put(F_WORKER, String.valueOf(WORKER));
+        h.put(F_RUNNER, String.valueOf(RUNNER));
         assertThat(TaskHashes.fromHash(
                         t.id(),
                         h,
@@ -139,11 +140,11 @@ class TaskHashesTest {
                 .state(TaskState.QUEUED)
                 .maxAttempts(3)
                 .createdAt(Instant.ofEpochMilli(AT - 9_000))
-                .due(Instant.ofEpochMilli(AT - 1_000))
+                .dueAt(Instant.ofEpochMilli(AT - 1_000))
                 .stateChangedAt(Instant.ofEpochMilli(AT - 1_000))
                 .build();
 
-        var claimed = TaskHashes.fromClaim(entry(t), AT, LEASE_UNTIL, WORKER);
+        var claimed = TaskHashes.fromClaim(entry(t), AT, LEASE_UNTIL, RUNNER);
 
         assertThat(claimed).isEqualTo(leased(t));
         assertThat(claimed.encodedPayload()).isNull();
@@ -159,15 +160,15 @@ class TaskHashesTest {
         var full = entry(everyField());
         var shorter = full.subList(0, full.size() - 1);
 
-        assertThatThrownBy(() -> TaskHashes.fromClaim(shorter, AT, LEASE_UNTIL, WORKER))
+        assertThatThrownBy(() -> TaskHashes.fromClaim(shorter, AT, LEASE_UNTIL, RUNNER))
                 .isInstanceOf(TaskStoreException.class)
                 .hasMessageContaining(full.size() - 1 + " values")
                 .hasMessageNotContaining("order");
-        assertThatThrownBy(() -> TaskHashes.fromClaim("secret", AT, LEASE_UNTIL, WORKER))
+        assertThatThrownBy(() -> TaskHashes.fromClaim("secret", AT, LEASE_UNTIL, RUNNER))
                 .isInstanceOf(TaskStoreException.class)
                 .hasMessageContaining("String")
                 .hasMessageNotContaining("secret");
-        assertThatThrownBy(() -> TaskHashes.fromClaim(null, AT, LEASE_UNTIL, WORKER))
+        assertThatThrownBy(() -> TaskHashes.fromClaim(null, AT, LEASE_UNTIL, RUNNER))
                 .isInstanceOf(TaskStoreException.class)
                 .hasMessageContaining("null");
     }
@@ -177,7 +178,7 @@ class TaskHashesTest {
         var e = entry(everyField());
         e.set(4 + Arrays.asList(RedisScripts.CLAIM_FIELDS).indexOf(F_QUEUE), 3L);
 
-        assertThatThrownBy(() -> TaskHashes.fromClaim(e, AT, LEASE_UNTIL, WORKER))
+        assertThatThrownBy(() -> TaskHashes.fromClaim(e, AT, LEASE_UNTIL, RUNNER))
                 .isInstanceOf(TaskStoreException.class)
                 .hasMessageContaining("task 42")
                 .hasMessageContaining("Long as " + F_QUEUE);
@@ -188,13 +189,13 @@ class TaskHashesTest {
         var e = entry(everyField());
         e.set(0, "4x2");
 
-        assertThatThrownBy(() -> TaskHashes.fromClaim(e, AT, LEASE_UNTIL, WORKER))
+        assertThatThrownBy(() -> TaskHashes.fromClaim(e, AT, LEASE_UNTIL, RUNNER))
                 .isInstanceOf(TaskStoreException.class)
                 .hasMessageContaining("malformed task id 4x2");
     }
 
     @Test
-    void aStoredValueThatCannotBeReadIsAStoreErrorNamingTheTaskOnBothPaths() {
+    void aStoredValueThatCannotBeReadIsAnUnreadableTaskNamingTheTaskOnBothPaths() {
         var t = everyField();
         for (var bad : List.of(
                 Map.entry(F_REVISION, "five"),
@@ -206,17 +207,17 @@ class TaskHashesTest {
             h.put(bad.getKey(), bad.getValue());
 
             assertThatThrownBy(
-                            () -> TaskHashes.fromClaim(entry(t, h, RedisScripts.CLAIM_FIELDS), AT, LEASE_UNTIL, WORKER))
+                            () -> TaskHashes.fromClaim(entry(t, h, RedisScripts.CLAIM_FIELDS), AT, LEASE_UNTIL, RUNNER))
                     .as(bad.getKey())
-                    .isInstanceOf(TaskStoreException.class)
+                    .isInstanceOf(UnreadableTaskException.class)
                     .hasMessageContaining("task 42");
             assertThatThrownBy(() -> TaskHashes.fromHash(t.id(), h, null, null, List.of()))
                     .as(bad.getKey())
-                    .isInstanceOf(TaskStoreException.class)
+                    .isInstanceOf(UnreadableTaskException.class)
                     .hasMessageContaining("task 42");
         }
         assertThatThrownBy(() -> TaskHashes.fromHash(t.id(), hash(t), null, null, List.of("[1]")))
-                .isInstanceOf(TaskStoreException.class)
+                .isInstanceOf(UnreadableTaskException.class)
                 .hasMessageContaining("task 42");
     }
 
@@ -228,7 +229,7 @@ class TaskHashesTest {
                 .toArray(String[]::new);
 
         assertThatThrownBy(() -> TaskHashes.fromClaim(
-                        entry(t, hash(t), withoutAccount), withoutAccount, AT, LEASE_UNTIL, WORKER))
+                        entry(t, hash(t), withoutAccount), withoutAccount, AT, LEASE_UNTIL, RUNNER))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("does not carry the task field " + F_ACCOUNT);
     }
@@ -240,7 +241,7 @@ class TaskHashesTest {
         Collections.reverse(reversed);
         var fields = reversed.toArray(String[]::new);
 
-        assertThat(TaskHashes.fromClaim(entry(t, hash(t), fields), fields, AT, LEASE_UNTIL, WORKER))
+        assertThat(TaskHashes.fromClaim(entry(t, hash(t), fields), fields, AT, LEASE_UNTIL, RUNNER))
                 .isEqualTo(leased(t));
     }
 
@@ -256,6 +257,6 @@ class TaskHashesTest {
     void theClaimScriptHasEveryFieldPositionFilledIn() {
         assertThat(RedisScripts.CLAIM).doesNotContainPattern("@[A-Za-z]+@");
         var state = Arrays.asList(RedisScripts.CLAIM_FIELDS).indexOf(F_STATE) + 1;
-        assertThat(RedisScripts.CLAIM).contains("if v[" + state + "] ~= '0'");
+        assertThat(RedisScripts.CLAIM).contains("v[" + state + "] == '0'");
     }
 }

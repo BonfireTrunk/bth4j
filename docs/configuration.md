@@ -24,11 +24,11 @@ How the runner finds its store, its processors and its JSON mapping, and how it 
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `store` | required | `new RedisTaskStore(jedis, "namespace")`, `new PostgresTaskStore(dataSource, "prefix")`, `new SqliteTaskStore(dataSource, "prefix")` or `new InMemoryStore()` |
+| `store` | required | `RedisTaskStore.builder().client(jedis).namespace("namespace").build()`, `PostgresTaskStore.builder().dataSource(dataSource).namespace("namespace").build()`, `SqliteTaskStore.builder().dataSource(dataSource).namespace("namespace").build()` or `InMemoryStore.builder().build()` |
 | `registry` | new registry | the processor registry; by default created by the runner and reached with `runner.registry()` |
-| `jsonMapper` | none | payloads and step results as JSON; needed unless every task type has its own codec |
+| `jsonMapper` | none | payloads and step results as JSON; needed unless every task type has its own codec. A runner without one refuses to start when a registered task type has a JSON payload |
 | `clock` | `Clock.systemUTC()` | clock for client-side instants (`createdAt`, delays, retry times) |
-| `workerLabel` | JVM name (`pid@host`) | identifies this process in the worker registry; 1 to 128 characters |
+| `runnerLabel` | JVM name (`pid@host`) | identifies this process in the runner registry; 1 to 128 characters |
 | `threadGroupName` | `bgr` | name of the runner's thread group |
 
 ## Executor and concurrency
@@ -38,7 +38,7 @@ How many tasks a runner runs at once. See [Concurrency](queues-and-concurrency.m
 | Setting | Default | Meaning |
 |---|---|---|
 | `concurrency` | `Concurrency.fixed(max(2, 2 x processors))` | how many tasks run at once; `fixed(n)` or `adaptive(min, max[, cpuTarget, memoryTarget])`; adaptive defaults: CPU 0.90, memory 0.80, `HEAP` |
-| `taskExecutor` | built from `concurrency` | a custom `BackgroundExecutor`; the runner shuts it down |
+| `taskExecutor` | built from `concurrency` | a custom `BackgroundExecutor`; the runner shuts it down. Set this or `concurrency`, not both |
 
 ## Queues
 
@@ -46,8 +46,9 @@ Which queues exist, which ones this instance processes and how it shares its slo
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `configureQueues` | `Q:DEF`, `Q:LOW`, `Q:MED`, `Q:HIGH`; default queue `Q:DEF` | available queues, queues this instance processes (round robin), default queue |
-| `queue(name, QueuePolicy)` | `QueuePolicy.DEFAULT` (weight 1, no limit) | share of free slots and concurrency limit of a queue on this runner |
+| `queues(Queues)` | the one queue `general` | the queues tasks can be enqueued to and the default queue; the same value goes to every runner and `TaskClient` |
+| `processQueues(list)` | all queues of `queues` | the queues this instance processes (round robin) |
+| `addQueuePolicy(name, QueuePolicy)` | `QueuePolicy.DEFAULT` (weight 1, no limit) | share of free slots and concurrency limit of a queue on this runner |
 
 ## Retries and attempts
 
@@ -56,23 +57,24 @@ How long a task waits after a failed attempt and how many attempts it gets. See 
 | Setting | Default | Meaning |
 |---|---|---|
 | `retryPolicy` | exponential, 1 s doubling, capped at 1 h, 20 % jitter | delay after a failed attempt |
-| `retryPolicy(name, policy)` | none | adds a named policy that requests choose with `TaskRequest.retryPolicy(name)`; name 1 to 64 characters; may be called several times |
+| `addRetryPolicy(name, policy)` | none | adds a named policy that requests choose with `TaskRequest.retryPolicy(name)`; name 1 to 64 characters; may be called several times |
 | `defaultMaxAttempts` | 10 (1 to 32767) | attempts for requests that do not set `maxAttempts` |
+| `defaultMaxRunTime` | 1 hour (at most `TaskRequest.MAX_RUN_TIME`, about 24.8 days) | the longest one attempt may run when its task or schedule sets no `maxRunTime`; see [Maximum run time](retries-and-cancelling.md#maximum-run-time) |
 
 ## Leases and timing
 
-How long a claimed task is leased, how often the runner polls and how often each service runs. See [How it works](how-it-works.md) for the services, [Recurring tasks](recurring-tasks.md) for `recurringTasksCheckInterval` and the misfire threshold, and [Cancelling tasks](retries-and-cancelling.md#cancelling-tasks) for how a cancel request reaches a running task through lease renewal.
+How long a claimed task is leased, how often the runner polls and how often each service runs. Every interval is at most 100 years. See [How it works](how-it-works.md) for the services, [Recurring tasks](recurring-tasks.md) for `scheduleCheckInterval` and the misfire threshold, and [Cancelling tasks](retries-and-cancelling.md#cancelling-tasks) for how a cancel request reaches a running task through lease renewal.
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `leaseDuration` | 60 s (1 s to 100 years) | how long a claimed task stays leased without renewal; renewed every third of its length while running. A lapsed lease cannot be renewed any more, so keep it well above the worst pause (GC, container freeze, slow store round trip); a few seconds is fragile |
 | `idlePollInterval` | 500 ms (at least 10 ms) | sleep after a claim that found nothing (cut short when a queue at its `maxConcurrent` frees a slot), and the wait for a free executor slot |
-| `claimBatchSize` | 32 | most tasks claimed in one call, bounded by free executor slots |
+| `claimBatchSize` | 32 | most tasks claimed in one call, bounded by free executor slots. There is no upper limit today; one call is one Redis script or one SQLite write transaction, so a very large value makes other callers wait. A later release may refuse values above about 10,000, so stay below that |
 | `shutdownTimeout` | 30 s | how long `stop()` takes at most, waiting for services and running tasks |
-| `serviceCheckInterval` | 10 s | how often a dead service thread is restarted |
-| `maintenanceCheckInterval` | 5 s (at least 1 s) | how often expired leases are looked for, tasks past `startBy` are expired and the worker heartbeat is written |
-| `scheduledTasksCheckInterval` | 1 s (at least 10 ms) | upper bound of the wait between promotions of due scheduled tasks; it wakes earlier for the next due task |
-| `recurringTasksCheckInterval` | 10 s | how often recurring definitions are checked; twice this value (at least 1 minute) is the misfire threshold |
+| `serviceCheckInterval` | 10 s (at least 1 ms) | how often a dead service thread is restarted |
+| `maintenanceCheckInterval` | 5 s (at least 1 s) | how often expired leases are looked for, tasks past `startBy` are expired and the runner heartbeat is written |
+| `scheduledTaskCheckInterval` | 1 s (at least 10 ms) | upper bound of the wait between promotions of due scheduled tasks; it wakes earlier for the next due task |
+| `scheduleCheckInterval` | 10 s (at least 10 ms) | how often recurring definitions are checked; twice this value (at least 1 minute) is the misfire threshold |
 
 ## Retention and purge
 
@@ -82,11 +84,12 @@ How long finished tasks stay readable and how the purge removes them. See [Reten
 |---|---|---|
 | `succeededRetention` | 10 minutes (at most 100 years) | how long succeeded tasks are kept; zero removes them at once |
 | `deadRetention` | 90 days (at most 100 years) | how long dead tasks are kept; zero removes them at once |
-| `cancelledRetention` | 48 hours (at most 100 years) | how long cancelled and expired tasks are kept |
+| `cancelledRetention` | 48 hours (at most 100 years) | how long cancelled tasks are kept; zero removes them at the next purge |
+| `expiredRetention` | 48 hours (at most 100 years) | how long expired tasks are kept; zero removes them at the next purge |
 | `keepSucceededPayload` | false | keep the payload of succeeded tasks (dropped on success by default) |
-| `purgeInterval` | 1 minute | time between purge runs |
-| `purgeBatchSize` | 500 | tasks removed per purge call; the purge loops until a call removes fewer |
-| `workerStaleAfter` | 10 minutes (at most 100 years) | worker registry rows without a heartbeat for this long are deleted by the purge |
+| `purgeInterval` | 1 minute (at least 1 ms) | time between purge runs |
+| `purgeBatchSize` | 500 | tasks removed per purge call; the purge loops until a call removes fewer. There is no upper limit today; one call is one Redis script or one SQLite write transaction, so a very large value makes other callers wait. A later release may refuse values above about 10,000, so stay below that |
+| `runnerStaleTimeout` | 10 minutes (at least three times `maintenanceCheckInterval`, at most 100 years) | runner registry rows without a heartbeat for this long are deleted by the purge |
 
 ## Task ids
 
@@ -114,12 +117,15 @@ What the runner reports about tasks and how much of a failure it records. See [M
 
 ### What `failureDetail` covers
 
+The default `FULL` is what finding the cause of a failed task needs. An exception message can carry customer data that the processor read while it ran, and with `FULL` it is stored with the task, written to the runner's log and shown by the admin API and the dashboard to every signed-in user (see [Roles](admin.md#roles)). Set `CLASS_NAME_ONLY` where that must not happen. It does not cover what the application itself puts into a task: payload, headers, step results, progress and cancel reasons are stored and shown as before.
+
 | Text or output | With `CLASS_NAME_ONLY` |
 |---|---|
 | The stored failure | carries no message and no stack |
 | The `TaskEvent` error (a `RedactedFailure` that has the class name as `toString()`) | carries no message and no stack |
-| The runner issues | carry no message and no stack |
-| The runner's log lines | carry no message and no stack |
+| The runner issues about a task's failure | carry no message and no stack |
+| The runner's log lines about a task's failure | carry no message and no stack |
+| A store error, in the runner issues, in `RunnerHealth.lastStoreError` and in the log | not covered: recorded and logged with its message and stack (the stack on the first failure of a kind, see [While the store is unreachable](monitoring.md#while-the-store-is-unreachable)). It comes from the store's driver and is what finding an outage needs; it can name the store's host and port |
 | A rethrown `VirtualMachineError` | not covered: it reaches the thread's uncaught exception handler with its message and stack |
 | The message of a `TaskCancelledException` | not stored as the cancel reason; the operator's reason or "cancel requested" is |
 | Progress text and messages that your own retry policy returns | not touched |
@@ -131,12 +137,38 @@ Application text is not covered, so hosts must keep personal data out of it.
 
 | Call | What happens |
 |---|---|
-| `start()` | Fails with `TaskConfigurationException` when no processor is registered. A `start()` that fails later, for example because the store cannot be reached, stops what it started and can be called again. |
+| `start()` | Fails with `TaskConfigurationException` when no processor is registered. A `start()` that fails later, for example because the store cannot be reached, stops what it started and can be called again. On a runner that is started it does nothing. After `stop()` it throws `IllegalStateException`: a stopped runner stays stopped, build a new one. |
 | `quiet()` | Stops claiming while running tasks finish. |
 | `resume()` | Claims again. |
-| `stop()` | Stops the services and waits up to `shutdownTimeout` in total, also when a service is stuck in a store call. It keeps renewing leases of running tasks meanwhile. Tasks still running afterwards are retried when their lease expires. |
+| `stop()` | Stops the services and waits up to `shutdownTimeout` in total, also when a service is stuck in a store call. It keeps renewing leases of running tasks meanwhile. Tasks still running afterwards are retried when their lease expires. It answers whether everything had ended when it returned. It can come before `start()` and can be repeated; a repeated call does not wait again. |
+| `close()` | The same as `stop()`, so a runner works in try-with-resources. |
 
-A lease that has lapsed is not revived by a later renewal, so `leaseDuration` must sit well above the worst pause of a worker (GC, container freeze, slow store round trip).
+`runner.health().status()` follows these calls:
+
+```mermaid
+stateDiagram-v2
+    [*] --> NEW: build()
+    NEW --> RUNNING: start()
+    RUNNING --> QUIET: quiet()
+    QUIET --> RUNNING: resume()
+    NEW --> STOPPING: stop()
+    RUNNING --> STOPPING: stop()
+    QUIET --> STOPPING: stop()
+    STOPPING --> STOPPED: the last task, claim and service has ended
+    STOPPED --> [*]
+```
+
+| Status | Meaning |
+|---|---|
+| `NEW` | built, not started |
+| `RUNNING` | claims and runs tasks |
+| `QUIET` | started, claims nothing new |
+| `STOPPING` | `stop()` was called and something of this runner still runs: a task, a claim or a service |
+| `STOPPED` | `stop()` was called and nothing of this runner runs any more |
+
+`STOPPED` is never reported because the shutdown timeout ran out. A script that ends the process should wait for `STOPPED`, or use the answer of `stop()`: `false` means tasks were still running. A task whose processor ignores interrupts keeps the runner in `STOPPING` for as long as it runs.
+
+A lease that has lapsed is not revived by a later renewal, so `leaseDuration` must sit well above the worst pause of a runner (GC, container freeze, slow store round trip).
 
 ## How outcomes are written
 
@@ -164,4 +196,8 @@ What this means in practice:
 
 ## A process that only produces tasks
 
-A process that only produces tasks can use `TaskClient.builder().store(store).jsonMapper(mapper).build()`. See [Enqueueing](enqueueing.md).
+A process that only produces tasks can use `TaskClient.builder().store(store).jsonMapper(mapper).queues(queues).build()`, with the `Queues` value the runners have. See [Enqueueing](enqueueing.md).
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `addRetryPolicyName(name)` | none | names a retry policy the runners have; name 1 to 64 characters; may be called several times. Once one name is added, a request that names another policy is refused with a `TaskValidationException`. With no name added nothing is checked. See [Named retry policies](retries-and-cancelling.md#named-retry-policies) |

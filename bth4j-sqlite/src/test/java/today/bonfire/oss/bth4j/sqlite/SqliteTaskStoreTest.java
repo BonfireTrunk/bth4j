@@ -24,9 +24,9 @@ import java.util.Set;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
 
 class SqliteTaskStoreTest {
 
@@ -34,48 +34,121 @@ class SqliteTaskStoreTest {
 
     @Test
     void nullDataSourceAndNullClockAreRejected() {
-        assertThatThrownBy(() -> new SqliteTaskStore(null, "bth")).isInstanceOf(TaskConfigurationException.class);
-        assertThatThrownBy(() -> new SqliteTaskStore(DATA_SOURCE, "bth", null))
+        assertThatThrownBy(() -> SqliteTaskStore.builder()
+                        .dataSource(null)
+                        .namespace("bth")
+                        .build())
+                .isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> SqliteTaskStore.builder()
+                        .dataSource(DATA_SOURCE)
+                        .namespace("bth")
+                        .clock(null)
+                        .build())
                 .isInstanceOf(TaskConfigurationException.class);
     }
 
     @Test
-    void prefixMustBeAPlainLowerCaseIdentifier() {
-        for (var bad : new String[] {null, "", "Bth", "1bth", "bth-tasks", "bth tasks", "a".repeat(42)}) {
-            assertThatThrownBy(() -> new SqliteTaskStore(DATA_SOURCE, bad))
-                    .as("prefix %s", bad)
-                    .isInstanceOf(TaskConfigurationException.class);
-        }
-        assertThatCode(() -> new SqliteTaskStore(DATA_SOURCE, "bth_2")).doesNotThrowAnyException();
-        assertThatCode(() -> new SqliteTaskStore(DATA_SOURCE, "a".repeat(41), Clock.systemUTC()))
+    void dataSourceAndNamespaceAreRequiredAndTheClockIsNot() {
+        assertThatThrownBy(() -> SqliteTaskStore.builder().namespace("bth").build())
+                .isInstanceOf(TaskConfigurationException.class)
+                .hasMessage("DataSource is required");
+        assertThatThrownBy(
+                        () -> SqliteTaskStore.builder().dataSource(DATA_SOURCE).build())
+                .isInstanceOf(TaskConfigurationException.class)
+                .hasMessageStartingWith("namespace must match ");
+        assertThatThrownBy(() -> SqliteTaskStore.builder()
+                        .dataSource(DATA_SOURCE)
+                        .namespace("bth")
+                        .clock(null)
+                        .build())
+                .isInstanceOf(TaskConfigurationException.class)
+                .hasMessage("clock is required");
+        assertThatCode(() -> SqliteTaskStore.builder()
+                        .dataSource(DATA_SOURCE)
+                        .namespace("bth")
+                        .build())
                 .doesNotThrowAnyException();
     }
 
     @Test
-    void prefixesThatWouldMakeTableNamesSqliteReservesAreRejected() {
-        for (var reserved : new String[] {"sqlite", "sqlite_", "sqlite_app"}) {
-            assertThatThrownBy(() -> new SqliteTaskStore(DATA_SOURCE, reserved))
-                    .as("prefix %s", reserved)
+    void oneBuilderBuildsTwoStoresThatDoNotShareItsLaterValues() {
+        var builder = SqliteTaskStore.builder().dataSource(DATA_SOURCE).namespace("first");
+        var first = builder.build();
+        var second = builder.namespace("second").build();
+
+        assertThat(first.schemaStatements().getFirst()).startsWith("CREATE TABLE IF NOT EXISTS first_meta (");
+        assertThat(second.schemaStatements().getFirst()).startsWith("CREATE TABLE IF NOT EXISTS second_meta (");
+    }
+
+    @Test
+    void namespaceMustBeAPlainLowerCaseIdentifier() {
+        for (var bad : new String[] {null, "", "Bth", "1bth", "bth-tasks", "bth tasks", "a".repeat(42)}) {
+            assertThatThrownBy(() -> SqliteTaskStore.builder()
+                            .dataSource(DATA_SOURCE)
+                            .namespace(bad)
+                            .build())
+                    .as("namespace %s", bad)
                     .isInstanceOf(TaskConfigurationException.class)
+                    .hasMessageStartingWith("namespace must match ");
+        }
+        assertThatCode(() -> SqliteTaskStore.builder()
+                        .dataSource(DATA_SOURCE)
+                        .namespace("bth_2")
+                        .build())
+                .doesNotThrowAnyException();
+        assertThatCode(() -> SqliteTaskStore.builder()
+                        .dataSource(DATA_SOURCE)
+                        .namespace("a".repeat(41))
+                        .clock(Clock.systemUTC())
+                        .build())
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void namespacesThatWouldMakeTableNamesSqliteReservesAreRejected() {
+        for (var reserved : new String[] {"sqlite", "sqlite_", "sqlite_app"}) {
+            assertThatThrownBy(() -> SqliteTaskStore.builder()
+                            .dataSource(DATA_SOURCE)
+                            .namespace(reserved)
+                            .build())
+                    .as("namespace %s", reserved)
+                    .isInstanceOf(TaskConfigurationException.class)
+                    .hasMessageStartingWith("namespace " + reserved + " would make table names")
                     .hasMessageContaining("reserves");
         }
-        assertThatCode(() -> new SqliteTaskStore(DATA_SOURCE, "sqlitex")).doesNotThrowAnyException();
-        assertThatCode(() -> new SqliteTaskStore(DATA_SOURCE, "my_sqlite")).doesNotThrowAnyException();
+        assertThatCode(() -> SqliteTaskStore.builder()
+                        .dataSource(DATA_SOURCE)
+                        .namespace("sqlitex")
+                        .build())
+                .doesNotThrowAnyException();
+        assertThatCode(() -> SqliteTaskStore.builder()
+                        .dataSource(DATA_SOURCE)
+                        .namespace("my_sqlite")
+                        .build())
+                .doesNotThrowAnyException();
     }
 
     @Test
     void infoNamesTheEngineAndTheSchemaVersion() {
-        var info = new SqliteTaskStore(DATA_SOURCE, "app").info();
+        var info = SqliteTaskStore.builder()
+                .dataSource(DATA_SOURCE)
+                .namespace("app")
+                .build()
+                .info();
 
         assertThat(info.engine()).isEqualTo("sqlite");
         assertThat(info.schemaVersion())
                 .isEqualTo(SqliteTaskStore.SCHEMA_VERSION)
-                .isEqualTo(1);
+                .isEqualTo(2);
     }
 
     @Test
     void schemaStatementsUseThePrefixAndTheHouseRules() {
-        var statements = new SqliteTaskStore(DATA_SOURCE, "app").schemaStatements();
+        var statements = SqliteTaskStore.builder()
+                .dataSource(DATA_SOURCE)
+                .namespace("app")
+                .build()
+                .schemaStatements();
 
         assertThat(statements).hasSize(17);
         assertThat(statements.getFirst()).startsWith("CREATE TABLE IF NOT EXISTS app_meta (");
@@ -103,13 +176,16 @@ class SqliteTaskStoreTest {
                 .singleElement()
                 .asString()
                 .contains("created INTEGER NOT NULL", "due INTEGER NOT NULL", "headers TEXT", "failures TEXT");
-        assertThat(statements.getLast()).startsWith("INSERT INTO app_meta").contains("'schema_version', 1");
+        assertThat(statements.getLast()).startsWith("INSERT INTO app_meta").contains("'schema_version', 2");
     }
 
     @Test
     void emptyClaimsDoNotOpenAConnection() {
         var dataSource = mock(DataSource.class);
-        var store = new SqliteTaskStore(dataSource, "app");
+        var store = SqliteTaskStore.builder()
+                .dataSource(dataSource)
+                .namespace("app")
+                .build();
         var grants = List.of(new QueueGrant(1, 1, 2));
 
         assertThat(store.claim(new ClaimRequest(grants, 0, Duration.ofSeconds(30), 1, null)))
@@ -132,7 +208,7 @@ class SqliteTaskStoreTest {
     private static SqliteTaskStore storeOn(Connection connection) throws SQLException {
         var dataSource = mock(DataSource.class);
         when(dataSource.getConnection()).thenReturn(connection);
-        return new SqliteTaskStore(dataSource, "app");
+        return SqliteTaskStore.builder().dataSource(dataSource).namespace("app").build();
     }
 
     @Test

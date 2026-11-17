@@ -6,28 +6,25 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.common.Cron;
 import today.bonfire.oss.bth4j.common.JsonMapper;
 import today.bonfire.oss.bth4j.exceptions.EnqueueFailedException;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
+import today.bonfire.oss.bth4j.exceptions.TaskDataException;
 import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FullStore;
-import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
-import today.bonfire.oss.bth4j.spi.StateCounts;
+import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
 
 /**
  * The producer side: enqueues tasks, manages recurring definitions and reads tasks. Thread-safe; one instance
@@ -47,6 +44,7 @@ public final class TaskClient {
     private final QueuesHolder queues;
     private final Clock clock;
     private final int defaultMaxAttempts;
+    private final Set<String> retryPolicyNames;
     private final AdminOps admin;
 
     TaskClient(Builder b) {
@@ -57,7 +55,8 @@ public final class TaskClient {
         this.queues = b.queues;
         this.clock = b.clock;
         this.defaultMaxAttempts = b.defaultMaxAttempts;
-        this.admin = new DefaultAdminOps(store, names, queues, clock, null, null);
+        this.retryPolicyNames = Set.copyOf(b.retryPolicyNames);
+        this.admin = new DefaultAdminOps(store, names, clock, null, null);
     }
 
     public static Builder builder() {
@@ -80,12 +79,17 @@ public final class TaskClient {
      *
      * @throws TaskValidationException when the request is invalid or exceeds a size limit, or sets an id that
      *                                 was never allocated
+     * @throws TaskDataException       when the payload cannot be encoded
+     * @throws TaskConfigurationException when the task type has no codec and this client has no JSON mapper
      * @throws TaskIdReusedException   when the request sets an id that belongs to a task with other content
+     * @throws UnreadableTaskException when the stored task of the request's id cannot be read; nothing was written,
+     *                                 and a retry fails the same way until that task is repaired or deleted
      * @throws EnqueueFailedException  when the store could not be reached or all three generated ids were taken;
      *                                 with an id the task may already be stored (retry with that id); with no
      *                                 ids nothing was written by this call (resend the same request)
      */
     public EnqueueResult enqueue(TaskRequest<?> request) {
+        if (request == null) throw new TaskValidationException("request is required");
         List<Long> known = request.id() == null ? List.of() : List.of(request.id());
         try {
             if (request.id() != null) {
@@ -126,10 +130,18 @@ public final class TaskClient {
      *                                 the same id, or a caller id overlaps this batch's fresh id range
      * @throws TaskIdReusedException   when a request sets an id that belongs to a task with other content;
      *                                 checked before the first write, so nothing is stored
-     * @throws EnqueueFailedException when the store fails, generated ids cannot be replaced, or caller-id
-     *                                 reuse is discovered after preflight; carries the ids as described above
+     * @throws UnreadableTaskException when the stored task of a caller id cannot be read; checked before the
+     *                                 first write, so nothing is stored
+     * @throws EnqueueFailedException when the store fails before the first write, or anything fails from the
+     *                                 first write on: the store, generated ids that cannot be replaced, caller-id
+     *                                 reuse discovered after preflight, a stored task that cannot be read;
+     *                                 carries the ids as described above and what failed as its cause
      */
     public List<EnqueueResult> enqueueAll(List<? extends TaskRequest<?>> requests) {
+        if (requests == null) throw new TaskValidationException("requests are required");
+        for (var request : requests) {
+            if (request == null) throw new TaskValidationException("requests cannot contain null");
+        }
         var notStored = new HashSet<Integer>();
         for (int i = 0; i < requests.size(); i++) {
             if (requests.get(i).id() == null) notStored.add(i);
@@ -172,7 +184,7 @@ public final class TaskClient {
             var to = Math.min(records.size(), from + ENQUEUE_CHUNK);
             try {
                 results.addAll(writeChunk(requests, records, ids, callerIds, verified, notStored, from, to));
-            } catch (TaskStoreException | TaskIdReusedException e) {
+            } catch (RuntimeException e) {
                 throw new EnqueueFailedException(ids, results, notStored, e);
             }
         }
@@ -259,10 +271,10 @@ public final class TaskClient {
 
     private EnqueueResult result(TaskRecord sent, EnqueueOutcome outcome, boolean verified) {
         return switch (outcome) {
-            case EnqueueOutcome.Stored s -> new EnqueueResult.Accepted(sent.id());
+            case EnqueueOutcome.Stored s -> new EnqueueResult.Accepted(sent.id(), true);
             case EnqueueOutcome.Exists e -> {
                 if (!verified) requireSameContent(sent);
-                yield new EnqueueResult.Accepted(sent.id());
+                yield new EnqueueResult.Accepted(sent.id(), false);
             }
             case EnqueueOutcome.DuplicateKey d -> new EnqueueResult.Duplicate(d.existingId());
         };
@@ -277,7 +289,7 @@ public final class TaskClient {
      * @throws TaskIdReusedException when it differs
      */
     private boolean requireSameContent(TaskRecord sent) {
-        var stored = store.getTask(sent.id()).orElse(null);
+        var stored = store.task(sent.id()).orElse(null);
         if (stored == null) return false;
         if (stored.typeId() != sent.typeId()) throw new TaskIdReusedException(sent.id(), "another task type");
         if (stored.queueId() != sent.queueId()) throw new TaskIdReusedException(sent.id(), "another queue");
@@ -291,18 +303,33 @@ public final class TaskClient {
         return true;
     }
 
+    /**
+     * A request with a caller id may be the resend of one that was accepted: its {@code startBy} can have passed
+     * since, and a {@code delay} counts from now again. The store then answers that the id exists, also for a
+     * task that was removed while its unique key is kept.
+     */
+    private boolean alreadyStored(TaskRequest<?> request) {
+        var id = request.id();
+        if (id == null) return false;
+        if (store.task(id).isPresent()) return true;
+        return request.uniqueKey() != null && store.holdsKey(id, request.uniqueKey());
+    }
+
     <T> TaskRecord toRecord(TaskRequest<T> request) {
         return toRecord(request, request.id() != null ? request.id() : ids.nextId());
     }
 
     private <T> TaskRecord toRecord(TaskRequest<T> request, long id) {
         var type = request.type();
+        requireKnownRetryPolicy(request.retryPolicy());
         var now = clock.instant();
         StoredTime.require("at", request.at(), now);
         StoredTime.require("startBy", request.startBy(), now);
         Instant due = request.at();
         if (due == null && request.delay() != null) due = now.plus(request.delay());
-        if (request.startBy() != null && due != null && request.startBy().isBefore(due)) {
+        if (request.startBy() != null
+                && request.startBy().isBefore(due != null ? due : now)
+                && !alreadyStored(request)) {
             throw new TaskValidationException("startBy is before the run time");
         }
         var b = TaskRecord.builder()
@@ -314,7 +341,7 @@ public final class TaskClient {
                 .state(due != null && due.isAfter(now) ? TaskState.SCHEDULED : TaskState.QUEUED)
                 .maxAttempts(request.maxAttempts() != null ? request.maxAttempts() : defaultMaxAttempts)
                 .createdAt(now)
-                .due(due)
+                .dueAt(due)
                 .encodedPayload(codecs.encode(type, request.payload()))
                 .account(request.account())
                 .headers(validHeaders(request.headers()))
@@ -322,10 +349,17 @@ public final class TaskClient {
                 .retryPolicy(request.retryPolicy())
                 .startBy(request.startBy())
                 .maxRunTime(request.maxRunTime());
-        if (request.uniqueKey() != null && request.uniqueness() instanceof Uniqueness.KeepFor k) {
+        if (request.uniqueKey() != null && request.uniqueness() instanceof Uniqueness.KeepAfterDone k) {
             b.keyKeep(k.duration());
         }
         return b.build();
+    }
+
+    private void requireKnownRetryPolicy(String name) {
+        if (name != null && !retryPolicyNames.isEmpty() && !retryPolicyNames.contains(name)) {
+            throw new TaskValidationException(
+                    "retry policy " + name + " is not one of the names this client was given");
+        }
     }
 
     private static Map<String, String> validHeaders(Map<String, String> headers) {
@@ -348,9 +382,11 @@ public final class TaskClient {
      * such as a parked fixed-delay definition, resets it. A fixed-delay definition first fires one delay from
      * now.
      *
-     * @return the next fire time it has after the put: the stored one when it was kept
+     * @return whether the definition was created, changed or found unchanged, and the next fire time it has
+     *         after the put: the stored one when it was kept
      */
-    public <T> Instant putSchedule(ScheduleDefinition<T> definition) {
+    public <T> PutScheduleResult putSchedule(ScheduleDefinition<T> definition) {
+        if (definition == null) throw new TaskValidationException("definition is required");
         var now = clock.instant();
         Instant next;
         Instant keepUntil;
@@ -366,7 +402,7 @@ public final class TaskClient {
             keepUntil = Cron.next(definition.cron(), next, zone).orElse(next);
         }
         var type = definition.type();
-        var stored = new RecurringDefinition(
+        var stored = new StoredSchedule(
                 definition.id(),
                 names.typeId(type.name()),
                 type.payloadVersion(),
@@ -374,45 +410,56 @@ public final class TaskClient {
                 definition.account(),
                 definition.cron(),
                 definition.zone() == null ? null : definition.zone().getId(),
-                RecurringDefinition.misfireCode(definition.misfire()),
-                RecurringDefinition.misfireMaxFires(definition.misfire()),
-                definition.fixedDelay() == null ? null : definition.fixedDelay().toMillis(),
+                StoredSchedule.misfireCode(definition.misfire()),
+                StoredSchedule.misfireMaxFires(definition.misfire()),
+                definition.fixedDelay(),
                 definition.overlap() == Overlap.SKIP,
                 codecs.encode(type, definition.payload()),
                 definition.maxAttempts() != null ? definition.maxAttempts() : defaultMaxAttempts,
-                definition.maxRunTime() == null ? null : definition.maxRunTime().toMillis(),
+                definition.maxRunTime(),
                 false,
                 0);
-        var result = store.putRecurring(stored, next, keepUntil);
+        var result = store.putSchedule(stored, next, keepUntil);
         var outcome = result.outcome();
-        next = result.nextFire();
         var timing = definition.isFixedDelay() ? "every " + definition.fixedDelay() : definition.cron();
-        if (outcome == PutRecurringOutcome.UNCHANGED) {
+        if (outcome == PutScheduleOutcome.UNCHANGED) {
             log.debug("Schedule {} ({}) is registered already", definition.id(), timing);
         } else {
             log.info(
                     "{} schedule {} ({}) next at {}",
-                    outcome == PutRecurringOutcome.CREATED ? "Registered" : "Changed",
+                    outcome == PutScheduleOutcome.CREATED ? "Registered" : "Changed",
                     definition.id(),
                     timing,
-                    next);
+                    result.nextFireAt());
         }
-        return next;
+        return result;
     }
 
     /** @return true when a definition with that id existed */
     public boolean deleteSchedule(String id) {
-        return store.deleteRecurring(id);
+        StoredText.requirePresent("schedule id", id);
+        return store.deleteSchedule(id, null) == ScheduleOutcome.APPLIED;
     }
 
-    /** @return every definition's id with its next fire time */
-    public Map<String, Instant> schedules() {
-        return store.recurringSchedules();
+    /** @return every definition's id with its next fire time; {@link AdminOps#schedules} lists the definitions */
+    public Map<String, Instant> nextFireTimes() {
+        return store.nextFireTimes();
     }
 
     /** @return the task with that id, in whatever state it is */
     public Optional<TaskView> task(long id) {
-        return store.getTask(id).map(names::view);
+        return store.task(id).map(names::view);
+    }
+
+    /** The rule for a unique key that is looked up: any text a store can keep. */
+    static void requireLookupKey(String key) {
+        if (key == null) throw new TaskValidationException("uniqueKey is required");
+        StoredText.require("uniqueKey", key);
+    }
+
+    /** The rule for the state of a task listing. */
+    static void requireListedState(TaskState state) {
+        if (state == null) throw new TaskValidationException("state is required");
     }
 
     /**
@@ -420,7 +467,7 @@ public final class TaskClient {
      *         holds the key
      */
     public Optional<TaskView> taskByKey(String key) {
-        StoredText.require("uniqueKey", key);
+        requireLookupKey(key);
         return store.taskByKey(key).map(names::view);
     }
 
@@ -440,9 +487,13 @@ public final class TaskClient {
      *
      * @param queue  a queue name, or null for every queue
      * @param cursor {@link TaskViewPage#next()} of the previous page; null starts at the beginning
-     * @throws IllegalArgumentException if the cursor is malformed
+     * @param limit  the most tasks one page holds, at least 1
+     * @throws TaskValidationException if the state is null, the queue is blank or not one of this client's, the
+     *                                 cursor is malformed or the limit is below 1
      */
     public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
+        requireListedState(state);
+        if (queue != null && queue.isBlank()) throw new TaskValidationException("queue is required");
         var queueId = queue == null ? null : Integer.valueOf(names.queueId(queues.validQueue(queue)));
         var page = store.tasks(state, queueId, cursor, limit);
         var result = new ArrayList<TaskView>();
@@ -479,15 +530,14 @@ public final class TaskClient {
     }
 
     public static final class Builder {
-        static final List<String> DEFAULT_QUEUES = List.of("Q:DEF", "Q:LOW", "Q:MED", "Q:HIGH");
-
         private FullStore store;
         private Names names;
         private JsonMapper jsonMapper;
         private Clock clock = Clock.systemUTC();
         private int idBlockSize = 64;
         private int defaultMaxAttempts = 10;
-        private QueuesHolder queues = new QueuesHolder(new LinkedHashSet<>(DEFAULT_QUEUES), DEFAULT_QUEUES, "Q:DEF");
+        private final Set<String> retryPolicyNames = new HashSet<>();
+        private QueuesHolder queues = QueuesHolder.of(Queues.of(Queues.GENERAL), null);
 
         private Builder() {}
 
@@ -526,22 +576,30 @@ public final class TaskClient {
         }
 
         /**
-         * The queues tasks may be enqueued to and the one used when a request names none. Default
-         * {@code Q:DEF, Q:LOW, Q:MED, Q:HIGH} with {@code Q:DEF} as default.
+         * Names a retry policy the runners have, as given to {@code BackgroundRunner.Builder#addRetryPolicy}. Once
+         * a name is added, a request that names a retry policy outside the added names is refused with a
+         * {@link TaskValidationException}, so a wrong name is found when the task is enqueued and not when it first
+         * fails. A request that names no policy always passes; with no name added nothing is checked.
+         *
+         * @throws TaskConfigurationException when the name is blank or longer than
+         *                                    {@value TaskRequest#MAX_RETRY_POLICY_LENGTH} characters
          */
-        public Builder queues(List<String> availableQueues, String defaultQueue) {
-            if (availableQueues == null || availableQueues.isEmpty()) {
-                throw new TaskConfigurationException("availableQueues cannot be empty");
+        public Builder addRetryPolicyName(String name) {
+            if (!TaskRequest.isRetryPolicyName(name)) {
+                throw new TaskConfigurationException(
+                        "retry policy name must be 1 to " + TaskRequest.MAX_RETRY_POLICY_LENGTH + " characters");
             }
-            for (var q : availableQueues) {
-                if (StringUtils.isBlank(q)) throw new TaskConfigurationException("queue names cannot be blank");
-                if (!StoredText.storable(q)) throw new TaskConfigurationException("queue name contains U+0000");
-            }
-            Set<String> available = new LinkedHashSet<>(availableQueues);
-            var def = StringUtils.isBlank(defaultQueue) ? availableQueues.getFirst() : defaultQueue;
-            if (!available.contains(def))
-                throw new TaskConfigurationException("default queue is not an available queue");
-            this.queues = new QueuesHolder(available, List.copyOf(available), def);
+            this.retryPolicyNames.add(name);
+            return this;
+        }
+
+        /**
+         * The queues tasks may be enqueued to and the one used when a request names none; give the runners of
+         * the application the same value. Default: the one queue {@link Queues#GENERAL}.
+         */
+        public Builder queues(Queues queues) {
+            if (queues == null) throw new TaskConfigurationException("queues cannot be null");
+            this.queues = QueuesHolder.of(queues, null);
             return this;
         }
 

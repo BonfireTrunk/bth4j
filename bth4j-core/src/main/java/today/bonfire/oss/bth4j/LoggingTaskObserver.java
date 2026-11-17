@@ -23,7 +23,7 @@ public final class LoggingTaskObserver implements TaskObserver {
     @Override
     public void onEvent(TaskEvent event) {
         switch (event) {
-            case TaskEvent.Started e -> withTask(e.task(), () -> log.debug("started on worker {}", e.workerId()));
+            case TaskEvent.Started e -> withTask(e.task(), () -> log.debug("started on runner {}", e.runnerId()));
             case TaskEvent.Succeeded e ->
                 withTask(e.task(), () -> log.debug("succeeded in {} ({})", e.runTime(), e.outcome()));
             case TaskEvent.Retrying e ->
@@ -41,7 +41,7 @@ public final class LoggingTaskObserver implements TaskObserver {
                         () -> log.warn(
                                 "died after {} attempts: {} ({})", e.task().attempts(), e.reason(), e.outcome()));
             case TaskEvent.Rescheduled e ->
-                withTask(e.task(), () -> log.info("rescheduled to {} ({})", e.due(), e.outcome()));
+                withTask(e.task(), () -> log.info("rescheduled to {} ({})", e.dueAt(), e.outcome()));
             case TaskEvent.Cancelled e ->
                 withTask(e.task(), () -> log.info("cancelled: {} ({})", e.reason(), e.outcome()));
             case TaskEvent.LeaseExpired e -> {
@@ -61,12 +61,13 @@ public final class LoggingTaskObserver implements TaskObserver {
             case TaskEvent.ScheduleFired e ->
                 log.info("schedule {} fired for {} as task {}", e.scheduleId(), e.fireAt(), e.taskId());
             case TaskEvent.Purged e -> log.debug("purged {} {} tasks", e.count(), e.state());
+            default -> {}
         }
     }
 
     private void withTask(TaskView task, Runnable body) {
         MDC.put("bth4j.task", Long.toString(task.id()));
-        MDC.put("bth4j.type", task.type());
+        MDC.put("bth4j.type", task.typeName());
         MDC.put("bth4j.queue", task.queue());
         try {
             body.run();

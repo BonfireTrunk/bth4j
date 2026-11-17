@@ -27,7 +27,7 @@ The example below enqueues a task with a one hour delay and moves the clock forw
 
 ```java
 var clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
-var store = new InMemoryStore(clock);
+var store = InMemoryStore.builder().clock(clock).build();
 
 var runner = BackgroundRunner.builder()
         .store(store)
@@ -44,9 +44,28 @@ runner.client().enqueue(TaskRequest.of(SEND_MAIL, new MailRequest("a@example.com
 clock.advance(Duration.ofHours(1));                 // the task is promoted and runs
 ```
 
-- `new InMemoryStore()` uses the system clock.
+- `InMemoryStore.builder().build()` uses the system clock.
 - The in-memory store passes the same `StoreContract` as the Redis, PostgreSQL and SQLite stores, so behavior in tests matches production.
 - The services still wait in real time between their checks. A test that moves the clock should poll for the result (for example with Awaitility) instead of asserting at once.
+
+## A task view made by hand
+
+A retry policy and a `TaskObserver` receive a `TaskView`. The library builds views from the store; in a unit test `TaskView.builder()` makes one without a store:
+
+```java
+TaskView task = TaskView.builder()
+        .id(41)
+        .queue("mail")
+        .typeName("send-mail")
+        .state(TaskState.LEASED)
+        .attempts(3)
+        .maxAttempts(5)
+        .build();
+
+assertThat(policy.decide(task, new IOException("reset"))).isInstanceOf(RetryPolicy.Decision.RetryAfter.class);
+```
+
+A view that is given nothing else is a QUEUED task with payload version 1 and one attempt allowed; every other field that is not set is null, zero or empty.
 
 ## Pinning the stored form of a payload
 

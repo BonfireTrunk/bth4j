@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.TaskEvent.Outcome;
@@ -19,12 +20,9 @@ import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.ExecutionStore;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
-import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.InspectionStore;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
-import today.bonfire.oss.bth4j.spi.StepResult;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
 
 /**
  * One attempt of one claimed task: decodes the payload, runs the processor as its {@link TaskContext} and
@@ -37,7 +35,7 @@ final class TaskExecution implements Runnable, TaskContext {
     private static final int MAX_PROGRESS = 4 * 1024;
     private static final int MAX_STEP_NAME = 64;
     private static final int MAX_STEP_RESULT = 8 * 1024;
-    private static final int MAX_STEPS_BYTES = 64 * 1024;
+    private static final int MAX_STEPS = 64 * 1024;
     private static final Duration DEFER = Duration.ofSeconds(5);
 
     record Settings(
@@ -98,27 +96,35 @@ final class TaskExecution implements Runnable, TaskContext {
     private volatile boolean cancelRequested;
     private volatile String cancelReason;
     private volatile boolean leaseLost;
-    private volatile Instant startedAt;
-    private volatile Instant overrunSince;
+    /** elapsed time for durations and the maximum run time: setting the wall clock must not move either */
+    private final LongSupplier nanoTime;
+
+    private volatile Long startedNanos;
+    private volatile Long overrunSinceNanos;
     private volatile boolean reporting;
     // Serializes interrupts with detachment so a late signal cannot reach the thread's next task.
-    private final ReentrantLock workerLock = new ReentrantLock();
-    private Thread worker;
+    private final ReentrantLock bodyLock = new ReentrantLock();
+    private Thread bodyThread;
     private boolean leaseLossInterrupted;
-    /** the body was interrupted for a cancel request; guarded by workerLock */
+    /** the body was interrupted for a cancel request; guarded by bodyLock */
     private boolean cancelInterrupted;
     /** the fatal error to rethrow from run(), written by the thread that runs the task only */
     private Error fatal;
 
     TaskExecution(TaskRecord record, Settings settings, Consumer<TaskExecution> onFinished) {
+        this(record, settings, onFinished, System::nanoTime);
+    }
+
+    TaskExecution(TaskRecord record, Settings settings, Consumer<TaskExecution> onFinished, LongSupplier nanoTime) {
         this.record = record;
         this.s = settings;
+        this.nanoTime = nanoTime;
         this.view = settings.names().view(record);
         this.onFinished = onFinished;
         this.steps = new LinkedHashMap<>(record.steps() == null ? Map.of() : record.steps());
         this.cancelRequested = record.cancelRequestedAt() != null;
         this.cancelReason = record.cancelReason();
-        var registration = settings.registry().get(view.type());
+        var registration = settings.registry().get(view.typeName());
         this.interruptOnCancel = registration != null && registration.type().isInterruptOnCancel();
     }
 
@@ -138,25 +144,25 @@ final class TaskExecution implements Runnable, TaskContext {
     void requestCancel(String reason) {
         if (reason != null) cancelReason = reason;
         cancelRequested = true;
-        interruptWorker(false);
+        interruptBody(false);
     }
 
-    /** @return when the processor started, or null before that */
-    Instant startedAt() {
-        return startedAt;
+    /** @return the elapsed-time reading at which the processor started, or null before that */
+    Long startedNanos() {
+        return startedNanos;
     }
 
     Duration maxRunTime() {
         return record.maxRunTime();
     }
 
-    /** @return when the runner found this attempt past its maximum run time, or null */
-    Instant overrunSince() {
-        return overrunSince;
+    /** @return the elapsed-time reading at which the runner found this attempt past its maximum run time, or null */
+    Long overrunSinceNanos() {
+        return overrunSinceNanos;
     }
 
-    void markOverrun(Instant at) {
-        overrunSince = at;
+    void markOverrun(long nanos) {
+        overrunSinceNanos = nanos;
     }
 
     int queueId() {
@@ -173,20 +179,25 @@ final class TaskExecution implements Runnable, TaskContext {
 
     void leaseLost() {
         leaseLost = true;
-        interruptWorker(true);
+        interruptBody(true);
     }
 
-    private void interruptWorker(boolean leaseLoss) {
+    /** @return true once this attempt is known to have lost its lease */
+    boolean lostLease() {
+        return leaseLost;
+    }
+
+    private void interruptBody(boolean leaseLoss) {
         if (!interruptOnCancel) return;
-        workerLock.lock();
+        bodyLock.lock();
         try {
-            if (worker != null && (leaseLoss || !cancelInterrupted)) {
-                worker.interrupt();
+            if (bodyThread != null && (leaseLoss || !cancelInterrupted)) {
+                bodyThread.interrupt();
                 if (leaseLoss) leaseLossInterrupted = true;
                 else cancelInterrupted = true;
             }
         } finally {
-            workerLock.unlock();
+            bodyLock.unlock();
         }
     }
 
@@ -218,23 +229,23 @@ final class TaskExecution implements Runnable, TaskContext {
     }
 
     private void runAttempt(Runnable freeSlot) {
-        var started = s.clock().instant();
-        startedAt = started;
-        emit(new TaskEvent.Started(view, record.workerId() == null ? 0 : record.workerId()));
-        var registration = s.registry().get(view.type());
+        long started = nanoTime.getAsLong();
+        startedNanos = started;
+        emit(new TaskEvent.Started(view, record.runnerId() == null ? 0 : record.runnerId()));
+        var registration = s.registry().get(view.typeName());
         if (registration == null) {
             freeSlot.run();
             reporting = true;
-            defer("no processor registered for " + view.type());
+            defer("no processor registered for " + view.typeName());
             return;
         }
         Throwable failure = null;
         try {
-            workerLock.lock();
+            bodyLock.lock();
             try {
-                worker = Thread.currentThread();
+                bodyThread = Thread.currentThread();
             } finally {
-                workerLock.unlock();
+                bodyLock.unlock();
             }
             if (leaseLost) throw new TaskLeaseLostException("lease of task " + record.id() + " was lost");
             process(registration);
@@ -242,13 +253,13 @@ final class TaskExecution implements Runnable, TaskContext {
             failure = t;
             remember(t);
         } finally {
-            workerLock.lock();
+            bodyLock.lock();
             try {
-                worker = null;
+                bodyThread = null;
                 // Clear cancel and lease-loss interrupts before bookkeeping or the thread's next task.
                 Thread.interrupted();
             } finally {
-                workerLock.unlock();
+                bodyLock.unlock();
             }
         }
         freeSlot.run();
@@ -284,14 +295,14 @@ final class TaskExecution implements Runnable, TaskContext {
     }
 
     private void defer(String reason) {
-        log.error("Task {} cannot run on this worker ({}), deferring it by {}", record.id(), reason, DEFER);
+        log.error("Task {} cannot run on this runner ({}), deferring it by {}", record.id(), reason, DEFER);
         apply(() -> s.store()
                 .reschedule(record.id(), record.revision(), s.clock().instant().plus(DEFER)));
-        s.status().issue("unknown-type", reason, record.id());
-        emit(new TaskEvent.Deferred(record.id(), view.type(), reason));
+        s.status().issue(Issue.Kind.UNKNOWN_TYPE, reason, record.id());
+        emit(new TaskEvent.Deferred(record.id(), view.queue(), view.typeName(), reason));
     }
 
-    private void succeed(Instant started) {
+    private void succeed(long started) {
         var rearm = rearmEffect();
         // a re-arm must stay atomic with its own transition, so it keeps the single call
         var outcome = apply(() -> rearm == null
@@ -300,7 +311,7 @@ final class TaskExecution implements Runnable, TaskContext {
         if (outcome == Outcome.LOST) {
             log.warn("Task {} completed but its lease was lost, it may run again", record.id());
         }
-        emit(new TaskEvent.Succeeded(view, Duration.between(started, s.clock().instant()), outcome));
+        emit(new TaskEvent.Succeeded(view, Duration.ofNanos(nanoTime.getAsLong() - started), outcome));
     }
 
     /** The re-arm of a fixed-delay occurrence; a header that cannot be read must not stop the acknowledgement. */
@@ -312,7 +323,7 @@ final class TaskExecution implements Runnable, TaskContext {
         } catch (RuntimeException e) {
             var detail = "schedule " + record.scheduleId() + " not re-armed: unreadable "
                     + RecurringTaskService.FIXED_DELAY_HEADER + " header";
-            s.status().issue("schedule-rearm", detail, record.id());
+            s.status().issue(Issue.Kind.SCHEDULE_REARM, detail, record.id());
             log.error("Task {}: {}", record.id(), detail);
             return null;
         }
@@ -373,7 +384,7 @@ final class TaskExecution implements Runnable, TaskContext {
     private String storedCancelReason(String fallback) {
         try {
             return s.inspection()
-                    .getTask(record.id())
+                    .task(record.id())
                     .map(TaskRecord::cancelReason)
                     .orElse(fallback);
         } catch (RuntimeException | Error e) {
@@ -385,7 +396,7 @@ final class TaskExecution implements Runnable, TaskContext {
     private RetryPolicy.Decision decide(Throwable e) {
         var policy = s.retryPolicies().named(record.retryPolicy());
         if (policy == null) {
-            s.status().issue("retry-policy", "unknown retry policy " + record.retryPolicy(), record.id());
+            s.status().issue(Issue.Kind.RETRY_POLICY, "unknown retry policy " + record.retryPolicy(), record.id());
             log.warn("Task {} names unknown retry policy {}, using the default", record.id(), record.retryPolicy());
             policy = s.retryPolicies().defaultPolicy();
         }
@@ -402,7 +413,7 @@ final class TaskExecution implements Runnable, TaskContext {
                         record.id(),
                         Failures.describe(detail(), policyError));
             }
-            s.status().issue("retry-policy", Failures.describe(detail(), policyError), record.id());
+            s.status().issue(Issue.Kind.RETRY_POLICY, Failures.describe(detail(), policyError), record.id());
             return RetryPolicy.Decision.retryAfter(Duration.ZERO);
         }
     }
@@ -457,9 +468,9 @@ final class TaskExecution implements Runnable, TaskContext {
      * operator looks at it. Only the issue is raised here, and only when the store paused the definition.
      */
     private void afterTerminal(TaskState state, Outcome outcome, ScheduleEffect pause) {
-        if (outcome != Outcome.APPLIED || pause == null || !pause.applied()) return;
+        if (outcome != Outcome.APPLIED || pause == null || !pause.isApplied()) return;
         var detail = "schedule " + record.scheduleId() + " paused: occurrence ended " + state;
-        s.status().issue("schedule-paused", detail, record.id());
+        s.status().issue(Issue.Kind.SCHEDULE_PAUSED, detail, record.id());
         log.warn(detail);
     }
 
@@ -479,7 +490,7 @@ final class TaskExecution implements Runnable, TaskContext {
     private Outcome apply(java.util.function.BooleanSupplier transition) {
         try {
             if (transition.getAsBoolean()) return Outcome.APPLIED;
-            s.status().issue("lease-lost", "transition rejected, the lease was taken over", record.id());
+            s.status().issue(Issue.Kind.LEASE_LOST, "transition rejected, the lease was taken over", record.id());
             return Outcome.LOST;
         } catch (RuntimeException | Error storeError) {
             remember(storeError);
@@ -539,7 +550,7 @@ final class TaskExecution implements Runnable, TaskContext {
     }
 
     @Override
-    public int attempt() {
+    public int attemptNumber() {
         return record.attempts();
     }
 
@@ -554,7 +565,7 @@ final class TaskExecution implements Runnable, TaskContext {
     }
 
     @Override
-    public boolean cancelRequested() {
+    public boolean isCancelRequested() {
         return cancelRequested;
     }
 
@@ -584,11 +595,12 @@ final class TaskExecution implements Runnable, TaskContext {
         if (name == null || name.isBlank() || name.length() > MAX_STEP_NAME) {
             throw new TaskValidationException("step name must be 1 to " + MAX_STEP_NAME + " characters");
         }
-        var key = StoredText.clean(name);
+        // the name is the identity of the checkpoint, so it is refused and not altered: two names must stay two
+        StoredText.require("step name", name);
         StepResult done;
         stepsLock.lock();
         try {
-            done = steps.get(key);
+            done = steps.get(name);
         } finally {
             stepsLock.unlock();
         }
@@ -597,33 +609,37 @@ final class TaskExecution implements Runnable, TaskContext {
             return s.codecs().decodeStep(done.result(), type);
         }
         checkCancelled();
+        // without a mapper the result cannot be recorded, and the body would run again in every attempt
+        if (type != Void.class) s.codecs().requireMapper();
         R result = body.call();
         var encoded = StoredText.clean(s.codecs().encodeStep(result));
+        // the body ran and cannot be recorded: a retry would run it again, in every attempt
         if (encoded != null && encoded.length() > MAX_STEP_RESULT) {
-            throw new TaskValidationException("result of step " + name + " exceeds " + MAX_STEP_RESULT + " characters");
+            throw new TaskUnrecoverableException(
+                    "result of step " + name + " exceeds " + MAX_STEP_RESULT + " characters");
         }
         // one section per step so that concurrent steps of one processor never overwrite each other's record
         stepsLock.lock();
         try {
             var updated = new LinkedHashMap<>(steps);
-            updated.put(key, new StepResult(s.clock().instant(), encoded));
-            long bytes = 0;
+            updated.put(name, new StepResult(s.clock().instant(), encoded));
+            long length = 0;
             for (var e : updated.entrySet()) {
-                bytes += e.getKey().length()
+                length += e.getKey().length()
                         + (e.getValue().result() == null
                                 ? 0
                                 : e.getValue().result().length());
             }
-            if (bytes > MAX_STEPS_BYTES) {
-                throw new TaskValidationException(
-                        "steps of task " + record.id() + " exceed " + MAX_STEPS_BYTES + " bytes");
+            if (length > MAX_STEPS) {
+                throw new TaskUnrecoverableException(
+                        "steps of task " + record.id() + " exceed " + MAX_STEPS + " characters");
             }
             if (!s.store().saveSteps(record.id(), record.revision(), updated)) {
                 leaseLost = true;
                 throw new TaskLeaseLostException(
                         "lease of task " + record.id() + " was lost before step " + name + " could be recorded");
             }
-            steps.put(key, updated.get(key));
+            steps.put(name, updated.get(name));
         } finally {
             stepsLock.unlock();
         }

@@ -15,7 +15,7 @@ Use `TaskType.of` to declare a type. It has three forms:
 | `TaskType.of(name, codec)` | takes a `PayloadCodec`, for another format |
 | `TaskType.of(name)` | a type without payload |
 
-`payloadVersion(n)` is stored with each task. A processor can use it to read old tasks differently after the payload
+The payload version, set with `withPayloadVersion(n)`, is stored with each task. A processor can use it to read old tasks differently after the payload
 shape changed.
 
 ### What a processor does
@@ -27,6 +27,7 @@ Delivery is at least once, so a processor must be safe to repeat. What a process
 | returns normally | the task succeeded |
 | throws `TaskRescheduleException(delay)` | runs again after the delay, the attempt is not counted |
 | throws `TaskUnrecoverableException` | the task is dead at once |
+| throws `TaskDataException`, or the payload cannot be decoded | the task is dead at once |
 | throws any other exception or `Error` | the attempt failed; the retry policy decides the delay, or dead when attempts are used up |
 
 The same choices as a picture:
@@ -35,7 +36,7 @@ The same choices as a picture:
 flowchart TD
     P["Processor ends"] --> R1["Returns normally"]
     P --> R2["Throws TaskRescheduleException(delay)"]
-    P --> R3["Throws TaskUnrecoverableException"]
+    P --> R3["Throws TaskUnrecoverableException or TaskDataException"]
     P --> R4["Throws any other exception or Error"]
     R1 --> S1["Task succeeded"]
     R2 --> S2["Runs again after the delay, attempt not counted"]
@@ -63,8 +64,8 @@ The rethrow rule applies to task execution only.
 
 ### What `TaskContext` gives a processor
 
-`TaskContext` gives `id()`, `attempt()`, `headers()`, `task()` (a `TaskView`) and `progress(text)`. It also has the
-cancel checks `cancelRequested()` and `checkCancelled()`, described in
+`TaskContext` gives `id()`, `attemptNumber()`, `headers()`, `task()` (a `TaskView`) and `progress(text)`. It also has the
+cancel checks `isCancelRequested()` and `checkCancelled()`, described in
 [Cancelling tasks](retries-and-cancelling.md#stopping-the-processor), and `step(name, ...)`, described next.
 
 ## Steps
@@ -75,7 +76,7 @@ How a step behaves:
 
 - The result is stored before `step` returns.
 - On a retry the stored result is returned and the body does not run.
-- A step is repeated only when the worker dies between finishing the body and storing the result.
+- A step is repeated only when the runner dies between finishing the body and storing the result.
 
 So put side effects inside steps and keep each step idempotent.
 
@@ -86,14 +87,14 @@ flowchart TD
     B -->|"no"| D["Run the body"]
     D --> E["Store the result"]
     E --> F["Return the result"]
-    D -.->|"worker dies after the body, before the result is stored"| G["The next attempt finds no result and runs the body again"]
+    D -.->|"runner dies after the body, before the result is stored"| G["The next attempt finds no result and runs the body again"]
 ```
 
-Step results are encoded with the runner's JSON mapper. These limits apply:
+Step results are encoded with the runner's JSON mapper. On a runner without one, a step with a result type fails with a `TaskConfigurationException` before its body runs; a step without a result needs no mapper. These limits apply:
 
 | What | Limit |
 |---|---|
-| A step name | nonblank, at most 64 UTF-16 code units |
+| A step name | nonblank, at most 64 UTF-16 code units, without U+0000 |
 | An encoded result | at most 8192 |
 | All step names and encoded results of one task together | at most 65536 |
 

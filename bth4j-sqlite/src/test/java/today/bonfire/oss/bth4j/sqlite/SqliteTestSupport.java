@@ -74,7 +74,11 @@ final class SqliteTestSupport implements AutoCloseable {
 
     /** A store on its own tables, named after the namespace, with the schema created. */
     SqliteTaskStore store(String namespace, Clock clock) {
-        var store = new SqliteTaskStore(dataSource, prefix(namespace), clock);
+        var store = SqliteTaskStore.builder()
+                .dataSource(dataSource)
+                .namespace(prefix(namespace))
+                .clock(clock)
+                .build();
         store.init();
         return store;
     }

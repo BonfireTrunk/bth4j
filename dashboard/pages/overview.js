@@ -1,4 +1,4 @@
-import { api } from '../api.js';
+import { api, serverNow } from '../api.js';
 import { STATES, usePoll, sum, useChanges } from '../ui.js';
 
 const { computed, watch } = Vue;
@@ -25,14 +25,12 @@ export default {
     // A fixed-delay definition is parked a century ahead while its occurrence runs (see schedules.js).
     const PARKED_AFTER_MS = 50 * 365 * 86400 * 1000;
     async function loadDepartures() {
-      // The listing is ordered by state change, not by due, so the soonest departures are picked client-side
-      // from the server's largest page; beyond 200 waiting tasks the board is approximate.
-      const [waiting, schedules] = await Promise.all([api.tasks({ state: 'SCHEDULED', limit: 200 }), api.schedules()]);
+      const [waiting, schedules] = await Promise.all([api.tasks({ state: 'SCHEDULED', limit: 8 }), api.upcomingSchedules(8)]);
       const rows = [];
-      for (const t of waiting.items) rows.push({ key: 't' + t.id, at: t.due, what: t.type, queue: t.queue, kind: 'task', href: '#/task/' + t.id, who: '#' + t.id });
+      for (const t of waiting.items) rows.push({ key: 't' + t.id, at: t.dueAt, what: t.type, queue: t.queue, kind: 'task', href: '#/task/' + t.id, who: '#' + t.id });
       for (const s of schedules) {
-        if (s.paused || !s.nextFire || Date.parse(s.nextFire) - Date.now() > PARKED_AFTER_MS) continue;
-        rows.push({ key: 's' + s.id, at: s.nextFire, what: s.type, queue: s.queue, kind: 'fire', href: '#/schedules', who: s.id });
+        if (s.paused || !s.nextFireAt || Date.parse(s.nextFireAt) - serverNow() > PARKED_AFTER_MS) continue;
+        rows.push({ key: 's' + s.id, at: s.nextFireAt, what: s.type, queue: s.queue, kind: 'fire', href: '#/schedules', who: s.id });
       }
       rows.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
       return rows.slice(0, 8);
@@ -63,7 +61,7 @@ export default {
         <a class="strip-item" href="#/tasks?state=SCHEDULED"><span class="n" :class="{ wait: totals.SCHEDULED > 0, zero: !totals.SCHEDULED }">{{ totals.SCHEDULED || 0 }}</span><span class="l">waiting for time</span></a>
         <a class="strip-item" href="#/dead"><span class="n" :class="{ alert: totals.DEAD > 0, zero: !totals.DEAD }">{{ totals.DEAD || 0 }}</span><span class="l">dead</span></a>
         <a class="strip-item" href="#/issues"><span class="n" :class="{ alert: data.issues > 0, zero: !data.issues }">{{ data.issues }}</span><span class="l">issues</span></a>
-        <a class="strip-item" href="#/workers"><span class="n" :class="{ zero: !data.workers }">{{ data.workers }}</span><span class="l">workers</span></a>
+        <a class="strip-item" href="#/runners"><span class="n" :class="{ zero: !data.runners }">{{ data.runners }}</span><span class="l">runners</span></a>
       </div>
 
       <div class="cols board">
@@ -109,8 +107,8 @@ export default {
             <p v-if="!unserved.data.value.length" class="muted">No unserved work detected.</p>
             <p v-for="work in unserved.data.value" :key="JSON.stringify([work.queue, work.type])">
               <span class="tag issue">UNSERVED</span>
-              <template v-if="work.type === null">No live worker processes queue {{ work.queue }} ({{ work.waiting }} waiting)</template>
-              <template v-else>No live worker on queue {{ work.queue }} handles type {{ work.type }} (at least {{ work.waiting }} waiting)</template>
+              <template v-if="work.type === null">No live runner processes queue {{ work.queue }} ({{ work.waiting }} waiting)</template>
+              <template v-else>No live runner on queue {{ work.queue }} handles type {{ work.type }} ({{ work.waiting }} waiting)</template>
             </p>
           </div>
           <h2>Runner in this process</h2>
@@ -118,7 +116,7 @@ export default {
             <p v-if="!health" class="muted">No runner in this process; the server only reads the store.</p>
             <dl v-else class="kv">
               <dt>Status</dt><dd>{{ health.status }}</dd>
-              <dt>Worker</dt><dd>{{ health.workerId }}, {{ health.runningTasks }} running</dd>
+              <dt>Runner</dt><dd>{{ health.runnerId }}, {{ health.runningTasks }} running</dd>
               <dt>Last claim</dt><dd><time-ago :at="health.lastClaimAt"></time-ago></dd>
               <dt>Last maintenance</dt><dd><time-ago :at="health.lastMaintenanceAt"></time-ago></dd>
               <dt>Last store error</dt>

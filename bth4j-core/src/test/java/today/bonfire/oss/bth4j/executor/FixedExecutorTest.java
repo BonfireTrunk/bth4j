@@ -10,13 +10,14 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 
 @Timeout(30)
 class FixedExecutorTest {
 
     @Test
     void limitMustBePositive() {
-        assertThatThrownBy(() -> new FixedExecutor(0)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new FixedExecutor(0)).isInstanceOf(TaskConfigurationException.class);
         var executor = new FixedExecutor(3);
         assertThat(executor.limit()).hasValue(3);
         executor.shutdown();

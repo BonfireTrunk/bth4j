@@ -13,6 +13,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
 import today.bonfire.oss.bth4j.spi.TaskStore;
 
@@ -40,7 +41,7 @@ class IdAllocatorTest {
         public void init() {}
 
         @Override
-        public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
+        public int allocateRunnerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
             return 1;
         }
 
@@ -122,7 +123,7 @@ class IdAllocatorTest {
 
         assertThat(allocator.nextId()).isEqualTo(113L);
         assertThat(store.blockSizes).containsExactly(4, 7, 4);
-        assertThatThrownBy(() -> allocator.nextIds(0)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> allocator.nextIds(0)).isInstanceOf(TaskValidationException.class);
     }
 
     @Test

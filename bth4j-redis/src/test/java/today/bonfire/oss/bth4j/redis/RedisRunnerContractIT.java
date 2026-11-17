@@ -2,6 +2,7 @@ package today.bonfire.oss.bth4j.redis;
 
 import java.time.Duration;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -24,6 +25,7 @@ class RedisRunnerContractIT extends RunnerContract {
             .waitingFor(Wait.forLogMessage(".*Ready to accept connections.*\\n", 1));
 
     private static RedisClient jedis;
+    private final RedisFixtures.UsedNamespaces used = new RedisFixtures.UsedNamespaces();
 
     @BeforeAll
     static void connect() {
@@ -51,8 +53,14 @@ class RedisRunnerContractIT extends RunnerContract {
         }
     }
 
+    @AfterEach
+    void queueSetsAgree() {
+        used.assertQueueSetsAgree(jedis);
+    }
+
     @Override
     protected FullStore newStore(String namespace) {
-        return new RedisTaskStore(jedis, namespace);
+        used.add(namespace);
+        return RedisTaskStore.builder().client(jedis).namespace(namespace).build();
     }
 }

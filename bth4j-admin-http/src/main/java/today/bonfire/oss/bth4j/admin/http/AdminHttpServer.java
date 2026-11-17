@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
@@ -25,30 +26,33 @@ import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.stream.Collectors;
 import javax.net.ssl.SSLContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.AdminOps;
+import today.bonfire.oss.bth4j.Loggers;
+import today.bonfire.oss.bth4j.ScheduleOutcome;
+import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.TaskRequest;
-import today.bonfire.oss.bth4j.TaskViewPage;
-import today.bonfire.oss.bth4j.common.Json;
+import today.bonfire.oss.bth4j.TaskState;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
-import today.bonfire.oss.bth4j.spi.CancelOutcome;
-import today.bonfire.oss.bth4j.spi.RetryOutcome;
-import today.bonfire.oss.bth4j.spi.StateCounts;
-import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
+import today.bonfire.oss.bth4j.internal.Json;
 
 /**
  * JSON admin API over {@link AdminOps} on the JDK HTTP server, optionally with a static dashboard.
  * <p>
  * Sign in with {@code POST /api/v1/session}; the reply sets the {@code bth4j_session} cookie and carries a CSRF
  * token that every later POST and DELETE must send as {@code X-CSRF-Token}. Sessions live in memory, so they end
- * when the server stops. Sessions are sliding: every request pushes the expiry out by the session TTL.
+ * when the server stops. A session ends its lifetime after the sign-in; requests do not extend it.
  * <p>
- * Failed logins block the remote address for 10 seconds after 5 failures in a row (HTTP 429 with
- * {@code Retry-After}). Behind a reverse proxy every client shares the proxy's address, so rate-limit there too.
+ * Failed logins are counted by where they come from and by the user they name: the fifth failure blocks that
+ * address, or that user name, for 10 seconds (HTTP 429 with {@code Retry-After}). Behind a reverse proxy every
+ * client shares the proxy's address unless {@link Builder#addTrustedProxy(String)} names the proxy.
  * <p>
  * The server speaks plain HTTP unless an {@link SSLContext} is given; without one, put it behind TLS or keep it on
  * the loopback interface. The session cookie is marked Secure when an {@link SSLContext} is given; behind a
@@ -56,9 +60,10 @@ import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
  * <p>
  * An instance is one-shot: after {@link #stop()} it cannot be started again, build a new one.
  */
-public final class AdminHttpServer {
+public final class AdminHttpServer implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(AdminHttpServer.class);
+    private static final Logger auditLog = LoggerFactory.getLogger(Loggers.ADMIN_AUDIT);
 
     private static final String API = "/api/v1";
     private static final String COOKIE = "bth4j_session";
@@ -66,6 +71,8 @@ public final class AdminHttpServer {
     private static final int MAX_BODY = 64 * 1024;
     private static final int MAX_SESSIONS = 1000;
     private static final int DEFAULT_LIMIT = 50;
+    private static final int SCHEDULES_LIMIT = 100;
+    private static final int UPCOMING_LIMIT = 8;
     private static final int MAX_LIMIT = 200;
     private static final String HTML_CSP = "default-src 'self'; script-src 'self' 'unsafe-eval'; "
             + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; "
@@ -89,7 +96,16 @@ public final class AdminHttpServer {
     private final Executor executor;
     private final boolean ownExecutor;
     private final Sessions sessions;
-    private final LoginThrottle throttle;
+    private final LoginThrottle addressThrottle;
+    private final LoginThrottle userThrottle;
+    private final ClientAddress clientAddress;
+    /**
+     * Keys the hashes the throttles count by, so that they hold no user names, also none that were only guessed,
+     * and no client addresses.
+     */
+    private final byte[] throttleKeySalt = randomBytes();
+
+    private final AtomicBoolean forwardedHeaderIgnored = new AtomicBoolean();
     // an unknown user is checked like a known one, so the reply time does not tell which names exist
     private final User dummyUser = User.of(HexFormat.of().formatHex(randomBytes()), Role.VIEWER);
     private final boolean secureCookie;
@@ -110,7 +126,12 @@ public final class AdminHttpServer {
         this.ownExecutor = b.executor == null;
         this.executor = ownExecutor ? Executors.newVirtualThreadPerTaskExecutor() : b.executor;
         this.sessions = new Sessions(b.clock, b.sessionTtl, MAX_SESSIONS);
-        this.throttle = new LoginThrottle(b.clock);
+        this.addressThrottle = new LoginThrottle(b.clock, Set.of(), b.loginThrottleCapacity);
+        this.userThrottle = new LoginThrottle(
+                b.clock,
+                users.keySet().stream().map(this::userThrottleKey).collect(Collectors.toUnmodifiableSet()),
+                b.loginThrottleCapacity);
+        this.clientAddress = ClientAddress.trusting(b.trustedProxies);
     }
 
     /** @return a builder with the defaults: 127.0.0.1:8787, session TTL of 12 hours, no static files, no CORS */
@@ -119,18 +140,21 @@ public final class AdminHttpServer {
     }
 
     /**
-     * Binds the port and starts serving.
+     * Binds the port and starts serving. Calling it on a server that is started does nothing.
      *
-     * @throws IllegalStateException when already started, or when this instance was stopped before
+     * @throws IllegalStateException when {@link #stop()} or {@link #close()} was called before, also on a server
+     *     that was never started: a stopped server stays stopped, build a new one
      */
     public void start() {
         lifecycle.lock();
         try {
             if (stopped) {
-                throw new IllegalStateException("Admin HTTP server was stopped and cannot be started again");
+                throw new IllegalStateException(
+                        "Admin HTTP server was stopped and cannot be started again; build a new server");
             }
             if (server != null) {
-                throw new IllegalStateException("Admin HTTP server is already started");
+                log.debug("Admin HTTP server is already started");
+                return;
             }
             try {
                 var address = new InetSocketAddress(host, requestedPort);
@@ -157,16 +181,21 @@ public final class AdminHttpServer {
         }
     }
 
-    /** Stops accepting requests, waiting briefly for running ones. Safe to call when not started. */
+    /**
+     * Stops accepting requests, waiting up to one second for running ones. A stopped server cannot be started
+     * again. The call can come before {@link #start()} and can be repeated.
+     */
     public void stop() {
         lifecycle.lock();
         try {
-            if (server == null) {
+            if (stopped) {
                 return;
             }
-            server.stop(1);
-            server = null;
             stopped = true;
+            if (server != null) {
+                server.stop(1);
+                server = null;
+            }
             if (ownExecutor) {
                 ((ExecutorService) executor).shutdown();
             }
@@ -174,6 +203,12 @@ public final class AdminHttpServer {
         } finally {
             lifecycle.unlock();
         }
+    }
+
+    /** Same as {@link #stop()}, for try-with-resources. */
+    @Override
+    public void close() {
+        stop();
     }
 
     /** @return the port actually bound, which differs from the requested one when that was 0 */
@@ -190,6 +225,7 @@ public final class AdminHttpServer {
     }
 
     private void handle(HttpExchange ex) throws IOException {
+        var actor = new Sessions.Session[1];
         try {
             ex.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
             var origin = applyCors(ex);
@@ -198,7 +234,7 @@ public final class AdminHttpServer {
             if ("OPTIONS".equals(method)) {
                 preflight(ex, origin);
             } else if (path.equals(API) || path.startsWith(API + "/")) {
-                api(ex, method, path.substring(API.length()));
+                api(ex, method, path.substring(API.length()), actor);
             } else if (path.startsWith("/api/")) {
                 throw new HttpError(404, "not found");
             } else if (method.equals("GET")) {
@@ -233,8 +269,37 @@ public final class AdminHttpServer {
                 // the response may already be committed; the failure is logged above
             }
         } finally {
+            if (actor[0] != null) {
+                securityLog(
+                        "Admin action {} {} by {} ({}) answered {}",
+                        ex.getRequestMethod(),
+                        auditedRoute(ex.getRequestURI().getRawPath()),
+                        actor[0].user(),
+                        actor[0].role(),
+                        ex.getResponseCode());
+            }
             ex.close();
         }
+    }
+
+    /**
+     * The one place that writes who signed in, who was refused and who changed what. A line names the signed-in
+     * user, or the keyed hash of a name that was only tried, and where the request came from; never a password,
+     * a token, a unique key or a request body.
+     */
+    private static void securityLog(String format, Object... arguments) {
+        auditLog.info(format, arguments);
+    }
+
+    /** {@link #routeTemplate} that keeps a task id, which is a number and says which task an action changed. */
+    static String auditedRoute(String rawPath) {
+        var template = routeTemplate(rawPath);
+        var parts = rawPath.split("/");
+        // "", "api", "v1", "tasks", id
+        if (parts.length >= 5 && parts[3].equals("tasks") && parts[4].matches("[0-9]{1,19}")) {
+            return template.replaceFirst("\\{}", parts[4]);
+        }
+        return template;
     }
 
     private String applyCors(HttpExchange ex) {
@@ -245,6 +310,7 @@ public final class AdminHttpServer {
         var h = ex.getResponseHeaders();
         h.set("Access-Control-Allow-Origin", origin);
         h.set("Access-Control-Allow-Credentials", "true");
+        h.set("Access-Control-Expose-Headers", "Date");
         h.add("Vary", "Origin");
         return origin;
     }
@@ -259,7 +325,8 @@ public final class AdminHttpServer {
         ex.sendResponseHeaders(204, -1);
     }
 
-    private void api(HttpExchange ex, String method, String rest) throws IOException {
+    /** @param actor receives the session of a request that asks for a change, for the security log */
+    private void api(HttpExchange ex, String method, String rest, Sessions.Session[] actor) throws IOException {
         var segments = segments(rest);
         if (method.equals("POST") && segments.equals(List.of("session"))) {
             login(ex);
@@ -267,11 +334,9 @@ public final class AdminHttpServer {
         }
         var session = authenticate(ex);
         var logout = method.equals("DELETE") && segments.equals(List.of("session"));
-        if (!logout) {
-            ex.getResponseHeaders().add("Set-Cookie", sessionCookie(session.token(), sessionTtl.toSeconds()));
-        }
         var mutation = method.equals("POST") || method.equals("DELETE");
         if (mutation) {
+            actor[0] = session;
             var sent = ex.getRequestHeaders().getFirst(CSRF_HEADER);
             if (sent == null
                     || !MessageDigest.isEqual(
@@ -283,7 +348,7 @@ public final class AdminHttpServer {
                 throw new HttpError(403, "this action needs the ADMIN role");
             }
         }
-        var byKey = segments.size() >= 3
+        var byKey = segments.size() >= 2
                 && segments.get(0).equals("tasks")
                 && segments.get(1).equals("by-key");
         if (byKey) {
@@ -294,6 +359,10 @@ public final class AdminHttpServer {
             throw new HttpError(404, "not found");
         }
         var first = segments.get(0);
+        // an encoded slash in a single segment would otherwise spell a route that takes an id, without one
+        if (first.indexOf('/') >= 0) {
+            throw new HttpError(404, "not found");
+        }
         var key = method
                 + ' '
                 + first
@@ -305,7 +374,7 @@ public final class AdminHttpServer {
                 sendJson(
                         ex,
                         200,
-                        Views.obj("user", session.user(), "role", session.role().name()));
+                        Views.obj("user", session.user(), "role", session.role().name(), "csrf", session.csrf()));
             case "DELETE session" -> logout(ex, session);
             case "GET health" -> health(ex);
             case "GET overview" -> sendJson(ex, 200, overview());
@@ -318,48 +387,72 @@ public final class AdminHttpServer {
             case "POST tasks/{}/retry" -> retry(ex, taskId(param));
             case "POST tasks/{}/cancel" -> cancel(ex, taskId(param));
             case "DELETE tasks/{}" -> delete(ex, taskId(param));
-            case "GET schedules" -> sendJson(ex, 200, Views.list(admin.schedules(), Views::schedule));
-            case "POST schedules/{}/pause" -> scheduleChange(ex, admin.pauseSchedule(param, true));
-            case "POST schedules/{}/resume" -> scheduleChange(ex, admin.pauseSchedule(param, false));
-            case "POST schedules/{}/trigger" -> scheduleChange(ex, admin.triggerSchedule(param));
-            case "DELETE schedules/{}" -> scheduleChange(ex, admin.deleteSchedule(param));
-            case "GET workers" -> {
-                var queues = admin.queueNames();
-                var types = admin.typeNames();
-                sendJson(ex, 200, Views.list(admin.workers(), w -> Views.worker(w, queues, types)));
+            case "GET schedules" -> sendJson(ex, 200, schedules(ex));
+            case "GET schedules/{}" -> {
+                if (!"upcoming".equals(param)) {
+                    throw new HttpError(404, "not found");
+                }
+                var limit = limit(query(ex), UPCOMING_LIMIT);
+                sendJson(ex, 200, Views.list(admin.upcomingSchedules(limit), Views::schedule));
             }
+            case "POST schedules/{}/pause" -> {
+                var revision = scheduleRevision(readObject(ex).get("revision"));
+                scheduleChange(ex, admin.pauseSchedule(param, revision, true));
+            }
+            case "POST schedules/{}/resume" -> {
+                var revision = scheduleRevision(readObject(ex).get("revision"));
+                scheduleChange(ex, admin.pauseSchedule(param, revision, false));
+            }
+            case "POST schedules/{}/trigger" -> {
+                var revision = scheduleRevision(readObject(ex).get("revision"));
+                scheduleChange(ex, admin.triggerSchedule(param, revision));
+            }
+            case "DELETE schedules/{}" -> {
+                var raw = query(ex).get("revision");
+                if (raw == null) {
+                    throw new HttpError(400, "revision is required");
+                }
+                scheduleChange(ex, admin.deleteSchedule(param, scheduleRevision(raw)));
+            }
+            case "GET runners" -> sendJson(ex, 200, Views.list(admin.runners(), Views::runner));
             case "GET unserved" -> sendJson(ex, 200, Views.list(admin.unservedWork(), Views::unserved));
             case "GET issues" -> sendJson(ex, 200, Views.list(admin.issues(), Views::issue));
             default -> throw new HttpError(404, "not found");
         }
     }
 
+    /** The key is a query value: a path cannot carry every key, a client resolves the segments "." and "..". */
     private void byKey(HttpExchange ex, String method, List<String> segments) throws IOException {
-        var key = segments.get(2);
+        var read = segments.size() == 2 && method.equals("GET");
+        var cancel =
+                segments.size() == 3 && method.equals("POST") && segments.get(2).equals("cancel");
+        if (!read && !cancel) {
+            throw new HttpError(404, "not found");
+        }
+        var key = query(ex).get("key");
+        if (key == null) {
+            throw new HttpError(400, "key is required");
+        }
         try {
             TaskRequest.requireUniqueKey(key);
         } catch (TaskValidationException e) {
             throw new HttpError(400, e.getMessage());
         }
-        if (segments.size() == 3 && method.equals("GET")) {
+        if (read) {
             var task = admin.taskByKey(key).orElseThrow(() -> new HttpError(404, "no task holds this key"));
             sendJson(ex, 200, Views.task(task));
-        } else if (segments.size() == 4
-                && method.equals("POST")
-                && segments.get(3).equals("cancel")) {
+        } else {
             var reason = readObject(ex).get("reason");
             if (reason != null && !(reason instanceof String)) {
                 throw new HttpError(400, "reason must be a string");
             }
             var outcome = admin.cancelByKey(key, (String) reason);
             switch (outcome) {
-                case NOT_FOUND -> throw new HttpError(404, "no task holds this key");
-                case FINISHED -> throw new HttpError(409, "the task holding this key is already finished");
-                case STALE -> throw new HttpError(409, "the task changed meanwhile, retry");
+                case NOT_FOUND -> throw notFound("no task holds this key");
+                case FINISHED -> throw wrongState("the task holding this key is already finished");
+                case STALE -> throw stale();
                 default -> sendJson(ex, 200, Views.obj("ok", true, "outcome", outcome.name()));
             }
-        } else {
-            throw new HttpError(404, "not found");
         }
     }
 
@@ -372,25 +465,49 @@ public final class AdminHttpServer {
         }
     }
 
+    private String userThrottleKey(String name) {
+        return HexFormat.of().formatHex(digest(throttleKeySalt, name));
+    }
+
     private void login(HttpExchange ex) throws IOException {
-        var address = ex.getRemoteAddress().getAddress().getHostAddress();
-        var wait = throttle.attempt(address);
+        var client = clientAddress(ex);
+        var address = HexFormat.of().formatHex(digest(throttleKeySalt, ClientAddress.throttleKey(client)));
+        var wait = addressThrottle.attempt(address);
         if (wait > 0) {
-            ex.getResponseHeaders().set("Retry-After", String.valueOf((wait + 999) / 1000));
-            throw new HttpError(429, "too many failed logins, try again later");
+            if (addressThrottle.firstRefusal(address)) {
+                securityLog("Admin sign-in refused, too many attempts from {}", client.getHostAddress());
+            }
+            throw tooManyLogins(ex, wait);
         }
         var body = readObject(ex);
         if (!(body.get("user") instanceof String name) || !(body.get("password") instanceof String password)) {
             throw new HttpError(400, "user and password are required");
         }
+        // counted for every name, known or not, so that a block does not tell which users exist
+        var userKey = userThrottleKey(name);
+        wait = userThrottle.attempt(userKey);
+        if (wait > 0) {
+            addressThrottle.takeBack(address);
+            if (userThrottle.firstRefusal(userKey)) {
+                securityLog(
+                        "Admin sign-in refused, too many attempts for the user with key {}, from {}",
+                        userKey,
+                        client.getHostAddress());
+            }
+            throw tooManyLogins(ex, wait);
+        }
         var user = users.get(name);
         var checked = user == null ? dummyUser : user;
         var matches = MessageDigest.isEqual(digest(checked.salt(), password), checked.digest());
         if (user == null || !matches) {
+            // one line for an unknown user and for a wrong password, so that the log does not tell which names exist
+            securityLog("Admin sign-in refused for the user with key {}, from {}", userKey, client.getHostAddress());
             throw new HttpError(401, "invalid credentials");
         }
-        throttle.success(address);
+        addressThrottle.takeBack(address);
+        userThrottle.takeBack(userKey);
         var session = sessions.create(name, user.role());
+        securityLog("Admin sign-in of {} ({}) from {}", name, user.role(), client.getHostAddress());
         ex.getResponseHeaders().add("Set-Cookie", sessionCookie(session.token(), sessionTtl.toSeconds()));
         sendJson(
                 ex,
@@ -402,6 +519,24 @@ public final class AdminHttpServer {
                         name,
                         "role",
                         user.role().name()));
+    }
+
+    private static HttpError tooManyLogins(HttpExchange ex, long waitMillis) {
+        ex.getResponseHeaders().set("Retry-After", String.valueOf((waitMillis + 999) / 1000));
+        return new HttpError(429, "too many failed logins, try again later");
+    }
+
+    private InetAddress clientAddress(HttpExchange ex) {
+        var peer = ex.getRemoteAddress().getAddress();
+        var forwardedFor = ex.getRequestHeaders().get("X-Forwarded-For");
+        if (forwardedFor != null && !clientAddress.trusts(peer) && forwardedHeaderIgnored.compareAndSet(false, true)) {
+            log.warn(
+                    "A login from {} carried X-Forwarded-For and the header was ignored, because that address is"
+                            + " not a trusted proxy. When the server is behind a proxy, name it with addTrustedProxy,"
+                            + " or all clients are counted as one. This is logged once.",
+                    peer.getHostAddress());
+        }
+        return clientAddress.resolve(peer, forwardedFor);
     }
 
     private void logout(HttpExchange ex, Sessions.Session session) throws IOException {
@@ -426,13 +561,15 @@ public final class AdminHttpServer {
                 parts.add(part);
             }
         }
-        var byKey = parts.size() >= 3
+        var byKey = parts.size() >= 2
                 && parts.get(0).equals("tasks")
                 && parts.get(1).equals("by-key");
-        if (byKey) {
-            parts.set(2, "{key}");
-        } else if (parts.size() >= 2) {
+        if (!byKey && parts.size() >= 2) {
             parts.set(1, "{}");
+        }
+        // the routes of 4.x carried the unique key as the segment after by-key
+        if (byKey && parts.size() >= 3 && !(parts.size() == 3 && parts.get(2).equals("cancel"))) {
+            parts.set(2, "{}");
         }
         return API + '/' + String.join("/", parts.subList(0, Math.min(parts.size(), 4)));
     }
@@ -464,7 +601,7 @@ public final class AdminHttpServer {
         return Views.obj(
                 "counts", counts,
                 "totals", Views.counts(total),
-                "workers", admin.workers().size(),
+                "runners", admin.runners().size(),
                 "issues", admin.issues().size(),
                 "health", admin.health().map(Views::health).orElse(null));
     }
@@ -498,23 +635,33 @@ public final class AdminHttpServer {
         } catch (IllegalArgumentException e) {
             throw new HttpError(400, "unknown state");
         }
-        var limit = DEFAULT_LIMIT;
-        if (query.containsKey("limit")) {
-            limit = (int) Math.min(parseLong(query.get("limit"), "limit"), MAX_LIMIT);
-            if (limit < 1) {
-                throw new HttpError(400, "limit must be at least 1");
-            }
-        }
+        var limit = limit(query, DEFAULT_LIMIT);
         var queue = query.get("queue");
-        var queueName = queue == null || queue.isEmpty() ? null : queue;
         var cursor = query.get("cursor");
-        TaskViewPage page;
-        try {
-            page = admin.tasks(state, queueName, cursor == null || cursor.isEmpty() ? null : cursor, limit);
-        } catch (IllegalArgumentException e) {
-            throw new HttpError(400, "malformed cursor");
-        }
+        var cursorOrNull = cursor == null || cursor.isEmpty() ? null : cursor;
+        var page = queue == null || queue.isEmpty()
+                ? admin.tasks(state, cursorOrNull, limit)
+                : admin.tasks(state, queue, cursorOrNull, limit);
         return Views.obj("items", Views.list(page.items(), Views::task), "next", page.next());
+    }
+
+    private Object schedules(HttpExchange ex) {
+        var query = query(ex);
+        var limit = limit(query, SCHEDULES_LIMIT);
+        var cursor = query.get("cursor");
+        var page = admin.schedules(cursor == null || cursor.isEmpty() ? null : cursor, limit);
+        return Views.obj("items", Views.list(page.items(), Views::schedule), "next", page.next());
+    }
+
+    private static int limit(Map<String, String> query, int fallback) {
+        if (!query.containsKey("limit")) {
+            return fallback;
+        }
+        var limit = (int) Math.min(parseLong(query.get("limit"), "limit"), MAX_LIMIT);
+        if (limit < 1) {
+            throw new HttpError(400, "limit must be at least 1");
+        }
+        return limit;
     }
 
     private Map<String, Object> payload(long id) {
@@ -523,11 +670,12 @@ public final class AdminHttpServer {
 
     private void retry(HttpExchange ex, long id) throws IOException {
         var revision = revision(readObject(ex).get("revision"));
-        var outcome = admin.retry(id, revision);
-        if (outcome == RetryOutcome.DUPLICATE) {
-            throw new HttpError(409, "the unique key is held by another task", "KEY_HELD");
+        switch (admin.retry(id, revision)) {
+            case NOT_FOUND -> throw notFound("there is no such task");
+            case STALE -> throw stale();
+            case NOT_RETRYABLE -> throw wrongState("only a dead, cancelled or expired task can be retried");
+            case RETRIED -> sendJson(ex, 200, Views.obj("ok", true));
         }
-        changeTask(ex, id, outcome == RetryOutcome.RETRIED);
     }
 
     private void cancel(HttpExchange ex, long id) throws IOException {
@@ -538,10 +686,11 @@ public final class AdminHttpServer {
             throw new HttpError(400, "reason must be a string");
         }
         var outcome = admin.cancel(id, revision, (String) reason);
-        if (outcome == CancelOutcome.STALE) {
-            changeTask(ex, id, false);
-        } else {
-            sendJson(ex, 200, Views.obj("ok", true, "outcome", outcome.name()));
+        switch (outcome) {
+            case NOT_FOUND -> throw notFound("there is no such task");
+            case STALE -> throw stale();
+            case FINISHED -> throw wrongState("the task has finished and cannot be cancelled");
+            default -> sendJson(ex, 200, Views.obj("ok", true, "outcome", outcome.name()));
         }
     }
 
@@ -550,25 +699,36 @@ public final class AdminHttpServer {
         if (raw == null) {
             throw new HttpError(400, "revision is required");
         }
-        changeTask(ex, id, admin.delete(id, revision(raw)));
+        switch (admin.delete(id, revision(raw))) {
+            case NOT_FOUND -> throw notFound("there is no such task");
+            case STALE -> throw stale();
+            case LEASED -> throw wrongState("a task that is running cannot be deleted");
+            case DELETED -> sendJson(ex, 200, Views.obj("ok", true));
+        }
     }
 
-    /** A false result is either a stale revision or a task that is gone; only the lookup tells which. */
-    private void changeTask(HttpExchange ex, long id, boolean changed) throws IOException {
-        if (!changed) {
-            if (admin.task(id).isEmpty()) {
-                throw new HttpError(404, "unknown task");
-            }
-            throw new HttpError(409, "the task changed since you loaded it");
-        }
-        sendJson(ex, 200, Views.obj("ok", true));
+    private static HttpError notFound(String message) {
+        return new HttpError(404, message, "NOT_FOUND");
     }
 
-    private void scheduleChange(HttpExchange ex, boolean found) throws IOException {
-        if (!found) {
-            throw new HttpError(404, "unknown schedule");
+    private static HttpError stale() {
+        return stale("task");
+    }
+
+    private static HttpError stale(String what) {
+        return new HttpError(409, "the " + what + " changed since it was loaded", "STALE");
+    }
+
+    private static HttpError wrongState(String message) {
+        return new HttpError(409, message, "WRONG_STATE");
+    }
+
+    private void scheduleChange(HttpExchange ex, ScheduleOutcome outcome) throws IOException {
+        switch (outcome) {
+            case NOT_FOUND -> throw notFound("there is no such schedule");
+            case STALE -> throw stale("schedule");
+            case APPLIED -> sendJson(ex, 200, Views.obj("ok", true));
         }
-        sendJson(ex, 200, Views.obj("ok", true));
     }
 
     private today.bonfire.oss.bth4j.TaskView requireTask(long id) {
@@ -593,13 +753,22 @@ public final class AdminHttpServer {
 
     private static int revision(Object raw) {
         try {
+            return Math.toIntExact(scheduleRevision(raw));
+        } catch (ArithmeticException e) {
+            throw new HttpError(400, "revision is not a valid number");
+        }
+    }
+
+    /** A task's revision is a 32-bit integer and a schedule's a 64-bit one; both come as a string or a number. */
+    private static long scheduleRevision(Object raw) {
+        try {
             if (raw instanceof String s) {
-                return Integer.parseInt(s);
+                return Long.parseLong(s);
             }
             if (raw instanceof Long l) {
-                return Math.toIntExact(l);
+                return l;
             }
-        } catch (NumberFormatException | ArithmeticException e) {
+        } catch (NumberFormatException e) {
             throw new HttpError(400, "revision is not a valid number");
         }
         throw new HttpError(400, "revision is required");
@@ -638,16 +807,22 @@ public final class AdminHttpServer {
             for (var pair : raw.split("&")) {
                 var eq = pair.indexOf('=');
                 if (eq > 0) {
-                    out.put(decode(pair.substring(0, eq)), decode(pair.substring(eq + 1)));
+                    out.put(decodeQuery(pair.substring(0, eq)), decodeQuery(pair.substring(eq + 1)));
                 }
             }
         }
         return out;
     }
 
+    /** Decodes a path segment, where a plus sign stands for itself. */
     private static String decode(String s) {
+        return decodeQuery(s.replace("+", "%2B"));
+    }
+
+    /** Decodes a query name or value, where a plus sign stands for a space. */
+    private static String decodeQuery(String s) {
         try {
-            return URLDecoder.decode(s.replace("+", "%2B"), StandardCharsets.UTF_8);
+            return URLDecoder.decode(s, StandardCharsets.UTF_8);
         } catch (IllegalArgumentException e) {
             throw new HttpError(400, "malformed URL encoding");
         }
@@ -671,8 +846,14 @@ public final class AdminHttpServer {
         if (resource.html()) {
             h.set("Content-Security-Policy", HTML_CSP);
         }
-        ex.sendResponseHeaders(200, resource.body().length);
-        ex.getResponseBody().write(resource.body());
+        h.set("ETag", resource.etag());
+        if (resource.matches(ex.getRequestHeaders().getFirst("If-None-Match"))) {
+            ex.sendResponseHeaders(304, -1);
+            return;
+        }
+        var body = resource.body();
+        ex.sendResponseHeaders(200, body.length);
+        ex.getResponseBody().write(body);
     }
 
     private void sendJson(HttpExchange ex, int status, Object body) throws IOException {
@@ -711,8 +892,10 @@ public final class AdminHttpServer {
         private final List<String> corsOrigins = new ArrayList<>();
         private SSLContext ssl;
         private Boolean secureCookie;
+        private final List<String> trustedProxies = new ArrayList<>();
         private Executor executor;
         private Clock clock = Clock.systemUTC();
+        private int loginThrottleCapacity = LoginThrottle.DEFAULT_CAPACITY;
 
         private Builder() {}
 
@@ -729,16 +912,26 @@ public final class AdminHttpServer {
             return this;
         }
 
-        /** Adds a user; at least one is required. Only a random salt and the SHA3-384 digest of the salt and password are kept. */
-        public Builder user(String name, String password, Role role) {
-            if (name == null || name.isEmpty() || password == null || role == null) {
-                throw new IllegalArgumentException("name, password and role are required");
+        /**
+         * Adds a user; at least one is required. Only a random salt and the SHA3-384 digest of the salt and password
+         * are kept.
+         *
+         * @throws TaskConfigurationException when a part is missing or a user with that name was added before
+         */
+        public Builder addUser(String name, String password, Role role) {
+            if (name == null || name.isEmpty() || password == null || password.isEmpty() || role == null) {
+                throw new TaskConfigurationException("name, password and role are required");
             }
-            users.put(name, User.of(password, role));
+            if (users.putIfAbsent(name, User.of(password, role)) != null) {
+                throw new TaskConfigurationException("a user with this name was added before");
+            }
             return this;
         }
 
-        /** How long a session survives without a request; the default is 12 hours. */
+        /**
+         * How long a session lasts, counted from the sign-in; the default is 12 hours and the shortest is one second.
+         * Requests do not make it last longer.
+         */
         public Builder sessionTtl(Duration ttl) {
             this.sessionTtl = ttl;
             return this;
@@ -750,9 +943,10 @@ public final class AdminHttpServer {
             return this;
         }
 
-        /** Origins, such as {@code https://admin.example.com}, that may call the API from a browser. */
-        public Builder corsOrigin(String... origins) {
-            corsOrigins.addAll(List.of(origins));
+        /** Adds an origin, such as {@code https://admin.example.com}, that may call the API from a browser. */
+        public Builder addCorsOrigin(String origin) {
+            if (origin == null || origin.isBlank()) throw new TaskConfigurationException("origin is required");
+            corsOrigins.add(origin);
             return this;
         }
 
@@ -771,6 +965,24 @@ public final class AdminHttpServer {
             return this;
         }
 
+        /**
+         * Adds a reverse proxy in front of the server, as an address ({@code 10.0.0.5}, {@code ::1}) or a
+         * range ({@code 10.0.0.0/8}). For a request that arrives from one of them the login throttle counts by
+         * the last address in {@code X-Forwarded-For} that is not a trusted proxy, so the proxy must set or
+         * append that header itself. Without this setting the header is ignored and every client behind a proxy
+         * counts as the proxy's address. Name only proxies: a request from any address named here can state the
+         * address it is counted by.
+         *
+         * @throws TaskConfigurationException when it is not an IP address or range
+         */
+        public Builder addTrustedProxy(String proxy) {
+            var all = new ArrayList<>(trustedProxies);
+            all.add(proxy);
+            ClientAddress.trusting(all);
+            trustedProxies.add(proxy);
+            return this;
+        }
+
         /** Runs requests on this executor; the default is a virtual thread per request, shut down by {@link AdminHttpServer#stop()}. */
         public Builder executor(Executor executor) {
             this.executor = executor;
@@ -782,16 +994,24 @@ public final class AdminHttpServer {
             return this;
         }
 
-        /** @throws IllegalStateException when the admin operations or all users are missing */
+        Builder loginThrottleCapacity(int capacity) {
+            this.loginThrottleCapacity = capacity;
+            return this;
+        }
+
+        /** @throws TaskConfigurationException when the admin operations or all users are missing */
         public AdminHttpServer build() {
             if (admin == null) {
-                throw new IllegalStateException("admin(AdminOps) is required");
+                throw new TaskConfigurationException("admin(AdminOps) is required");
             }
             if (users.isEmpty()) {
-                throw new IllegalStateException("at least one user is required");
+                throw new TaskConfigurationException("at least one user is required");
             }
             if (sessionTtl == null || sessionTtl.isZero() || sessionTtl.isNegative()) {
-                throw new IllegalStateException("sessionTtl must be positive");
+                throw new TaskConfigurationException("sessionTtl must be positive");
+            }
+            if (sessionTtl.compareTo(Duration.ofSeconds(1)) < 0) {
+                throw new TaskConfigurationException("sessionTtl must be at least one second");
             }
             return new AdminHttpServer(this);
         }

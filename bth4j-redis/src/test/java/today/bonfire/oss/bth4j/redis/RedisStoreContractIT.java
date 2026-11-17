@@ -1,7 +1,9 @@
 package today.bonfire.oss.bth4j.redis;
 
 import java.time.Duration;
+import java.util.Comparator;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -25,6 +27,7 @@ class RedisStoreContractIT extends StoreContract {
             .waitingFor(Wait.forLogMessage(".*Ready to accept connections.*\\n", 1));
 
     private static RedisClient jedis;
+    private final RedisFixtures.UsedNamespaces used = new RedisFixtures.UsedNamespaces();
 
     @BeforeAll
     static void connect() {
@@ -52,20 +55,42 @@ class RedisStoreContractIT extends StoreContract {
         }
     }
 
+    @AfterEach
+    void queueSetsAgree() {
+        used.assertQueueSetsAgree(jedis);
+    }
+
     @Override
     protected boolean releasesKeysOnItsOwn() {
         return true;
     }
 
     @Override
+    protected Comparator<Long> orderOfIdsThatShareATime() {
+        return Comparator.comparing(String::valueOf);
+    }
+
+    @Override
     protected FullStore newStore(String namespace) {
-        return new RedisTaskStore(jedis, namespace);
+        used.add(namespace);
+        return RedisTaskStore.builder().client(jedis).namespace(namespace).build();
     }
 
     @Override
     protected boolean corruptStoredValue(String namespace, long taskId) {
         jedis.hset(new Keys(namespace).task(taskId), Keys.F_HEADERS, "{\"a\":null}");
         return true;
+    }
+
+    @Override
+    protected boolean writeOtherSchemaVersion(String namespace) {
+        jedis.hset(new Keys(namespace).meta, Keys.SCHEMA, String.valueOf(RedisTaskStore.SCHEMA_VERSION + 1));
+        return true;
+    }
+
+    @Override
+    protected boolean removeSchemaVersion(String namespace) {
+        return jedis.hdel(new Keys(namespace).meta, Keys.SCHEMA) == 1;
     }
 
     @Override

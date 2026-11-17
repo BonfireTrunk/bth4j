@@ -1,6 +1,6 @@
 package today.bonfire.oss.bth4j;
 
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /** What a recurring definition does when a fire time was missed by more than the misfire threshold. */
 public sealed interface Misfire {
@@ -13,7 +13,7 @@ public sealed interface Misfire {
     /** one occurrence per missed fire, up to {@code maxFires}; continue from now */
     record CatchUp(int maxFires) implements Misfire {
         public CatchUp {
-            if (maxFires < 1) throw new TaskConfigurationException("CatchUp maxFires must be at least 1");
+            if (maxFires < 1) throw new TaskValidationException("CatchUp maxFires must be at least 1");
         }
     }
 

@@ -34,8 +34,6 @@ import today.bonfire.oss.bth4j.exceptions.TaskRescheduleException;
 import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.FullStore;
-import today.bonfire.oss.bth4j.spi.RetryOutcome;
-import today.bonfire.oss.bth4j.spi.TaskState;
 
 /**
  * Behaviour every store must give a {@link BackgroundRunner}, checked end to end through the public API. A store
@@ -74,10 +72,14 @@ public abstract class RunnerContract {
     /** @return a store with no state, isolated from every other namespace */
     protected abstract FullStore newStore(String namespace);
 
+    /** One value for the client and every runner of a test, as an application gives it to all of its parts. */
+    protected static final Queues QUEUES = Queues.of("Q:DEF", "Q:LOW", "Q:MED", "Q:HIGH");
+
     @BeforeEach
     void openStore() {
         store = newStore("rc" + Long.toString(System.currentTimeMillis(), 36) + NAMESPACES.incrementAndGet());
         client = TaskClient.builder()
+                .queues(QUEUES)
                 .store(store)
                 .jsonMapper(new JsonMapperTest())
                 .build();
@@ -92,14 +94,15 @@ public abstract class RunnerContract {
     /** A runner builder with short intervals; the lease cannot go below one second. */
     protected BackgroundRunner.Builder runnerBuilder() {
         return BackgroundRunner.builder()
+                .queues(QUEUES)
                 .store(store)
                 .jsonMapper(new JsonMapperTest())
                 .concurrency(Concurrency.fixed(8))
                 .leaseDuration(Duration.ofSeconds(1))
                 .idlePollInterval(Duration.ofMillis(20))
                 .maintenanceCheckInterval(Duration.ofSeconds(1))
-                .scheduledTasksCheckInterval(Duration.ofMillis(50))
-                .recurringTasksCheckInterval(Duration.ofMillis(200))
+                .scheduledTaskCheckInterval(Duration.ofMillis(50))
+                .scheduleCheckInterval(Duration.ofMillis(200))
                 .purgeInterval(Duration.ofSeconds(1))
                 .shutdownTimeout(Duration.ofSeconds(5))
                 .threadGroupName("rc-" + NAMESPACES.get())
@@ -177,13 +180,13 @@ public abstract class RunnerContract {
         }));
 
         long id = enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("alpha", 7))
-                .header("trace", "t-1")
+                .addHeader("trace", "t-1")
                 .build());
 
         var done = awaitState(id, TaskState.SUCCEEDED);
         assertThat(seen.get()).isEqualTo(new Payload("alpha", 7));
         assertThat(stateInside.get()).isEqualTo(TaskState.LEASED);
-        assertThat(viewInside.get().type()).isEqualTo("rc-payload");
+        assertThat(viewInside.get().typeName()).isEqualTo("rc-payload");
         assertThat(viewInside.get().queue()).isEqualTo("Q:DEF");
         assertThat(viewInside.get().headers()).containsEntry("trace", "t-1");
         assertThat(done.attempts()).isEqualTo(1);
@@ -218,9 +221,9 @@ public abstract class RunnerContract {
     void callerIdIsComparedWithTheStoredTask() {
         long id = client.nextId();
         var request = TaskRequest.of(PAYLOAD_TYPE, new Payload("one", 1)).id(id).build();
-        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id, true));
 
-        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id, false));
         assertThatThrownBy(() -> client.enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("two", 1))
                         .id(id)
                         .build()))
@@ -239,11 +242,11 @@ public abstract class RunnerContract {
         startRunner(r -> r.register(PAYLOAD_TYPE, (ctx, payload) -> {}));
         var done = awaitState(id, TaskState.SUCCEEDED);
         assertThat(done.encodedPayload()).isNull();
-        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id, false));
         assertThat(client.enqueue(TaskRequest.of(PAYLOAD_TYPE, new Payload("two", 1))
                         .id(id)
                         .build()))
-                .isEqualTo(new EnqueueResult.Accepted(id));
+                .isEqualTo(new EnqueueResult.Accepted(id, false));
         assertThatThrownBy(() -> client.enqueue(TaskRequest.of(VOID_TYPE).id(id).build()))
                 .isInstanceOf(TaskIdReusedException.class);
     }
@@ -263,15 +266,19 @@ public abstract class RunnerContract {
         assertThat(client.task(id).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
         assertThat(client.task(id).orElseThrow().uniqueKey()).isNull();
 
-        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
-        assertThat(client.enqueueAll(List.of(request))).containsExactly(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id, false));
+        assertThat(client.enqueueAll(List.of(request))).containsExactly(new EnqueueResult.Accepted(id, false));
         assertThat(client.counts().get("Q:DEF").queued()).isEqualTo(1);
     }
 
     @Test
     void generatedIdCollisionsAbandonTheClientsCurrentBlock() {
         for (boolean batch : List.of(false, true)) {
-            var producer = TaskClient.builder().store(store).idBlockSize(4).build();
+            var producer = TaskClient.builder()
+                    .queues(QUEUES)
+                    .store(store)
+                    .idBlockSize(4)
+                    .build();
             long first = producer.nextId();
             long occupied = first + 1;
             client.enqueue(TaskRequest.of(VOID_TYPE).id(occupied).build());
@@ -279,9 +286,9 @@ public abstract class RunnerContract {
 
             var result = batch ? producer.enqueueAll(List.of(request)).getFirst() : producer.enqueue(request);
 
-            assertThat(result).isEqualTo(new EnqueueResult.Accepted(first + 4));
-            assertThat(store.getTask(occupied)).isPresent();
-            assertThat(store.getTask(result.id())).isPresent();
+            assertThat(result).isEqualTo(new EnqueueResult.Accepted(first + 4, true));
+            assertThat(store.task(occupied)).isPresent();
+            assertThat(store.task(result.id())).isPresent();
         }
         assertThat(client.counts().get("Q:DEF").queued()).isEqualTo(4);
     }
@@ -294,7 +301,7 @@ public abstract class RunnerContract {
                 .isInstanceOf(TaskValidationException.class);
 
         long id = client.nextId();
-        assertThat(client.enqueue(TaskRequest.of(VOID_TYPE).id(id).build()).accepted())
+        assertThat(client.enqueue(TaskRequest.of(VOID_TYPE).id(id).build()).isAccepted())
                 .isTrue();
     }
 
@@ -330,11 +337,11 @@ public abstract class RunnerContract {
         startRunner(
                 b -> b.retryPolicy(RetryPolicy.fixed(Duration.ofMillis(400))).observer(events::add),
                 r -> r.register(VOID_TYPE, (ctx, payload) -> {
-                    attempts.add(ctx.attempt());
+                    attempts.add(ctx.attemptNumber());
                     startedAt.add(Instant.now());
-                    if (ctx.attempt() < 3) {
+                    if (ctx.attemptNumber() < 3) {
                         failedAt.add(Instant.now());
-                        throw new IllegalStateException("not yet " + ctx.attempt());
+                        throw new IllegalStateException("not yet " + ctx.attemptNumber());
                     }
                 }));
 
@@ -349,7 +356,7 @@ public abstract class RunnerContract {
             assertThat(retryAt.get(i)).isAfterOrEqualTo(failedAt.get(i).plusMillis(400));
             assertThat(startedAt.get(i + 1)).isAfterOrEqualTo(retryAt.get(i).minusMillis(50));
         }
-        assertThat(Duration.between(done.due(), retryAt.get(1)).abs()).isLessThanOrEqualTo(Duration.ofMillis(2));
+        assertThat(Duration.between(done.dueAt(), retryAt.get(1)).abs()).isLessThanOrEqualTo(Duration.ofMillis(2));
     }
 
     private static List<Instant> retryTimes(List<TaskEvent> events, long id) {
@@ -394,18 +401,18 @@ public abstract class RunnerContract {
                 r -> r.register(VOID_TYPE, (ctx, payload) -> {
                     ctx.progress("half\u0000way");
                     if (ctx.headers().containsKey("cancel")) throw new TaskCancelledException("stop \u0000 now");
-                    ctx.step("o\u0000ne", String.class, () -> "a\u0000b");
+                    ctx.step("one", String.class, () -> "a\u0000b");
                     throw new IllegalStateException("bad \u0000 byte");
                 }));
 
         long failing = enqueue(TaskRequest.of(VOID_TYPE).maxAttempts(1).build());
         long cancelling =
-                enqueue(TaskRequest.of(VOID_TYPE).header("cancel", "yes").build());
+                enqueue(TaskRequest.of(VOID_TYPE).addHeader("cancel", "yes").build());
 
         var dead = awaitState(failing, TaskState.DEAD);
         assertThat(dead.progress()).isEqualTo("half" + REPLACEMENT + "way");
-        assertThat(dead.steps()).containsOnlyKeys("o" + REPLACEMENT + "ne");
-        assertThat(dead.steps().get("o" + REPLACEMENT + "ne").result()).isEqualTo("a" + REPLACEMENT + "b");
+        assertThat(dead.steps()).containsOnlyKeys("one");
+        assertThat(dead.steps().get("one").result()).isEqualTo("a" + REPLACEMENT + "b");
         assertThat(dead.lastFailure().message()).isEqualTo("bad " + REPLACEMENT + " byte");
         assertThat(dead.lastFailure().stack())
                 .contains("bad " + REPLACEMENT + " byte")
@@ -413,6 +420,57 @@ public abstract class RunnerContract {
         var cancelled = awaitState(cancelling, TaskState.CANCELLED);
         assertThat(cancelled.cancelReason()).isEqualTo("stop " + REPLACEMENT + " now");
         assertThat(cancelled.progress()).isEqualTo("half" + REPLACEMENT + "way");
+    }
+
+    @Test
+    void aStepNameWithANulCharacterIsRefusedAndItsBodyDoesNotRun() {
+        var bodies = new AtomicInteger();
+        startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> ctx.step("o\u0000ne", bodies::incrementAndGet)));
+
+        long id = enqueue(TaskRequest.of(VOID_TYPE).maxAttempts(1).build());
+
+        var dead = awaitState(id, TaskState.DEAD);
+        assertThat(dead.lastFailure().type()).isEqualTo(TaskValidationException.class.getName());
+        assertThat(dead.lastFailure().message()).contains("step name");
+        assertThat(dead.steps()).isEmpty();
+        assertThat(bodies).hasValue(0);
+    }
+
+    @Test
+    void aStepWhoseResultIsTooLongToRecordEndsTheTaskAndItsBodyDoesNotRunAgain() {
+        var bodies = new AtomicInteger();
+        startRunner(r -> r.register(
+                VOID_TYPE,
+                (ctx, payload) -> ctx.step("big", String.class, () -> {
+                    bodies.incrementAndGet();
+                    return "x".repeat(8193);
+                })));
+
+        long id = enqueue(TaskRequest.of(VOID_TYPE).maxAttempts(3).build());
+
+        var dead = awaitState(id, TaskState.DEAD);
+        assertThat(bodies).hasValue(1);
+        assertThat(dead.attempts()).isEqualTo(1);
+        assertThat(dead.lastFailure().message()).isEqualTo("result of step big exceeds 8192 characters");
+        assertThat(dead.steps()).isEmpty();
+    }
+
+    @Test
+    void aStepWithAResultOnARunnerWithoutAMapperFailsBeforeItsBodyRuns() {
+        var bodies = new AtomicInteger();
+        startRunner(
+                b -> b.jsonMapper(null),
+                r -> r.register(VOID_TYPE, (ctx, payload) -> {
+                    ctx.step("no result", bodies::incrementAndGet);
+                    ctx.step("result", String.class, () -> "stored " + bodies.addAndGet(10));
+                }));
+
+        long id = enqueue(TaskRequest.of(VOID_TYPE).maxAttempts(1).build());
+
+        var dead = awaitState(id, TaskState.DEAD);
+        assertThat(dead.lastFailure().type()).isEqualTo(TaskConfigurationException.class.getName());
+        assertThat(dead.steps()).containsOnlyKeys("no result");
+        assertThat(bodies).as("only the step without a result ran").hasValue(1);
     }
 
     @Test
@@ -441,7 +499,7 @@ public abstract class RunnerContract {
         startRunner(
                 b -> b.observer(events::add),
                 r -> r.register(VOID_TYPE, (ctx, payload) -> {
-                    attempts.add(ctx.attempt());
+                    attempts.add(ctx.attemptNumber());
                     startedAt.add(Instant.now());
                     if (attempts.size() == 1) {
                         rescheduledAt.set(Instant.now());
@@ -462,9 +520,9 @@ public abstract class RunnerContract {
                 .filter(e -> e.task().id() == id)
                 .findFirst()
                 .orElseThrow();
-        assertThat(rescheduled.due()).isAfterOrEqualTo(rescheduledAt.get().plusMillis(400));
-        assertThat(startedAt.get(1)).isAfterOrEqualTo(rescheduled.due().minusMillis(50));
-        assertThat(Duration.between(done.due(), rescheduled.due()).abs()).isLessThanOrEqualTo(Duration.ofMillis(2));
+        assertThat(rescheduled.dueAt()).isAfterOrEqualTo(rescheduledAt.get().plusMillis(400));
+        assertThat(startedAt.get(1)).isAfterOrEqualTo(rescheduled.dueAt().minusMillis(50));
+        assertThat(Duration.between(done.dueAt(), rescheduled.dueAt()).abs()).isLessThanOrEqualTo(Duration.ofMillis(2));
     }
 
     @Test
@@ -487,7 +545,7 @@ public abstract class RunnerContract {
             });
             firstResults.add(first);
             secondResults.add(second);
-            if (ctx.attempt() == 1) throw new IllegalStateException("after the second step");
+            if (ctx.attemptNumber() == 1) throw new IllegalStateException("after the second step");
             ctx.step(
                     "three",
                     () -> runs.computeIfAbsent("three", k -> new AtomicInteger())
@@ -563,16 +621,16 @@ public abstract class RunnerContract {
     }
 
     @Test
-    void uniqueKeyWithKeepForStaysDuplicateAfterSuccess() {
+    void uniqueKeyWithKeepAfterDoneStaysDuplicateAfterSuccess() {
         startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {}));
 
         long first = enqueue(TaskRequest.of(VOID_TYPE)
-                .uniqueKey("kept", Uniqueness.keepFor(Duration.ofMinutes(5)))
+                .uniqueKey("kept", Uniqueness.keepAfterDone(Duration.ofMinutes(5)))
                 .build());
         awaitState(first, TaskState.SUCCEEDED);
 
         var again = client.enqueue(TaskRequest.of(VOID_TYPE)
-                .uniqueKey("kept", Uniqueness.keepFor(Duration.ofMinutes(5)))
+                .uniqueKey("kept", Uniqueness.keepAfterDone(Duration.ofMinutes(5)))
                 .build());
 
         assertThat(again).isEqualTo(new EnqueueResult.Duplicate(first));
@@ -588,8 +646,8 @@ public abstract class RunnerContract {
                 enqueue(TaskRequest.of(VOID_TYPE).delay(Duration.ofMillis(300)).build());
 
         var done = awaitState(id, TaskState.SUCCEEDED);
-        assertThat(done.due()).isAfterOrEqualTo(enqueuedAfter.plusMillis(300));
-        assertThat(startedAt.get()).isAfterOrEqualTo(done.due().minusMillis(50));
+        assertThat(done.dueAt()).isAfterOrEqualTo(enqueuedAfter.plusMillis(300));
+        assertThat(startedAt.get()).isAfterOrEqualTo(done.dueAt().minusMillis(50));
     }
 
     @Test
@@ -597,22 +655,24 @@ public abstract class RunnerContract {
         startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {}));
         var before = Instant.now();
 
-        var next = client.putSchedule(ScheduleDefinition.of("every-minute", VOID_TYPE, "* * * * *"));
+        var put = client.putSchedule(ScheduleDefinition.of("every-minute", VOID_TYPE, "* * * * *", Overlap.ALLOW));
 
-        assertThat(next)
+        assertThat(put.outcome()).isEqualTo(PutScheduleOutcome.CREATED);
+        assertThat(put.nextFireAt())
                 .isAfter(before.minusSeconds(1))
                 .isBeforeOrEqualTo(Instant.now().plusSeconds(61));
-        assertThat(client.schedules()).containsKey("every-minute");
-        assertThat(client.schedules().get("every-minute")).isAfter(before.minusSeconds(1));
+        assertThat(client.nextFireTimes()).containsKey("every-minute");
+        assertThat(client.nextFireTimes().get("every-minute")).isAfter(before.minusSeconds(1));
 
-        var yearly = ScheduleDefinition.of("yearly", VOID_TYPE, "0 0 1 1 *");
-        var yearlyNext = client.putSchedule(yearly);
-        assertThat(client.putSchedule(yearly)).isEqualTo(yearlyNext);
-        assertThat(client.schedules().get("yearly")).isEqualTo(yearlyNext);
+        var yearly = ScheduleDefinition.of("yearly", VOID_TYPE, "0 0 1 1 *", Overlap.ALLOW);
+        var yearlyNext = client.putSchedule(yearly).nextFireAt();
+        assertThat(client.putSchedule(yearly))
+                .isEqualTo(new PutScheduleResult(PutScheduleOutcome.UNCHANGED, yearlyNext));
+        assertThat(client.nextFireTimes().get("yearly")).isEqualTo(yearlyNext);
 
         assertThat(client.deleteSchedule("yearly")).isTrue();
         assertThat(client.deleteSchedule("yearly")).isFalse();
-        assertThat(client.schedules()).doesNotContainKey("yearly");
+        assertThat(client.nextFireTimes()).doesNotContainKey("yearly");
     }
 
     @Test
@@ -661,7 +721,7 @@ public abstract class RunnerContract {
         });
         stopper.start();
         try {
-            await("the runner to be stopping", () -> runner.health().status() == RunnerHealth.Status.STOPPED);
+            await("the runner to be stopping", () -> runner.health().status() == RunnerHealth.Status.STOPPING);
             stopper.join(HELD_FOR_MS);
             assertThat(stopper.isAlive())
                     .as("stop returned while the task was still running")
@@ -678,6 +738,7 @@ public abstract class RunnerContract {
         assertThat(releasedWhenStopReturned).isTrue();
         assertThat(client.task(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
         assertThat(runner.runningTasks()).isZero();
+        assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.STOPPED);
     }
 
     @Test
@@ -732,7 +793,7 @@ public abstract class RunnerContract {
         var untouched = client.task(unknown).orElseThrow();
         assertThat(untouched.attempts()).isZero();
         assertThat(untouched.state()).isIn(TaskState.QUEUED, TaskState.SCHEDULED);
-        assertThat(untouched.workerId()).isNull();
+        assertThat(untouched.runnerId()).isNull();
     }
 
     @Test
@@ -786,7 +847,7 @@ public abstract class RunnerContract {
 
         var outcome = runner.admin().cancel(id, running.revision(), "operator says stop");
 
-        assertThat(outcome).isEqualTo(today.bonfire.oss.bth4j.spi.CancelOutcome.REQUESTED);
+        assertThat(outcome).isEqualTo(today.bonfire.oss.bth4j.CancelOutcome.REQUESTED);
         var done = awaitState(id, TaskState.CANCELLED);
         assertThat(done.cancelReason()).isEqualTo("operator says stop");
         assertThat(done.revision()).isEqualTo(running.revision() + 1);
@@ -805,12 +866,12 @@ public abstract class RunnerContract {
         var queued = client.task(id).orElseThrow();
 
         assertThat(runner.admin().cancel(id, queued.revision(), null))
-                .isEqualTo(today.bonfire.oss.bth4j.spi.CancelOutcome.CANCELLED);
+                .isEqualTo(today.bonfire.oss.bth4j.CancelOutcome.CANCELLED);
         var cancelled = client.task(id).orElseThrow();
         assertThat(cancelled.state()).isEqualTo(TaskState.CANCELLED);
         assertThat(cancelled.cancelReason()).isEqualTo("cancelled by operator");
         assertThat(runner.admin().cancel(id, queued.revision(), null))
-                .isEqualTo(today.bonfire.oss.bth4j.spi.CancelOutcome.STALE);
+                .isEqualTo(today.bonfire.oss.bth4j.CancelOutcome.STALE);
 
         assertThat(runner.admin().retry(id, cancelled.revision())).isEqualTo(RetryOutcome.RETRIED);
         runner.resume();
@@ -836,7 +897,7 @@ public abstract class RunnerContract {
 
     @Test
     void interruptOnCancelWakesABlockedProcessor() throws Exception {
-        var interruptible = TaskType.of("rc-interruptible").interruptOnCancel();
+        var interruptible = TaskType.of("rc-interruptible").withInterruptOnCancel();
         var started = new CountDownLatch(1);
         var runner = startRunner(r -> r.register(interruptible, (ctx, payload) -> {
             started.countDown();
@@ -854,7 +915,7 @@ public abstract class RunnerContract {
 
     @Test
     void lostLeaseInterruptsAnOptedInProcessorWithoutFinishingTheTask() throws Exception {
-        var type = TaskType.of("rc-lost-lease").interruptOnCancel();
+        var type = TaskType.of("rc-lost-lease").withInterruptOnCancel();
         var started = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var interrupted = new CountDownLatch(1);
@@ -895,7 +956,7 @@ public abstract class RunnerContract {
                     });
             await(
                     "the lease-lost issue",
-                    () -> runner.issues().stream().anyMatch(i -> i.kind().equals("lease-lost")));
+                    () -> runner.issues().stream().anyMatch(i -> i.kind() == Issue.Kind.LEASE_LOST));
         } finally {
             release.countDown();
         }
@@ -909,7 +970,7 @@ public abstract class RunnerContract {
         var runner = startRunner(
                 b -> b.observer(events::add),
                 r -> r.register(VOID_TYPE, (ctx, payload) -> {
-                    if (ctx.attempt() == 1) {
+                    if (ctx.attemptNumber() == 1) {
                         started.countDown();
                         release.await(60, TimeUnit.SECONDS);
                     }
@@ -922,7 +983,7 @@ public abstract class RunnerContract {
             assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
             await(
                     "the abandoned attempt",
-                    () -> runner.issues().stream().anyMatch(i -> i.kind().equals("attempt-abandoned")));
+                    () -> runner.issues().stream().anyMatch(i -> i.kind() == Issue.Kind.ATTEMPT_ABANDONED));
             assertThat(runner.abandonedAttempts()).isEqualTo(1);
 
             var done = awaitState(id, TaskState.SUCCEEDED);
@@ -941,6 +1002,8 @@ public abstract class RunnerContract {
                     .findFirst()
                     .orElseThrow();
             assertThat(expired.dead()).isFalse();
+            assertThat(expired.queue()).isEqualTo(done.queue());
+            assertThat(expired.type()).isEqualTo(VOID_TYPE.name());
 
             release.countDown();
             await("the abandoned attempt to return", () -> runner.abandonedAttempts() == 0);
@@ -975,7 +1038,7 @@ public abstract class RunnerContract {
             assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
             var running = awaitState(id, TaskState.LEASED);
             assertThat(runner.admin().cancel(id, running.revision(), "operator says stop"))
-                    .isEqualTo(today.bonfire.oss.bth4j.spi.CancelOutcome.REQUESTED);
+                    .isEqualTo(today.bonfire.oss.bth4j.CancelOutcome.REQUESTED);
 
             var done = awaitState(id, TaskState.CANCELLED);
 
@@ -983,7 +1046,7 @@ public abstract class RunnerContract {
             assertThat(done.attempts()).isEqualTo(1);
             assertThat(runs).hasValue(1);
             await("the cancelled event", () -> eventNames(events, id).contains("Cancelled"));
-            assertThat(runner.issues()).anyMatch(i -> i.kind().equals("attempt-abandoned"));
+            assertThat(runner.issues()).anyMatch(i -> i.kind() == Issue.Kind.ATTEMPT_ABANDONED);
 
             release.countDown();
             await("the abandoned attempt to return", () -> runner.runningTasks() == 0);
@@ -1019,7 +1082,7 @@ public abstract class RunnerContract {
             assertThat(store.unclaim(id, running.revision())).isTrue();
             await(
                     "the lease-lost issue",
-                    () -> runner.issues().stream().anyMatch(i -> i.kind().equals("lease-lost")));
+                    () -> runner.issues().stream().anyMatch(i -> i.kind() == Issue.Kind.LEASE_LOST));
             assertThat(stopped.get()).isNull();
             assertThat(runner.runningTasks()).isEqualTo(1);
 
@@ -1052,13 +1115,21 @@ public abstract class RunnerContract {
         pause(300);
         assertThat(ran.getCount()).isEqualTo(1);
         await("the expired event", () -> eventNames(events, id).contains("Expired"));
+        var event = events.stream()
+                .filter(TaskEvent.Expired.class::isInstance)
+                .map(TaskEvent.Expired.class::cast)
+                .filter(e -> e.id() == id)
+                .findFirst()
+                .orElseThrow();
+        assertThat(event.queue()).isEqualTo(expired.queue());
+        assertThat(event.type()).isEqualTo(VOID_TYPE.name());
     }
 
     @Test
     void aRetryOrRescheduleDelayLongerThanOneHundredYearsWaitsOneHundredYears() {
         var forever = ChronoUnit.FOREVER.getDuration();
         startRunner(
-                b -> b.retryPolicy("forever", RetryPolicy.fixed(forever)),
+                b -> b.addRetryPolicy("forever", RetryPolicy.fixed(forever)),
                 r -> r.register(VOID_TYPE, (ctx, payload) -> {
                     if (ctx.headers().containsKey("reschedule")) throw new TaskRescheduleException(forever);
                     throw new IllegalStateException("boom");
@@ -1067,11 +1138,11 @@ public abstract class RunnerContract {
 
         long retried = enqueue(TaskRequest.of(VOID_TYPE).retryPolicy("forever").build());
         long rescheduled =
-                enqueue(TaskRequest.of(VOID_TYPE).header("reschedule", "yes").build());
+                enqueue(TaskRequest.of(VOID_TYPE).addHeader("reschedule", "yes").build());
 
         for (long id : new long[] {retried, rescheduled}) {
             var waiting = awaitState(id, TaskState.SCHEDULED);
-            assertThat(waiting.due())
+            assertThat(waiting.dueAt())
                     .as("task %d", id)
                     .isBetween(
                             from.plus(TaskRequest.MAX_TIME_FROM_NOW).minusSeconds(60),
@@ -1084,7 +1155,7 @@ public abstract class RunnerContract {
     void namedRetryPolicyDecidesAndAnUnknownNameFallsBackToTheDefault() {
         var calls = new AtomicInteger();
         var runner = startRunner(
-                b -> b.retryPolicy("never", (task, error) -> RetryPolicy.Decision.dead("policy says no")),
+                b -> b.addRetryPolicy("never", (task, error) -> RetryPolicy.Decision.dead("policy says no")),
                 r -> r.register(VOID_TYPE, (ctx, payload) -> {
                     calls.incrementAndGet();
                     throw new IllegalStateException("boom");
@@ -1102,7 +1173,7 @@ public abstract class RunnerContract {
         assertThat(retried.attempts()).isEqualTo(2);
         await(
                 "the retry-policy issue",
-                () -> runner.issues().stream().anyMatch(i -> i.kind().equals("retry-policy")));
+                () -> runner.issues().stream().anyMatch(i -> i.kind() == Issue.Kind.RETRY_POLICY));
     }
 
     @Test
@@ -1136,7 +1207,7 @@ public abstract class RunnerContract {
             release.await();
         }));
         assertThat(runner.health().status()).isEqualTo(RunnerHealth.Status.RUNNING);
-        assertThat(runner.health().workerId()).isPositive();
+        assertThat(runner.health().runnerId()).isPositive();
 
         long id = enqueue(TaskRequest.of(VOID_TYPE).build());
         assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
@@ -1173,9 +1244,9 @@ public abstract class RunnerContract {
         assertThat(health.status()).isEqualTo(RunnerHealth.Status.QUIET);
         assertThat(health.lastClaimAt()).isNotNull();
         await(
-                "the worker heartbeat",
-                () -> runner.admin().workers().stream()
-                        .anyMatch(w -> w.id() == runner.workerId() && w.lastSeen() != null));
+                "the runner heartbeat",
+                () -> runner.admin().runners().stream()
+                        .anyMatch(w -> w.id() == runner.runnerId() && w.lastSeenAt() != null));
         assertThat(runner.admin().health()).isPresent();
     }
 
@@ -1193,19 +1264,20 @@ public abstract class RunnerContract {
         await("two ticks", () -> okRuns.get() >= 2);
         await(
                 "the broken schedule to pause",
-                () -> runner.admin().schedules().stream().anyMatch(s -> s.id().equals("broken") && s.paused()));
-        var broken = runner.admin().schedules().stream()
+                () -> runner.admin().schedules(null, 200).items().stream()
+                        .anyMatch(s -> s.id().equals("broken") && s.paused()));
+        var broken = runner.admin().schedules(null, 200).items().stream()
                 .filter(s -> s.id().equals("broken"))
                 .findFirst()
                 .orElseThrow();
         assertThat(broken.fixedDelay()).isEqualTo(Duration.ofSeconds(1));
-        assertThat(runner.issues()).anyMatch(i -> i.kind().equals("schedule-paused"));
-        var tick = runner.admin().schedules().stream()
+        assertThat(runner.issues()).anyMatch(i -> i.kind() == Issue.Kind.SCHEDULE_PAUSED);
+        var tick = runner.admin().schedules(null, 200).items().stream()
                 .filter(s -> s.id().equals("tick"))
                 .findFirst()
                 .orElseThrow();
         assertThat(tick.paused()).isFalse();
-        assertThat(tick.nextFire()).isAfter(Instant.now().minusSeconds(2));
+        assertThat(tick.nextFireAt()).isAfter(Instant.now().minusSeconds(2));
     }
 
     @Test
@@ -1220,15 +1292,17 @@ public abstract class RunnerContract {
         }));
 
         client.putSchedule(ScheduleDefinition.every("slow", VOID_TYPE, Duration.ofSeconds(1))
-                .maxRunTime(Duration.ofMillis(300)));
+                .withMaxRunTime(Duration.ofMillis(300)));
 
         await(
                 "the overrunning occurrence to pause its schedule",
-                () -> runner.admin().schedules().stream().anyMatch(s -> s.id().equals("slow") && s.paused()));
+                () -> runner.admin().schedules(null, 200).items().stream()
+                        .anyMatch(s -> s.id().equals("slow") && s.paused()));
         var task = client.task(occurrence.get()).orElseThrow();
         assertThat(task.maxRunTime()).isEqualTo(Duration.ofMillis(300));
         assertThat(task.state()).isEqualTo(TaskState.CANCELLED);
-        assertThat(runner.admin().schedules().getFirst().maxRunTime()).isEqualTo(Duration.ofMillis(300));
+        assertThat(runner.admin().schedules(null, 200).items().getFirst().maxRunTime())
+                .isEqualTo(Duration.ofMillis(300));
     }
 
     @Test
@@ -1237,18 +1311,18 @@ public abstract class RunnerContract {
         startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> runs.incrementAndGet()));
         var tick = ScheduleDefinition.every("tick", VOID_TYPE, Duration.ofHours(1));
         client.putSchedule(tick);
-        store.setNextFire("tick", Instant.now());
+        store.triggerSchedule("tick", null, Instant.now());
         await("the triggered run", () -> runs.get() >= 1);
         await("the re-arm one delay ahead", () -> {
-            var next = client.schedules().get("tick");
+            var next = client.nextFireTimes().get("tick");
             return next.isAfter(Instant.now().plus(Duration.ofMinutes(30)))
                     && next.isBefore(Instant.now().plus(Duration.ofHours(2)));
         });
 
-        store.setNextFire("tick", Instant.now().plus(Duration.ofDays(36_500)));
+        store.triggerSchedule("tick", null, Instant.now().plus(Duration.ofDays(36_500)));
         client.putSchedule(tick);
 
-        assertThat(client.schedules().get("tick")).isBefore(Instant.now().plus(Duration.ofHours(2)));
+        assertThat(client.nextFireTimes().get("tick")).isBefore(Instant.now().plus(Duration.ofHours(2)));
     }
 
     @Test
@@ -1276,22 +1350,24 @@ public abstract class RunnerContract {
     void misfireFireOnceNowCreatesOneOccurrenceAndMovesOn() {
         var dues = new CopyOnWriteArrayList<Instant>();
         var runner = startRunner(
-                r -> r.register(VOID_TYPE, (ctx, payload) -> dues.add(ctx.task().due())));
+                r -> r.register(VOID_TYPE, (ctx, payload) -> dues.add(ctx.task().dueAt())));
         int minute = farMinute();
         var latest = latestGridInstant(minute);
         var missed = registerLate(
                 "late-once",
                 cronAt(minute),
-                today.bonfire.oss.bth4j.spi.RecurringDefinition.MISFIRE_FIRE_ONCE_NOW,
+                today.bonfire.oss.bth4j.spi.StoredSchedule.MISFIRE_FIRE_ONCE_NOW,
                 0,
                 Duration.ofMinutes(10));
 
         await("one catch-up run", () -> dues.size() == 1);
-        await("a future fire time", () -> client.schedules().get("late-once").isAfter(Instant.now()));
+        await(
+                "a future fire time",
+                () -> client.nextFireTimes().get("late-once").isAfter(Instant.now()));
         pause(300);
         assertThat(dues).containsExactly(missed);
-        assertThat(client.schedules().get("late-once")).isEqualTo(latest.plus(Duration.ofHours(1)));
-        assertThat(runner.issues()).anyMatch(i -> i.kind().equals("schedule-misfire"));
+        assertThat(client.nextFireTimes().get("late-once")).isEqualTo(latest.plus(Duration.ofHours(1)));
+        assertThat(runner.issues()).anyMatch(i -> i.kind() == Issue.Kind.SCHEDULE_MISFIRE);
     }
 
     @Test
@@ -1301,36 +1377,40 @@ public abstract class RunnerContract {
         registerLate(
                 "late-skip",
                 farCron(),
-                today.bonfire.oss.bth4j.spi.RecurringDefinition.MISFIRE_SKIP,
+                today.bonfire.oss.bth4j.spi.StoredSchedule.MISFIRE_SKIP,
                 0,
                 Duration.ofMinutes(10));
 
-        await("a future fire time", () -> client.schedules().get("late-skip").isAfter(Instant.now()));
+        await(
+                "a future fire time",
+                () -> client.nextFireTimes().get("late-skip").isAfter(Instant.now()));
         pause(300);
         assertThat(runs.get()).isZero();
         assertThat(client.tasks(TaskState.QUEUED, null, null, 10).items()).isEmpty();
-        assertThat(runner.issues()).anyMatch(i -> i.kind().equals("schedule-misfire"));
+        assertThat(runner.issues()).anyMatch(i -> i.kind() == Issue.Kind.SCHEDULE_MISFIRE);
     }
 
     @Test
     void misfireCatchUpCreatesAtMostTheConfiguredOccurrences() {
         var dues = new CopyOnWriteArrayList<Instant>();
         startRunner(
-                r -> r.register(VOID_TYPE, (ctx, payload) -> dues.add(ctx.task().due())));
+                r -> r.register(VOID_TYPE, (ctx, payload) -> dues.add(ctx.task().dueAt())));
         int minute = farMinute();
         var latest = latestGridInstant(minute);
         registerLate(
                 "late-catch",
                 cronAt(minute),
-                today.bonfire.oss.bth4j.spi.RecurringDefinition.MISFIRE_CATCH_UP,
+                today.bonfire.oss.bth4j.spi.StoredSchedule.MISFIRE_CATCH_UP,
                 2,
                 Duration.ofHours(10));
 
         await("two catch-up runs", () -> dues.size() == 2);
-        await("a future fire time", () -> client.schedules().get("late-catch").isAfter(Instant.now()));
+        await(
+                "a future fire time",
+                () -> client.nextFireTimes().get("late-catch").isAfter(Instant.now()));
         pause(300);
         assertThat(dues).containsExactlyInAnyOrder(latest.minus(Duration.ofHours(1)), latest);
-        assertThat(client.schedules().get("late-catch")).isEqualTo(latest.plus(Duration.ofHours(1)));
+        assertThat(client.nextFireTimes().get("late-catch")).isEqualTo(latest.plus(Duration.ofHours(1)));
     }
 
     @Test
@@ -1343,58 +1423,70 @@ public abstract class RunnerContract {
             started.countDown();
             release.await();
         }));
-        client.putSchedule(
-                ScheduleDefinition.of("guarded", VOID_TYPE, "0 0 1 1 *").overlap(Overlap.SKIP));
+        client.putSchedule(ScheduleDefinition.of("guarded", VOID_TYPE, "0 0 1 1 *", Overlap.SKIP));
 
-        assertThat(runner.admin().triggerSchedule("guarded")).isTrue();
+        assertThat(runner.admin().triggerSchedule("guarded", revisionOf(runner, "guarded")))
+                .isEqualTo(ScheduleOutcome.APPLIED);
         assertThat(started.await(20, TimeUnit.SECONDS)).isTrue();
-        assertThat(runner.admin().triggerSchedule("guarded")).isTrue();
+        assertThat(runner.admin().triggerSchedule("guarded", revisionOf(runner, "guarded")))
+                .isEqualTo(ScheduleOutcome.APPLIED);
         await(
                 "the overlap issue",
-                () -> runner.issues().stream().anyMatch(i -> i.kind().equals("schedule-overlap")));
+                () -> runner.issues().stream().anyMatch(i -> i.kind() == Issue.Kind.SCHEDULE_OVERLAP));
         assertThat(runs.get()).isEqualTo(1);
-        var guarded = runner.admin().schedules().stream()
+        var guarded = runner.admin().schedules(null, 200).items().stream()
                 .filter(s -> s.id().equals("guarded"))
                 .findFirst()
                 .orElseThrow();
         assertThat(guarded.overlap()).isEqualTo(Overlap.SKIP);
-        assertThat(guarded.nextFire()).isAfter(Instant.now());
+        assertThat(guarded.nextFireAt()).isAfter(Instant.now());
 
         release.countDown();
         await(
                 "the first occurrence to finish",
                 () -> client.tasks(TaskState.LEASED, null, null, 10).items().isEmpty());
-        assertThat(runner.admin().triggerSchedule("guarded")).isTrue();
+        assertThat(runner.admin().triggerSchedule("guarded", revisionOf(runner, "guarded")))
+                .isEqualTo(ScheduleOutcome.APPLIED);
         await("a second run", () -> runs.get() == 2);
     }
 
     @Test
     void scheduleZoneAndPauseAreStoredAndVisible() {
         var runner = startRunner(r -> r.register(VOID_TYPE, (ctx, payload) -> {}));
-        client.putSchedule(ScheduleDefinition.of("kolkata", VOID_TYPE, "30 9 * * *")
-                .zone(java.time.ZoneId.of("Asia/Kolkata"))
-                .misfire(Misfire.SKIP));
+        client.putSchedule(ScheduleDefinition.of("kolkata", VOID_TYPE, "30 9 * * *", Overlap.ALLOW)
+                .withZone(java.time.ZoneId.of("Asia/Kolkata"))
+                .withMisfire(Misfire.SKIP));
 
-        var view = runner.admin().schedules().stream()
+        var view = runner.admin().schedules(null, 200).items().stream()
                 .filter(s -> s.id().equals("kolkata"))
                 .findFirst()
                 .orElseThrow();
-        assertThat(view.zone()).isEqualTo(java.time.ZoneId.of("Asia/Kolkata"));
+        assertThat(view.zone()).isEqualTo("Asia/Kolkata");
         assertThat(view.misfire()).isEqualTo(Misfire.SKIP);
         assertThat(view.cron()).isEqualTo("30 9 * * *");
-        assertThat(view.nextFire().atZone(java.time.ZoneId.of("Asia/Kolkata")).getHour())
+        assertThat(view.nextFireAt().atZone(java.time.ZoneId.of("Asia/Kolkata")).getHour())
                 .isEqualTo(9);
 
-        assertThat(runner.admin().pauseSchedule("kolkata", true)).isTrue();
-        assertThat(runner.admin().schedules().stream()
+        assertThat(runner.admin().pauseSchedule("kolkata", view.revision(), true))
+                .isEqualTo(ScheduleOutcome.APPLIED);
+        assertThat(runner.admin().schedules(null, 200).items().stream()
                         .filter(s -> s.id().equals("kolkata"))
                         .findFirst()
                         .orElseThrow()
                         .paused())
                 .isTrue();
-        assertThat(runner.admin().pauseSchedule("kolkata", false)).isTrue();
-        assertThat(runner.admin().pauseSchedule("missing", true)).isFalse();
-        assertThat(runner.admin().deleteSchedule("kolkata")).isTrue();
+        assertThat(runner.admin().pauseSchedule("kolkata", view.revision(), false))
+                .isEqualTo(ScheduleOutcome.APPLIED);
+        assertThat(runner.admin().pauseSchedule("missing", 1, true)).isEqualTo(ScheduleOutcome.NOT_FOUND);
+        assertThat(runner.admin().deleteSchedule("kolkata", view.revision())).isEqualTo(ScheduleOutcome.APPLIED);
+    }
+
+    private static long revisionOf(BackgroundRunner runner, String scheduleId) {
+        return runner.admin().schedules(null, 200).items().stream()
+                .filter(s -> s.id().equals(scheduleId))
+                .findFirst()
+                .orElseThrow()
+                .revision();
     }
 
     /** Stores a cron definition whose next fire is {@code late} in the past, as a runner that was down would find it. */
@@ -1423,7 +1515,7 @@ public abstract class RunnerContract {
 
     /** @return the missed fire time the definition is stored with */
     private Instant registerLate(String id, String cron, String misfire, int catchUpMaxFires, Duration late) {
-        var def = new today.bonfire.oss.bth4j.spi.RecurringDefinition(
+        var def = new today.bonfire.oss.bth4j.spi.StoredSchedule(
                 id,
                 store.typeId(VOID_TYPE.name()),
                 1,
@@ -1442,7 +1534,7 @@ public abstract class RunnerContract {
                 0);
         var missed =
                 Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MILLIS).minus(late);
-        store.putRecurring(def, missed, missed);
+        store.putSchedule(def, missed, missed);
         return missed;
     }
 
@@ -1467,6 +1559,7 @@ public abstract class RunnerContract {
             case TaskEvent.Expired e -> e.id();
             case TaskEvent.ScheduleFired e -> e.taskId();
             case TaskEvent.Purged e -> -1L;
+            default -> -1L;
         };
     }
 }

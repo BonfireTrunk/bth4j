@@ -12,7 +12,9 @@ import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
  * Cron definitions fire by wall-clock time in {@code zone} (UTC by default). When a runner was down past a
  * fire time, {@link #misfire} decides what happens (one occurrence now by default). Fixed-delay definitions
  * fire {@code fixedDelay} after the previous occurrence ended; a failed occurrence pauses the definition.
- * {@link Overlap#SKIP} prevents a new occurrence while the previous one has not finished.
+ * {@link Overlap#SKIP} prevents a new occurrence while the previous one has not finished. A cron definition
+ * has no default for it, the caller chooses; a fixed-delay definition defaults to {@link Overlap#ALLOW}, which
+ * only matters for a fire an operator triggers while an occurrence runs.
  *
  * @param cron       five-field unix expression; null for a fixed-delay definition
  * @param fixedDelay delay between the end of an occurrence and the next, at least {@link #MIN_FIXED_DELAY} and at
@@ -43,7 +45,9 @@ public record ScheduleDefinition<T>(
         StoredText.require("schedule id", id);
         TaskRequest.requireAccount(account);
         if (type == null) throw new TaskValidationException("type is required");
-        if (StringUtils.isBlank(cron) == (fixedDelay == null)) {
+        // a blank cron is no cron: stored as text it would differ from the same definition given with null
+        if (StringUtils.isBlank(cron)) cron = null;
+        if ((cron == null) == (fixedDelay == null)) {
             throw new TaskValidationException("exactly one of cron and fixedDelay is required");
         }
         if (fixedDelay != null && fixedDelay.compareTo(MIN_FIXED_DELAY) < 0) {
@@ -58,15 +62,27 @@ public record ScheduleDefinition<T>(
         }
         TaskRequest.requireMaxRunTime(maxRunTime);
         if (misfire == null) misfire = Misfire.FIRE_ONCE_NOW;
-        if (overlap == null) overlap = Overlap.ALLOW;
+        if (overlap == null) {
+            if (fixedDelay == null) {
+                throw new TaskValidationException(
+                        "a cron schedule needs an overlap rule: Overlap.ALLOW or Overlap.SKIP");
+            }
+            overlap = Overlap.ALLOW;
+        }
     }
 
-    public static <T> ScheduleDefinition<T> of(String id, TaskType<T> type, T payload, String cron) {
-        return new ScheduleDefinition<>(id, type, payload, cron, null, null, null, null, null, null, null, null);
+    /**
+     * A definition that fires on a cron expression.
+     *
+     * @param overlap what happens to a fire while the previous occurrence has not finished: {@link Overlap#ALLOW}
+     *     runs both, {@link Overlap#SKIP} drops the fire
+     */
+    public static <T> ScheduleDefinition<T> of(String id, TaskType<T> type, T payload, String cron, Overlap overlap) {
+        return new ScheduleDefinition<>(id, type, payload, cron, null, null, null, overlap, null, null, null, null);
     }
 
-    public static ScheduleDefinition<Void> of(String id, TaskType<Void> type, String cron) {
-        return of(id, type, null, cron);
+    public static ScheduleDefinition<Void> of(String id, TaskType<Void> type, String cron, Overlap overlap) {
+        return of(id, type, null, cron, overlap);
     }
 
     /** A definition that fires {@code delay} after each occurrence ends, starting {@code delay} from now. */
@@ -82,39 +98,39 @@ public record ScheduleDefinition<T>(
         return fixedDelay != null;
     }
 
-    public ScheduleDefinition<T> queue(String queue) {
+    public ScheduleDefinition<T> withQueue(String queue) {
         return new ScheduleDefinition<>(
                 id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRunTime);
     }
 
-    public ScheduleDefinition<T> account(String account) {
+    public ScheduleDefinition<T> withAccount(String account) {
         return new ScheduleDefinition<>(
                 id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRunTime);
     }
 
-    public ScheduleDefinition<T> maxAttempts(int maxAttempts) {
+    public ScheduleDefinition<T> withMaxAttempts(int maxAttempts) {
         return new ScheduleDefinition<>(
                 id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRunTime);
     }
 
     /** An occurrence's attempt running longer than this is cancelled, like {@link TaskRequest.Builder#maxRunTime}. */
-    public ScheduleDefinition<T> maxRunTime(Duration maxRunTime) {
+    public ScheduleDefinition<T> withMaxRunTime(Duration maxRunTime) {
         return new ScheduleDefinition<>(
                 id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRunTime);
     }
 
     /** The zone the cron expression is evaluated in. Ignored by fixed-delay definitions. */
-    public ScheduleDefinition<T> zone(ZoneId zone) {
+    public ScheduleDefinition<T> withZone(ZoneId zone) {
         return new ScheduleDefinition<>(
                 id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRunTime);
     }
 
-    public ScheduleDefinition<T> misfire(Misfire misfire) {
+    public ScheduleDefinition<T> withMisfire(Misfire misfire) {
         return new ScheduleDefinition<>(
                 id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRunTime);
     }
 
-    public ScheduleDefinition<T> overlap(Overlap overlap) {
+    public ScheduleDefinition<T> withOverlap(Overlap overlap) {
         return new ScheduleDefinition<>(
                 id, type, payload, cron, fixedDelay, zone, misfire, overlap, queue, account, maxAttempts, maxRunTime);
     }

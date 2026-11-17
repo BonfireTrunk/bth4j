@@ -2,6 +2,10 @@ package today.bonfire.oss.bth4j.spi;
 
 import java.util.Map;
 import java.util.Optional;
+import today.bonfire.oss.bth4j.StateCounts;
+import today.bonfire.oss.bth4j.TaskState;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 
 /** Read-only views for clients, the runner and the admin API. */
 public interface InspectionStore extends TaskStore {
@@ -10,7 +14,7 @@ public interface InspectionStore extends TaskStore {
      * @return the task with that id, in whatever state it is
      * @throws UnreadableTaskException when a stored value of the task cannot be read
      */
-    Optional<TaskRecord> getTask(long id);
+    Optional<TaskRecord> task(long id);
 
     /**
      * @return the first task id that {@link #allocateIds} has not handed out yet; every id below it was
@@ -26,6 +30,13 @@ public interface InspectionStore extends TaskStore {
     Optional<TaskRecord> taskByKey(String key);
 
     /**
+     * @return true when the task with this id holds the unique key now: as an open task, as a finished one whose
+     *         keep window has not passed, or as one that was removed inside its keep window, which
+     *         {@link #taskByKey} does not show
+     */
+    boolean holdsKey(long id, String key);
+
+    /**
      * @return counts per state by queue id, for every registered queue; a queue without tasks has every count
      *         zero
      */
@@ -35,8 +46,10 @@ public interface InspectionStore extends TaskStore {
     Map<Integer, Map<Integer, Long>> queuedByType();
 
     /**
-     * Lists tasks in one state, QUEUED and SCHEDULED by {@code (due, id)} ascending and the other states by
-     * {@code (stateChanged, id)} ascending, paging by an opaque position that the store encodes itself. The
+     * Lists tasks in one state, QUEUED and SCHEDULED by {@code (dueAt, id)} ascending and the other states by
+     * {@code (stateChanged, id)} ascending, paging by an opaque position that the store encodes itself. Among
+     * tasks that share the time, a store may order the ids its own way, as long as the order is total and stable
+     * (the Redis store compares them as text). The
      * position does not depend on the task it was taken from, so that task leaving the listed state neither ends
      * the listing early nor restarts it. A task whose own position moves while the walk runs can still be seen
      * twice (moved later) or missed (moved earlier). A task with a stored value that cannot be read is left out,
@@ -45,7 +58,8 @@ public interface InspectionStore extends TaskStore {
      *
      * @param queueId null for every queue
      * @param cursor {@link TaskPage#next()} of the previous page; null starts at the beginning
-     * @throws IllegalArgumentException if the cursor was not produced by this store
+     * @param limit the most tasks one page holds, at least 1
+     * @throws TaskValidationException if the cursor was not produced by this store or the limit is below 1
      */
     TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit);
 }

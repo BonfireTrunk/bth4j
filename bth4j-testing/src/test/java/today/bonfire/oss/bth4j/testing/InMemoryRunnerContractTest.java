@@ -7,6 +7,6 @@ class InMemoryRunnerContractTest extends RunnerContract {
 
     @Override
     protected FullStore newStore(String namespace) {
-        return new InMemoryStore();
+        return InMemoryStore.builder().build();
     }
 }

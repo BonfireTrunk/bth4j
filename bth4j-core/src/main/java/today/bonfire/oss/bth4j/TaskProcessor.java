@@ -1,7 +1,7 @@
 package today.bonfire.oss.bth4j;
 
 /**
- * Runs tasks of one {@link TaskType}. Delivery is at least once: a task runs again when the worker holding
+ * Runs tasks of one {@link TaskType}. Delivery is at least once: a task runs again when the runner holding
  * it died or lost its lease, so the work must be safe to repeat, or split into {@link TaskContext#step steps}.
  * <p>
  * Returning normally completes the task. Throwing {@link today.bonfire.oss.bth4j.exceptions.TaskRescheduleException}

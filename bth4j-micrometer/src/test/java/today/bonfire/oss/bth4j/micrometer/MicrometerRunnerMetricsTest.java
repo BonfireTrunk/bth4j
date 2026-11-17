@@ -2,18 +2,24 @@ package today.bonfire.oss.bth4j.micrometer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
+import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
@@ -21,7 +27,8 @@ import today.bonfire.oss.bth4j.AdminOps;
 import today.bonfire.oss.bth4j.BackgroundRunner;
 import today.bonfire.oss.bth4j.Concurrency;
 import today.bonfire.oss.bth4j.RunnerHealth;
-import today.bonfire.oss.bth4j.spi.StateCounts;
+import today.bonfire.oss.bth4j.StateCounts;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
 
 class MicrometerRunnerMetricsTest {
@@ -107,6 +114,26 @@ class MicrometerRunnerMetricsTest {
     }
 
     @Test
+    void aScrapeDuringARefreshNeverReadsAZeroForAQueueThatHasTasks() {
+        counts.set(Map.of("q", new StateCounts(5, 0, 0, 0, 0, 0, 0)));
+        try (var metrics = MicrometerRunnerMetrics.bind(admin, () -> 0, registry, Duration.ofHours(1))) {
+            var readWhileRefreshing = new ArrayList<Double>();
+            // the refresh walks the entries of the counts it was given: that moment stands for a scrape in between
+            counts.set(new LinkedHashMap<>(Map.of("q", new StateCounts(7, 0, 0, 0, 0, 0, 0))) {
+                @Override
+                public Set<Map.Entry<String, StateCounts>> entrySet() {
+                    readWhileRefreshing.add(state("q", "queued"));
+                    return super.entrySet();
+                }
+            });
+            metrics.refresh();
+
+            assertThat(readWhileRefreshing).isNotEmpty().containsOnly(5.0);
+            assertThat(state("q", "queued")).isEqualTo(7);
+        }
+    }
+
+    @Test
     void backgroundThreadRefreshesWithoutManualCalls() throws Exception {
         try (var metrics = MicrometerRunnerMetrics.bind(admin, () -> 0, registry, Duration.ofMillis(10))) {
             counts.set(Map.of("q", new StateCounts(5, 0, 0, 0, 0, 0, 0)));
@@ -168,6 +195,70 @@ class MicrometerRunnerMetricsTest {
 
             assertThat(state("q", "queued")).isEqualTo(9);
         }
+    }
+
+    private MicrometerRunnerMetrics bindWithClock(AtomicLong nanos) {
+        return MicrometerRunnerMetrics.bind(
+                admin, () -> 0, OptionalInt::empty, registry, Tags.empty(), Duration.ofHours(1), nanos::get);
+    }
+
+    @Test
+    void countsAgeIsAboutZeroAfterAReadThatWorkedAndGrowsWithTheClock() {
+        var nanos = new AtomicLong(5_000_000_000L);
+        try (var metrics = bindWithClock(nanos)) {
+            assertThat(gauge("bth4j.runner.counts.age")).isEqualTo(0);
+            assertThat(registry.get("bth4j.runner.counts.age").gauge().getId().getBaseUnit())
+                    .isEqualTo("seconds");
+
+            nanos.addAndGet(Duration.ofSeconds(90).toNanos());
+            assertThat(gauge("bth4j.runner.counts.age")).isEqualTo(90);
+
+            metrics.refresh();
+            assertThat(gauge("bth4j.runner.counts.age")).isEqualTo(0);
+        }
+    }
+
+    @Test
+    void countsAgeKeepsGrowingOverFailingReadsAndDropsBackAfterOneThatWorks() {
+        var nanos = new AtomicLong();
+        try (var metrics = bindWithClock(nanos)) {
+            countsFailure.set(new IllegalStateException("store down"));
+            nanos.addAndGet(Duration.ofSeconds(30).toNanos());
+            metrics.refresh();
+            nanos.addAndGet(Duration.ofSeconds(30).toNanos());
+            metrics.refresh();
+
+            assertThat(gauge("bth4j.runner.counts.age")).isEqualTo(60);
+
+            countsFailure.set(null);
+            metrics.refresh();
+
+            assertThat(gauge("bth4j.runner.counts.age")).isEqualTo(0);
+        }
+    }
+
+    @Test
+    void countsAgeCountsFromBindingWhenTheFirstReadFails() {
+        var nanos = new AtomicLong(1_000L);
+        countsFailure.set(new IllegalStateException("store down"));
+        try (var metrics = bindWithClock(nanos)) {
+            assertThat(gauge("bth4j.runner.counts.age")).isEqualTo(0);
+
+            nanos.addAndGet(Duration.ofSeconds(10).toNanos());
+
+            assertThat(gauge("bth4j.runner.counts.age")).isEqualTo(10);
+        }
+    }
+
+    @Test
+    void closeRemovesTheCountsAgeGaugeAndItHasTheCommonTags() {
+        var metrics = MicrometerRunnerMetrics.bind(
+                admin, () -> 0, OptionalInt::empty, registry, Tags.of("runner", "a"), Duration.ofHours(1), () -> 0L);
+        assertThat(gauge("bth4j.runner.counts.age", "runner", "a")).isEqualTo(0);
+
+        metrics.close();
+
+        assertThat(registry.find("bth4j.runner.counts.age").gauge()).isNull();
     }
 
     @Test
@@ -275,7 +366,7 @@ class MicrometerRunnerMetricsTest {
     @Test
     void bindingARunnerIncludesItsExecutorLimit() {
         var runner = BackgroundRunner.builder()
-                .store(new InMemoryStore())
+                .store(InMemoryStore.builder().build())
                 .concurrency(Concurrency.fixed(7))
                 .build();
         try (var metrics = MicrometerRunnerMetrics.bind(runner, registry, Duration.ofHours(1))) {
@@ -287,8 +378,96 @@ class MicrometerRunnerMetricsTest {
     }
 
     @Test
+    void aSecondBindingWithTheSameTagsOnOneRegistryIsRefusedUntilTheFirstIsClosed() {
+        var tags = Tags.of("runner", "a");
+        var first = MicrometerRunnerMetrics.bind(admin, () -> 1, registry, tags, Duration.ofHours(1));
+        try {
+            assertThatThrownBy(() -> MicrometerRunnerMetrics.bind(
+                            admin, () -> 2, registry, Tags.of("runner", "a"), Duration.ofHours(1)))
+                    .isInstanceOf(TaskConfigurationException.class)
+                    .hasMessageContaining("tags");
+            assertThat(gauge("bth4j.runner.running", "runner", "a")).isEqualTo(1);
+
+            try (var other = MicrometerRunnerMetrics.bind(
+                            admin, () -> 2, registry, Tags.of("runner", "b"), Duration.ofHours(1));
+                    var untagged = MicrometerRunnerMetrics.bind(admin, () -> 3, registry, null, Duration.ofHours(1));
+                    var elsewhere = MicrometerRunnerMetrics.bind(
+                            admin, () -> 4, new SimpleMeterRegistry(), tags, Duration.ofHours(1))) {
+                assertThat(gauge("bth4j.runner.running", "runner", "b")).isEqualTo(2);
+            }
+        } finally {
+            first.close();
+        }
+
+        try (var again = MicrometerRunnerMetrics.bind(admin, () -> 5, registry, tags, Duration.ofHours(1))) {
+            assertThat(gauge("bth4j.runner.running", "runner", "a")).isEqualTo(5);
+        }
+    }
+
+    @Test
+    void theTagsStayTakenUntilCloseHasRemovedTheMeters() {
+        var tags = Tags.of("runner", "a");
+        var duringRemoval = new ArrayList<Throwable>();
+        var watched = new SimpleMeterRegistry() {
+            @Override
+            public Meter remove(Meter meter) {
+                if (duringRemoval.isEmpty()) {
+                    duringRemoval.add(catchThrowable(
+                            () -> MicrometerRunnerMetrics.bind(admin, () -> 2, this, tags, Duration.ofHours(1))
+                                    .close()));
+                }
+                return super.remove(meter);
+            }
+        };
+
+        MicrometerRunnerMetrics.bind(admin, () -> 1, watched, tags, Duration.ofHours(1))
+                .close();
+
+        assertThat(duringRemoval).singleElement().isInstanceOf(TaskConfigurationException.class);
+        try (var again = MicrometerRunnerMetrics.bind(admin, () -> 3, watched, tags, Duration.ofHours(1))) {
+            assertThat(watched.get("bth4j.runner.running").tags(tags).gauge().value())
+                    .isEqualTo(3);
+        }
+    }
+
+    @Test
+    void aRefreshTooLargeForMillisecondsStillBindsAndCloseRemovesTheGauges() {
+        var metrics = MicrometerRunnerMetrics.bind(admin, () -> 0, registry, Duration.ofSeconds(Long.MAX_VALUE));
+
+        assertThat(gauge("bth4j.runner.up")).isEqualTo(1);
+        metrics.close();
+
+        assertThat(registry.getMeters()).isEmpty();
+    }
+
+    @Test
+    void aBindingThatFailsWhileItRegistersLeavesNoMeterAndItsTagsCanBeBoundAgain() {
+        var failing = new SimpleMeterRegistry();
+        var registered = new AtomicInteger();
+        failing.config().meterFilter(new io.micrometer.core.instrument.config.MeterFilter() {
+            @Override
+            public Meter.Id map(Meter.Id id) {
+                if (id.getName().startsWith("bth4j.") && registered.incrementAndGet() == 3) {
+                    throw new IllegalStateException("registry refuses the third gauge");
+                }
+                return id;
+            }
+        });
+
+        assertThatThrownBy(() -> MicrometerRunnerMetrics.bind(admin, () -> 0, failing, Duration.ofHours(1)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("third gauge");
+        assertThat(failing.getMeters()).isEmpty();
+
+        try (var again = MicrometerRunnerMetrics.bind(admin, () -> 0, failing, Duration.ofHours(1))) {
+            assertThat(failing.get("bth4j.runner.up").gauge().value()).isEqualTo(1);
+        }
+        assertThat(failing.getMeters()).isEmpty();
+    }
+
+    @Test
     void refreshMustBePositive() {
         assertThatThrownBy(() -> MicrometerRunnerMetrics.bind(admin, () -> 0, registry, Duration.ZERO))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskConfigurationException.class);
     }
 }

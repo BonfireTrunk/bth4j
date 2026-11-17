@@ -11,25 +11,26 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.IntSupplier;
+import java.util.function.LongSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.TaskEvent.Outcome;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
-import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
 
 /**
  * Housekeeping, every check interval: ends tasks whose lease expired (retried, dead, or cancelled when a
- * cancel request was pending), expires tasks that missed their start-by time and records this worker's
+ * cancel request was pending), expires tasks that missed their start-by time and records this runner's
  * heartbeat. Every purge interval: purges finished tasks past their retention, releases unique keys whose
- * window passed and deletes stale worker rows. Jobs run on the scheduler thread itself; {@link #stopThread()}
- * returns at once and {@link #waitTillDone(Duration)} waits for a job in progress.
+ * window passed and deletes stale runner rows. Jobs run on the scheduler thread itself; {@link #stopThread()}
+ * returns at once and {@link #waitTillDone(Duration)} waits for a job in progress. A job that works through
+ * many batches does not hold the others back: a purge runs a cycle between two batches, and a cycle writes
+ * the heartbeat again between two batches, whenever a check interval has passed.
  */
 class MaintenanceService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(Loggers.MAINTENANCE);
@@ -48,13 +49,20 @@ class MaintenanceService extends CustomThread {
     private final FailureDetail failureDetail;
     private final int batchSize;
     private final int purgeBatchSize;
-    private final int workerId;
-    private final String workerLabel;
-    private final Set<Integer> workerQueueIds;
-    private final Set<Integer> workerTypeIds;
+    private final int runnerId;
+    private final String runnerLabel;
+    private final Set<Integer> runnerQueueIds;
+    private final Set<Integer> runnerTypeIds;
     private final IntSupplier running;
     private final BooleanSupplier accepting;
-    private final Duration workerStaleAfter;
+    private final Duration runnerStaleTimeout;
+    private final LongSupplier nanoTime;
+    private long lastCycleEnd;
+    private long lastHeartbeat;
+    private final OutageLog heartbeatOutage;
+    private final OutageLog reclaimOutage;
+    private final OutageLog expiryOutage;
+    private final OutageLog purgeOutage;
 
     MaintenanceService(Builder b) {
         super(b.group, b.threadName);
@@ -71,13 +79,20 @@ class MaintenanceService extends CustomThread {
         this.failureDetail = b.failureDetail;
         this.batchSize = b.batchSize;
         this.purgeBatchSize = b.purgeBatchSize;
-        this.workerId = b.workerId;
-        this.workerLabel = b.workerLabel;
-        this.workerQueueIds = b.workerQueueIds;
-        this.workerTypeIds = b.workerTypeIds;
+        this.runnerId = b.runnerId;
+        this.runnerLabel = b.runnerLabel;
+        this.runnerQueueIds = b.runnerQueueIds;
+        this.runnerTypeIds = b.runnerTypeIds;
         this.running = b.running;
         this.accepting = b.accepting;
-        this.workerStaleAfter = b.workerStaleAfter;
+        this.runnerStaleTimeout = b.runnerStaleTimeout;
+        this.nanoTime = b.nanoTime;
+        this.lastCycleEnd = nanoTime.getAsLong();
+        this.lastHeartbeat = lastCycleEnd;
+        this.heartbeatOutage = new OutageLog(log, "Maintenance heartbeat", nanoTime);
+        this.reclaimOutage = new OutageLog(log, "Maintenance lease reclaim", nanoTime);
+        this.expiryOutage = new OutageLog(log, "Maintenance expiry of missed starts", nanoTime);
+        this.purgeOutage = new OutageLog(log, "Maintenance purge", nanoTime);
         this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
             var thread = new Thread(b.group, r, b.threadName + "-scheduler");
             thread.setDaemon(true);
@@ -88,9 +103,14 @@ class MaintenanceService extends CustomThread {
     @Override
     public void run() {
         var delay = checkInterval.toMillis();
-        executor.scheduleWithFixedDelay(survivingErrors(this::cycle), delay, delay, TimeUnit.MILLISECONDS);
-        executor.scheduleWithFixedDelay(
-                survivingErrors(this::purge), delay, purgeInterval.toMillis(), TimeUnit.MILLISECONDS);
+        try {
+            executor.scheduleWithFixedDelay(survivingErrors(this::cycle), delay, delay, TimeUnit.MILLISECONDS);
+            executor.scheduleWithFixedDelay(
+                    survivingErrors(this::purge), delay, purgeInterval.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException e) {
+            // stopped before this thread got to run: there is nothing left to schedule
+            if (!executor.isShutdown()) throw e;
+        }
     }
 
     /** A periodic job that throws is never run again by its executor, so an Error must not leave the job. */
@@ -105,17 +125,32 @@ class MaintenanceService extends CustomThread {
     }
 
     void cycle() {
+        // first, so that a long backlog of expired leases cannot make this runner look gone
+        boolean seen = heartbeat();
         reclaimExpiredLeases();
         expireMissedStarts();
-        heartbeat();
+        if (seen) status.maintained();
+        lastCycleEnd = nanoTime.getAsLong();
+    }
+
+    /** Between two batches of a long purge, so that it does not hold back the heartbeat, lease recovery and expiry. */
+    private void cycleIfDue() {
+        if (nanoTime.getAsLong() - lastCycleEnd >= checkInterval.toNanos()) cycle();
+    }
+
+    /** Between two batches of a long backlog, so that it does not make this runner look gone. */
+    private void heartbeatIfDue() {
+        if (nanoTime.getAsLong() - lastHeartbeat >= checkInterval.toNanos() && heartbeat()) status.maintained();
     }
 
     private void reclaimExpiredLeases() {
         try {
             int count;
             int handled;
+            boolean more;
             do {
                 var expired = store.reclaim(batchSize);
+                reclaimOutage.succeeded();
                 count = expired.size();
                 handled = 0;
                 for (var e : expired) {
@@ -127,17 +162,19 @@ class MaintenanceService extends CustomThread {
                     }
                 }
                 // a lease that could not be handled stays expired, so a batch of only those would come back at once
-            } while (count == batchSize && handled > 0 && canContinueProcessing);
+                more = count == batchSize && handled > 0 && canContinueProcessing;
+                if (more) heartbeatIfDue();
+            } while (more);
         } catch (Exception e) {
             status.storeError(e);
-            log.error("Error in reclaiming expired leases", e);
+            reclaimOutage.failed(e, "Error in reclaiming expired leases");
         }
     }
 
     private void handleExpired(ExpiredLease e) {
         TaskRecord record;
         try {
-            record = store.getTask(e.id()).orElse(null);
+            record = store.task(e.id()).orElse(null);
         } catch (UnreadableTaskException unreadable) {
             endUnreadable(e, unreadable);
             return;
@@ -158,10 +195,19 @@ class MaintenanceService extends CustomThread {
         var outcome = store.failExpired(e.id(), e.revision(), failure, retryAt, keepDead, pause);
         log.warn("Lease of task {} expired after attempt {}: {}", e.id(), e.attempts(), outcome);
         if (outcome != FailOutcome.LOST) {
-            observer.emit(
-                    new TaskEvent.LeaseExpired(e.id(), e.attempts(), e.maxAttempts(), outcome == FailOutcome.DEAD));
+            observer.emit(leaseExpired(e, outcome == FailOutcome.DEAD));
         }
         if (outcome == FailOutcome.DEAD) pauseParkedSchedule(record, TaskState.DEAD, pause);
+    }
+
+    private TaskEvent.LeaseExpired leaseExpired(ExpiredLease e, boolean dead) {
+        return new TaskEvent.LeaseExpired(
+                e.id(),
+                names.queueNameOrUnknown(e.queueId()),
+                names.typeNameOrUnknown(e.typeId()),
+                e.attempts(),
+                e.maxAttempts(),
+                dead);
     }
 
     /**
@@ -169,9 +215,9 @@ class MaintenanceService extends CustomThread {
      * transition, because nothing would re-arm it; this makes that visible so an operator can resume it.
      */
     private void pauseParkedSchedule(TaskRecord record, TaskState ended, ScheduleEffect pause) {
-        if (pause == null || !pause.applied()) return;
+        if (pause == null || !pause.isApplied()) return;
         var detail = "schedule " + record.scheduleId() + " paused: occurrence ended " + ended;
-        status.issue("schedule-paused", detail, record.id());
+        status.issue(Issue.Kind.SCHEDULE_PAUSED, detail, record.id());
         log.warn(detail);
     }
 
@@ -184,12 +230,12 @@ class MaintenanceService extends CustomThread {
                 new FailureInfo(e.attempts(), clock.instant(), "unreadable-record", unreadable.getMessage(), null);
         var outcome = store.failExpired(e.id(), e.revision(), failure, null, keepDead, null);
         if (outcome == FailOutcome.LOST) return;
-        status.issue("corrupt-task", unreadable.getMessage(), e.id());
+        status.issue(Issue.Kind.CORRUPT_TASK, unreadable.getMessage(), e.id());
         log.error("Task {} has a stored value that cannot be read, it ended {}", e.id(), outcome, unreadable);
-        observer.emit(new TaskEvent.LeaseExpired(e.id(), e.attempts(), e.maxAttempts(), true));
+        observer.emit(leaseExpired(e, true));
     }
 
-    /** A cancelled task whose worker died must not run again. */
+    /** A cancelled task whose runner died must not run again. */
     private void cancelExpired(ExpiredLease e, TaskRecord record) {
         var reason = record != null && record.cancelReason() != null ? record.cancelReason() : "cancel requested";
         var pause = RecurringTaskService.pauseEffect(record);
@@ -205,7 +251,7 @@ class MaintenanceService extends CustomThread {
     private RetryPolicy.Decision decide(TaskRecord record) {
         var policy = retryPolicies.named(record.retryPolicy());
         if (policy == null) {
-            status.issue("retry-policy", "unknown retry policy " + record.retryPolicy(), record.id());
+            status.issue(Issue.Kind.RETRY_POLICY, "unknown retry policy " + record.retryPolicy(), record.id());
             log.warn("Task {} names unknown retry policy {}, using the default", record.id(), record.retryPolicy());
             policy = retryPolicies.defaultPolicy();
         }
@@ -221,7 +267,7 @@ class MaintenanceService extends CustomThread {
                         record.id(),
                         Failures.describe(failureDetail, policyError));
             }
-            status.issue("retry-policy", Failures.describe(failureDetail, policyError), record.id());
+            status.issue(Issue.Kind.RETRY_POLICY, Failures.describe(failureDetail, policyError), record.id());
             return RetryPolicy.Decision.retryAfter(Duration.ZERO);
         }
     }
@@ -229,44 +275,55 @@ class MaintenanceService extends CustomThread {
     private void expireMissedStarts() {
         try {
             int count;
+            boolean more;
             do {
-                var ids = store.expire(batchSize);
-                count = ids.size();
-                for (var id : ids) {
-                    observer.emit(new TaskEvent.Expired(id));
+                var tasks = store.expire(batchSize);
+                expiryOutage.succeeded();
+                count = tasks.size();
+                for (var t : tasks) {
+                    observer.emit(new TaskEvent.Expired(
+                            t.id(), names.queueNameOrUnknown(t.queueId()), names.typeNameOrUnknown(t.typeId())));
                 }
                 if (count > 0) log.info("Expired {} tasks that missed their start-by time", count);
-            } while (count == batchSize && canContinueProcessing);
+                more = count == batchSize && canContinueProcessing;
+                if (more) heartbeatIfDue();
+            } while (more);
         } catch (Exception e) {
             status.storeError(e);
-            log.error("Error in expiring tasks", e);
+            expiryOutage.failed(e, "Error in expiring tasks");
         }
     }
 
     void heartbeatNow() {
         try {
-            executor.execute(survivingErrors(this::heartbeat));
+            executor.execute(survivingErrors(() -> {
+                if (heartbeat()) status.maintained();
+            }));
         } catch (RejectedExecutionException e) {
             // A concurrent stop leaves the next service generation to publish the state.
             if (!executor.isShutdown()) throw e;
         }
     }
 
-    private void heartbeat() {
+    /** @return false when the store call failed */
+    private boolean heartbeat() {
+        lastHeartbeat = nanoTime.getAsLong();
         try {
-            if (workerId > 0) {
+            if (runnerId > 0) {
                 store.heartbeat(
-                        workerId,
-                        workerLabel,
-                        workerQueueIds,
-                        workerTypeIds,
+                        runnerId,
+                        runnerLabel,
+                        runnerQueueIds,
+                        runnerTypeIds,
                         running.getAsInt(),
                         accepting.getAsBoolean());
+                heartbeatOutage.succeeded();
             }
-            status.maintained();
+            return true;
         } catch (Exception e) {
             status.storeError(e);
-            log.error("Heartbeat of worker {} failed", workerId, e);
+            heartbeatOutage.failed(e, "Heartbeat of runner {} failed", runnerId);
+            return false;
         }
     }
 
@@ -275,24 +332,31 @@ class MaintenanceService extends CustomThread {
             for (var entry : retention.entrySet()) {
                 long removed = 0;
                 long batch;
+                boolean more;
                 do {
                     batch = store.purge(entry.getKey(), entry.getValue(), purgeBatchSize);
                     removed += batch;
-                } while (batch == purgeBatchSize && canContinueProcessing);
+                    more = batch == purgeBatchSize && canContinueProcessing;
+                    if (more) cycleIfDue();
+                } while (more);
                 if (removed > 0) {
                     log.info("Purged {} {} tasks", removed, entry.getKey());
                     observer.emit(new TaskEvent.Purged(entry.getKey(), removed));
                 }
             }
             int released;
+            boolean more;
             do {
                 released = store.releaseKeys(purgeBatchSize);
-            } while (released == purgeBatchSize && canContinueProcessing);
-            int workers = store.purgeWorkers(workerStaleAfter);
-            if (workers > 0) log.info("Removed {} workers without a heartbeat for {}", workers, workerStaleAfter);
+                more = released == purgeBatchSize && canContinueProcessing;
+                if (more) cycleIfDue();
+            } while (more);
+            int runners = store.purgeRunners(runnerStaleTimeout);
+            if (runners > 0) log.info("Removed {} runners without a heartbeat for {}", runners, runnerStaleTimeout);
+            purgeOutage.succeeded();
         } catch (Exception e) {
             status.storeError(e);
-            log.error("Error in purging finished tasks", e);
+            purgeOutage.failed(e, "Error in purging finished tasks");
         }
     }
 
@@ -323,6 +387,12 @@ class MaintenanceService extends CustomThread {
         return !executor.isShutdown();
     }
 
+    /** The thread only schedules the jobs and ends at once; a job still in a store call runs on the executor. */
+    @Override
+    boolean isDone() {
+        return !isAlive() && executor.isTerminated();
+    }
+
     static class Builder {
         private ThreadGroup group;
         private String threadName;
@@ -339,13 +409,14 @@ class MaintenanceService extends CustomThread {
         private FailureDetail failureDetail = FailureDetail.FULL;
         private int batchSize = 100;
         private int purgeBatchSize = 500;
-        private int workerId;
-        private String workerLabel;
-        private Set<Integer> workerQueueIds = Set.of();
-        private Set<Integer> workerTypeIds = Set.of();
+        private int runnerId;
+        private String runnerLabel;
+        private Set<Integer> runnerQueueIds = Set.of();
+        private Set<Integer> runnerTypeIds = Set.of();
         private IntSupplier running = () -> 0;
         private BooleanSupplier accepting = () -> true;
-        private Duration workerStaleAfter = Duration.ofMinutes(10);
+        private Duration runnerStaleTimeout = Duration.ofMinutes(10);
+        private LongSupplier nanoTime = System::nanoTime;
 
         Builder group(ThreadGroup group) {
             this.group = group;
@@ -424,14 +495,14 @@ class MaintenanceService extends CustomThread {
         }
 
         /**
-         * The worker whose heartbeat this service records, with what it registered so that the heartbeat can
+         * The runner whose heartbeat this service records, with what it registered so that the heartbeat can
          * restore a purged row; 0 records none.
          */
-        Builder worker(int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, IntSupplier running) {
-            this.workerId = workerId;
-            this.workerLabel = label;
-            this.workerQueueIds = queueIds;
-            this.workerTypeIds = typeIds;
+        Builder runner(int runnerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, IntSupplier running) {
+            this.runnerId = runnerId;
+            this.runnerLabel = label;
+            this.runnerQueueIds = queueIds;
+            this.runnerTypeIds = typeIds;
             this.running = running;
             return this;
         }
@@ -441,8 +512,14 @@ class MaintenanceService extends CustomThread {
             return this;
         }
 
-        Builder workerStaleAfter(Duration workerStaleAfter) {
-            this.workerStaleAfter = workerStaleAfter;
+        Builder runnerStaleTimeout(Duration runnerStaleTimeout) {
+            this.runnerStaleTimeout = runnerStaleTimeout;
+            return this;
+        }
+
+        /** The source of elapsed time between maintenance cycles; a test passes its own. */
+        Builder nanoTime(LongSupplier nanoTime) {
+            this.nanoTime = nanoTime;
             return this;
         }
 

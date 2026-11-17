@@ -25,11 +25,9 @@ import today.bonfire.oss.bth4j.exceptions.RedactedFailure;
 import today.bonfire.oss.bth4j.exceptions.TaskCancelledException;
 import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
-import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
 
 class FailureDetailTest {
 
@@ -264,7 +262,7 @@ class FailureDetailTest {
 
         assertThat(((TaskEvent.Retrying) events.get(1)).retryAt()).isEqualTo(NOW);
         assertThat(stored.get().type()).isEqualTo(IllegalStateException.class.getName());
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("retry-policy"));
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.RETRY_POLICY);
         assertThat(finishedCalls).isEqualTo(1);
     }
 
@@ -303,7 +301,7 @@ class FailureDetailTest {
         run(FailureDetail.FULL, new IllegalStateException("x"));
 
         assertThat(stored.get()).isNull();
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
         assertThat(logText()).contains("Unable to update the state of task 9");
         assertThat(finishedCalls).isEqualTo(1);
     }
@@ -317,7 +315,7 @@ class FailureDetailTest {
         assertThat(events.getLast())
                 .isInstanceOfSatisfying(
                         TaskEvent.Retrying.class, e -> assertThat(e.outcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN));
-        assertThat(status.issues()).noneMatch(i -> i.kind().equals("lease-lost"));
+        assertThat(status.issues()).noneMatch(i -> i.kind() == Issue.Kind.LEASE_LOST);
         assertThat(logText()).contains("the outcome is unknown");
     }
 
@@ -342,7 +340,7 @@ class FailureDetailTest {
         assertThat(events.getLast())
                 .isInstanceOfSatisfying(
                         TaskEvent.Succeeded.class, e -> assertThat(e.outcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN));
-        assertThat(status.issues()).noneMatch(i -> i.kind().equals("lease-lost"));
+        assertThat(status.issues()).noneMatch(i -> i.kind() == Issue.Kind.LEASE_LOST);
     }
 
     @Test
@@ -432,7 +430,7 @@ class FailureDetailTest {
         assertThat(acked).isTrue();
         assertThat(nextFire.get()).isNull();
         assertThat(events.get(1)).isInstanceOf(TaskEvent.Succeeded.class);
-        assertThat(status.issues()).noneMatch(i -> i.kind().equals("schedule-rearm"));
+        assertThat(status.issues()).noneMatch(i -> i.kind() == Issue.Kind.SCHEDULE_REARM);
     }
 
     @Test
@@ -445,7 +443,7 @@ class FailureDetailTest {
         assertThat(acked).isTrue();
         assertThat(nextFire.get()).isNull();
         assertThat(events.get(1)).isInstanceOf(TaskEvent.Succeeded.class);
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("schedule-rearm"));
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.SCHEDULE_REARM);
         assertThat(logText()).contains("not re-armed");
     }
 
@@ -459,7 +457,7 @@ class FailureDetailTest {
         assertThat(events.get(1))
                 .isInstanceOfSatisfying(
                         TaskEvent.Succeeded.class, e -> assertThat(e.outcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN));
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
         assertThat(finishedCalls).isEqualTo(1);
     }
 
@@ -479,14 +477,14 @@ class FailureDetailTest {
                             if (scheduleError != null) throw scheduleError;
                             acked = true;
                             var effect = (ScheduleEffect) args[4];
-                            if (effect != null && !effect.pauses()) {
-                                nextFire.set(effect.nextFire());
+                            if (effect != null && !effect.isPause()) {
+                                nextFire.set(effect.nextFireAt());
                                 effect.markApplied();
                             }
                             yield true;
                         }
                         case "ackAll" -> InvocationHandler.invokeDefault(proxy, method, args);
-                        case "getTask" -> java.util.Optional.empty();
+                        case "task" -> java.util.Optional.empty();
                         case "finishCancelled" -> {
                             cancelledReason.set((String) args[2]);
                             yield true;
@@ -496,7 +494,7 @@ class FailureDetailTest {
                             stored.set((FailureInfo) args[2]);
                             var dead = args[3] == null;
                             var effect = (ScheduleEffect) args[5];
-                            if (dead && effect != null && effect.pauses()) {
+                            if (dead && effect != null && effect.isPause()) {
                                 paused.set(true);
                                 effect.markApplied();
                             }

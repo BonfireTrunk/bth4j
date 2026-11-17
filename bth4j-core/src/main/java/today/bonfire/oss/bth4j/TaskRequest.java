@@ -25,6 +25,13 @@ public final class TaskRequest<T> {
 
     public static final int MAX_UNIQUE_KEY_LENGTH = 256;
     public static final int MAX_ACCOUNT_LENGTH = 128;
+    public static final int MAX_RETRY_POLICY_LENGTH = 64;
+
+    /** The rule for the name of a retry policy: 1 to {@link #MAX_RETRY_POLICY_LENGTH} characters, not blank. */
+    static boolean isRetryPolicyName(String name) {
+        return name != null && !name.isBlank() && name.length() <= MAX_RETRY_POLICY_LENGTH;
+    }
+
     public static final int MAX_HEADERS_BYTES = 8 * 1024;
     public static final int MAX_PAYLOAD_BYTES = 256 * 1024;
 
@@ -34,17 +41,21 @@ public final class TaskRequest<T> {
      */
     public static final Duration MAX_TIME_FROM_NOW = Duration.ofDays(36_525);
 
-    /** The rule for a maximum run time of a task or schedule; null means none. */
+    /**
+     * The rule for a maximum run time of a task or schedule; null means none. Stores keep whole milliseconds, so
+     * a shorter time would be kept as zero.
+     */
     public static void requireMaxRunTime(Duration maxRunTime) {
+        // compared before the conversion, which overflows for a duration such as ChronoUnit.FOREVER
         if (maxRunTime != null
-                && (maxRunTime.isNegative() || maxRunTime.isZero() || maxRunTime.compareTo(MAX_RUN_TIME) > 0)) {
-            throw new TaskValidationException("maxRunTime must be positive and at most " + MAX_RUN_TIME);
+                && (maxRunTime.compareTo(MAX_RUN_TIME) > 0 || !maxRunTime.isPositive() || maxRunTime.toMillis() < 1)) {
+            throw new TaskValidationException("maxRunTime must be at least 1 ms and at most " + MAX_RUN_TIME);
         }
     }
 
     /** The rule for a unique key, for enqueueing and for looking one up. */
     public static void requireUniqueKey(String key) {
-        if (key.isBlank() || key.length() > MAX_UNIQUE_KEY_LENGTH) {
+        if (key == null || key.isBlank() || key.length() > MAX_UNIQUE_KEY_LENGTH) {
             throw new TaskValidationException("uniqueKey must be 1 to " + MAX_UNIQUE_KEY_LENGTH + " characters");
         }
         StoredText.require("uniqueKey", key);
@@ -248,11 +259,21 @@ public final class TaskRequest<T> {
 
         /**
          * Makes the task record unique: while the key is taken, another request with the same key is answered with
-         * {@link EnqueueResult.Duplicate} instead of being stored. See {@link Uniqueness} for lease-loss limits.
+         * {@link EnqueueResult.Duplicate} instead of being stored. The key is taken until the task is done, also
+         * when an earlier call on this builder asked for a keep window. See {@link Uniqueness} for lease-loss
+         * limits. A key must not start with {@code sched:}: an occurrence of a schedule that skips overlaps holds
+         * the key {@code sched:<schedule id>}, and a task with that key would make the schedule skip its fires.
          */
         public Builder<T> uniqueKey(String key) {
-            if (key != null) requireUniqueKey(key);
+            if (key != null) {
+                requireUniqueKey(key);
+                if (key.startsWith(RecurringTaskService.OVERLAP_KEY_PREFIX)) {
+                    throw new TaskValidationException("uniqueKey must not start with \""
+                            + RecurringTaskService.OVERLAP_KEY_PREFIX + "\", the keys of schedule occurrences do");
+                }
+            }
             this.uniqueKey = key;
+            this.uniqueness = Uniqueness.UNTIL_DONE;
             return this;
         }
 
@@ -272,7 +293,7 @@ public final class TaskRequest<T> {
             return this;
         }
 
-        public Builder<T> header(String name, String value) {
+        public Builder<T> addHeader(String name, String value) {
             if (name == null || name.isBlank() || value == null) {
                 throw new TaskValidationException("header name and value are required");
             }
@@ -283,8 +304,8 @@ public final class TaskRequest<T> {
             return this;
         }
 
-        public Builder<T> headers(Map<String, String> headers) {
-            if (headers != null) headers.forEach(this::header);
+        public Builder<T> addHeaders(Map<String, String> headers) {
+            if (headers != null) headers.forEach(this::addHeader);
             return this;
         }
 
@@ -297,15 +318,22 @@ public final class TaskRequest<T> {
             return this;
         }
 
-        /** An attempt running longer than this is cancelled; the task ends CANCELLED. */
+        /**
+         * An attempt running longer than this is cancelled; the task ends CANCELLED. The runner looks about once
+         * a second, so the cancel request comes up to a second after this time.
+         */
         public Builder<T> maxRunTime(Duration maxRunTime) {
             requireMaxRunTime(maxRunTime);
             this.maxRunTime = maxRunTime;
             return this;
         }
 
-        /** Name of a retry policy registered with {@code BackgroundRunner.Builder#retryPolicy(String, RetryPolicy)}; an unknown name falls back to the default policy. */
+        /** Name of a retry policy registered with {@code BackgroundRunner.Builder#addRetryPolicy(String, RetryPolicy)}; an unknown name falls back to the default policy. */
         public Builder<T> retryPolicy(String name) {
+            if (name != null && !isRetryPolicyName(name)) {
+                throw new TaskValidationException(
+                        "retryPolicy must be 1 to " + MAX_RETRY_POLICY_LENGTH + " characters");
+            }
             StoredText.require("retryPolicy", name);
             this.retryPolicy = name;
             return this;
@@ -321,7 +349,7 @@ public final class TaskRequest<T> {
          * task has the same type, queue, payload (compared as stored text, when the task still has it) and
          * unique key (when the stored task still holds one); anything else throws a
          * {@link today.bonfire.oss.bth4j.exceptions.TaskIdReusedException}. Headers, account, attempts, retry
-         * policy, start-by, max run, delay, {@code at(...)} time, {@code keepFor} duration and payload version
+         * policy, start-by, max run, delay, {@code at(...)} time, {@code keepAfterDone} duration and payload version
          * are not compared. Never invent an id.
          */
         public Builder<T> id(long id) {

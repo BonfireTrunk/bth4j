@@ -15,7 +15,7 @@ class KeysTest {
                 keys.prefix,
                 keys.meta,
                 keys.seqId,
-                keys.seqWorker,
+                keys.seqRunner,
                 keys.leased,
                 keys.cron,
                 keys.cronRevision,
@@ -24,12 +24,13 @@ class KeysTest {
                 keys.steps(1),
                 keys.failures(1),
                 keys.queue(2, 3),
+                keys.queueAll(2),
                 keys.scheduled(2),
                 keys.index(3, 2),
                 keys.activeTypes(2),
                 keys.typeSet("d"),
                 keys.uniqueKey("k"),
-                keys.worker(4),
+                keys.runner(4),
                 keys.cronDefinition("s"),
                 keys.registry("queue"));
 
@@ -43,6 +44,7 @@ class KeysTest {
         assertThat(keys.steps(7)).isEqualTo("{NS}:st:7");
         assertThat(keys.failures(7)).isEqualTo("{NS}:f:7");
         assertThat(keys.queue(2, 3)).isEqualTo("{NS}:q:2:3");
+        assertThat(keys.queueAll(2)).isEqualTo("{NS}:qa:2");
         assertThat(keys.scheduled(2)).isEqualTo("{NS}:sched:2");
         assertThat(keys.index(4, 2)).isEqualTo("{NS}:idx:4:2");
         assertThat(keys.activeTypes(2)).isEqualTo("{NS}:active:2");
@@ -56,11 +58,11 @@ class KeysTest {
         assertThat(List.of(
                         keys.meta,
                         keys.seqId,
-                        keys.seqWorker,
+                        keys.seqRunner,
                         keys.leased,
                         keys.startBy,
                         keys.paused,
-                        keys.workers,
+                        keys.runners,
                         keys.cronDefinitions,
                         keys.cron,
                         keys.cronRevision))

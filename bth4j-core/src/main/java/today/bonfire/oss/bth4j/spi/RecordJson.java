@@ -6,7 +6,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import today.bonfire.oss.bth4j.common.Json;
+import today.bonfire.oss.bth4j.FailureInfo;
+import today.bonfire.oss.bth4j.StepResult;
+import today.bonfire.oss.bth4j.internal.Json;
 
 /** JSON text forms of the map and list fields of {@link TaskRecord}, shared by the store implementations. */
 public final class RecordJson {

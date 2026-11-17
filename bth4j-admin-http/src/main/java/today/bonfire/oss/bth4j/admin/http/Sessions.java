@@ -9,7 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * In-memory sessions with a sliding expiry and two caps: a user at {@link #PER_USER} sessions loses their own oldest,
+ * In-memory sessions that end a fixed time after sign-in, with two caps: a user at {@link #PER_USER} sessions loses their own oldest,
  * so one account logging in over and over cannot push out the others, and the total cap evicts the oldest session.
  */
 final class Sessions {
@@ -20,7 +20,6 @@ final class Sessions {
         private final String user;
         private final Role role;
         private final long created;
-        private volatile long lastSeen;
 
         private Session(String token, String csrf, String user, Role role, long now) {
             this.token = token;
@@ -28,7 +27,6 @@ final class Sessions {
             this.user = user;
             this.role = role;
             this.created = now;
-            this.lastSeen = now;
         }
 
         String token() {
@@ -70,7 +68,7 @@ final class Sessions {
         var session = new Session(randomToken(), randomToken(), user, role, now);
         admission.lock();
         try {
-            sessions.values().removeIf(s -> now - s.lastSeen >= ttlMillis);
+            sessions.values().removeIf(s -> now - s.created >= ttlMillis);
             var own =
                     sessions.values().stream().filter(s -> s.user.equals(user)).toList();
             if (own.size() >= PER_USER) {
@@ -89,7 +87,7 @@ final class Sessions {
         return session;
     }
 
-    /** @return the live session for the token, whose expiry is pushed out, or null */
+    /** @return the live session for the token, or null; using a session does not make it last longer */
     Session find(String token) {
         if (token == null) {
             return null;
@@ -98,12 +96,10 @@ final class Sessions {
         if (session == null) {
             return null;
         }
-        var now = clock.millis();
-        if (now - session.lastSeen >= ttlMillis) {
+        if (clock.millis() - session.created >= ttlMillis) {
             sessions.remove(token, session);
             return null;
         }
-        session.lastSeen = now;
         return session;
     }
 

@@ -5,18 +5,17 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.function.Function;
 import today.bonfire.oss.bth4j.Issue;
 import today.bonfire.oss.bth4j.Misfire;
+import today.bonfire.oss.bth4j.QueueInfo;
 import today.bonfire.oss.bth4j.RunnerHealth;
+import today.bonfire.oss.bth4j.RunnerView;
 import today.bonfire.oss.bth4j.ScheduleView;
+import today.bonfire.oss.bth4j.StateCounts;
 import today.bonfire.oss.bth4j.TaskView;
 import today.bonfire.oss.bth4j.UnservedWork;
-import today.bonfire.oss.bth4j.spi.QueueInfo;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
-import today.bonfire.oss.bth4j.spi.StateCounts;
-import today.bonfire.oss.bth4j.spi.WorkerInfo;
+import today.bonfire.oss.bth4j.spi.StoredSchedule;
 
 /** Maps core types to the JSON structures of the API: ids and revisions as strings, times and durations as ISO-8601. */
 final class Views {
@@ -61,16 +60,16 @@ final class Views {
                 "revision", text(t.revision()),
                 "state", t.state().name(),
                 "queue", t.queue(),
-                "type", t.type(),
+                "type", t.typeName(),
                 "payloadVersion", t.payloadVersion(),
                 "attempts", t.attempts(),
                 "maxAttempts", t.maxAttempts(),
                 "createdAt", t.createdAt(),
-                "due", t.due(),
+                "dueAt", t.dueAt(),
                 "stateChangedAt", t.stateChangedAt(),
                 "claimedAt", t.claimedAt(),
                 "leaseUntil", t.leaseUntil(),
-                "workerId", t.workerId(),
+                "runnerId", t.runnerId(),
                 "account", t.account(),
                 "headers", t.headers(),
                 "uniqueKey", t.uniqueKey(),
@@ -114,7 +113,7 @@ final class Views {
     static Map<String, Object> health(RunnerHealth h) {
         return obj(
                 "status", h.status().name(),
-                "workerId", h.workerId(),
+                "runnerId", h.runnerId(),
                 "runningTasks", h.runningTasks(),
                 "abandonedAttempts", h.abandonedAttempts(),
                 "lastClaimAt", h.lastClaimAt(),
@@ -127,36 +126,33 @@ final class Views {
     static Map<String, Object> schedule(ScheduleView s) {
         var view = obj(
                 "id", s.id(),
-                "type", s.type(),
+                "revision", text(s.revision()),
+                "type", s.typeName(),
                 "queue", s.queue(),
                 "account", s.account(),
                 "cron", s.cron(),
-                "zone", s.zone() == null ? null : s.zone().getId(),
-                "misfire", RecurringDefinition.misfireCode(s.misfire()),
+                "zone", s.zone(),
+                "misfire", StoredSchedule.misfireCode(s.misfire()),
                 "fixedDelay", text(s.fixedDelay()),
                 "overlap", s.overlap().name(),
                 "paused", s.paused(),
-                "nextFire", s.nextFire(),
+                "nextFireAt", s.nextFireAt(),
                 "maxAttempts", s.maxAttempts(),
                 "maxRunTime", text(s.maxRunTime()));
         if (s.misfire() instanceof Misfire.CatchUp c) view.put("catchUpMaxFires", c.maxFires());
         return view;
     }
 
-    static Map<String, Object> worker(WorkerInfo w, Map<Integer, String> queues, Map<Integer, String> types) {
+    static Map<String, Object> runner(RunnerView r) {
         return obj(
-                "id", w.id(),
-                "label", w.label(),
-                "startedAt", w.startedAt(),
-                "lastSeen", w.lastSeen(),
-                "running", w.running(),
-                "accepting", w.accepting(),
-                "queues", names(w.queueIds(), queues),
-                "types", names(w.typeIds(), types));
-    }
-
-    private static List<String> names(Set<Integer> ids, Map<Integer, String> names) {
-        return ids.stream().map(id -> names.getOrDefault(id, "#" + id)).sorted().toList();
+                "id", r.id(),
+                "label", r.label(),
+                "startedAt", r.startedAt(),
+                "lastSeenAt", r.lastSeenAt(),
+                "running", r.running(),
+                "accepting", r.accepting(),
+                "queues", List.copyOf(r.queues()),
+                "types", List.copyOf(r.types()));
     }
 
     static Map<String, Object> unserved(UnservedWork work) {
@@ -164,7 +160,7 @@ final class Views {
     }
 
     static Map<String, Object> issue(Issue i) {
-        return obj("at", i.at(), "kind", i.kind(), "detail", i.detail(), "taskId", text(i.taskId()));
+        return obj("at", i.at(), "kind", i.kind().text(), "detail", i.detail(), "taskId", text(i.taskId()));
     }
 
     static <T> List<Object> list(List<T> items, Function<T, Map<String, Object>> mapper) {

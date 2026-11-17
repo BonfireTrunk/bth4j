@@ -26,7 +26,7 @@ public final class Loggers {
     /** One attempt of a task: failures, retries, cancellation, rescheduling, deferral and lost leases. */
     public static final String ATTEMPT = "today.bonfire.oss.bth4j.TaskExecution";
 
-    /** Expired leases, start-by expiry, purge, worker heartbeats and stale workers. */
+    /** Expired leases, start-by expiry, purge, runner heartbeats and stale runners. */
     public static final String MAINTENANCE = "today.bonfire.oss.bth4j.MaintenanceService";
 
     /** Recurring schedules: queued occurrences, skipped definitions and definitions that never fire again. */
@@ -43,6 +43,13 @@ public final class Loggers {
 
     /** The Redis store: a server setting {@code init} could not read and so did not check. */
     public static final String REDIS_STORE = "today.bonfire.oss.bth4j.redis.RedisTaskStore";
+
+    /**
+     * The admin HTTP server's audit lines: sign-ins, refused sign-ins and requests that change something. They go
+     * here, not to the server's class logger, so a level set on that class cannot silence them and they can be
+     * sent to a file of their own.
+     */
+    public static final String ADMIN_AUDIT = "today.bonfire.oss.bth4j.admin.http.audit";
 
     /** The default logger of {@link LoggingTaskObserver}, one line per {@link TaskEvent}. */
     public static final String TASKS = "bth4j.tasks";

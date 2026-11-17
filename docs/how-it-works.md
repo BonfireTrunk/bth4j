@@ -7,6 +7,7 @@ long finished tasks are kept.
 ## On this page
 
 - [The pieces](#the-pieces)
+- [The packages](#the-packages)
 - [Task states and transitions](#task-states-and-transitions)
 - [One attempt](#one-attempt)
 - [The four runner services](#the-four-runner-services)
@@ -44,6 +45,24 @@ flowchart LR
 | Store | Holds every task and decides every state change. The stores are Redis, PostgreSQL and SQLite. `InMemoryStore` from `bth4j-testing` is for tests. See [Stores](stores.md). |
 | `BackgroundRunner` | Runs the tasks. It is made of four services, described in [The four runner services](#the-four-runner-services). |
 
+## The packages
+
+Every package starts with `today.bonfire.oss.bth4j`.
+
+| Package | Who uses it | What is in it |
+|---|---|---|
+| (the root) | applications | `BackgroundRunner`, `TaskClient`, requests, task types, views (`TaskView`, `ScheduleView`, `RunnerView`), events, `AdminOps` |
+| `.exceptions` | applications | everything the library throws; see [Errors](errors.md) |
+| `.executor` | applications | the executors a runner runs task bodies on |
+| `.common` | applications | `JsonMapper`, the JSON interface a runner and a client are given, and `Cron` |
+| `.redis`, `.postgres`, `.sqlite` | applications | the stores; see [Stores](stores.md) |
+| `.micrometer`, `.admin.http` | applications | metrics and the admin HTTP server |
+| `.testing` | tests | `InMemoryStore` and `MutableClock`; see [Testing](testing.md) |
+| `.spi` | store authors | the store interfaces and their records; see [Writing a store](writing-a-store.md) |
+| `.internal` | nobody outside bth4j | code the bth4j modules share; not supported API, it can change in any release |
+
+An application imports from `.spi` in one case only, the transactional enqueue of the PostgreSQL and SQLite stores: `TaskClient.prepare()` returns the `TaskRecord` that `enqueue(Connection, TaskRecord)` takes, and that call answers with the store's `EnqueueOutcome`. See [Enqueueing](enqueueing.md).
+
 ## Task states and transitions
 
 A task is in exactly one state at a time: QUEUED, SCHEDULED, LEASED, SUCCEEDED, DEAD, CANCELLED or EXPIRED. Each
@@ -77,7 +96,7 @@ stateDiagram-v2
 |---|---|---|
 | QUEUED | Waiting in its queue and runnable now. | No |
 | SCHEDULED | Waiting for its due time: a delayed enqueue, a retry after a failure, a reschedule or a recurring occurrence. | No |
-| LEASED | Claimed by a worker that holds the lease. | No |
+| LEASED | Claimed by a runner that holds the lease. | No |
 | SUCCEEDED | The processor finished without an error. | Yes |
 | DEAD | The attempts are used up, the retry policy gave up, or the processor threw `TaskUnrecoverableException`. | Yes |
 | CANCELLED | An operator cancelled it, its processor threw `TaskCancelledException`, or it ran past its `maxRunTime`. | Yes |
@@ -95,11 +114,11 @@ From DEAD, CANCELLED or EXPIRED an operator can send the task back to QUEUED wit
 | ack | LEASED | SUCCEEDED | The processor returned without an error. |
 | fail, attempts left | LEASED | SCHEDULED | The attempt failed and the retry policy gives a delay. The task runs again at the retry time. See [Retries](retries-and-cancelling.md#retries). |
 | fail, exhausted | LEASED | DEAD | The attempt failed and the attempts are used up, or the retry policy returned `Dead(reason)`. A processor that throws `TaskUnrecoverableException` ends the task DEAD at once. |
-| lease expired | LEASED | SCHEDULED or DEAD | The worker crashed or stopped renewing the lease. Maintenance handles the task like a failed attempt. |
+| lease expired | LEASED | SCHEDULED or DEAD | The runner crashed or stopped renewing the lease. Maintenance handles the task like a failed attempt. |
 | reschedule | LEASED | SCHEDULED | The processor threw `TaskRescheduleException(delay)`. The task runs again later without spending an attempt. |
 | unclaim | LEASED | QUEUED | The runner gives a claimed task back to its queue, for example when the executor rejected it. |
 | cancel | QUEUED or SCHEDULED | CANCELLED | An operator cancels the task. It happens at once. A LEASED task only gets a cancel request. |
-| finishCancelled | LEASED | CANCELLED | A cancel was requested and the processor stopped. Also used when a worker died with a cancel pending and its lease expired. |
+| finishCancelled | LEASED | CANCELLED | A cancel was requested and the processor stopped. Also used when a runner died with a cancel pending and its lease expired. |
 | expire | QUEUED or SCHEDULED | EXPIRED | The `startBy` time passed before the task started. Maintenance does it. |
 | operator retry | DEAD, CANCELLED or EXPIRED | QUEUED | An operator calls `AdminOps.retry`. |
 
@@ -119,7 +138,7 @@ The in-memory store skips such tasks like PostgreSQL and SQLite. The Redis limit
 ### How a transition stays safe
 
 Every transition is one atomic call on the store. The call checks the task's revision. So a task runs again only
-when the worker holding it crashed, lost its lease or failed the attempt. Several runners on the same store share
+when the runner holding it crashed, lost its lease or failed the attempt. Several runners on the same store share
 the work without locks.
 
 | Store | How one transition is atomic |
@@ -128,8 +147,9 @@ the work without locks.
 | PostgreSQL | One SQL statement per transition, with `FOR UPDATE SKIP LOCKED` for claims. |
 | SQLite | Every write runs in a `BEGIN IMMEDIATE` transaction. A claim is several statements in one such transaction. |
 
-The design, the record layout, the store contract and the Redis and PostgreSQL storage layouts are in
-[design-3.0.md](design-3.0.md). The SQLite store is described in [SQLite](stores/sqlite.md).
+Each store page describes its storage layout: [Redis](stores/redis.md#inside-the-redis-store),
+[PostgreSQL](stores/postgresql.md#inside-the-postgresql-store) and [SQLite](stores/sqlite.md#inside-the-sqlite-store). The rules every
+store follows, with the reason for each, are in [Writing a store](writing-a-store.md).
 
 ## One attempt
 
@@ -174,7 +194,7 @@ Events that end an attempt carry the outcome. The observer receives it after the
 | `LOST` | The store rejected the change because the lease had moved on. |
 | `UNKNOWN` | The store call failed, so the change may or may not have been made. If it was not, the lease expires and the task runs again. |
 
-A lease that is not renewed expires. This happens when the worker crashed, or when it paused for longer than the
+A lease that is not renewed expires. This happens when the runner crashed, or when it paused for longer than the
 lease. Maintenance then handles the task like a failed attempt: it retries the task, or ends it DEAD when the
 attempts are used up. When a cancel was pending, maintenance ends the task CANCELLED instead of retrying it. A
 lease that has lapsed is not revived by a later renewal. See `leaseDuration` in
@@ -188,10 +208,10 @@ A runner is made of four services. A monitor restarts a service whose thread die
 | Service | What it does | How often |
 |---|---|---|
 | Task processor | Claims tasks in batches, runs them and renews their leases. | Claims at most `claimBatchSize` tasks (32) per call, bounded by the free executor slots. After a claim that found nothing it sleeps `idlePollInterval` (500 ms). Renews leases every third of `leaseDuration`. |
-| Scheduled task service | Promotes due SCHEDULED tasks to QUEUED. | At most `scheduledTasksCheckInterval` (1 second) between promotions. It wakes earlier for the next due task. |
-| Recurring task service | Creates the occurrences of recurring definitions. See [Recurring tasks](recurring-tasks.md). | Every `recurringTasksCheckInterval` (10 seconds). |
-| Maintenance service | Retries expired leases, expires tasks past their `startBy` and writes the worker heartbeat. | Every `maintenanceCheckInterval` (5 seconds). |
-| Maintenance service, purge | Purges finished tasks, releases unique keys and removes stale workers. | Every `purgeInterval` (1 minute). Workers without a heartbeat for `workerStaleAfter` (10 minutes) are removed. |
+| Scheduled task service | Promotes due SCHEDULED tasks to QUEUED. | At most `scheduledTaskCheckInterval` (1 second) between promotions. It wakes earlier for the next due task. |
+| Recurring task service | Creates the occurrences of recurring definitions. See [Recurring tasks](recurring-tasks.md). | Every `scheduleCheckInterval` (10 seconds). |
+| Maintenance service | Retries expired leases, expires tasks past their `startBy` and writes the runner heartbeat. | Every `maintenanceCheckInterval` (5 seconds). |
+| Maintenance service, purge | Purges finished tasks, releases unique keys and removes stale runners. | Every `purgeInterval` (1 minute). Runners without a heartbeat for `runnerStaleTimeout` (10 minutes) are removed. |
 
 ## Retention
 
@@ -201,16 +221,17 @@ Finished tasks are kept for inspection, then purged by the maintenance service.
 |---|---|---|
 | SUCCEEDED | 10 minutes. The payload is dropped unless you set `keepSucceededPayload(true)`. | `succeededRetention` |
 | DEAD | 90 days | `deadRetention` |
-| CANCELLED and EXPIRED | 48 hours | `cancelledRetention` |
+| CANCELLED | 48 hours | `cancelledRetention` |
+| EXPIRED | 48 hours | `expiredRetention` |
 
-A retention of `Duration.ZERO` removes a SUCCEEDED or DEAD task at the transition instead. A CANCELLED or EXPIRED task with a zero `cancelledRetention` is removed at the next purge run (`purgeInterval`).
+A retention of `Duration.ZERO` removes a SUCCEEDED or DEAD task at the transition instead. A CANCELLED or EXPIRED task with a zero `cancelledRetention` or `expiredRetention` is removed at the next purge run (`purgeInterval`).
 
 Retention and the key window are independent:
 
 | What | Decides | Set by |
 |---|---|---|
 | Retention | How long the task stays readable. | The retention settings above. |
-| Key window | How long the task's unique key blocks a same-key enqueue. | `keepFor` on the request. See [Enqueueing](enqueueing.md). |
+| Key window | How long the task's unique key blocks a same-key enqueue. | `keepAfterDone` on the request. See [Enqueueing](enqueueing.md). |
 
 A task can be removed inside its key window, either with retention zero at the transition or when it is purged
 after its retention. It is then gone from every read. Its key still answers a same-key enqueue with `Duplicate`

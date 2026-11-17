@@ -13,7 +13,7 @@ On this page:
 
 ## Set up
 
-Put SQLite in WAL mode with a busy timeout, then create the store from a pooled `DataSource` and a table prefix:
+Put SQLite in WAL mode with a busy timeout, then create the store from a pooled `DataSource` and a namespace, the name every table starts with:
 
 ```java
 var config = new SQLiteConfig();
@@ -25,14 +25,14 @@ source.setUrl("jdbc:sqlite:/var/lib/my-app/tasks.db");
 
 var pool = new HikariConfig();
 pool.setDataSource(source);
-var store = new SqliteTaskStore(new HikariDataSource(pool), "bth");   // tables bth_task, bth_queue, bth_type, bth_worker, bth_schedule, bth_meta
+var store = SqliteTaskStore.builder().dataSource(new HikariDataSource(pool)).namespace("bth").build();   // tables bth_task, bth_queue, bth_type, bth_worker, bth_schedule, bth_meta
 ```
 
 The store is for one or more runners in one process, or in several processes on one machine, with the database file on a local disk.
 
 Network file systems are not supported. SQLite's WAL mode does not work over them, and the store does not detect them. For runners on several machines use PostgreSQL or Redis.
 
-The tables are created when the runner or client is built. Or run `store.schemaStatements()` from your migration tool. Runners with the same prefix on the same database file share the work.
+The tables are created when the runner or client is built. Or run `store.schemaStatements()` from your migration tool. Runners with the same namespace on the same database file share the work.
 
 ## Requirements
 
@@ -44,9 +44,9 @@ The tables are created when the runner or client is built. Or run `store.schemaS
 | `journal_mode` | `wal` on the connection `init` receives |
 | `busy_timeout` | At least 1000 on the connection `init` receives |
 | `synchronous` | Your choice. It is not checked. |
-| Table prefix | Lower case letters, digits and underscores, at most 41 characters, and neither `sqlite` nor starting with `sqlite_`, because SQLite reserves table names that start with `sqlite_` |
-| Schema version | 1, stored in `<prefix>_meta`. `init` refuses tables with another version and tables that have no `<prefix>_meta`. When the version matches, it only reads. |
-| Clock | The store's `java.time.Clock`: the third constructor argument, `Clock.systemUTC()` by default |
+| Namespace | Lower case letters, digits and underscores, starting with a letter, at most 41 characters, and neither `sqlite` nor starting with `sqlite_`, because SQLite reserves table names that start with `sqlite_` |
+| Schema version | 2, stored in `<namespace>_meta`. `init` refuses tables with another version, which includes every database written by bth4j 4.2, and tables that have no `<namespace>_meta`; there is no migration. When the version matches, it only reads. |
+| Clock | The store's `java.time.Clock`: set with `clock(...)` on the builder, `Clock.systemUTC()` by default |
 | JDK 25 | The JVM prints a warning when sqlite-jdbc loads its native library, unless the application starts with `--enable-native-access=ALL-UNNAMED` |
 
 ## Settings on every connection
@@ -88,9 +88,15 @@ Caveats that apply to every store, such as what a crash can lose, time precision
 
 ### One writer at a time
 
-SQLite allows one writer at a time. All runners on one SQLite database share a single write lock, so they write at the rate of one writer. Writes queue behind one another, so the write rate of the whole database is that of one writer.
+SQLite allows one writer at a time. All runners on one SQLite database share a single write lock, so they write at the rate of one writer. Who waits how depends on where the writer runs:
 
-A writer waits for the lock up to the busy timeout. A write that waits longer than `busy_timeout` fails with a `TaskStoreException`. The runner handles this like a short outage:
+| Writer | How it waits for the write lock |
+|---|---|
+| Another thread of the same `SqliteTaskStore` instance | In line, in the process: the store lets one write transaction at a time start, so none of them polls SQLite. The order of the line is not guaranteed to be first come, first served. |
+| A second `SqliteTaskStore` instance in the same process, or another process, on the same file | By SQLite's busy timeout: SQLite retries after short sleeps and does not keep a line, so under sustained write load a writer can lose every round and fail with `SQLITE_BUSY` after `busy_timeout`. |
+| Your own transaction, with `SqliteTaskStore.enqueue(Connection, TaskRecord)` | By SQLite's busy timeout, as above. The store does not hold its in-process line for a write on your connection. |
+
+Run one store instance per database file and process to get the line. A write that waits longer than `busy_timeout` for SQLite fails with a `TaskStoreException`. The runner handles this like a short outage:
 
 | Write that failed | What the runner does |
 |---|---|
@@ -98,6 +104,15 @@ A writer waits for the lock up to the busy timeout. A write that waits longer th
 | An outcome | It is reported as `UNKNOWN` (see [Event outcomes](../monitoring.md#event-outcomes)). If it was not written, the lease expires and the task runs again. |
 
 Keep your own write transactions on the database short.
+
+### Write-ahead log and disk sync
+
+| Topic | What to know |
+|---|---|
+| Checkpoints | SQLite copies the write-ahead log back into the database file by itself once the log reaches `wal_autocheckpoint` pages, 1,000 by default. The checkpoint runs in the commit that crosses the limit, so that commit is slower than the others. |
+| Size of the `-wal` file | A checkpoint restarts the log from its beginning and does not shrink the file, so after a burst of writes it can stay large. Set `journal_size_limit` (a size in bytes, for example `PRAGMA journal_size_limit=67108864`) to have SQLite truncate it to that size after a checkpoint. Without it there is no limit. |
+| `synchronous=FULL` | Every commit waits until the log is on disk, so a write is limited by the disk's sync time however many threads write. Batch instead: `enqueueAll`, the runner's claim batch and its batched acknowledgements each pay for one commit for many tasks. More writer threads do not help, because the writers take turns. |
+| `synchronous=NORMAL` | The log is synced at checkpoints and not at every commit, so commits are cheaper, at the cost of the last commits after a power loss (see above). |
 
 ### Pools that turn auto-commit off
 
@@ -122,11 +137,14 @@ The queued partial index ends with `type_id`, and a claim walks the queued tasks
 
 | Item | Detail |
 |---|---|
-| Tables | `<prefix>_task`, `<prefix>_queue`, `<prefix>_type`, `<prefix>_worker`, `<prefix>_schedule`, `<prefix>_meta` |
+| Tables | `<namespace>_task`, `<namespace>_queue`, `<namespace>_type`, `<namespace>_worker` (the runners; the table kept its name), `<namespace>_schedule`, `<namespace>_meta` |
 | Table mode | all tables are `STRICT` |
 | Foreign keys | none |
 | Times | epoch milliseconds, taken from the store's `java.time.Clock` |
-| Schema version | 1, stored in `<prefix>_meta` |
+| Schema version | 2, stored in `<namespace>_meta` |
+| `schedules(afterId, limit)` | the primary key of the schedule table, from the first id after `afterId`; text compares by bytes, which is the order of `ScheduleStore.ID_ORDER`. One page is read. |
+| `upcomingSchedules(limit)` | the `<namespace>_schedule_due` index (`next_fire, id`, schedules that are not paused), which is in the order asked for, so it reads `limit` entries however many schedules share a fire time; `dueSchedules` uses the same index |
+| `schedule(id)` | the primary key |
 | Claim lease | one `UPDATE` that takes the id list through `json_each` |
 | Key-only row | state code 7, content columns empty |
 | Queued partial index | ends with `type_id` |

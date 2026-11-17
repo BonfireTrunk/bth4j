@@ -195,7 +195,7 @@ public class DefaultVtExecutor implements BackgroundExecutor {
         executor.shutdown();
     }
 
-    public int getActiveTaskCount() {
+    public int activeTaskCount() {
         return activeTaskCount.get();
     }
 

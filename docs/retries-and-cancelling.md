@@ -67,7 +67,7 @@ Two clocks are involved:
 
 | Clock | What it decides |
 |---|---|
-| The worker's clock | a retry's due time |
+| The runner's clock | a retry's due time |
 | The store's clock | promotion and leases |
 
 Keep these clocks synchronized: skew changes the effective retry delay. After a failover to a store server whose clock is
@@ -80,7 +80,7 @@ Register policies under a name and let a request choose one:
 
 ```java
 BackgroundRunner.builder()
-        .retryPolicy("slow-api", RetryPolicy.exponential(Duration.ofMinutes(1), Duration.ofHours(6)))
+        .addRetryPolicy("slow-api", RetryPolicy.exponential(Duration.ofMinutes(1), Duration.ofHours(6)))
         ...
 
 client.enqueue(TaskRequest.of(SEND_MAIL, mail).retryPolicy("slow-api").build());
@@ -88,6 +88,13 @@ client.enqueue(TaskRequest.of(SEND_MAIL, mail).retryPolicy("slow-api").build());
 
 A task that names a policy the runner does not have uses the default policy, and the runner records a `retry-policy`
 issue (see [Issues](monitoring.md#issues)).
+
+A process that only enqueues does not know the runners' policy names. Give its client the names with
+`TaskClient.builder().addRetryPolicyName("slow-api")`, and `enqueue` and `enqueueAll` refuse a request that names any
+other policy with a `TaskValidationException`, so a wrong name is found when the task is enqueued and not when it first
+fails. A request that names no policy passes. A client with no names added checks nothing. That includes
+`runner.client()`: a runner does not hold its own client to its own policy names, because the task can be for a runner
+that has others.
 
 ## Cancelling tasks
 
@@ -107,7 +114,11 @@ What the call returns depends on the task:
 |---|---|---|
 | QUEUED or SCHEDULED | `CANCELLED` | The task becomes CANCELLED at once. |
 | LEASED | `REQUESTED` | The task only gets the request. The running runner sees it on the next lease renewal, within a third of `leaseDuration`, and the task ends CANCELLED when the processor stops. |
-| The revision or state had changed | `STALE` | Nothing was done. |
+| No task has this id | `NOT_FOUND` | Nothing was done. |
+| The revision is not the task's current one | `STALE` | Nothing was done. The task changed since it was loaded. |
+| The task is in a final state (SUCCEEDED, DEAD, CANCELLED or EXPIRED) | `FINISHED` | Nothing was done. |
+
+The store answers the first row that applies, from the top: a missing task is `NOT_FOUND` whatever the revision, and a finished task with a wrong revision is `STALE`.
 
 The reason (default "cancelled by operator", at most 512 characters) stays on the task.
 
@@ -124,7 +135,7 @@ sequenceDiagram
     Note over Store,Runner: the next lease renewal, within a third of leaseDuration
     Runner->>Store: renew the lease
     Store-->>Runner: a cancel is requested
-    Runner->>Proc: ctx.cancelRequested() now shows the request
+    Runner->>Proc: ctx.isCancelRequested() now shows the request
     Proc->>Proc: ctx.checkCancelled() throws TaskCancelledException
     Proc-->>Runner: the processor stops
     Runner->>Store: the task ends CANCELLED
@@ -136,14 +147,14 @@ The processor decides how to stop:
 
 | What | Effect |
 |---|---|
-| `ctx.cancelRequested()` | shows the request |
+| `ctx.isCancelRequested()` | shows the request |
 | `ctx.checkCancelled()` | throws `TaskCancelledException`, which ends the task CANCELLED |
-| A task type declared with `interruptOnCancel()` | its thread is also interrupted once per attempt, so sleeps and blocking calls wake up; the exception that follows is treated as the cancellation |
+| A task type declared with `withInterruptOnCancel()` | its thread is also interrupted once per attempt, so sleeps and blocking calls wake up; the exception that follows is treated as the cancellation |
 
 Starting a new `ctx.step` also checks for a cancel request, like `checkCancelled()`.
 
 ```java
-static final TaskType<Export> EXPORT = TaskType.of("export", Export.class).interruptOnCancel();
+static final TaskType<Export> EXPORT = TaskType.of("export", Export.class).withInterruptOnCancel();
 
 runner.registry().register(EXPORT, (ctx, export) -> {
     for (var part : export.parts()) {
@@ -159,12 +170,12 @@ runner.registry().register(EXPORT, (ctx, export) -> {
 |---|---|
 | The processor throws any exception, also a `TaskUnrecoverableException` or a `TaskRescheduleException` | The task ends CANCELLED. A body that reschedules itself every attempt can still be cancelled. |
 | The processor ignores the cancellation and returns normally, and the revision fence still accepts it | The task ends SUCCEEDED. The request is not applied after a normal return. |
-| The request reaches the store after the last renewal of an attempt that then fails | The request stays on the task when it is retried, so the next attempt starts with `cancelRequested()` true. |
-| The worker dies while the cancel is pending | Maintenance ends the task CANCELLED when its lease expires, instead of retrying it. |
+| The request reaches the store after the last renewal of an attempt that then fails | The request stays on the task when it is retried, so the next attempt starts with `isCancelRequested()` true. |
+| The runner dies while the cancel is pending | Maintenance ends the task CANCELLED when its lease expires, instead of retrying it. |
 
 ### Lease loss
 
-`interruptOnCancel()` also interrupts the body when lease renewal reports a lost lease. What happens to the attempt's
+`withInterruptOnCancel()` also interrupts the body when lease renewal reports a lost lease. What happens to the attempt's
 outcome depends on that interrupt:
 
 | Attempt | What happens to its outcome |
@@ -182,13 +193,15 @@ More about lease loss:
 
 ### Maximum run time
 
-`maxRunTime(duration)` uses the same path as a cancel. When an attempt has run longer, the lease renewal asks it to stop
-with the reason "max run time ... exceeded".
+`maxRunTime(duration)` uses the same path as a cancel. When an attempt has run longer, the runner asks it to stop
+with the reason "max run time ... exceeded". The runner looks about once a second, so the request comes up to a second
+after the limit. The run time is elapsed time in the runner's process: setting the machine's clock does not move it.
 
 | Setting | Value |
 |---|---|
 | The runner's `defaultMaxRunTime(duration)` | applies to a task without its own `maxRunTime`; one hour unless the builder sets another |
 | `TaskRequest.MAX_RUN_TIME` | the most a task's own `maxRunTime` can be: about 24.8 days |
+| The least a task's own `maxRunTime` can be | one millisecond, the finest a store keeps |
 
 A task that legitimately runs longer needs its own `maxRunTime`.
 
@@ -224,7 +237,7 @@ This example shows both limits on one request:
 
 ```java
 client.enqueue(TaskRequest.of(EXPORT, export)
-        .startBy(Instant.now().plus(Duration.ofMinutes(10)))   // expired, not run, if no worker was free by then
+        .startBy(Instant.now().plus(Duration.ofMinutes(10)))   // expired, not run, if no runner had a free slot by then
         .maxRunTime(Duration.ofMinutes(30))                        // asked to stop after 30 minutes
         .build());
 ```

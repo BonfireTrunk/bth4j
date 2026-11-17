@@ -1,4 +1,4 @@
-import { api, session, clearSession, setSession, isAdmin } from './api.js';
+import { api, session, clearSession, setSession, isAdmin, latestOverview } from './api.js';
 import { registerComponents, toasts, dismissToast, dialog, closeDialog, toastError } from './ui.js';
 import Login from './pages/login.js';
 import Overview from './pages/overview.js';
@@ -7,7 +7,7 @@ import Tasks from './pages/tasks.js';
 import Task from './pages/task.js';
 import Dead from './pages/dead.js';
 import Schedules from './pages/schedules.js';
-import Workers from './pages/workers.js';
+import Runners from './pages/runners.js';
 import Issues from './pages/issues.js';
 
 const { createApp, ref, computed, watch, onMounted, onUnmounted, nextTick } = Vue;
@@ -19,7 +19,7 @@ const PAGES = {
   task: Task,
   dead: Dead,
   schedules: Schedules,
-  workers: Workers,
+  runners: Runners,
   issues: Issues,
 };
 
@@ -29,7 +29,7 @@ const NAV = [
   ['tasks', 'Tasks'],
   ['dead', 'Dead'],
   ['schedules', 'Schedules'],
-  ['workers', 'Workers'],
+  ['runners', 'Runners'],
   ['issues', 'Issues'],
 ];
 
@@ -47,13 +47,13 @@ function parseHash() {
   return { name: segs[0] || 'overview', param: segs[1] || null, query, key: raw };
 }
 
-const HEALTH_CLASS = { RUNNING: 'running', QUIET: 'quiet', NEW: 'quiet', STOPPED: 'stopped' };
+const HEALTH_CLASS = { RUNNING: 'running', QUIET: 'quiet', NEW: 'quiet', STOPPING: 'quiet', STOPPED: 'stopped' };
 
 const App = {
   components: { Login },
   setup() {
     const route = ref(parseHash());
-    const checking = ref(!!session.csrf);
+    const checking = ref(true);
     const navOpen = ref(false);
 
     const onHash = () => {
@@ -62,13 +62,12 @@ const App = {
     };
     onMounted(async () => {
       window.addEventListener('hashchange', onHash);
-      if (session.csrf) {
-        try {
-          const me = await api.me();
-          setSession({ user: me.user, role: me.role });
-        } catch (e) {
-          clearSession();
-        }
+      // every tab asks: the cookie is shared between tabs, the token kept by this one may be stale or missing
+      try {
+        const me = await api.me();
+        setSession({ user: me.user, role: me.role, csrf: me.csrf });
+      } catch (e) {
+        if (e.status === 401) clearSession();
       }
       checking.value = false;
       guard();
@@ -90,23 +89,33 @@ const App = {
     const health = ref(undefined);
     const deadCount = ref(0);
     const issueCount = ref(0);
+    const OVERVIEW_MS = 10000;
     let overviewTimer = null;
     async function loadOverview() {
       if (!authed.value) return;
       try {
-        const o = await api.overview();
-        health.value = o.health;
-        deadCount.value = Number((o.totals && o.totals.DEAD) || 0);
-        issueCount.value = Number(o.issues || 0);
+        await api.overview();
       } catch (e) {
         health.value = undefined;
       }
     }
+    // every /overview answer feeds the header, so this asks only when no page has asked within the interval
+    watch(latestOverview, (latest) => {
+      const o = latest.data;
+      health.value = o.health;
+      deadCount.value = Number((o.totals && o.totals.DEAD) || 0);
+      issueCount.value = Number(o.issues || 0);
+    });
+    async function overviewTick() {
+      const age = latestOverview.value ? Date.now() - latestOverview.value.at : Infinity;
+      if (age >= OVERVIEW_MS) await loadOverview();
+      overviewTimer = setTimeout(overviewTick, age >= OVERVIEW_MS ? OVERVIEW_MS : OVERVIEW_MS - age);
+    }
     onMounted(() => {
       loadOverview();
-      overviewTimer = setInterval(loadOverview, 10000);
+      overviewTimer = setTimeout(overviewTick, OVERVIEW_MS);
     });
-    onUnmounted(() => clearInterval(overviewTimer));
+    onUnmounted(() => clearTimeout(overviewTimer));
     watch(authed, (v) => v && loadOverview());
     const navCount = (name) => (name === 'dead' ? deadCount.value : name === 'issues' ? issueCount.value : 0);
 
@@ -161,8 +170,8 @@ const App = {
       <span class="brand">bth4j<small>DASHBOARD</small></span>
       <station-clock></station-clock>
       <span class="spacer"></span>
-      <span class="health" :class="healthClass" :title="health ? 'worker ' + health.workerId + ', running ' + health.runningTasks : ''">
-        <i class="dot" aria-hidden="true"></i>{{ healthLabel }}<span v-if="health" class="sub">worker {{ health.workerId }} &middot; {{ health.runningTasks }} tasks</span>
+      <span class="health" :class="healthClass" :title="health ? 'runner ' + health.runnerId + ', running ' + health.runningTasks : ''">
+        <i class="dot" aria-hidden="true"></i>{{ healthLabel }}<span v-if="health" class="sub">runner {{ health.runnerId }} &middot; {{ health.runningTasks }} tasks</span>
       </span>
       <span class="who">{{ session.user }} <span class="role">{{ session.role }}</span></span>
       <button type="button" @click="logout">Log out</button>

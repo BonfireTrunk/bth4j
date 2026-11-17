@@ -6,7 +6,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
@@ -27,7 +26,6 @@ import today.bonfire.oss.bth4j.executor.BackgroundExecutor;
 import today.bonfire.oss.bth4j.executor.DefaultVtExecutor;
 import today.bonfire.oss.bth4j.executor.FixedExecutor;
 import today.bonfire.oss.bth4j.spi.FullStore;
-import today.bonfire.oss.bth4j.spi.TaskState;
 
 /**
  * Runs tasks: claims them from the store, executes them with the registered processors, moves scheduled
@@ -37,7 +35,7 @@ import today.bonfire.oss.bth4j.spi.TaskState;
  * {@link #stop()} drains running tasks within the shutdown timeout. Several runners sharing a store share
  * the work. Delivery is at least once.
  */
-public final class BackgroundRunner {
+public final class BackgroundRunner implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(Loggers.RUNNER);
 
     private final Builder config;
@@ -61,9 +59,10 @@ public final class BackgroundRunner {
     private final QueueReservations queueReservations = new QueueReservations();
 
     private volatile boolean stopRequested;
-    private volatile int workerId;
-    private volatile Set<Integer> workerQueueIds;
-    private volatile Set<Integer> workerTypeIds;
+    private volatile boolean stopSequenceDone;
+    private volatile int runnerId;
+    private volatile Set<Integer> runnerQueueIds;
+    private volatile Set<Integer> runnerTypeIds;
     private volatile ScheduledFuture<?> monitoringTask;
     private volatile TaskProcessorService taskProcessorService;
     private volatile CustomThread scheduledTaskService;
@@ -81,13 +80,6 @@ public final class BackgroundRunner {
         this.observer = new Observers(b.observer);
         this.status = new RunnerStatus(b.clock);
         this.retryPolicies = new RetryPolicies(b.retryPolicy, b.namedRetryPolicies);
-        this.taskExecutor = b.taskExecutor != null
-                ? b.taskExecutor
-                : switch (b.concurrency) {
-                    case Concurrency.Fixed f -> new FixedExecutor(f.limit());
-                    case Concurrency.Adaptive a ->
-                        new DefaultVtExecutor(a, detail -> status.issue("resource-signal-unavailable", detail, null));
-                };
         this.client = TaskClient.builder()
                 .store(store)
                 .jsonMapper(b.jsonMapper)
@@ -97,7 +89,16 @@ public final class BackgroundRunner {
                 .queues(queues)
                 .names(names)
                 .build();
-        this.admin = new DefaultAdminOps(store, names, queues, b.clock, this::health, status::issues);
+        // after the client, whose build reaches the store and can fail: the adaptive executor starts a thread
+        this.taskExecutor = b.taskExecutor != null
+                ? b.taskExecutor
+                : switch (b.concurrency) {
+                    case Concurrency.Fixed f -> new FixedExecutor(f.limit());
+                    case Concurrency.Adaptive a ->
+                        new DefaultVtExecutor(
+                                a, detail -> status.issue(Issue.Kind.RESOURCE_SIGNAL_UNAVAILABLE, detail, null));
+                };
+        this.admin = new DefaultAdminOps(store, names, b.clock, this::health, status::issues);
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread thread = new Thread(threadGroup, r, "BackgroundRunner-Monitor");
             thread.setDaemon(true);
@@ -109,7 +110,11 @@ public final class BackgroundRunner {
         return new Builder();
     }
 
-    /** The producer side on the same store. */
+    /**
+     * The producer side on the same store. It does not check the retry policy name of a request against this
+     * runner's policies, because the task can be for a runner that has others; a client of your own with
+     * {@link TaskClient.Builder#addRetryPolicyName} does.
+     */
     public TaskClient client() {
         return client;
     }
@@ -119,9 +124,9 @@ public final class BackgroundRunner {
         return registry;
     }
 
-    /** @return this runner's worker id, 0 before {@link #start()} */
-    public int workerId() {
-        return workerId;
+    /** @return this runner's runner id, 0 before {@link #start()} */
+    public int runnerId() {
+        return runnerId;
     }
 
     /**
@@ -152,13 +157,13 @@ public final class BackgroundRunner {
 
     public RunnerHealth health() {
         var s = stopped.get()
-                ? RunnerHealth.Status.STOPPED
+                ? ended() ? RunnerHealth.Status.STOPPED : RunnerHealth.Status.STOPPING
                 : !started.get()
                         ? RunnerHealth.Status.NEW
                         : admission.quiet() ? RunnerHealth.Status.QUIET : RunnerHealth.Status.RUNNING;
         return new RunnerHealth(
                 s,
-                workerId,
+                runnerId,
                 admission.running(),
                 queueReservations.abandoned(),
                 status.lastClaimAt(),
@@ -175,25 +180,30 @@ public final class BackgroundRunner {
 
     /**
      * Starts all services and the monitor that restarts a service if its thread dies. Returns after
-     * starting. Calling it a second time, or after {@link #stop()}, logs a warning and does nothing. When the
-     * start fails, for example because the store cannot be reached, what was started is stopped again and the
-     * exception is rethrown; {@code start()} can then be called again.
+     * starting. Calling it on a runner that is started does nothing. When the start fails, for example because
+     * the store cannot be reached, what was started is stopped again and the exception is rethrown;
+     * {@code start()} can then be called again.
      *
-     * @throws TaskConfigurationException when no processor is registered
+     * @throws IllegalStateException when {@link #stop()} or {@link #close()} was called before, also on a runner
+     *     that was never started: a stopped runner stays stopped, build a new one
+     * @throws TaskConfigurationException when no processor is registered, or a registered task type has a JSON
+     *     payload and the runner has no {@code jsonMapper}
      */
     public void start() {
+        requireNotStopped();
         if (registry.isEmpty()) {
             throw new TaskConfigurationException("No task processor registered; register processors before start()");
         }
+        requireMapperForJsonTypes();
         if (!started.compareAndSet(false, true)) {
-            log.warn("Background runner {} is already started, ignoring start()", threadGroup.getName());
+            log.debug("Background runner {} is already started", threadGroup.getName());
             return;
         }
         lifecycleLock.lock();
         try {
             if (stopRequested) {
-                log.warn("Background runner {} was stopped before it started", threadGroup.getName());
-                return;
+                started.set(false);
+                requireNotStopped();
             }
             try {
                 startServices();
@@ -215,9 +225,9 @@ public final class BackgroundRunner {
         config.queuePolicies.forEach((q, p) -> policies.put(names.queueId(q), p));
         var typeIds = new HashSet<Integer>();
         for (var e : registry.typeNames()) typeIds.add(names.typeId(e));
-        workerQueueIds = Set.copyOf(queueIds);
-        workerTypeIds = Set.copyOf(typeIds);
-        workerId = store.allocateWorkerId(config.workerLabel, workerQueueIds, workerTypeIds);
+        runnerQueueIds = Set.copyOf(queueIds);
+        runnerTypeIds = Set.copyOf(typeIds);
+        runnerId = store.allocateRunnerId(config.runnerLabel, runnerQueueIds, runnerTypeIds);
         // stop() gives up waiting for the lifecycle lock when a store call here hangs; it cannot stop what is not
         // started yet
         if (stopRequested) {
@@ -241,7 +251,7 @@ public final class BackgroundRunner {
                 List.copyOf(queueIds),
                 policies,
                 Set.copyOf(typeIds),
-                workerId);
+                runnerId);
         var storeInfo = store.info();
         scheduledTaskService = startScheduledTaskService();
         recurringTaskService = startRecurringTaskService();
@@ -254,7 +264,7 @@ public final class BackgroundRunner {
             return;
         }
         taskProcessorService = startTaskProcessorService();
-        log.info("Background runner {} started as worker {} on {}", threadGroup.getName(), workerId, storeInfo);
+        log.info("Background runner {} started as runner {} on {}", threadGroup.getName(), runnerId, storeInfo);
         monitoringTask = scheduler.scheduleWithFixedDelay(
                 this::checkServices,
                 config.serviceCheckInterval.toMillis(),
@@ -262,9 +272,41 @@ public final class BackgroundRunner {
                 TimeUnit.MILLISECONDS);
     }
 
+    private void requireNotStopped() {
+        if (stopped.get()) {
+            throw new IllegalStateException("Background runner " + threadGroup.getName()
+                    + " was stopped and cannot be started again; build a new runner");
+        }
+    }
+
+    /** Nothing of a stopped runner runs any more: no attempt, no claim in progress and no service thread. */
+    private boolean ended() {
+        if (!stopSequenceDone || !admission.idle()) return false;
+        var services =
+                new CustomThread[] {taskProcessorService, scheduledTaskService, recurringTaskService, maintenanceService
+                };
+        for (var service : services) {
+            if (service != null && !service.isDone()) return false;
+        }
+        return true;
+    }
+
+    /** Without this check the runner would claim the tasks of such a type and end each one as dead. */
+    private void requireMapperForJsonTypes() {
+        if (config.jsonMapper != null) return;
+        for (var name : registry.typeNames()) {
+            var type = registry.get(name).type();
+            if (type.hasPayload() && type.codec() == null) {
+                throw new TaskConfigurationException("Task type " + name
+                        + " has a JSON payload and the runner has no jsonMapper; set one on the builder or give"
+                        + " the type a codec");
+            }
+        }
+    }
+
     /** Stops the services a failed {@link #start()} got going, so that nothing runs and the next start is clean. */
     private void abandonStart() {
-        var deadline = System.nanoTime() + config.shutdownTimeout.toNanos();
+        var deadline = System.nanoTime() + waitNanos(config.shutdownTimeout);
         var processor = taskProcessorService;
         var threads = new CustomThread[] {processor, scheduledTaskService, recurringTaskService, maintenanceService};
         for (var service : threads) {
@@ -279,7 +321,7 @@ public final class BackgroundRunner {
         recurringTaskService = null;
         maintenanceService = null;
         services = null;
-        workerId = 0;
+        runnerId = 0;
     }
 
     private static Duration remaining(long deadline) {
@@ -315,9 +357,9 @@ public final class BackgroundRunner {
      */
     public boolean drain(Duration timeout) {
         quiet();
-        var deadline = System.nanoTime() + timeout.toNanos();
+        var deadline = System.nanoTime() + waitNanos(timeout);
         while (!admission.idle()) {
-            if (System.nanoTime() >= deadline) return false;
+            if (deadline - System.nanoTime() <= 0) return false;
             try {
                 Thread.sleep(20);
             } catch (InterruptedException e) {
@@ -359,7 +401,8 @@ public final class BackgroundRunner {
             } finally {
                 lifecycleLock.unlock();
             }
-        } catch (Exception e) {
+        } catch (Exception | Error e) {
+            // a periodic job that throws is never run again by its executor, so an Error must not leave the check
             log.error("Error in service monitoring", e);
         }
     }
@@ -367,16 +410,39 @@ public final class BackgroundRunner {
     /**
      * Stops the runner: stops claiming, stops all services, shuts down the task executor and waits up to the
      * shutdown timeout for running tasks, renewing their leases meanwhile. Tasks still running afterwards
-     * keep their lease until it expires and are then retried. Calling it again is a no-op.
+     * keep their lease until it expires and are then retried.
+     * <p>
+     * {@link #health()} reports {@code STOPPING} from this call until the last task, claim and service of this
+     * runner has ended, and {@code STOPPED} only then, however long that takes: the shutdown timeout limits how
+     * long this call waits, not how long a task runs. A stopped runner cannot be started again. The call can
+     * come before {@link #start()} and can be repeated; a repeated call does not wait again.
+     *
+     * @return true when everything had ended when the call returned, false when the shutdown timeout ran out
+     *     first
      */
-    public void stop() {
+    public boolean stop() {
         if (!stopped.compareAndSet(false, true)) {
             log.debug("Background runner {} is already stopped or stopping", threadGroup.getName());
-            return;
+            return ended();
         }
+        try {
+            shutDown();
+        } finally {
+            stopSequenceDone = true;
+        }
+        return ended();
+    }
+
+    /** Same as {@link #stop()}, for try-with-resources. */
+    @Override
+    public void close() {
+        stop();
+    }
+
+    private void shutDown() {
         log.info("Stopping background runner {}", threadGroup.getName());
         // one monotonic deadline for every wait below: the shutdown timeout bounds the whole of stop()
-        var deadline = System.nanoTime() + config.shutdownTimeout.toNanos();
+        var deadline = System.nanoTime() + waitNanos(config.shutdownTimeout);
         // before the lock: a start() that is stuck in a store call checks it when the call returns
         stopRequested = true;
         final TaskProcessorService processor;
@@ -435,7 +501,8 @@ public final class BackgroundRunner {
                 log.info("Background runner {} stopped", threadGroup.getName());
             } else {
                 log.warn(
-                        "Tasks still running after {}. They keep their lease until it expires and are then retried",
+                        "Tasks still running after {}. They keep their lease until it expires and are then retried;"
+                                + " the runner reports STOPPING until they have ended",
                         config.shutdownTimeout);
             }
         } catch (InterruptedException e) {
@@ -476,13 +543,24 @@ public final class BackgroundRunner {
         return service;
     }
 
+    /** A wait for a monotonic deadline; one longer than {@link StoredTime#MAX} is cut to it, which nanoseconds can count. */
+    private static long waitNanos(Duration wait) {
+        return (StoredTime.fits(wait) ? wait : StoredTime.MAX).toNanos();
+    }
+
+    private int serviceBatchSize() {
+        return (int) Math.min(Integer.MAX_VALUE, config.claimBatchSize * 4L);
+    }
+
     private CustomThread startScheduledTaskService() {
         var service = new ScheduledTaskService.Builder()
                 .setGroup(threadGroup)
                 .setThreadName("ScheduledTaskService")
                 .setStore(store)
-                .setPollInterval(config.scheduledTasksCheckInterval)
-                .setBatchSize(config.claimBatchSize * 4)
+                .setClock(config.clock)
+                .setStatus(status)
+                .setPollInterval(config.scheduledTaskCheckInterval)
+                .setBatchSize(serviceBatchSize())
                 .create();
         service.start();
         return service;
@@ -498,8 +576,8 @@ public final class BackgroundRunner {
                 .observer(observer)
                 .clock(config.clock)
                 .status(status)
-                .checkInterval(config.recurringTasksCheckInterval)
-                .batchSize(config.claimBatchSize * 4)
+                .checkInterval(config.scheduleCheckInterval)
+                .batchSize(serviceBatchSize())
                 .create();
         service.start();
         return service;
@@ -510,7 +588,7 @@ public final class BackgroundRunner {
         retention.put(TaskState.SUCCEEDED, config.succeededRetention);
         retention.put(TaskState.DEAD, config.deadRetention);
         retention.put(TaskState.CANCELLED, config.cancelledRetention);
-        retention.put(TaskState.EXPIRED, config.cancelledRetention);
+        retention.put(TaskState.EXPIRED, config.expiredRetention);
         var service = new MaintenanceService.Builder()
                 .group(threadGroup)
                 .threadName("Maintenance")
@@ -525,34 +603,36 @@ public final class BackgroundRunner {
                 .retention(retention)
                 .keepDead(!config.deadRetention.isZero())
                 .failureDetail(config.failureDetail)
-                .batchSize(config.claimBatchSize * 4)
+                .batchSize(serviceBatchSize())
                 .purgeBatchSize(config.purgeBatchSize)
-                .worker(workerId, config.workerLabel, workerQueueIds, workerTypeIds, admission::running)
+                .runner(runnerId, config.runnerLabel, runnerQueueIds, runnerTypeIds, admission::running)
                 .accepting(() -> !admission.quiet() && !stopRequested)
-                .workerStaleAfter(config.workerStaleAfter)
+                .runnerStaleTimeout(config.runnerStaleTimeout)
                 .create();
         service.start();
         service.heartbeatNow();
         return service;
     }
 
-    public static final class Builder {
+    public static final class Builder implements Cloneable {
         private FullStore store;
         private TaskProcessorRegistry registry;
         private JsonMapper jsonMapper;
         private Clock clock = Clock.systemUTC();
         private Concurrency concurrency = Concurrency.defaultConcurrency();
+        private boolean concurrencySet;
         private BackgroundExecutor taskExecutor;
         private RetryPolicy retryPolicy = RetryPolicy.defaultPolicy();
-        private final Map<String, RetryPolicy> namedRetryPolicies = new LinkedHashMap<>();
-        private final Map<String, QueuePolicy> queuePolicies = new LinkedHashMap<>();
-        private Duration workerStaleAfter = Duration.ofMinutes(10);
+        private Map<String, RetryPolicy> namedRetryPolicies = new LinkedHashMap<>();
+        private Map<String, QueuePolicy> queuePolicies = new LinkedHashMap<>();
+        private Duration runnerStaleTimeout = Duration.ofMinutes(10);
         private TaskObserver observer;
-        private String workerLabel = defaultWorkerLabel();
+        private String runnerLabel = defaultRunnerLabel();
         private String threadGroupName = "bgr";
         private Duration succeededRetention = Duration.ofMinutes(10);
         private Duration deadRetention = Duration.ofDays(90);
         private Duration cancelledRetention = Duration.ofHours(48);
+        private Duration expiredRetention = Duration.ofHours(48);
         private boolean keepSucceededPayload;
         private FailureDetail failureDetail = FailureDetail.FULL;
         private Duration purgeInterval = Duration.ofMinutes(1);
@@ -564,21 +644,20 @@ public final class BackgroundRunner {
         private Duration shutdownTimeout = Duration.ofSeconds(30);
         private Duration serviceCheckInterval = Duration.ofSeconds(10);
         private Duration maintenanceCheckInterval = Duration.ofSeconds(5);
-        private Duration scheduledTasksCheckInterval = Duration.ofSeconds(1);
-        private Duration recurringTasksCheckInterval = Duration.ofSeconds(10);
+        private Duration scheduledTaskCheckInterval = Duration.ofSeconds(1);
+        private Duration scheduleCheckInterval = Duration.ofSeconds(10);
         private int idBlockSize = 64;
         private int defaultMaxAttempts = 10;
-        private Set<String> availableQueues = new LinkedHashSet<>(TaskClient.Builder.DEFAULT_QUEUES);
-        private List<String> queuesToProcess = TaskClient.Builder.DEFAULT_QUEUES;
-        private String defaultQueue = "Q:DEF";
+        private Queues queues = Queues.of(Queues.GENERAL);
+        private List<String> queuesToProcess;
 
         private Builder() {}
 
-        private static String defaultWorkerLabel() {
+        private static String defaultRunnerLabel() {
             try {
                 return ManagementFactory.getRuntimeMXBean().getName();
             } catch (RuntimeException e) {
-                return "worker";
+                return "runner";
             }
         }
 
@@ -606,14 +685,21 @@ public final class BackgroundRunner {
             return this;
         }
 
-        /** How many tasks run at once. Default twice the number of processors, fixed. */
+        /**
+         * How many tasks run at once. Default twice the number of processors, fixed. Not together with
+         * {@link #taskExecutor}.
+         */
         public Builder concurrency(Concurrency concurrency) {
             if (concurrency == null) throw new TaskConfigurationException("concurrency cannot be null");
             this.concurrency = concurrency;
+            this.concurrencySet = true;
             return this;
         }
 
-        /** A custom executor instead of the one built from {@link #concurrency}. The runner shuts it down. */
+        /**
+         * A custom executor instead of the one built from {@link #concurrency}; set one of the two, not both. The
+         * runner shuts it down.
+         */
         public Builder taskExecutor(BackgroundExecutor executor) {
             this.taskExecutor = executor;
             return this;
@@ -630,9 +716,10 @@ public final class BackgroundRunner {
          * A policy requests may pick by name with {@code TaskRequest.retryPolicy(name)}. A task naming an
          * unknown policy uses the default one and the runner records an issue.
          */
-        public Builder retryPolicy(String name, RetryPolicy retryPolicy) {
-            if (StringUtils.isBlank(name) || name.length() > 64) {
-                throw new TaskConfigurationException("retry policy name must be 1 to 64 characters");
+        public Builder addRetryPolicy(String name, RetryPolicy retryPolicy) {
+            if (!TaskRequest.isRetryPolicyName(name)) {
+                throw new TaskConfigurationException(
+                        "retry policy name must be 1 to " + TaskRequest.MAX_RETRY_POLICY_LENGTH + " characters");
             }
             if (retryPolicy == null) throw new TaskConfigurationException("retryPolicy cannot be null");
             this.namedRetryPolicies.put(name, retryPolicy);
@@ -644,7 +731,7 @@ public final class BackgroundRunner {
          * a policy get {@link QueuePolicy#DEFAULT}. Any policy other than the default makes each claim share the
          * slots between the queues by weight and cap, still in one store call.
          */
-        public Builder queue(String name, QueuePolicy policy) {
+        public Builder addQueuePolicy(String name, QueuePolicy policy) {
             if (StringUtils.isBlank(name)) throw new TaskConfigurationException("queue name cannot be blank");
             if (policy == null) throw new TaskConfigurationException("policy cannot be null");
             this.queuePolicies.put(name, policy);
@@ -652,12 +739,12 @@ public final class BackgroundRunner {
         }
 
         /**
-         * Worker rows without a heartbeat for this long are deleted by the purge. Default 10 minutes, at most
+         * Runner rows without a heartbeat for this long are deleted by the purge. Default 10 minutes, at most
          * {@link TaskRequest#MAX_TIME_FROM_NOW}.
          */
-        public Builder workerStaleAfter(Duration staleAfter) {
-            this.workerStaleAfter =
-                    requireStorable(requirePositive(staleAfter, "workerStaleAfter"), "workerStaleAfter");
+        public Builder runnerStaleTimeout(Duration staleAfter) {
+            this.runnerStaleTimeout =
+                    requireStorable(requirePositive(staleAfter, "runnerStaleTimeout"), "runnerStaleTimeout");
             return this;
         }
 
@@ -666,13 +753,13 @@ public final class BackgroundRunner {
             return this;
         }
 
-        /** Identifies this process in the worker registry. Default is the JVM name (pid@host). */
-        public Builder workerLabel(String label) {
+        /** Identifies this process in the runner registry. Default is the JVM name (pid@host). */
+        public Builder runnerLabel(String label) {
             if (StringUtils.isBlank(label) || label.length() > 128) {
-                throw new TaskConfigurationException("workerLabel must be 1 to 128 characters");
+                throw new TaskConfigurationException("runnerLabel must be 1 to 128 characters");
             }
-            if (!StoredText.storable(label)) throw new TaskConfigurationException("workerLabel contains U+0000");
-            this.workerLabel = label;
+            if (!StoredText.storable(label)) throw new TaskConfigurationException("runnerLabel contains U+0000");
+            this.runnerLabel = label;
             return this;
         }
 
@@ -703,12 +790,22 @@ public final class BackgroundRunner {
         }
 
         /**
-         * How long cancelled and expired tasks are kept. Default 48 hours, at most
+         * How long cancelled tasks are kept. Zero removes them at the next purge. Default 48 hours, at most
          * {@link TaskRequest#MAX_TIME_FROM_NOW}.
          */
         public Builder cancelledRetention(Duration retention) {
             this.cancelledRetention =
                     requireStorable(requireNonNegative(retention, "cancelledRetention"), "cancelledRetention");
+            return this;
+        }
+
+        /**
+         * How long expired tasks, those whose {@code startBy} passed before they ran, are kept. Zero removes
+         * them at the next purge. Default 48 hours, at most {@link TaskRequest#MAX_TIME_FROM_NOW}.
+         */
+        public Builder expiredRetention(Duration retention) {
+            this.expiredRetention =
+                    requireStorable(requireNonNegative(retention, "expiredRetention"), "expiredRetention");
             return this;
         }
 
@@ -728,13 +825,16 @@ public final class BackgroundRunner {
             return this;
         }
 
-        /** Time between purge runs. Default 1 minute. */
+        /** Time between purge runs. Default 1 minute, at least 1 ms. */
         public Builder purgeInterval(Duration interval) {
-            this.purgeInterval = requirePositive(interval, "purgeInterval");
+            this.purgeInterval = requireInterval(interval, Duration.ofMillis(1), "purgeInterval");
             return this;
         }
 
-        /** Tasks removed per purge call; the purge loops until a call removes fewer. Default 500. */
+        /**
+         * Tasks removed per purge call; the purge loops until a call removes fewer. Default 500. There is no upper
+         * limit today; a later release may refuse values above about 10,000.
+         */
         public Builder purgeBatchSize(int size) {
             if (size < 1) throw new TaskConfigurationException("purgeBatchSize must be at least 1");
             this.purgeBatchSize = size;
@@ -755,9 +855,10 @@ public final class BackgroundRunner {
         }
 
         /**
-         * The maximum run time of an attempt whose task or schedule sets no {@code maxRunTime}. Past it the runner
+         * The maximum run time of an attempt whose task or schedule sets no {@code maxRunTime}. Past it, checked
+         * about once a second, the runner
          * requests cancellation (and interrupts the processor when its type opted in with
-         * {@code interruptOnCancel}); an attempt still running one renewal period later is abandoned: its lease
+         * {@code withInterruptOnCancel}); an attempt still running one renewal period later is abandoned: its lease
          * is no longer renewed, so maintenance retries or ends the task, while the stuck thread keeps its slots
          * until it returns and is reported as the issue {@code attempt-abandoned}. Default one hour, at most
          * {@link TaskRequest#MAX_RUN_TIME}.
@@ -777,14 +878,14 @@ public final class BackgroundRunner {
          * 500 ms, at least 10 ms.
          */
         public Builder idlePollInterval(Duration interval) {
-            requirePositive(interval, "idlePollInterval");
-            if (interval.toMillis() < 10)
-                throw new TaskConfigurationException("idlePollInterval cannot be less than 10ms");
-            this.idlePollInterval = interval;
+            this.idlePollInterval = requireInterval(interval, Duration.ofMillis(10), "idlePollInterval");
             return this;
         }
 
-        /** The most tasks claimed in one call, bounded by free executor slots. Default 32. */
+        /**
+         * The most tasks claimed in one call, bounded by free executor slots. Default 32. There is no upper limit
+         * today; a later release may refuse values above about 10,000.
+         */
         public Builder claimBatchSize(int size) {
             if (size < 1) throw new TaskConfigurationException("claimBatchSize must be at least 1");
             this.claimBatchSize = size;
@@ -797,32 +898,29 @@ public final class BackgroundRunner {
             return this;
         }
 
+        /** Time between checks that the runner's services are alive. Default 10 s, at least 1 ms. */
         public Builder serviceCheckInterval(Duration interval) {
-            this.serviceCheckInterval = requirePositive(interval, "serviceCheckInterval");
+            this.serviceCheckInterval = requireInterval(interval, Duration.ofMillis(1), "serviceCheckInterval");
             return this;
         }
 
         /** Time between checks for expired leases. Default 5 s, at least 1 s. */
         public Builder maintenanceCheckInterval(Duration interval) {
-            requirePositive(interval, "maintenanceCheckInterval");
-            if (interval.toMillis() < 1000)
-                throw new TaskConfigurationException("maintenanceCheckInterval cannot be less than 1 second");
-            this.maintenanceCheckInterval = interval;
+            this.maintenanceCheckInterval =
+                    requireInterval(interval, Duration.ofSeconds(1), "maintenanceCheckInterval");
             return this;
         }
 
         /** Upper bound of the wait between checks for due scheduled tasks. Default 1 s, at least 10 ms. */
-        public Builder scheduledTasksCheckInterval(Duration interval) {
-            requirePositive(interval, "scheduledTasksCheckInterval");
-            if (interval.toMillis() < 10)
-                throw new TaskConfigurationException("scheduledTasksCheckInterval cannot be less than 10ms");
-            this.scheduledTasksCheckInterval = interval;
+        public Builder scheduledTaskCheckInterval(Duration interval) {
+            this.scheduledTaskCheckInterval =
+                    requireInterval(interval, Duration.ofMillis(10), "scheduledTaskCheckInterval");
             return this;
         }
 
-        /** Time between checks for due recurring definitions. Default 10 s. */
-        public Builder recurringTasksCheckInterval(Duration interval) {
-            this.recurringTasksCheckInterval = requirePositive(interval, "recurringTasksCheckInterval");
+        /** Time between checks for due recurring definitions. Default 10 s, at least 10 ms. */
+        public Builder scheduleCheckInterval(Duration interval) {
+            this.scheduleCheckInterval = requireInterval(interval, Duration.ofMillis(10), "scheduleCheckInterval");
             return this;
         }
 
@@ -843,50 +941,49 @@ public final class BackgroundRunner {
         }
 
         /**
-         * Configures the queues.
-         * <p>
-         * A queue may appear more than once in {@code queuesToProcess} to give it more turns in the round robin.
-         *
-         * @param availableQueues all queues tasks can be enqueued to. Duplicates are removed.
-         * @param queuesToProcess the queues this instance processes, in round robin order. Must be a subset of
-         *                        availableQueues. If null or empty, all available queues are processed in order.
-         * @param defaultQueue    the queue of tasks that do not name one. Must be in availableQueues. If null or
-         *                        blank, the first queue to process is used.
+         * The queues of the application: the ones tasks may be enqueued to, and the one used when a request
+         * names none. Give every runner and every separate {@link TaskClient} of the application the same value.
+         * This runner processes all of them, in their order, unless {@link #processQueues} says otherwise.
+         * Default: the one queue {@link Queues#GENERAL}.
          */
-        public Builder configureQueues(
-                List<String> availableQueues, List<String> queuesToProcess, String defaultQueue) {
-            if (ObjectUtils.isEmpty(availableQueues))
-                throw new TaskConfigurationException("Available queues cannot be empty");
-            availableQueues.forEach(s -> {
-                if (StringUtils.isBlank(s)) throw new TaskConfigurationException("Queue names cannot be blank");
-                if (!StoredText.storable(s)) throw new TaskConfigurationException("Queue name contains U+0000");
-            });
-            // LinkedHashSet keeps the order given by the caller, a HashSet would make it random
-            this.availableQueues = new LinkedHashSet<>(availableQueues);
-            this.queuesToProcess = ObjectUtils.isEmpty(queuesToProcess)
-                    ? new ArrayList<>(this.availableQueues)
-                    : new ArrayList<>(queuesToProcess);
-            this.defaultQueue = StringUtils.isBlank(defaultQueue) ? this.queuesToProcess.getFirst() : defaultQueue;
+        public Builder queues(Queues queues) {
+            if (queues == null) throw new TaskConfigurationException("queues cannot be null");
+            this.queues = queues;
+            return this;
+        }
+
+        /**
+         * The queues this runner processes, in round robin order; each must be one of {@link #queues(Queues)}.
+         * Tasks in the other queues, the default queue included, wait for a runner that processes them.
+         * <p>
+         * A queue may appear more than once to give it more turns in the round robin. Once a queue has a
+         * {@link QueuePolicy} every queue counts once and the weights set the shares.
+         */
+        public Builder processQueues(List<String> queuesToProcess) {
+            if (ObjectUtils.isEmpty(queuesToProcess)) {
+                throw new TaskConfigurationException("queues to process cannot be empty");
+            }
+            for (var queue : queuesToProcess) {
+                if (queue == null) throw new TaskConfigurationException("queues to process cannot contain null");
+            }
+            this.queuesToProcess = List.copyOf(queuesToProcess);
             return this;
         }
 
         QueuesHolder queues() {
-            if (queuesToProcess.isEmpty()) throw new TaskConfigurationException("Queues to process cannot be empty");
-            for (var q : queuesToProcess) {
-                if (!availableQueues.contains(q)) {
-                    throw new TaskConfigurationException("Queue to process " + q + " is not an available queue");
+            var toProcess = queuesToProcess == null ? queues.names() : queuesToProcess;
+            for (var q : toProcess) {
+                if (!queues.names().contains(q)) {
+                    throw new TaskConfigurationException("Queue to process " + q + " is not one of the queues");
                 }
             }
-            if (!availableQueues.contains(defaultQueue)) {
-                throw new TaskConfigurationException("Default queue " + defaultQueue + " is not an available queue");
-            }
             for (var q : queuePolicies.keySet()) {
-                if (!queuesToProcess.contains(q)) {
+                if (!toProcess.contains(q)) {
                     throw new TaskConfigurationException(
                             "Queue policy for " + q + ", which this runner does not process");
                 }
             }
-            return new QueuesHolder(availableQueues, queuesToProcess, defaultQueue);
+            return QueuesHolder.of(queues, toProcess);
         }
 
         /**
@@ -896,13 +993,42 @@ public final class BackgroundRunner {
         public BackgroundRunner build() {
             if (store == null) throw new TaskConfigurationException("Cannot build runner without a store");
             queues();
-            return new BackgroundRunner(this);
+            if (concurrencySet && taskExecutor != null) {
+                throw new TaskConfigurationException("Set concurrency or taskExecutor, not both");
+            }
+            // the heartbeat is written once per maintenance check; below three of them one late write would
+            // get a live runner purged
+            if (runnerStaleTimeout.compareTo(maintenanceCheckInterval.multipliedBy(3)) < 0) {
+                throw new TaskConfigurationException(
+                        "runnerStaleTimeout must be at least three times maintenanceCheckInterval");
+            }
+            return new BackgroundRunner(snapshot());
+        }
+
+        /** The runner reads its settings later too, so it gets a copy that further calls on this builder leave alone. */
+        private Builder snapshot() {
+            try {
+                var copy = (Builder) clone();
+                copy.namedRetryPolicies = new LinkedHashMap<>(namedRetryPolicies);
+                copy.queuePolicies = new LinkedHashMap<>(queuePolicies);
+                return copy;
+            } catch (CloneNotSupportedException e) {
+                throw new AssertionError(e);
+            }
         }
 
         private static Duration requirePositive(Duration d, String name) {
             if (d == null || d.isZero() || d.isNegative())
                 throw new TaskConfigurationException(name + " must be positive");
             return d;
+        }
+
+        /** Compares durations, so that one too long to count in milliseconds is refused and does not overflow. */
+        private static Duration requireInterval(Duration d, Duration min, String name) {
+            if (d == null || d.compareTo(min) < 0) {
+                throw new TaskConfigurationException(name + " must be at least " + min.toMillis() + " ms");
+            }
+            return requireStorable(d, name);
         }
 
         private static Duration requireNonNegative(Duration d, String name) {

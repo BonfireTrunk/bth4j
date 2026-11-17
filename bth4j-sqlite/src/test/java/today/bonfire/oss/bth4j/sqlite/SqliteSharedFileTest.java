@@ -23,13 +23,13 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import today.bonfire.oss.bth4j.FailureInfo;
+import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
-import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.testing.MutableClock;
 
 /**
@@ -65,10 +65,18 @@ class SqliteSharedFileTest {
     @BeforeEach
     void setUp() {
         var prefix = SqliteTestSupport.prefix("shared" + NAMESPACES.incrementAndGet());
-        first = new SqliteTaskStore(database.dataSource(), prefix, clock);
+        first = SqliteTaskStore.builder()
+                .dataSource(database.dataSource())
+                .namespace(prefix)
+                .clock(clock)
+                .build();
         first.init();
         otherPool = database.anotherPool();
-        second = new SqliteTaskStore(otherPool, prefix, clock);
+        second = SqliteTaskStore.builder()
+                .dataSource(otherPool)
+                .namespace(prefix)
+                .clock(clock)
+                .build();
         second.init();
         queue = first.queueId("default");
         type = first.typeId("send-mail");
@@ -89,10 +97,10 @@ class SqliteSharedFileTest {
         return tasks;
     }
 
-    private List<Long> claimUntilEmpty(SqliteTaskStore store, int workerId) {
+    private List<Long> claimUntilEmpty(SqliteTaskStore store, int runnerId) {
         var claimed = new ArrayList<Long>();
         while (true) {
-            var batch = store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, workerId, null));
+            var batch = store.claim(new ClaimRequest(List.of(new QueueGrant(queue, 5, 5)), 5, LEASE, runnerId, null));
             if (batch.isEmpty()) return claimed;
             batch.forEach(t -> claimed.add(t.id()));
         }
@@ -108,8 +116,8 @@ class SqliteSharedFileTest {
             var futures = new ArrayList<Future<?>>();
             for (var store : List.of(first, second)) {
                 for (int i = 0; i < CLAIMERS_PER_STORE; i++) {
-                    int workerId = store.allocateWorkerId("claimer-" + futures.size(), Set.of(queue), Set.of(type));
-                    futures.add(executor.submit(() -> claimedBy.addAll(claimUntilEmpty(store, workerId))));
+                    int runnerId = store.allocateRunnerId("claimer-" + futures.size(), Set.of(queue), Set.of(type));
+                    futures.add(executor.submit(() -> claimedBy.addAll(claimUntilEmpty(store, runnerId))));
                 }
             }
             for (var future : futures) future.get(60, TimeUnit.SECONDS);
@@ -154,19 +162,19 @@ class SqliteSharedFileTest {
 
     @Test
     void whatOneInstanceWritesTheOtherReadsAndFences() {
-        int workerA = first.allocateWorkerId("a", Set.of(queue), Set.of(type));
-        int workerB = second.allocateWorkerId("b", Set.of(queue), Set.of(type));
+        int runnerA = first.allocateRunnerId("a", Set.of(queue), Set.of(type));
+        int runnerB = second.allocateRunnerId("b", Set.of(queue), Set.of(type));
         var task = enqueueThrough(first, 1).getFirst();
 
-        assertThat(workerB).isNotEqualTo(workerA);
+        assertThat(runnerB).isNotEqualTo(runnerA);
         assertThat(second.queueId("default")).isEqualTo(queue);
         assertThat(second.typeId("send-mail")).isEqualTo(type);
-        assertThat(second.getTask(task.id())).isPresent();
-        var claimed = first.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, workerA, null))
+        assertThat(second.task(task.id())).isPresent();
+        var claimed = first.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, runnerA, null))
                 .getFirst();
-        assertThat(second.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, workerB, null)))
+        assertThat(second.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, runnerB, null)))
                 .isEmpty();
-        assertThat(second.getTask(task.id()).orElseThrow().state()).isEqualTo(TaskState.LEASED);
+        assertThat(second.task(task.id()).orElseThrow().state()).isEqualTo(TaskState.LEASED);
 
         assertThat(second.ack(claimed.id(), claimed.revision() + 1, true, true, null))
                 .isFalse();
@@ -174,15 +182,15 @@ class SqliteSharedFileTest {
                 .isTrue();
         assertThat(first.ack(claimed.id(), claimed.revision(), true, true, null))
                 .isFalse();
-        assertThat(first.getTask(task.id()).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
-        assertThat(first.workers()).extracting(w -> w.id()).containsExactlyInAnyOrder(workerA, workerB);
+        assertThat(first.task(task.id()).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(first.runners()).extracting(w -> w.id()).containsExactlyInAnyOrder(runnerA, runnerB);
     }
 
     @Test
     void anExpiredLeaseOfOneInstanceIsEndedByTheOther() {
-        int workerA = first.allocateWorkerId("a", Set.of(queue), Set.of(type));
+        int runnerA = first.allocateRunnerId("a", Set.of(queue), Set.of(type));
         var task = enqueueThrough(first, 1).getFirst();
-        var claimed = first.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, workerA, null))
+        var claimed = first.claim(new ClaimRequest(List.of(new QueueGrant(queue, 1, 1)), 1, LEASE, runnerA, null))
                 .getFirst();
         assertThat(second.reclaim(10)).isEmpty();
 
@@ -195,6 +203,6 @@ class SqliteSharedFileTest {
                 .isEqualTo(FailOutcome.RETRY);
         assertThat(first.ack(claimed.id(), claimed.revision(), true, true, null))
                 .isFalse();
-        assertThat(first.getTask(task.id()).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
+        assertThat(first.task(task.id()).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
     }
 }

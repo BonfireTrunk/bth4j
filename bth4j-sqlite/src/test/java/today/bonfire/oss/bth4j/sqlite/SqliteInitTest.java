@@ -21,7 +21,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.sqlite.SQLiteConfig;
 import org.sqlite.SQLiteDataSource;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 
 /** What {@link SqliteTaskStore#init()} requires of the connection and of the file, on real database files. */
 @Timeout(60)
@@ -44,7 +44,11 @@ class SqliteInitTest {
     }
 
     private SqliteTaskStore store(DataSource dataSource) {
-        return new SqliteTaskStore(dataSource, "app", Clock.systemUTC());
+        return SqliteTaskStore.builder()
+                .dataSource(dataSource)
+                .namespace("app")
+                .clock(Clock.systemUTC())
+                .build();
     }
 
     private void sql(DataSource dataSource, String statement) throws SQLException {
@@ -150,7 +154,8 @@ class SqliteInitTest {
 
         assertThatThrownBy(() -> store(pool).init())
                 .isInstanceOf(TaskStoreException.class)
-                .hasMessage("schema version 99, this library needs 1");
+                .hasMessage("namespace app has schema version 99, this library needs " + SqliteTaskStore.SCHEMA_VERSION
+                        + " and does not migrate another one");
         assertThat(scalar(pool, "SELECT value FROM app_meta WHERE key = 'schema_version'"))
                 .isEqualTo(99);
     }
@@ -163,7 +168,8 @@ class SqliteInitTest {
 
         assertThatThrownBy(() -> store(pool).init())
                 .isInstanceOf(TaskStoreException.class)
-                .hasMessage("schema version null, this library needs 1");
+                .hasMessage("namespace app has schema version null, this library needs "
+                        + SqliteTaskStore.SCHEMA_VERSION + " and does not migrate another one");
     }
 
     @Test

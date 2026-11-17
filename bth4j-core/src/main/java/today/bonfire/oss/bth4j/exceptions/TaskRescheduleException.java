@@ -21,7 +21,7 @@ public final class TaskRescheduleException extends TaskSignal {
     public TaskRescheduleException(Duration delay, String message, Throwable cause) {
         super(message, cause);
         if (delay == null || delay.isNegative()) {
-            throw new IllegalArgumentException("Reschedule delay cannot be null or negative: " + delay);
+            throw new TaskValidationException("Reschedule delay cannot be null or negative: " + delay);
         }
         this.delay = delay;
     }

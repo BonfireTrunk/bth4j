@@ -13,7 +13,10 @@ class InMemoryStoreContractTest extends StoreContract {
 
     @Override
     protected FullStore newStore(String namespace) {
-        return new InMemoryStore(clock, REGISTRY_BOUND);
+        return InMemoryStore.builder()
+                .clock(clock)
+                .registryBound(REGISTRY_BOUND)
+                .build();
     }
 
     @Override

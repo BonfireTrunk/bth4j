@@ -1,13 +1,16 @@
 package today.bonfire.oss.bth4j.exceptions;
 
-public class TaskConfigurationException extends RuntimeException {
-    private static final String PREFIX = "ERR11_Error in configuration ";
+/**
+ * A setting of a runtime object was refused: a builder, a store, an executor, a policy, the admin HTTP server or
+ * the metrics binder.
+ */
+public class TaskConfigurationException extends Bth4jException {
 
     public TaskConfigurationException(String message) {
-        super(PREFIX + message);
+        super(message);
     }
 
     public TaskConfigurationException(String message, Throwable cause) {
-        super(PREFIX + message, cause);
+        super(message, cause);
     }
 }

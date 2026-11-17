@@ -12,7 +12,7 @@ import java.time.Instant;
  */
 public record RunnerHealth(
         Status status,
-        int workerId,
+        int runnerId,
         int runningTasks,
         int abandonedAttempts,
         Instant lastClaimAt,
@@ -22,9 +22,14 @@ public record RunnerHealth(
         int issueCount) {
 
     public enum Status {
+        /** built, {@code start()} not called yet */
         NEW,
         RUNNING,
+        /** started, and claiming no new tasks after {@code quiet()} */
         QUIET,
+        /** {@code stop()} was called and a task, a claim or a service of this runner has not ended yet */
+        STOPPING,
+        /** {@code stop()} was called and nothing of this runner runs any more */
         STOPPED
     }
 }

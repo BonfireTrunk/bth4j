@@ -17,14 +17,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.executor.BackgroundExecutor;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
-import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
-import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
 import today.bonfire.oss.bth4j.testing.MutableClock;
 
@@ -43,24 +41,22 @@ class TaskProcessorCapacityTest {
     private static final Duration WOKEN_WITHIN = Duration.ofSeconds(1);
 
     private final MutableClock clock = new MutableClock();
-    private final InMemoryStore store = new InMemoryStore(clock);
+    private final InMemoryStore store = InMemoryStore.builder().clock(clock).build();
     private final Names names = new Names(store);
     private final TaskClient client = TaskClient.builder()
             .store(store)
             .clock(clock)
-            .queues(
-                    List.of(
-                            "Q:DEF",
-                            "Q:HEAVY",
-                            "Q:LIGHT",
-                            "Q:CAPPED",
-                            "Q:OPEN",
-                            "Q:EMPTY",
-                            "Q:BUSY",
-                            "Q:PAUSED",
-                            "Q:FIRST",
-                            "Q:SECOND"),
-                    "Q:DEF")
+            .queues(Queues.of(List.of(
+                    "Q:DEF",
+                    "Q:HEAVY",
+                    "Q:LIGHT",
+                    "Q:CAPPED",
+                    "Q:OPEN",
+                    "Q:EMPTY",
+                    "Q:BUSY",
+                    "Q:PAUSED",
+                    "Q:FIRST",
+                    "Q:SECOND")))
             .build();
     private final int queueId = names.queueId("Q:DEF");
     private final int typeId = names.typeId(TYPE.name());
@@ -86,13 +82,13 @@ class TaskProcessorCapacityTest {
         var replacement = processor(executor, 1);
         executor.runNext();
         assertThat(admission.attempts()).isEmpty();
-        assertThat(store.getTask(inheritedId).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(store.task(inheritedId).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
         assertThat(reservations.running(queueId)).isZero();
 
         long nextId = enqueue();
         processOnce(replacement);
 
-        assertThat(store.getTask(nextId).orElseThrow().state()).isEqualTo(TaskState.LEASED);
+        assertThat(store.task(nextId).orElseThrow().state()).isEqualTo(TaskState.LEASED);
     }
 
     @Test
@@ -118,30 +114,30 @@ class TaskProcessorCapacityTest {
 
         assertThat(attempt(id)).isSameAs(current);
         assertThat(reservations.running(queueId)).isEqualTo(1);
-        var leased = store.getTask(id).orElseThrow();
+        var leased = store.task(id).orElseThrow();
         assertThat(leased.state()).isEqualTo(TaskState.LEASED);
         assertThat(leased.revision()).isEqualTo(current.revision());
         clock.advance(Duration.ofMillis(100));
         processor.renewOnce();
-        assertThat(store.getTask(id).orElseThrow().leaseUntil())
+        assertThat(store.task(id).orElseThrow().leaseUntil())
                 .isEqualTo(clock.instant().plus(LEASE));
 
         executor.runNext();
-        assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(store.task(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
         assertThat(admission.attempts()).isEmpty();
         assertThat(reservations.running(queueId)).isZero();
 
         long first = enqueue();
         long second = enqueue();
         processOnce(processor);
-        assertThat(store.getTask(first).orElseThrow().state()).isEqualTo(TaskState.LEASED);
-        assertThat(store.getTask(second).orElseThrow().state()).isEqualTo(TaskState.LEASED);
+        assertThat(store.task(first).orElseThrow().state()).isEqualTo(TaskState.LEASED);
+        assertThat(store.task(second).orElseThrow().state()).isEqualTo(TaskState.LEASED);
     }
 
     @Test
     void theQueueCapHoldsWhenTheExecutorHasMoreCapacityAndTheClaimBatchIsLarger() throws Exception {
         var executor = new ManualExecutor(10);
-        var processor = processor(executor, 5, Map.of(queueId, QueuePolicy.maxConcurrent(2)));
+        var processor = processor(executor, 5, Map.of(queueId, QueuePolicy.ofMaxConcurrent(2)));
         var ids = enqueue(5, "Q:DEF");
 
         processOnce(processor);
@@ -155,7 +151,7 @@ class TaskProcessorCapacityTest {
     @Test
     void aQuietProcessorReservesNoSlotAndClaimsNothingUntilItIsResumed() throws Exception {
         var executor = new ManualExecutor(10);
-        var processor = processor(executor, 5, Map.of(queueId, QueuePolicy.maxConcurrent(5)));
+        var processor = processor(executor, 5, Map.of(queueId, QueuePolicy.ofMaxConcurrent(5)));
         var ids = enqueue(3, "Q:DEF");
         admission.quiet(true);
 
@@ -177,7 +173,7 @@ class TaskProcessorCapacityTest {
     @Test
     void anotherIterationWhileTheAttemptsStayBlockedClaimsNothingUntilOneFinishes() throws Exception {
         var executor = new ManualExecutor(10);
-        var processor = processor(executor, 5, Map.of(queueId, QueuePolicy.maxConcurrent(2)));
+        var processor = processor(executor, 5, Map.of(queueId, QueuePolicy.ofMaxConcurrent(2)));
         var ids = enqueue(5, "Q:DEF");
         processOnce(processor);
 
@@ -203,7 +199,10 @@ class TaskProcessorCapacityTest {
         int light = names.queueId("Q:LIGHT");
         var executor = new ManualExecutor(4);
         var processor = processor(
-                executor, 4, List.of(heavy, light), Map.of(heavy, QueuePolicy.weight(3), light, QueuePolicy.weight(1)));
+                executor,
+                4,
+                List.of(heavy, light),
+                Map.of(heavy, QueuePolicy.ofWeight(3), light, QueuePolicy.ofWeight(1)));
         var heavyIds = enqueue(6, "Q:HEAVY");
         var lightIds = enqueue(6, "Q:LIGHT");
 
@@ -211,6 +210,67 @@ class TaskProcessorCapacityTest {
 
         assertThat(leased(heavyIds)).isEqualTo(3);
         assertThat(leased(lightIds)).isEqualTo(1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 3, 4, 8})
+    void theWeightsHoldOverManyClaimsHoweverFewSlotsFreeUpAtATime(int slots) throws Exception {
+        int heavy = names.queueId("Q:HEAVY");
+        int light = names.queueId("Q:LIGHT");
+        var executor = new ManualExecutor(slots);
+        var processor = processor(
+                executor,
+                slots,
+                List.of(heavy, light),
+                Map.of(heavy, QueuePolicy.ofWeight(3), light, QueuePolicy.ofWeight(1)));
+        var heavyIds = enqueue(120, "Q:HEAVY");
+        var lightIds = enqueue(120, "Q:LIGHT");
+
+        for (int run = 0; run < 96; run += slots) {
+            processOnce(processor);
+            for (int i = 0; i < slots; i++) executor.runNext();
+        }
+
+        assertThat(heavyIds.stream().filter(id -> state(id) != TaskState.QUEUED))
+                .hasSize(72);
+        assertThat(lightIds.stream().filter(id -> state(id) != TaskState.QUEUED))
+                .hasSize(24);
+    }
+
+    @Test
+    void aQueueHeldAtItsCapDoesNotCollectSlotsForLater() throws Exception {
+        int capped = names.queueId("Q:CAPPED");
+        int open = names.queueId("Q:OPEN");
+        var executor = new ManualExecutor(3);
+        var processor = processor(
+                executor,
+                1,
+                List.of(capped, open),
+                Map.of(capped, new QueuePolicy(3, 1), open, QueuePolicy.ofWeight(1)));
+        var cappedIds = enqueue(40, "Q:CAPPED");
+        var openIds = enqueue(40, "Q:OPEN");
+        // the capped queue's one task stays running, so every further slot goes to the open queue
+        processOnce(processor);
+        processOnce(processor);
+        assertThat(leased(cappedIds)).isEqualTo(1);
+        for (int i = 0; i < 20; i++) {
+            processOnce(processor);
+            executor.runLast();
+        }
+        assertThat(openIds.stream().filter(id -> state(id) != TaskState.QUEUED)).hasSize(21);
+
+        // its task ends: from here on the two queues share three to one again, without a burst for the time missed
+        executor.runNext();
+        executor.runNext();
+        int cappedBefore = (int)
+                cappedIds.stream().filter(id -> state(id) != TaskState.QUEUED).count();
+        for (int i = 0; i < 8; i++) {
+            processOnce(processor);
+            executor.runNext();
+        }
+
+        assertThat(cappedIds.stream().filter(id -> state(id) != TaskState.QUEUED))
+                .hasSize(cappedBefore + 6);
     }
 
     @Test
@@ -222,7 +282,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 4,
                 List.of(heavy, light),
-                Map.of(heavy, QueuePolicy.weight(3 << 29), light, QueuePolicy.weight(1 << 29)));
+                Map.of(heavy, QueuePolicy.ofWeight(3 << 29), light, QueuePolicy.ofWeight(1 << 29)));
         var heavyIds = enqueue(6, "Q:HEAVY");
         var lightIds = enqueue(6, "Q:LIGHT");
 
@@ -241,7 +301,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 4,
                 List.of(capped, open),
-                Map.of(capped, QueuePolicy.maxConcurrent(1), open, QueuePolicy.DEFAULT));
+                Map.of(capped, QueuePolicy.ofMaxConcurrent(1), open, QueuePolicy.DEFAULT));
         var cappedIds = enqueue(6, "Q:CAPPED");
         var openIds = enqueue(6, "Q:OPEN");
 
@@ -262,7 +322,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 4,
                 List.of(empty, busy),
-                Map.of(empty, QueuePolicy.maxConcurrent(5), busy, QueuePolicy.maxConcurrent(5)));
+                Map.of(empty, QueuePolicy.ofMaxConcurrent(5), busy, QueuePolicy.ofMaxConcurrent(5)));
         var busyIds = enqueue(10, "Q:BUSY");
 
         processOnce(processor);
@@ -270,6 +330,75 @@ class TaskProcessorCapacityTest {
         assertThat(leased(busyIds)).isEqualTo(4);
         assertThat(reservations.running(busy)).isEqualTo(4);
         assertThat(reservations.running(empty)).isZero();
+    }
+
+    @Test
+    void aSingleFreeSlotGoesToTheBusyQueueWhenTheQueueAheadOfItIsEmpty() throws Exception {
+        int empty = names.queueId("Q:EMPTY");
+        int busy = names.queueId("Q:BUSY");
+        var executor = new ManualExecutor(1);
+        var processor = processor(
+                executor,
+                1,
+                List.of(empty, busy),
+                Map.of(empty, QueuePolicy.ofMaxConcurrent(5), busy, QueuePolicy.ofMaxConcurrent(5)));
+        var busyIds = enqueue(10, "Q:BUSY");
+
+        processOnce(processor);
+
+        assertThat(leased(busyIds)).isEqualTo(1);
+        assertThat(reservations.running(busy)).isEqualTo(1);
+    }
+
+    @Test
+    void aQueueWhoseWeightEarnsNoShareTakesTheSlotsTheHeavyQueueLeaves() throws Exception {
+        int heavy = names.queueId("Q:HEAVY");
+        int light = names.queueId("Q:LIGHT");
+        var executor = new ManualExecutor(4);
+        var processor = processor(
+                executor,
+                4,
+                List.of(heavy, light),
+                Map.of(heavy, QueuePolicy.ofWeight(100), light, QueuePolicy.ofWeight(1)));
+        var lightIds = enqueue(10, "Q:LIGHT");
+
+        processOnce(processor);
+
+        assertThat(leased(lightIds)).isEqualTo(4);
+    }
+
+    @Test
+    void aFailedClaimForTheLeftoverSlotsStillRunsWhatTheFirstClaimLeased() throws Exception {
+        int first = names.queueId("Q:FIRST");
+        int empty = names.queueId("Q:EMPTY");
+        int busy = names.queueId("Q:BUSY");
+        var executor = new ManualExecutor(2);
+        var claims = new AtomicInteger();
+        var processor = processorOn(
+                StoreInterceptor.around(store, (method, args, real) -> {
+                    if (method.equals("claim") && claims.incrementAndGet() == 2) {
+                        throw new TaskStoreException("claim failed");
+                    }
+                    return real.proceed();
+                }),
+                executor,
+                2,
+                List.of(first, empty, busy),
+                Map.of(
+                        first, QueuePolicy.ofMaxConcurrent(5),
+                        empty, QueuePolicy.ofMaxConcurrent(5),
+                        busy, QueuePolicy.ofMaxConcurrent(5)));
+        var firstIds = enqueue(1, "Q:FIRST");
+        var busyIds = enqueue(3, "Q:BUSY");
+
+        processOnce(processor);
+
+        assertThat(claims).hasValue(2);
+        assertThat(leased(firstIds)).isEqualTo(1);
+        assertThat(leased(busyIds)).isZero();
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
+        executor.runNext();
+        assertThat(state(firstIds.getFirst())).isEqualTo(TaskState.SUCCEEDED);
     }
 
     @Test
@@ -281,7 +410,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 4,
                 List.of(paused, busy),
-                Map.of(paused, QueuePolicy.maxConcurrent(5), busy, QueuePolicy.maxConcurrent(5)));
+                Map.of(paused, QueuePolicy.ofMaxConcurrent(5), busy, QueuePolicy.ofMaxConcurrent(5)));
         var pausedIds = enqueue(3, "Q:PAUSED");
         var busyIds = enqueue(10, "Q:BUSY");
         store.pauseQueue(paused, true);
@@ -350,7 +479,7 @@ class TaskProcessorCapacityTest {
         assertThat(executor.available()).isEqualTo(2);
         assertThat(reservations.running(queueId)).isZero();
         assertThat(admission.attempts()).isEmpty();
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
 
         processOnce(processor);
 
@@ -372,7 +501,7 @@ class TaskProcessorCapacityTest {
                                     .toList(),
                             3,
                             asked.lease(),
-                            asked.workerId(),
+                            asked.runnerId(),
                             asked.knownTypeIds()));
                 }),
                 executor,
@@ -386,8 +515,8 @@ class TaskProcessorCapacityTest {
         assertThat(ids.stream().filter(id -> state(id) == TaskState.LEASED)).hasSize(1);
         assertThat(ids.stream().filter(id -> state(id) == TaskState.QUEUED)).hasSize(2);
         assertThat(status.issues())
-                .anyMatch(i ->
-                        i.kind().equals("store-error") && i.detail().equals("store returned 3 tasks for a claim of 1"));
+                .anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR
+                        && i.detail().equals("store returned 3 tasks for a claim of 1"));
     }
 
     @Test
@@ -444,7 +573,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 4,
                 List.of(first, second),
-                Map.of(first, QueuePolicy.maxConcurrent(5), second, QueuePolicy.maxConcurrent(5)));
+                Map.of(first, QueuePolicy.ofMaxConcurrent(5), second, QueuePolicy.ofMaxConcurrent(5)));
         var firstIds = enqueue(3, "Q:FIRST");
         var secondIds = enqueue(3, "Q:SECOND");
 
@@ -474,23 +603,49 @@ class TaskProcessorCapacityTest {
                 1);
         long id = enqueue();
         processOnce(processor);
-        var leaseBefore = store.getTask(id).orElseThrow().leaseUntil();
+        var leaseBefore = store.task(id).orElseThrow().leaseUntil();
         clock.advance(Duration.ofMillis(300));
 
         processor.renewOnce();
 
         assertThat(attempt(id)).isNotNull();
-        assertThat(store.getTask(id).orElseThrow().leaseUntil()).isEqualTo(leaseBefore);
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        assertThat(store.task(id).orElseThrow().leaseUntil()).isEqualTo(leaseBefore);
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
         assertThat(reservations.running(queueId)).isEqualTo(1);
 
         processor.renewOnce();
 
-        assertThat(store.getTask(id).orElseThrow().leaseUntil())
+        assertThat(store.task(id).orElseThrow().leaseUntil())
                 .isEqualTo(clock.instant().plus(LEASE));
         executor.runNext();
         assertThat(state(id)).isEqualTo(TaskState.SUCCEEDED);
         assertThat(reservations.running(queueId)).isZero();
+    }
+
+    @Test
+    void aLostLeaseIsReportedOnceHoweverManyRenewalRoundsFollow() throws Exception {
+        var executor = new ManualExecutor(1);
+        var renewed = new AtomicInteger();
+        var processor = processorOn(
+                StoreInterceptor.around(store, (method, args, real) -> {
+                    if (method.equals("renew")) renewed.incrementAndGet();
+                    return real.proceed();
+                }),
+                executor,
+                1);
+        long id = enqueue();
+        processOnce(processor);
+        clock.advance(LEASE.plusMillis(1));
+
+        processor.renewOnce();
+        processor.renewOnce();
+        processor.renewOnce();
+
+        assertThat(status.issues())
+                .filteredOn(i -> i.kind() == Issue.Kind.LEASE_LOST)
+                .singleElement()
+                .satisfies(i -> assertThat(i.taskId()).isEqualTo(id));
+        assertThat(renewed).hasValue(1);
     }
 
     @Test
@@ -511,7 +666,7 @@ class TaskProcessorCapacityTest {
         executor.runNext();
 
         assertThat(state(id)).isEqualTo(TaskState.SUCCEEDED);
-        assertThat(status.issues()).noneMatch(i -> i.kind().equals("lease-lost"));
+        assertThat(status.issues()).noneMatch(i -> i.kind() == Issue.Kind.LEASE_LOST);
         assertThat(admission.attempts()).isEmpty();
     }
 
@@ -534,8 +689,8 @@ class TaskProcessorCapacityTest {
         assertThat(admission.attempts()).isEmpty();
         assertThat(executor.available()).isEqualTo(1);
         assertThat(reservations.running(queueId)).isZero();
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("executor-rejected"));
-        assertThat(status.issues()).anyMatch(i -> i.kind().equals("store-error"));
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.EXECUTOR_REJECTED);
+        assertThat(status.issues()).anyMatch(i -> i.kind() == Issue.Kind.STORE_ERROR);
 
         clock.advance(LEASE.plusMillis(1));
         assertThat(store.reclaim(10))
@@ -552,14 +707,14 @@ class TaskProcessorCapacityTest {
 
         processOnce(processor);
 
-        assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
+        assertThat(store.task(id).orElseThrow().state()).isEqualTo(TaskState.QUEUED);
         assertThat(admission.attempts()).isEmpty();
         assertThat(reservations.running(queueId)).isZero();
         assertThat(executor.available()).isEqualTo(1);
 
         executor.reject = false;
         processOnce(processor);
-        assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.LEASED);
+        assertThat(store.task(id).orElseThrow().state()).isEqualTo(TaskState.LEASED);
         assertThat(reservations.running(queueId)).isEqualTo(1);
     }
 
@@ -572,7 +727,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 5,
                 List.of(queueId),
-                Map.of(queueId, QueuePolicy.maxConcurrent(1)),
+                Map.of(queueId, QueuePolicy.ofMaxConcurrent(1)),
                 IDLE_LONGER_THAN_THE_TEST);
         var ids = enqueue(2, "Q:DEF");
         processOnce(processor);
@@ -584,7 +739,7 @@ class TaskProcessorCapacityTest {
                         executor,
                         5,
                         List.of(queueId),
-                        Map.of(queueId, QueuePolicy.maxConcurrent(1)),
+                        Map.of(queueId, QueuePolicy.ofMaxConcurrent(1)),
                         IDLE_LONGER_THAN_THE_TEST)
                 : processor;
         var waiting = Thread.ofPlatform().start(() -> {
@@ -617,7 +772,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 5,
                 List.of(queueId),
-                Map.of(queueId, QueuePolicy.maxConcurrent(2)),
+                Map.of(queueId, QueuePolicy.ofMaxConcurrent(2)),
                 IDLE_LONGER_THAN_THE_TEST);
         enqueue(1, "Q:DEF");
         processOnce(processor);
@@ -873,7 +1028,7 @@ class TaskProcessorCapacityTest {
     }
 
     private TaskState state(long id) {
-        return store.getTask(id).orElseThrow().state();
+        return store.task(id).orElseThrow().state();
     }
 
     private long leased(List<Long> ids) {
@@ -898,7 +1053,7 @@ class TaskProcessorCapacityTest {
     }
 
     private TaskProcessorService processor(BackgroundExecutor executor, int maxConcurrent) {
-        return processor(executor, maxConcurrent, Map.of(queueId, QueuePolicy.maxConcurrent(maxConcurrent)));
+        return processor(executor, maxConcurrent, Map.of(queueId, QueuePolicy.ofMaxConcurrent(maxConcurrent)));
     }
 
     private TaskProcessorService processor(
@@ -920,7 +1075,7 @@ class TaskProcessorCapacityTest {
                 executor,
                 maxConcurrent,
                 List.of(queueId),
-                Map.of(queueId, QueuePolicy.maxConcurrent(maxConcurrent)));
+                Map.of(queueId, QueuePolicy.ofMaxConcurrent(maxConcurrent)));
     }
 
     private TaskProcessorService processorOn(
@@ -961,7 +1116,7 @@ class TaskProcessorCapacityTest {
                 .claimBatchSize(claimBatchSize)
                 .idlePollInterval(idlePollInterval)
                 .lease(LEASE)
-                .workerId(1)
+                .runnerId(1)
                 .create();
     }
 

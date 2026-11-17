@@ -9,8 +9,6 @@ import java.time.Instant;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.exceptions.RedactedFailure;
-import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
 
 class LoggingTaskObserverTest {
 
@@ -23,15 +21,14 @@ class LoggingTaskObserverTest {
         logs.start();
         logger.addAppender(logs);
         try {
-            var record = TaskRecord.builder()
+            var task = TaskView.builder()
                     .id(5)
-                    .queueId(1)
-                    .typeId(1)
                     .state(TaskState.SCHEDULED)
                     .attempts(1)
                     .maxAttempts(3)
+                    .queue("Q:DEF")
+                    .typeName("boom")
                     .build();
-            var task = new TaskView(record, "Q:DEF", "boom");
             var error = new RedactedFailure(IllegalStateException.class.getName());
 
             new LoggingTaskObserver(logger)

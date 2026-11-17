@@ -27,27 +27,28 @@ import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.exceptions.TaskCancelledException;
 import today.bonfire.oss.bth4j.exceptions.TaskLeaseLostException;
 import today.bonfire.oss.bth4j.exceptions.TaskRescheduleException;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskUnrecoverableException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
-import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
-import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
 import today.bonfire.oss.bth4j.testing.MutableClock;
 
 @Timeout(15)
 class TaskExecutionTest {
     private static final Duration LEASE = Duration.ofMinutes(1);
-    private static final TaskType<Void> TYPE = TaskType.of("lease-loss").interruptOnCancel();
+    private static final TaskType<Void> TYPE = TaskType.of("lease-loss").withInterruptOnCancel();
 
     private final MutableClock clock = new MutableClock();
-    private final InMemoryStore store = new InMemoryStore(clock);
-    private final TaskClient client =
-            TaskClient.builder().store(store).clock(clock).build();
+    private final InMemoryStore store = InMemoryStore.builder().clock(clock).build();
+    private final TaskClient client = TaskClient.builder()
+            .queues(Queues.of("Q:DEF"))
+            .store(store)
+            .clock(clock)
+            .build();
     private final TaskProcessorRegistry registry = new TaskProcessorRegistry();
     private final List<TaskEvent> events = new ArrayList<>();
     private final AtomicBoolean interruptedAtFinish = new AtomicBoolean();
@@ -104,7 +105,7 @@ class TaskExecutionTest {
                 TaskType.of("next-task"),
                 (ctx, payload) -> nextInterrupted.set(Thread.currentThread().isInterrupted()));
         var thrown = new AtomicReference<Throwable>();
-        var worker = new Thread(() -> {
+        var runner = new Thread(() -> {
             try {
                 execution.run();
             } catch (Throwable e) {
@@ -114,7 +115,7 @@ class TaskExecutionTest {
             execution.requestCancel("late cancel");
             next.run();
         });
-        worker.start();
+        runner.start();
         try {
             assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
             clock.advance(LEASE.plusSeconds(1));
@@ -124,12 +125,12 @@ class TaskExecutionTest {
             execution.leaseLost();
 
             assertThat(interrupted.await(5, TimeUnit.SECONDS)).isTrue();
-            worker.join(5_000);
-            assertThat(worker.isAlive()).isFalse();
+            runner.join(5_000);
+            assertThat(runner.isAlive()).isFalse();
             assertThat(thrown.get()).isSameAs(exit == BodyExit.FATAL ? fatal : null);
             assertThat(interruptedAtFinish).isFalse();
             assertThat(nextInterrupted.get()).isFalse();
-            var task = store.getTask(execution.taskId()).orElseThrow();
+            var task = store.task(execution.taskId()).orElseThrow();
             assertThat(task.state()).isEqualTo(TaskState.LEASED);
             assertThat(task.revision()).isEqualTo(execution.revision());
             assertThat(task.failures()).isNull();
@@ -148,7 +149,7 @@ class TaskExecutionTest {
                             .contains("was lost"));
         } finally {
             release.countDown();
-            worker.join(5_000);
+            runner.join(5_000);
         }
     }
 
@@ -171,7 +172,7 @@ class TaskExecutionTest {
         execution.run();
 
         assertThat(runs).hasValue(1);
-        var task = store.getTask(execution.taskId()).orElseThrow();
+        var task = store.task(execution.taskId()).orElseThrow();
         var expectedOutcome = takenOver ? TaskEvent.Outcome.LOST : TaskEvent.Outcome.APPLIED;
         if (fails) {
             assertThat(events.getLast()).isInstanceOfSatisfying(TaskEvent.Retrying.class, event -> {
@@ -222,7 +223,7 @@ class TaskExecutionTest {
                 .isInstanceOfSatisfying(
                         TaskEvent.Retrying.class,
                         event -> assertThat(event.outcome()).isEqualTo(TaskEvent.Outcome.APPLIED));
-        var task = store.getTask(execution.taskId()).orElseThrow();
+        var task = store.task(execution.taskId()).orElseThrow();
         assertThat(task.state()).isEqualTo(TaskState.SCHEDULED);
         assertThat(task.failures()).hasSize(1);
     }
@@ -239,7 +240,7 @@ class TaskExecutionTest {
         assertThat(ran).isFalse();
         assertThat(Thread.currentThread().isInterrupted()).isFalse();
         assertThat(interruptedAtFinish).isFalse();
-        assertThat(store.getTask(execution.taskId()).orElseThrow().state()).isEqualTo(TaskState.LEASED);
+        assertThat(store.task(execution.taskId()).orElseThrow().state()).isEqualTo(TaskState.LEASED);
         assertThat(events).hasSize(2);
         assertThat(events.getFirst()).isInstanceOf(TaskEvent.Started.class);
         assertThat(events.getLast())
@@ -262,26 +263,26 @@ class TaskExecutionTest {
             }
         });
         var after = new AtomicReference<Boolean>();
-        var worker = new Thread(() -> {
+        var runner = new Thread(() -> {
             execution.run();
             execution.requestCancel("late cancel");
             execution.leaseLost();
             after.set(Thread.currentThread().isInterrupted());
         });
-        worker.start();
+        runner.start();
         try {
             assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
             execution.requestCancel("stop");
-            worker.join(5_000);
+            runner.join(5_000);
 
-            assertThat(worker.isAlive()).isFalse();
+            assertThat(runner.isAlive()).isFalse();
             assertThat(after.get()).isFalse();
             assertThat(interruptedAtFinish).isFalse();
-            assertThat(store.getTask(execution.taskId()).orElseThrow().state()).isEqualTo(TaskState.CANCELLED);
+            assertThat(store.task(execution.taskId()).orElseThrow().state()).isEqualTo(TaskState.CANCELLED);
             assertThat(events.getLast()).isInstanceOf(TaskEvent.Cancelled.class);
         } finally {
             release.countDown();
-            worker.join(5_000);
+            runner.join(5_000);
         }
     }
 
@@ -305,8 +306,8 @@ class TaskExecutionTest {
                 interrupts.incrementAndGet();
             }
         });
-        var worker = new Thread(execution::run);
-        worker.start();
+        var runner = new Thread(execution::run);
+        runner.start();
         try {
             assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
             execution.requestCancel("stop");
@@ -315,14 +316,14 @@ class TaskExecutionTest {
             execution.requestCancel(null);
             execution.requestCancel(null);
             cleanup.countDown();
-            worker.join(5_000);
+            runner.join(5_000);
 
-            assertThat(worker.isAlive()).isFalse();
+            assertThat(runner.isAlive()).isFalse();
             assertThat(interrupts).hasValue(1);
             assertThat(interruptedAtFinish).isFalse();
         } finally {
             cleanup.countDown();
-            worker.join(5_000);
+            runner.join(5_000);
         }
     }
 
@@ -335,7 +336,7 @@ class TaskExecutionTest {
 
         execution.run();
 
-        var task = store.getTask(execution.taskId()).orElseThrow();
+        var task = store.task(execution.taskId()).orElseThrow();
         assertThat(task.state()).isEqualTo(TaskState.CANCELLED);
         assertThat(task.cancelReason()).isEqualTo("operator stop");
         assertThat(events.getLast()).isInstanceOf(TaskEvent.Cancelled.class);
@@ -358,7 +359,7 @@ class TaskExecutionTest {
             releaseBody.await(10, TimeUnit.SECONDS);
             returning.countDown();
         });
-        var worker =
+        var runner =
                 new Thread(() -> {
                     execution.run();
                     nextStarted.countDown();
@@ -384,7 +385,7 @@ class TaskExecutionTest {
             if (cancel) execution.requestCancel("stop");
             else execution.leaseLost();
         });
-        worker.start();
+        runner.start();
         try {
             assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
             signaller.start();
@@ -392,21 +393,21 @@ class TaskExecutionTest {
             releaseBody.countDown();
             assertThat(returning.await(5, TimeUnit.SECONDS)).isTrue();
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-            while (worker.getState() != Thread.State.WAITING
-                    && worker.getState() != Thread.State.TIMED_WAITING
+            while (runner.getState() != Thread.State.WAITING
+                    && runner.getState() != Thread.State.TIMED_WAITING
                     && System.nanoTime() < deadline) {
                 Thread.sleep(1);
             }
-            assertThat(worker.getState()).isIn(Thread.State.WAITING, Thread.State.TIMED_WAITING);
+            assertThat(runner.getState()).isIn(Thread.State.WAITING, Thread.State.TIMED_WAITING);
             assertThat(nextStarted.getCount()).isEqualTo(1);
 
             deliverInterrupt.countDown();
             assertThat(nextStarted.await(5, TimeUnit.SECONDS)).isTrue();
             releaseNext.countDown();
-            worker.join(5_000);
+            runner.join(5_000);
             signaller.join(5_000);
 
-            assertThat(worker.isAlive()).isFalse();
+            assertThat(runner.isAlive()).isFalse();
             assertThat(signaller.isAlive()).isFalse();
             assertThat(nextInterrupted).isFalse();
             assertThat(interruptedAtFinish).isFalse();
@@ -414,7 +415,7 @@ class TaskExecutionTest {
             releaseBody.countDown();
             deliverInterrupt.countDown();
             releaseNext.countDown();
-            worker.join(5_000);
+            runner.join(5_000);
             signaller.join(5_000);
         }
     }
@@ -461,7 +462,7 @@ class TaskExecutionTest {
         execution.run();
 
         assertThat(lastOutcome()).isEqualTo(TaskEvent.Outcome.LOST);
-        var task = store.getTask(execution.taskId()).orElseThrow();
+        var task = store.task(execution.taskId()).orElseThrow();
         assertThat(task.state()).isEqualTo(TaskState.QUEUED);
         assertThat(task.failures()).isNull();
     }
@@ -475,7 +476,7 @@ class TaskExecutionTest {
         execution.run();
 
         assertThat(lastOutcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN);
-        var task = store.getTask(execution.taskId()).orElseThrow();
+        var task = store.task(execution.taskId()).orElseThrow();
         assertThat(task.state()).isEqualTo(TaskState.LEASED);
         assertThat(task.revision()).isEqualTo(execution.revision());
         assertThat(task.failures()).isNull();
@@ -507,14 +508,14 @@ class TaskExecutionTest {
         execution.run();
 
         assertThat(lastOutcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN);
-        var task = store.getTask(execution.taskId()).orElseThrow();
+        var task = store.task(execution.taskId()).orElseThrow();
         assertThat(task.state()).isEqualTo(transition.committedState);
         assertThat(task.revision()).isEqualTo(execution.revision() + 1);
-        assertThat(storeCalls).filteredOn(c -> !c.equals("getTask")).containsExactly(transition.storeMethod);
+        assertThat(storeCalls).filteredOn(c -> !c.equals("task")).containsExactly(transition.storeMethod);
         if (transition == Transition.RETRY || transition == Transition.DIE)
             assertThat(task.failures()).hasSize(1);
         if (transition == Transition.RESCHEDULE) {
-            assertThat(task.due()).isEqualTo(clock.instant().plusSeconds(30));
+            assertThat(task.dueAt()).isEqualTo(clock.instant().plusSeconds(30));
         }
     }
 
@@ -529,10 +530,10 @@ class TaskExecutionTest {
         execution.run();
 
         assertThat(lastOutcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN);
-        var schedule = store.recurringDefinitions().getFirst();
+        var schedule = store.schedules(null, Integer.MAX_VALUE).getFirst();
         assertThat(schedule.definition().paused()).isFalse();
-        assertThat(schedule.nextFire()).isAfter(clock.instant().plus(Duration.ofDays(365)));
-        assertThat(storeCalls).filteredOn(c -> !c.equals("getTask")).isEmpty();
+        assertThat(schedule.nextFireAt()).isAfter(clock.instant().plus(Duration.ofDays(365)));
+        assertThat(storeCalls).filteredOn(c -> !c.equals("task")).isEmpty();
     }
 
     @ParameterizedTest
@@ -546,15 +547,15 @@ class TaskExecutionTest {
         execution.run();
 
         assertThat(lastOutcome()).isEqualTo(TaskEvent.Outcome.UNKNOWN);
-        var schedule = store.recurringDefinitions().getFirst();
+        var schedule = store.schedules(null, Integer.MAX_VALUE).getFirst();
         if (transition == Transition.ACK) {
             assertThat(schedule.definition().paused()).isFalse();
-            assertThat(schedule.nextFire()).isEqualTo(clock.instant().plus(Duration.ofMinutes(1)));
+            assertThat(schedule.nextFireAt()).isEqualTo(clock.instant().plus(Duration.ofMinutes(1)));
         } else {
             assertThat(schedule.definition().paused()).isTrue();
         }
-        assertThat(storeCalls).filteredOn(c -> !c.equals("getTask")).containsExactly(transition.storeMethod);
-        assertThat(store.getTask(execution.taskId()).orElseThrow().state()).isEqualTo(transition.committedState);
+        assertThat(storeCalls).filteredOn(c -> !c.equals("task")).containsExactly(transition.storeMethod);
+        assertThat(store.task(execution.taskId()).orElseThrow().state()).isEqualTo(transition.committedState);
     }
 
     @ParameterizedTest
@@ -571,7 +572,7 @@ class TaskExecutionTest {
 
         assertThat(order).containsSubsequence("processor", "slot freed", transition.storeMethod);
         assertThat(order).containsOnlyOnce("slot freed");
-        assertThat(store.getTask(execution.taskId()).orElseThrow().state()).isEqualTo(transition.committedState);
+        assertThat(store.task(execution.taskId()).orElseThrow().state()).isEqualTo(transition.committedState);
     }
 
     @Test
@@ -586,7 +587,22 @@ class TaskExecutionTest {
         new TaskExecution(record, settings(), e -> {}).run(() -> order.add("slot freed"));
 
         assertThat(order).containsSubsequence("slot freed", "reschedule");
-        assertThat(store.getTask(record.id()).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
+        assertThat(store.task(record.id()).orElseThrow().state()).isEqualTo(TaskState.SCHEDULED);
+    }
+
+    @Test
+    void aDeferredTaskSaysWhichQueueAndTypeItHas() {
+        client.enqueue(TaskRequest.of(TaskType.of("unregistered")).build());
+        var record = store.claim(
+                        new ClaimRequest(List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)), 1, LEASE, 1, null))
+                .getFirst();
+
+        new TaskExecution(record, settings(), e -> {}).run(() -> {});
+
+        assertThat(events)
+                .last()
+                .isEqualTo(new TaskEvent.Deferred(
+                        record.id(), "Q:DEF", "unregistered", "no processor registered for unregistered"));
     }
 
     private TaskEvent.Outcome lastOutcome() {
@@ -624,7 +640,7 @@ class TaskExecutionTest {
     private FullStore recording(List<String> order) {
         return (FullStore) Proxy.newProxyInstance(
                 FullStore.class.getClassLoader(), new Class<?>[] {FullStore.class}, (proxy, m, args) -> {
-                    if (!m.getName().equals("getTask")) order.add(m.getName().equals("ackAll") ? "ack" : m.getName());
+                    if (!m.getName().equals("task")) order.add(m.getName().equals("ackAll") ? "ack" : m.getName());
                     try {
                         return m.invoke(store, args);
                     } catch (InvocationTargetException e) {

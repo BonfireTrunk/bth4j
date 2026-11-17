@@ -2,6 +2,7 @@ package today.bonfire.oss.bth4j;
 
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.ReentrantLock;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 import today.bonfire.oss.bth4j.spi.TaskStore;
 
 /**
@@ -22,9 +23,9 @@ final class IdAllocator {
     }
 
     /**
-     * The revision a new task starts at: random, so that a worker still holding a lease on an earlier task with the
-     * same id (enqueued again after that task was removed) cannot match the new task's revisions. Below 2^30, so the
-     * revision has room to count up.
+     * The revision a new task starts at: random, so that a runner still holding a lease on an earlier task with the
+     * same id (enqueued again after that task was removed) practically cannot match the new task's revisions: the
+     * chance is one in 2^30 for each such reuse. Below 2^30, so the revision has room to count up.
      */
     static int firstRevision() {
         return ThreadLocalRandom.current().nextInt(1 << 30);
@@ -51,7 +52,7 @@ final class IdAllocator {
         lock.lock();
         try {
             if (count < 1) {
-                throw new IllegalArgumentException("count must be positive");
+                throw new TaskValidationException("count must be positive");
             }
             if (end - next < count) {
                 reserve(Math.max(count, blockSize));

@@ -4,25 +4,23 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import today.bonfire.oss.bth4j.spi.CancelOutcome;
-import today.bonfire.oss.bth4j.spi.QueueInfo;
-import today.bonfire.oss.bth4j.spi.RetryOutcome;
-import today.bonfire.oss.bth4j.spi.StateCounts;
-import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.WorkerInfo;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /**
  * Operator view and operations over one store. {@link TaskClient#admin()} gives one without runner health and
  * issues; {@link BackgroundRunner#admin()} gives one that also reports the runner it belongs to.
  * <p>
- * Every change to a task takes the revision the operator saw; a stale revision changes nothing and is
- * reported as false, {@link CancelOutcome#STALE} or {@link RetryOutcome#STALE}.
+ * Every change to a task takes the revision the operator saw. A refusal changes nothing and says why: no such
+ * task, a revision that differs from what the operator saw, or a state that does not allow the change. The
+ * store decides in that order in the same atomic step as the change.
  */
 public interface AdminOps {
     Map<String, StateCounts> counts();
 
     List<QueueInfo> queues();
 
+    /** @throws TaskValidationException when the queue is null, blank or unknown */
     void pauseQueue(String queue, boolean paused);
 
     Optional<TaskView> task(long id);
@@ -36,9 +34,23 @@ public interface AdminOps {
     Optional<TaskView> taskByKey(String key);
 
     /**
-     * @param queue null for all queues
+     * Lists the tasks of every queue in one state.
+     *
      * @param cursor {@link TaskViewPage#next()} of the previous page; null starts at the beginning
-     * @throws IllegalArgumentException if the cursor is malformed
+     * @param limit the most tasks one page holds, at least 1. There is no upper bound, and a page is read into
+     *     memory as a whole; the HTTP API caps it at 200.
+     * @throws TaskValidationException if the state is null, the cursor is malformed or the limit is below 1
+     */
+    TaskViewPage tasks(TaskState state, String cursor, int limit);
+
+    /**
+     * Lists the tasks of one queue in one state.
+     *
+     * @param queue a known queue name; never null or blank
+     * @param cursor {@link TaskViewPage#next()} of the previous page; null starts at the beginning
+     * @param limit as for {@link #tasks(TaskState, String, int)}
+     * @throws TaskValidationException when the state is null, the queue is null, blank or unknown, the cursor is
+     *     malformed or the limit is below 1
      */
     TaskViewPage tasks(TaskState state, String queue, String cursor, int limit);
 
@@ -48,12 +60,20 @@ public interface AdminOps {
      * open, and its keep window applies again when it finishes. A released key is not taken again: the retry
      * runs without a key, and an enqueue with that key is accepted as a second task when no other task holds it.
      *
-     * @return {@link RetryOutcome#RETRIED} on success, {@link RetryOutcome#STALE} for a missing task or a
-     *         revision or state mismatch, or {@link RetryOutcome#DUPLICATE} when another task holds the key;
-     *         either refusal changes nothing
+     * @return {@link RetryOutcome#RETRIED} on success, else {@link RetryOutcome#NOT_FOUND},
+     *         {@link RetryOutcome#STALE} (another revision) or {@link RetryOutcome#NOT_RETRYABLE} (another state)
+     * @throws TaskStoreException when another task holds the task's unique key,
+     *         which only damaged data can cause; nothing changes then
      */
     RetryOutcome retry(long id, int revision);
 
+    /**
+     * Cancels a QUEUED or SCHEDULED task at once and asks the runner of a LEASED one to stop.
+     *
+     * @return {@link CancelOutcome#CANCELLED} or {@link CancelOutcome#REQUESTED} on success, else
+     *         {@link CancelOutcome#NOT_FOUND}, {@link CancelOutcome#STALE} (another revision) or
+     *         {@link CancelOutcome#FINISHED} (the task is in a final state)
+     */
     CancelOutcome cancel(long id, int revision, String reason);
 
     /**
@@ -63,43 +83,98 @@ public interface AdminOps {
      * this operation targets the current holder, which may be a different task.
      *
      * @return {@link CancelOutcome#NOT_FOUND} when no task holds the key, {@link CancelOutcome#FINISHED} when the
-     *         holder has already finished (it only keeps the key for its window), {@link CancelOutcome#STALE} when it
-     *         changed between the read and the cancel, otherwise the outcome of {@code cancel}
+     *         holder has already finished (it only keeps the key for its window), otherwise the outcome of
+     *         {@code cancel} for the holder. That is {@link CancelOutcome#STALE} when the holder changed between
+     *         the read and the cancel, and can be {@link CancelOutcome#NOT_FOUND} or {@link CancelOutcome#FINISHED}
+     *         when the holder was removed or finished in between.
      */
     CancelOutcome cancelByKey(String key, String reason);
 
-    boolean delete(long id, int revision);
+    /**
+     * Removes a task in any state but LEASED.
+     *
+     * @return {@link DeleteOutcome#DELETED} on success, else {@link DeleteOutcome#NOT_FOUND},
+     *         {@link DeleteOutcome#STALE} (another revision) or {@link DeleteOutcome#LEASED}
+     */
+    DeleteOutcome delete(long id, int revision);
 
-    List<WorkerInfo> workers();
+    /** @return the registered runners in the order of their ids, with the queues and types each processes */
+    List<RunnerView> runners();
 
-    /** Uses a one-minute heartbeat window to find unserved waiting work. */
+    /**
+     * Uses a one-minute heartbeat window to find unserved waiting work. A runner writes its heartbeat every
+     * {@code maintenanceCheckInterval} (5 seconds unless set); where runners use an interval above about 20
+     * seconds, pass a window of at least three intervals to {@link #unservedWork(Duration)}, or live runners
+     * count as absent between two heartbeats.
+     */
     default List<UnservedWork> unservedWork() {
         return unservedWork(Duration.ofMinutes(1));
     }
 
     /**
-     * Finds queued work on unpaused queues without a live accepting worker. Queue and type counts are exact.
+     * Finds queued work on unpaused queues without a live accepting runner. Queue and type counts are exact.
      *
-     * @param liveWithin non-negative maximum heartbeat age, measured against the admin clock
+     * @param liveWithin maximum heartbeat age, measured against the admin clock; not negative and at most
+     *     {@link TaskRequest#MAX_TIME_FROM_NOW}
+     * @throws TaskValidationException for another {@code liveWithin}
      */
     List<UnservedWork> unservedWork(Duration liveWithin);
 
     /**
-     * Deletes worker rows whose last heartbeat is older than {@code staleAfter}.
+     * Deletes runner rows whose last heartbeat is older than {@code staleAfter}.
      *
      * @param staleAfter positive and at most {@link TaskRequest#MAX_TIME_FROM_NOW}
      * @return how many were deleted
      */
-    int purgeStaleWorkers(Duration staleAfter);
+    int purgeStaleRunners(Duration staleAfter);
 
-    List<ScheduleView> schedules();
+    /**
+     * Lists the schedule definitions ordered by id (by the code points of the ids).
+     *
+     * @param cursor {@link ScheduleViewPage#next()} of the previous page, an opaque string; null starts at the
+     *     beginning
+     * @param limit the most definitions one page holds, at least 1. There is no upper bound, and a page is read
+     *     into memory as a whole; the HTTP API caps it at 200.
+     * @throws TaskValidationException if the limit is below 1
+     */
+    ScheduleViewPage schedules(String cursor, int limit);
 
-    boolean pauseSchedule(String id, boolean paused);
+    /**
+     * Lists the definitions that will fire next: those that are not paused, soonest next fire time first and by
+     * id among equal times. A paused definition does not fire and is left out.
+     *
+     * @param limit the most definitions returned, at least 1
+     * @throws TaskValidationException if the limit is below 1
+     */
+    List<ScheduleView> upcomingSchedules(int limit);
 
-    /** fires the definition at the next check, whatever its next fire time was */
-    boolean triggerSchedule(String id);
+    /**
+     * Pauses or resumes a definition. Every schedule write takes the {@link ScheduleView#revision()} the operator
+     * saw, and is refused as {@link ScheduleOutcome#STALE} when a write that is not the runner's replaced or
+     * re-timed the definition meanwhile. A pause and a runner fire keep the revision.
+     *
+     * @return {@link ScheduleOutcome#APPLIED} on success, else {@link ScheduleOutcome#NOT_FOUND} or
+     *         {@link ScheduleOutcome#STALE}
+     */
+    ScheduleOutcome pauseSchedule(String id, long revision, boolean paused);
 
-    boolean deleteSchedule(String id);
+    /**
+     * Fires the definition at the next recurring check, whatever its next fire time was and however late that
+     * check comes: the misfire policy does not apply to a triggered fire. A paused definition fires nothing
+     * until it is resumed.
+     *
+     * @return {@link ScheduleOutcome#APPLIED} on success, else {@link ScheduleOutcome#NOT_FOUND} or
+     *         {@link ScheduleOutcome#STALE}
+     */
+    ScheduleOutcome triggerSchedule(String id, long revision);
+
+    /**
+     * Removes a definition.
+     *
+     * @return {@link ScheduleOutcome#APPLIED} on success, else {@link ScheduleOutcome#NOT_FOUND} or
+     *         {@link ScheduleOutcome#STALE}
+     */
+    ScheduleOutcome deleteSchedule(String id, long revision);
 
     /** @return the health of the runner this instance belongs to, or empty for a client-only instance */
     Optional<RunnerHealth> health();

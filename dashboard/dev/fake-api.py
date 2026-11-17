@@ -37,24 +37,25 @@ def make_tasks():
     for i in range(130):
         state = STATES[(i * 3 + i // 7) % len(STATES)]
         tid = str(BASE_ID + i)
+        changed = -3600 + i * 20
         t = {
             "id": tid, "revision": str(1 + i % 5), "queue": qnames[i % 3], "type": ["send-mail", "build-report", "sync-account"][i % 3],
             "payloadVersion": 1, "state": state, "attempts": 1 if state != "QUEUED" else 0, "maxAttempts": 5,
-            "createdAt": iso(-86400 + i * 600), "due": iso(-86000 + i * 600), "stateChangedAt": iso(-3600 + i * 20),
-            "workerId": 7 if state == "LEASED" else None, "leaseUntil": iso(30) if state == "LEASED" else None,
-            "claimedAt": iso(-40) if state in ("LEASED", "SUCCEEDED", "DEAD") else None,
+            "createdAt": iso(-86400 + i * 600), "dueAt": iso(-86000 + i * 600), "stateChangedAt": iso(changed),
+            "runnerId": 7 if state == "LEASED" else None, "leaseUntil": iso(30) if state == "LEASED" else None,
+            "claimedAt": iso(changed) if state == "LEASED" else iso(changed - 420) if state in ("SUCCEEDED", "DEAD") else None,
             "account": "acme" if i % 2 else None, "headers": {"trace": "t-%d" % i} if i % 4 == 0 else {},
             "uniqueKey": "uk-%d" % i if i % 5 == 0 else None, "scheduleId": "nightly-report" if i % 11 == 0 else None,
             "retryOf": None, "startBy": None, "maxRunTime": "PT15M" if i % 3 == 0 else None,
-            "cancelRequestedAt": iso(-100) if state == "CANCELLED" else None,
+            "cancelRequestedAt": iso(changed) if state == "CANCELLED" else None,
             "cancelReason": "no longer needed" if state == "CANCELLED" else None,
             "progress": "step 2 of 3" if state == "LEASED" else None,
-            "steps": {"fetch": {"at": iso(-3000), "result": "ok"}, "render": {"at": iso(-2900), "result": None}} if state in ("SUCCEEDED", "DEAD") else {},
+            "steps": {"fetch": {"at": iso(changed - 400), "result": "ok"}, "render": {"at": iso(changed - 300), "result": None}} if state in ("SUCCEEDED", "DEAD") else {},
             "failures": [], "lastFailure": None,
         }
         if state == "DEAD":
             t["attempts"] = 5
-            t["failures"] = [{"attempt": n, "at": iso(-3000 + n * 60), "type": "java.io.IOException", "message": "connection reset %d" % n,
+            t["failures"] = [{"attempt": n, "at": iso(changed - (5 - n) * 60), "type": "java.io.IOException", "message": "connection reset %d" % n,
                               "stack": "java.io.IOException: connection reset %d\n\tat app.Mailer.send(Mailer.java:42)\n\tat app.Worker.run(Worker.java:17)" % n} for n in range(1, 6)]
             t["lastFailure"] = t["failures"][-1]
         tasks[tid] = t
@@ -68,21 +69,26 @@ def counts():
 
 
 schedules = {
-    "nightly-report": {"id": "nightly-report", "type": "build-report", "queue": "reports", "account": None, "cron": "0 0 2 * * *", "zone": "Europe/Berlin",
-                       "misfire": "CATCH_UP", "catchUpMaxFires": 3, "fixedDelay": None, "overlap": "SKIP", "paused": False, "nextFire": iso(7200), "maxAttempts": 3},
+    "nightly-report": {"id": "nightly-report", "type": "build-report", "queue": "reports", "account": None, "cron": "0 2 * * *", "zone": "Europe/Berlin",
+                       "misfire": "CATCH_UP", "catchUpMaxFires": 3, "fixedDelay": None, "overlap": "SKIP", "paused": False, "nextFireAt": iso(7200), "maxAttempts": 3, "revision": "41"},
     "mail-pump": {"id": "mail-pump", "type": "send-mail", "queue": "mail", "account": None, "cron": None, "zone": None,
-                  "misfire": "SKIP", "fixedDelay": "PT30S", "overlap": "ALLOW", "paused": True, "nextFire": iso(25), "maxAttempts": 5},
+                  "misfire": "SKIP", "fixedDelay": "PT30S", "overlap": "ALLOW", "paused": True, "nextFireAt": iso(25), "maxAttempts": 5, "revision": "42"},
 }
-workers = [
-    {"id": 7, "label": "host-a/1234", "startedAt": iso(-7200), "lastSeen": iso(-2), "running": 3, "accepting": True, "queues": ["default", "mail"], "types": ["send-mail"]},
-    {"id": 8, "label": "host-b/9876", "startedAt": iso(-9000), "lastSeen": iso(-300), "running": 0, "accepting": False, "queues": ["reports"], "types": ["build-report"]},
+for n in range(120):
+    sid = "sync-%03d" % n
+    schedules[sid] = {"id": sid, "type": "send-mail", "queue": "mail", "account": None, "cron": "*/5 * * * *", "zone": "UTC",
+                      "misfire": "SKIP", "fixedDelay": None, "overlap": "ALLOW", "paused": False, "nextFireAt": iso(600 + 60 * n),
+                      "maxAttempts": 3, "revision": str(100 + n)}
+runners = [
+    {"id": 7, "label": "host-a/1234", "startedAt": iso(-7200), "lastSeenAt": iso(-2), "running": 3, "accepting": True, "queues": ["default", "mail"], "types": ["send-mail"]},
+    {"id": 8, "label": "host-b/9876", "startedAt": iso(-9000), "lastSeenAt": iso(-300), "running": 0, "accepting": False, "queues": ["reports"], "types": ["build-report"]},
 ]
 issues = [
     {"at": iso(-600), "kind": "unknown-type", "detail": "No handler for type 'legacy-export'", "taskId": str(BASE_ID + 3)},
     {"at": iso(-60), "kind": "store-error", "detail": "Connection refused (retrying)", "taskId": None},
     {"at": iso(-5000), "kind": "lease-lost", "detail": "Lease expired while running", "taskId": str(BASE_ID + 9)},
 ]
-health = {"status": "RUNNING", "workerId": 7, "runningTasks": 3, "abandonedAttempts": 0, "lastClaimAt": iso(-2), "lastMaintenanceAt": iso(-15),
+health = {"status": "RUNNING", "runnerId": 7, "runningTasks": 3, "abandonedAttempts": 0, "lastClaimAt": iso(-2), "lastMaintenanceAt": iso(-15),
           "lastStoreErrorAt": iso(-60), "lastStoreError": "Connection refused", "issueCount": len(issues)}
 
 
@@ -193,19 +199,22 @@ class Handler(BaseHTTPRequestHandler):
     def dispatch(self, method, segs, q):
         head = segs[0]
         if head == "me":
-            return self.send_json(200, {"user": self.session()["user"], "role": self.session()["role"]})
+            s = self.session()
+            return self.send_json(200, {"user": s["user"], "role": s["role"], "csrf": s["csrf"]})
         if head == "health":
             return self.send_json(200, health)
         if head == "overview":
-            return self.send_json(200, {"counts": counts(), "workers": len(workers), "issues": len(issues), "health": health})
+            c = counts()
+            totals = {s: sum(q[s] for q in c.values()) for s in STATES}
+            return self.send_json(200, {"counts": c, "totals": totals, "runners": len(runners), "issues": len(issues), "health": health})
         if head == "queues":
             if len(segs) == 1:
                 c = counts()
                 return self.send_json(200, [dict(v, counts=c[k]) for k, v in queues.items()])
             queues[segs[1]]["paused"] = segs[2] == "pause"
             return self.send_json(204, None)
-        if head == "workers":
-            return self.send_json(200, workers)
+        if head == "runners":
+            return self.send_json(200, runners)
         if head == "unserved":
             return self.send_json(200, [{"queue": "reports", "type": None, "waiting": 7},
                                         {"queue": "mail", "type": "build-report", "waiting": 2}])
@@ -213,14 +222,32 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, issues)
         if head == "schedules":
             if len(segs) == 1:
-                return self.send_json(200, list(schedules.values()))
-            sc = schedules[segs[1]]
+                ordered = sorted(schedules.values(), key=lambda s: s["id"].encode())
+                cursor = q.get("cursor")
+                if cursor:
+                    ordered = [s for s in ordered if s["id"].encode() > cursor.encode()]
+                limit = max(1, min(int(q.get("limit", 100)), 200))
+                page = ordered[:limit]
+                return self.send_json(200, {"items": page, "next": page[-1]["id"] if len(ordered) > limit else None})
+            if len(segs) == 2 and segs[1] == "upcoming" and method == "GET":
+                limit = max(1, min(int(q.get("limit", 8)), 200))
+                armed = [s for s in schedules.values() if not s["paused"]]
+                armed.sort(key=lambda s: (s["nextFireAt"], s["id"].encode()))
+                return self.send_json(200, armed[:limit])
+            sc = schedules.get(segs[1])
+            if sc is None:
+                return self.send_json(404, {"error": "there is no such schedule", "code": "NOT_FOUND"})
+            rev = (self.body().get("revision") if method == "POST" else q.get("revision"))
+            if str(rev) != sc["revision"]:
+                return self.send_json(409, {"error": "the schedule changed since it was loaded", "code": "STALE"})
             if method == "DELETE":
                 del schedules[segs[1]]
             elif segs[2] == "pause":
                 sc["paused"] = True
             elif segs[2] == "resume":
                 sc["paused"] = False
+            elif segs[2] == "trigger":
+                sc.update(nextFireAt=iso(0), revision=str(int(sc["revision"]) + 1))
             return self.send_json(204, None)
         if head == "tasks":
             return self.tasks_api(method, segs, q)
@@ -237,36 +264,50 @@ class Handler(BaseHTTPRequestHandler):
                     and (not q.get("state") or t["state"] == q["state"]) and (not q.get("queue") or t["queue"] == q["queue"])]
             page = rows[:limit]
             return self.send_json(200, {"items": page, "next": page[-1]["id"] if len(page) == limit else None})
-        if segs[1] == "by-key" and len(segs) in (3, 4):
-            holder = next((x for x in tasks.values() if x["uniqueKey"] == segs[2]), None)
+        if segs[1] == "by-key":
+            holder = next((x for x in tasks.values() if x["uniqueKey"] == q.get("key")), None)
             if holder is None:
-                return self.send_json(404, {"error": "no task holds this key"})
-            if len(segs) == 3 and method == "GET":
+                return self.send_json(404, {"error": "no task holds this key", "code": "NOT_FOUND"})
+            if len(segs) == 2 and method == "GET":
                 return self.send_json(200, holder)
-            if len(segs) == 4 and segs[3] == "cancel" and method == "POST":
+            if len(segs) == 3 and segs[2] == "cancel" and method == "POST":
                 if holder["state"] in ("SUCCEEDED", "DEAD", "CANCELLED", "EXPIRED"):
-                    return self.send_json(409, {"error": "the task holding this key is already finished"})
+                    return self.send_json(409, {"error": "the task holding this key is already finished", "code": "WRONG_STATE"})
                 holder.update(state="CANCELLED", cancelReason=self.body().get("reason"), cancelRequestedAt=iso(0),
                               revision=str(int(holder["revision"]) + 1), stateChangedAt=iso(0))
                 return self.send_json(200, {"ok": True, "outcome": "CANCELLED"})
             return self.send_json(404, {"error": "not found"})
-        t = tasks[segs[1]]
+        t = tasks.get(segs[1])
+        if t is None:
+            if len(segs) == 2 and method == "GET" or len(segs) == 3 and segs[2] == "payload":
+                return self.send_json(404, {"error": "unknown task"})
+            return self.send_json(404, {"error": "there is no such task", "code": "NOT_FOUND"})
         if len(segs) == 2 and method == "GET":
             return self.send_json(200, t)
         if len(segs) == 3 and segs[2] == "payload":
             return self.send_json(200, {"payload": json.dumps({"to": "ops@example.com", "template": "welcome", "n": int(t["id"]) % 100})})
         rev = (self.body().get("revision") if method == "POST" else q.get("revision"))
         if str(rev) != t["revision"]:
-            return self.send_json(409, {"error": "stale revision"})
+            return self.send_json(409, {"error": "the task changed since it was loaded", "code": "STALE"})
         if method == "DELETE":
+            if t["state"] == "LEASED":
+                return self.send_json(409, {"error": "a task that is running cannot be deleted", "code": "WRONG_STATE"})
             del tasks[t["id"]]
-            return self.send_json(204, None)
+            return self.send_json(200, {"ok": True})
         if segs[2] == "retry":
+            if t["state"] not in ("DEAD", "CANCELLED", "EXPIRED"):
+                return self.send_json(409, {"error": "only a dead, cancelled or expired task can be retried",
+                                            "code": "WRONG_STATE"})
             t.update(state="QUEUED", attempts=0, revision=str(int(t["revision"]) + 1), stateChangedAt=iso(0))
-        elif segs[2] == "cancel":
-            t.update(state="CANCELLED", cancelReason=self.body().get("reason"), cancelRequestedAt=iso(0),
-                     revision=str(int(t["revision"]) + 1), stateChangedAt=iso(0))
-        return self.send_json(200, t)
+            return self.send_json(200, {"ok": True})
+        if t["state"] in ("SUCCEEDED", "DEAD", "CANCELLED", "EXPIRED"):
+            return self.send_json(409, {"error": "the task has finished and cannot be cancelled", "code": "WRONG_STATE"})
+        if t["state"] == "LEASED":
+            t.update(cancelReason=self.body().get("reason"), cancelRequestedAt=iso(0))
+            return self.send_json(200, {"ok": True, "outcome": "REQUESTED"})
+        t.update(state="CANCELLED", cancelReason=self.body().get("reason"), cancelRequestedAt=iso(0),
+                 revision=str(int(t["revision"]) + 1), stateChangedAt=iso(0))
+        return self.send_json(200, {"ok": True, "outcome": "CANCELLED"})
 
 
 if __name__ == "__main__":

@@ -7,7 +7,6 @@ import java.lang.reflect.Proxy;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -20,19 +19,15 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
-import today.bonfire.oss.bth4j.spi.CancelOutcome;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.FullStore;
-import today.bonfire.oss.bth4j.spi.QueueInfo;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
-import today.bonfire.oss.bth4j.spi.RecurringSchedule;
-import today.bonfire.oss.bth4j.spi.RetryOutcome;
-import today.bonfire.oss.bth4j.spi.StateCounts;
+import today.bonfire.oss.bth4j.spi.RunnerRecord;
+import today.bonfire.oss.bth4j.spi.ScheduleEntry;
+import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
-import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 class DefaultAdminOpsTest {
 
@@ -80,11 +75,9 @@ class DefaultAdminOpsTest {
                     }
                     return handler.apply(arguments);
                 });
-        var queues = new QueuesHolder(java.util.Set.of("Q:DEF", "Q:OTHER"), List.of("Q:DEF"), "Q:DEF");
         return new DefaultAdminOps(
                 store,
                 new Names(store),
-                queues,
                 Clock.fixed(NOW, ZoneOffset.UTC),
                 () -> health == null ? null : health.get(),
                 () -> issues == null ? List.of() : issues.get());
@@ -99,20 +92,20 @@ class DefaultAdminOpsTest {
                 .build();
     }
 
-    private static RecurringDefinition definition(String id, String cron, Long fixedDelayMs, boolean paused) {
-        return definition(id, cron, fixedDelayMs, paused, "Europe/Berlin", RecurringDefinition.MISFIRE_SKIP, 0, true);
+    private static StoredSchedule definition(String id, String cron, Duration fixedDelay, boolean paused) {
+        return definition(id, cron, fixedDelay, paused, "Europe/Berlin", StoredSchedule.MISFIRE_SKIP, 0, true);
     }
 
-    private static RecurringDefinition definition(
+    private static StoredSchedule definition(
             String id,
             String cron,
-            Long fixedDelayMs,
+            Duration fixedDelay,
             boolean paused,
             String zone,
             String misfire,
             int catchUpMaxFires,
             boolean overlapSkip) {
-        return new RecurringDefinition(
+        return new StoredSchedule(
                 id,
                 TYPE_ID,
                 1,
@@ -122,7 +115,7 @@ class DefaultAdminOpsTest {
                 zone,
                 misfire,
                 catchUpMaxFires,
-                fixedDelayMs,
+                fixedDelay,
                 overlapSkip,
                 null,
                 5,
@@ -147,14 +140,46 @@ class DefaultAdminOpsTest {
     }
 
     @Test
-    void queuesAndWorkersAreReturnedAsTheStoreHasThem() {
+    void queuesAreReturnedAsTheStoreHasThem() {
         var queueInfos = List.of(new QueueInfo(1, "Q:DEF", false), new QueueInfo(2, "Q:OTHER", true));
-        var workerInfos = List.of(new WorkerInfo(4, "w", NOW, NOW, 2, true, Set.of(), Set.of()));
         handlers.put("queues", a -> queueInfos);
-        handlers.put("workers", a -> workerInfos);
 
         assertThat(ops.queues()).isEqualTo(queueInfos);
-        assertThat(ops.workers()).isEqualTo(workerInfos);
+    }
+
+    @Test
+    void runnersAreListedWithTheNamesOfTheirQueuesAndTypes() {
+        var started = NOW.minusSeconds(600);
+        handlers.put(
+                "runners",
+                a -> List.of(
+                        new RunnerRecord(
+                                4,
+                                "w",
+                                started,
+                                NOW,
+                                2,
+                                true,
+                                Set.of(OTHER_QUEUE_ID, DEFAULT_QUEUE_ID, 99),
+                                Set.of(TYPE_ID, 98)),
+                        new RunnerRecord(5, "idle", started, started, 0, false, Set.of(), Set.of())));
+
+        var runners = ops.runners();
+
+        assertThat(runners)
+                .containsExactly(
+                        new RunnerView(
+                                4,
+                                "w",
+                                started,
+                                NOW,
+                                2,
+                                true,
+                                Set.of("#99", "Q:DEF", "Q:OTHER"),
+                                Set.of("#98", "send-mail")),
+                        new RunnerView(5, "idle", started, started, 0, false, Set.of(), Set.of()));
+        assertThat(runners.getFirst().queues()).containsExactly("#99", "Q:DEF", "Q:OTHER");
+        assertThat(runners.getFirst().types()).containsExactly("#98", "send-mail");
     }
 
     @Test
@@ -174,12 +199,16 @@ class DefaultAdminOpsTest {
     }
 
     @Test
-    void pauseQueueWithABlankNameTargetsTheDefaultQueue() {
+    void pauseQueueNeedsAQueueName() {
         handlers.put("pauseQueue", a -> null);
 
-        ops.pauseQueue(null, true);
-
-        assertThat(calls).contains("pauseQueue[1, true]");
+        for (var queue : new String[] {null, "", "  "}) {
+            assertThatThrownBy(() -> ops.pauseQueue(queue, true))
+                    .as("queue [%s]", queue)
+                    .isInstanceOf(TaskValidationException.class)
+                    .hasMessage("queue is required");
+        }
+        assertThat(calls).noneMatch(c -> c.startsWith("pauseQueue"));
     }
 
     @Test
@@ -216,18 +245,18 @@ class DefaultAdminOpsTest {
 
     @Test
     void taskIsReturnedWithQueueAndTypeNames() {
-        handlers.put("getTask", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
+        handlers.put("task", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
 
         var view = ops.task(42).orElseThrow();
 
         assertThat(view.id()).isEqualTo(42);
         assertThat(view.queue()).isEqualTo("Q:OTHER");
-        assertThat(view.type()).isEqualTo("send-mail");
+        assertThat(view.typeName()).isEqualTo("send-mail");
     }
 
     @Test
     void unknownTaskIsEmpty() {
-        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("task", a -> Optional.empty());
 
         assertThat(ops.task(42)).isEmpty();
     }
@@ -236,7 +265,7 @@ class DefaultAdminOpsTest {
     void tasksWithoutQueueFilterAskTheStoreForAllQueues() {
         handlers.put("tasks", a -> new TaskPage(List.of(record(1, DEFAULT_QUEUE_ID), record(2, OTHER_QUEUE_ID)), null));
 
-        var views = ops.tasks(TaskState.DEAD, null, null, 50).items();
+        var views = ops.tasks(TaskState.DEAD, null, 50).items();
 
         assertThat(calls).contains("tasks[DEAD, null, null, 50]");
         assertThat(views).extracting("queue").containsExactly("Q:DEF", "Q:OTHER");
@@ -263,34 +292,53 @@ class DefaultAdminOpsTest {
     }
 
     @Test
+    void tasksOfAQueueNeedAQueueName() {
+        for (var queue : new String[] {null, "", "  "}) {
+            assertThatThrownBy(() -> ops.tasks(TaskState.QUEUED, queue, null, 5))
+                    .as("queue [%s]", queue)
+                    .isInstanceOf(TaskValidationException.class)
+                    .hasMessage("queue is required");
+        }
+        assertThat(calls).noneMatch(c -> c.startsWith("tasks"));
+    }
+
+    @Test
     void cursorTasksRejectAQueueThatIsNotAvailable() {
         assertThatThrownBy(() -> ops.tasks(TaskState.QUEUED, "Q:MISSING", (String) null, 5))
                 .isInstanceOf(TaskValidationException.class);
     }
 
     @Test
-    void retryPassesADuplicateKeyRefusalThrough() {
-        handlers.put("retry", a -> RetryOutcome.DUPLICATE);
+    void retryPassesEachStoreOutcomeThroughAndAStoreErrorUnchanged() {
+        for (var outcome : RetryOutcome.values()) {
+            handlers.put("retry", a -> outcome);
 
-        assertThat(ops.retry(9, 3)).isEqualTo(RetryOutcome.DUPLICATE);
+            assertThat(ops.retry(9, 3)).isEqualTo(outcome);
+        }
+        var failure = new TaskStoreException("the key is held by another task");
+        handlers.put("retry", a -> {
+            throw failure;
+        });
+
+        assertThatThrownBy(() -> ops.retry(9, 3)).isSameAs(failure);
     }
 
     @Test
     void retryAndDeleteDelegateWithTheRevisionAndReturnTheStoreAnswer() {
         handlers.put("retry", a -> a[1].equals(3) ? RetryOutcome.RETRIED : RetryOutcome.STALE);
-        handlers.put("delete", a -> a[1].equals(4));
-        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("delete", a -> a[1].equals(4) ? DeleteOutcome.DELETED : DeleteOutcome.STALE);
+        handlers.put("task", a -> Optional.empty());
 
         assertThat(ops.retry(9, 3)).isEqualTo(RetryOutcome.RETRIED);
         assertThat(ops.retry(9, 2)).isEqualTo(RetryOutcome.STALE);
-        assertThat(ops.delete(9, 4)).isTrue();
-        assertThat(ops.delete(9, 5)).isFalse();
+        assertThat(ops.delete(9, 4)).isEqualTo(DeleteOutcome.DELETED);
+        assertThat(ops.delete(9, 5)).isEqualTo(DeleteOutcome.STALE);
         assertThat(calls).contains("retry[9, 3]", "delete[9, 4, null]");
     }
 
     @Test
     void cancelReturnsEachStoreOutcomeUnchanged() {
-        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("task", a -> Optional.empty());
         for (var outcome : CancelOutcome.values()) {
             handlers.put("cancel", a -> outcome);
 
@@ -307,6 +355,40 @@ class DefaultAdminOpsTest {
         assertThat(view.id()).isEqualTo(42);
         assertThat(view.queue()).isEqualTo("Q:OTHER");
         assertThat(calls).contains("taskByKey[invoice-9]");
+    }
+
+    @Test
+    void aMissingKeyIsRejectedBeforeTheStore() {
+        assertThatThrownBy(() -> ops.cancelByKey(null, "why")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.taskByKey(null)).isInstanceOf(TaskValidationException.class);
+        assertThat(calls).isEmpty();
+    }
+
+    @Test
+    void aMissingScheduleIdIsRejectedBeforeTheStore() {
+        assertThatThrownBy(() -> ops.pauseSchedule(null, 1, true)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.pauseSchedule(null, 1, false)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.triggerSchedule(null, 1)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.deleteSchedule(null, 1)).isInstanceOf(TaskValidationException.class);
+        assertThat(calls).isEmpty();
+    }
+
+    @Test
+    void anUnservedWorkWindowThatIsMissingNegativeOrTooLongIsRejectedBeforeTheStore() {
+        assertThatThrownBy(() -> ops.unservedWork(null)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.unservedWork(Duration.ofMillis(-1))).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.unservedWork(TaskRequest.MAX_TIME_FROM_NOW.plusMillis(1)))
+                .isInstanceOf(TaskValidationException.class);
+        assertThat(calls).isEmpty();
+    }
+
+    @Test
+    void aScheduleIdWithAU0000IsRejectedBeforeTheStore() {
+        assertThatThrownBy(() -> ops.pauseSchedule("s\u0000", 1, true)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.pauseSchedule("s\u0000", 1, false)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.triggerSchedule("s\u0000", 1)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ops.deleteSchedule("s\u0000", 1)).isInstanceOf(TaskValidationException.class);
+        assertThat(calls).isEmpty();
     }
 
     @Test
@@ -330,7 +412,7 @@ class DefaultAdminOpsTest {
                 "taskByKey",
                 a -> Optional.of(
                         record(42, OTHER_QUEUE_ID).toBuilder().revision(5).build()));
-        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("task", a -> Optional.empty());
         handlers.put("cancel", a -> CancelOutcome.REQUESTED);
 
         assertThat(ops.cancelByKey("invoice-9", "duplicate")).isEqualTo(CancelOutcome.REQUESTED);
@@ -340,7 +422,7 @@ class DefaultAdminOpsTest {
     @Test
     void cancelByKeyReportsAChangeBetweenTheReadAndTheCancelAsStale() {
         handlers.put("taskByKey", a -> Optional.of(record(42, OTHER_QUEUE_ID)));
-        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("task", a -> Optional.empty());
         handlers.put("cancel", a -> CancelOutcome.STALE);
 
         assertThat(ops.cancelByKey("invoice-9", "duplicate")).isEqualTo(CancelOutcome.STALE);
@@ -380,7 +462,7 @@ class DefaultAdminOpsTest {
                 .headers(Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT5S"))
                 .build();
         handlers.put("taskByKey", a -> Optional.of(occurrence));
-        handlers.put("getTask", a -> Optional.of(occurrence));
+        handlers.put("task", a -> Optional.of(occurrence));
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
 
         ops.cancelByKey("sched:poll", "stop");
@@ -391,7 +473,7 @@ class DefaultAdminOpsTest {
     @Test
     void cancelPassesTheReasonToTheStore() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
-        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("task", a -> Optional.empty());
 
         ops.cancel(1, 2, "duplicate");
 
@@ -401,7 +483,7 @@ class DefaultAdminOpsTest {
     @Test
     void cancelWithoutAReasonUsesTheOperatorDefault() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
-        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("task", a -> Optional.empty());
 
         ops.cancel(1, 2, null);
         ops.cancel(1, 2, "   ");
@@ -415,7 +497,7 @@ class DefaultAdminOpsTest {
     void cancelOfAWaitingFixedDelayOccurrencePassesThePauseToTheStore() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
         handlers.put(
-                "getTask",
+                "task",
                 a -> Optional.of(TaskRecord.builder()
                         .id((Long) a[0])
                         .queueId(OTHER_QUEUE_ID)
@@ -427,15 +509,14 @@ class DefaultAdminOpsTest {
 
         ops.cancel(7, 1, "stop");
 
-        assertThat(calls)
-                .containsExactly("getTask[7]", "cancel[7, 1, stop, ScheduleEffect[poll, occurrence 7, pause]]");
+        assertThat(calls).containsExactly("task[7]", "cancel[7, 1, stop, ScheduleEffect[poll, occurrence 7, pause]]");
     }
 
     @Test
     void deleteOfAFixedDelayOccurrencePassesThePauseToTheStore() {
-        handlers.put("delete", a -> true);
+        handlers.put("delete", a -> DeleteOutcome.DELETED);
         handlers.put(
-                "getTask",
+                "task",
                 a -> Optional.of(TaskRecord.builder()
                         .id((Long) a[0])
                         .queueId(OTHER_QUEUE_ID)
@@ -445,49 +526,49 @@ class DefaultAdminOpsTest {
                         .headers(Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT5S"))
                         .build()));
 
-        assertThat(ops.delete(7, 1)).isTrue();
+        assertThat(ops.delete(7, 1)).isEqualTo(DeleteOutcome.DELETED);
 
-        assertThat(calls).containsExactly("getTask[7]", "delete[7, 1, ScheduleEffect[poll, occurrence 7, pause]]");
+        assertThat(calls).containsExactly("task[7]", "delete[7, 1, ScheduleEffect[poll, occurrence 7, pause]]");
     }
 
     @Test
     void aTaskThatCannotBeReadCanStillBeCancelledAndDeleted() {
-        handlers.put("getTask", a -> {
+        handlers.put("task", a -> {
             throw new UnreadableTaskException(
                     (Long) a[0], "task " + a[0] + " has a stored value that cannot be read", null);
         });
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
-        handlers.put("delete", a -> true);
+        handlers.put("delete", a -> DeleteOutcome.DELETED);
 
         assertThat(ops.cancel(7, 1, "stop")).isEqualTo(CancelOutcome.CANCELLED);
-        assertThat(ops.delete(7, 2)).isTrue();
+        assertThat(ops.delete(7, 2)).isEqualTo(DeleteOutcome.DELETED);
 
-        assertThat(calls).containsExactly("getTask[7]", "cancel[7, 1, stop, null]", "getTask[7]", "delete[7, 2, null]");
+        assertThat(calls).containsExactly("task[7]", "cancel[7, 1, stop, null]", "task[7]", "delete[7, 2, null]");
     }
 
     @Test
     void cancelOfAnOrdinaryTaskDoesNotTouchSchedules() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
-        handlers.put("getTask", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
+        handlers.put("task", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
 
         ops.cancel(7, 1, "stop");
 
-        assertThat(calls).containsExactly("getTask[7]", "cancel[7, 1, stop, null]");
+        assertThat(calls).containsExactly("task[7]", "cancel[7, 1, stop, null]");
     }
 
     @Test
     void cancelRequestedOnARunningTaskPassesNoEffect() {
         handlers.put("cancel", a -> CancelOutcome.REQUESTED);
-        handlers.put("getTask", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
+        handlers.put("task", a -> Optional.of(record((Long) a[0], OTHER_QUEUE_ID)));
 
         assertThat(ops.cancel(7, 1, "stop")).isEqualTo(CancelOutcome.REQUESTED);
-        assertThat(calls).containsExactly("getTask[7]", "cancel[7, 1, stop, null]");
+        assertThat(calls).containsExactly("task[7]", "cancel[7, 1, stop, null]");
     }
 
     @Test
     void cancelRejectsAReasonLongerThan512CharactersWithoutCallingTheStore() {
         handlers.put("cancel", a -> CancelOutcome.CANCELLED);
-        handlers.put("getTask", a -> Optional.empty());
+        handlers.put("task", a -> Optional.empty());
 
         assertThatThrownBy(() -> ops.cancel(1, 2, "x".repeat(513))).isInstanceOf(TaskValidationException.class);
         assertThat(calls).isEmpty();
@@ -496,52 +577,77 @@ class DefaultAdminOpsTest {
     }
 
     @Test
-    void purgeStaleWorkersDelegatesAndReturnsTheCount() {
-        handlers.put("purgeWorkers", a -> 3);
+    void purgeStaleRunnersDelegatesAndReturnsTheCount() {
+        handlers.put("purgeRunners", a -> 3);
 
-        assertThat(ops.purgeStaleWorkers(Duration.ofMinutes(5))).isEqualTo(3);
-        assertThat(calls).contains("purgeWorkers[PT5M]");
+        assertThat(ops.purgeStaleRunners(Duration.ofMinutes(5))).isEqualTo(3);
+        assertThat(calls).contains("purgeRunners[PT5M]");
     }
 
     @Test
-    void purgeStaleWorkersNeedsAPositiveAgeOfAtMostOneHundredYears() {
-        handlers.put("purgeWorkers", a -> 0);
+    void purgeStaleRunnersNeedsAPositiveAgeOfAtMostOneHundredYears() {
+        handlers.put("purgeRunners", a -> 0);
 
         for (Duration bad :
                 new Duration[] {null, Duration.ZERO, Duration.ofSeconds(-1), TaskRequest.MAX_TIME_FROM_NOW.plusMillis(1)
                 }) {
-            assertThatThrownBy(() -> ops.purgeStaleWorkers(bad))
+            assertThatThrownBy(() -> ops.purgeStaleRunners(bad))
                     .as("%s", bad)
-                    .isInstanceOf(IllegalArgumentException.class);
+                    .isInstanceOf(TaskValidationException.class);
         }
-        assertThat(calls).noneMatch(c -> c.startsWith("purgeWorkers"));
+        assertThat(calls).noneMatch(c -> c.startsWith("purgeRunners"));
 
-        assertThat(ops.purgeStaleWorkers(TaskRequest.MAX_TIME_FROM_NOW)).isZero();
+        assertThat(ops.purgeStaleRunners(TaskRequest.MAX_TIME_FROM_NOW)).isZero();
+    }
+
+    @Test
+    void aScheduleWhoseZoneThisJvmDoesNotKnowIsListedWithTheOthers() {
+        handlers.put(
+                "schedules",
+                a -> List.of(
+                        new ScheduleEntry(
+                                definition(
+                                        "lost-zone",
+                                        "0 2 * * *",
+                                        null,
+                                        false,
+                                        "Mars/Olympus_Mons",
+                                        StoredSchedule.MISFIRE_SKIP,
+                                        0,
+                                        false),
+                                NOW),
+                        new ScheduleEntry(definition("nightly", "0 2 * * *", null, false), NOW)));
+
+        var views = ops.schedules(null, 100).items();
+
+        assertThat(views).extracting(ScheduleView::id).containsExactly("lost-zone", "nightly");
+        assertThat(views.get(0).zone()).isEqualTo("Mars/Olympus_Mons");
     }
 
     @Test
     void schedulesAreViewedWithResolvedNames() {
         handlers.put(
-                "recurringDefinitions",
+                "schedules",
                 a -> List.of(
-                        new RecurringSchedule(definition("nightly", "0 2 * * *", null, false), NOW.plusSeconds(60)),
-                        new RecurringSchedule(definition("poll", null, 90_000L, true), NOW)));
+                        new ScheduleEntry(definition("nightly", "0 2 * * *", null, false), NOW.plusSeconds(60)),
+                        new ScheduleEntry(definition("poll", null, Duration.ofMillis(90_000), true), NOW)));
 
-        var views = ops.schedules();
+        var views = ops.schedules(null, 100).items();
 
         assertThat(views).hasSize(2);
         var nightly = views.get(0);
         assertThat(nightly.id()).isEqualTo("nightly");
-        assertThat(nightly.type()).isEqualTo("send-mail");
+        assertThat(nightly.revision()).isEqualTo(3);
+        assertThat(nightly.typeName()).isEqualTo("send-mail");
         assertThat(nightly.queue()).isEqualTo("Q:OTHER");
         assertThat(nightly.account()).isEqualTo("acme");
         assertThat(nightly.cron()).isEqualTo("0 2 * * *");
-        assertThat(nightly.zone()).isEqualTo(ZoneId.of("Europe/Berlin"));
+        assertThat(nightly.zone()).isEqualTo("Europe/Berlin");
         assertThat(nightly.misfire()).isEqualTo(Misfire.SKIP);
         assertThat(nightly.fixedDelay()).isNull();
         assertThat(nightly.overlap()).isEqualTo(Overlap.SKIP);
         assertThat(nightly.paused()).isFalse();
-        assertThat(nightly.nextFire()).isEqualTo(NOW.plusSeconds(60));
+        assertThat(nightly.nextFireAt()).isEqualTo(NOW.plusSeconds(60));
         assertThat(nightly.maxAttempts()).isEqualTo(5);
         assertThat(views.get(1).fixedDelay()).isEqualTo(Duration.ofSeconds(90));
         assertThat(views.get(1).paused()).isTrue();
@@ -550,27 +656,34 @@ class DefaultAdminOpsTest {
     @Test
     void scheduleViewMapsZoneMisfireAndOverlapToTheirTypes() {
         handlers.put(
-                "recurringDefinitions",
+                "schedules",
                 a -> List.of(
-                        new RecurringSchedule(
+                        new ScheduleEntry(
                                 definition(
                                         "zoned",
                                         "0 2 * * *",
                                         null,
                                         false,
                                         "Europe/Berlin",
-                                        RecurringDefinition.MISFIRE_CATCH_UP,
+                                        StoredSchedule.MISFIRE_CATCH_UP,
                                         4,
                                         false),
                                 NOW),
-                        new RecurringSchedule(
+                        new ScheduleEntry(
                                 definition(
-                                        "plain", null, 1_000L, false, null, RecurringDefinition.MISFIRE_SKIP, 0, true),
+                                        "plain",
+                                        null,
+                                        Duration.ofMillis(1_000),
+                                        false,
+                                        null,
+                                        StoredSchedule.MISFIRE_SKIP,
+                                        0,
+                                        true),
                                 NOW)));
 
-        var views = ops.schedules();
+        var views = ops.schedules(null, 100).items();
 
-        assertThat(views.get(0).zone()).isEqualTo(ZoneId.of("Europe/Berlin"));
+        assertThat(views.get(0).zone()).isEqualTo("Europe/Berlin");
         assertThat(views.get(0).misfire()).isEqualTo(Misfire.catchUp(4));
         assertThat(views.get(0).overlap()).isEqualTo(Overlap.ALLOW);
         assertThat(views.get(1).zone()).isNull();
@@ -579,73 +692,155 @@ class DefaultAdminOpsTest {
     }
 
     @Test
-    void pausingAScheduleOnlyTellsTheStore() {
-        handlers.put("pauseRecurring", a -> true);
+    void pausingAScheduleOnlyTellsTheStoreTheRevisionTheOperatorSaw() {
+        handlers.put("pauseSchedule", a -> ScheduleOutcome.APPLIED);
 
-        assertThat(ops.pauseSchedule("poll", true)).isTrue();
+        assertThat(ops.pauseSchedule("poll", 7, true)).isEqualTo(ScheduleOutcome.APPLIED);
 
-        assertThat(calls).containsExactly("pauseRecurring[poll]");
+        assertThat(calls).containsExactly("pauseSchedule[poll, 7]");
     }
 
     @Test
-    void resumingAnUnknownScheduleReturnsFalseAndDoesNothingElse() {
-        handlers.put("resumeRecurring", a -> false);
-        handlers.put("recurringDefinitions", a -> List.of());
+    void resumingAnUnknownScheduleReturnsTheStoreAnswerAndDoesNothingElse() {
+        handlers.put("resumeSchedule", a -> ScheduleOutcome.NOT_FOUND);
+        handlers.put("schedule", a -> Optional.empty());
+        failWhenListed();
 
-        assertThat(ops.pauseSchedule("missing", false)).isFalse();
+        assertThat(ops.pauseSchedule("missing", 3, false)).isEqualTo(ScheduleOutcome.NOT_FOUND);
 
-        assertThat(calls).containsExactly("recurringDefinitions[]", "resumeRecurring[missing, null]");
+        assertThat(calls).containsExactly("schedule[missing]", "resumeSchedule[missing, 3, null]");
     }
 
     @Test
     void resumingAFixedDelayScheduleRearmsItsNextFireFromNowInTheSameStoreCall() {
-        handlers.put("resumeRecurring", a -> true);
+        handlers.put("resumeSchedule", a -> ScheduleOutcome.APPLIED);
         handlers.put(
-                "recurringDefinitions",
-                a -> List.of(
-                        new RecurringSchedule(definition("other", null, 1_000L, false), NOW),
-                        new RecurringSchedule(definition("poll", null, 90_000L, false), NOW.plusSeconds(999))));
+                "schedule",
+                a -> Optional.of(new ScheduleEntry(
+                        definition("poll", null, Duration.ofMillis(90_000), false), NOW.plusSeconds(999))));
+        failWhenListed();
 
-        assertThat(ops.pauseSchedule("poll", false)).isTrue();
+        assertThat(ops.pauseSchedule("poll", 5, false)).isEqualTo(ScheduleOutcome.APPLIED);
 
-        assertThat(calls)
-                .containsExactly("recurringDefinitions[]", "resumeRecurring[poll, " + NOW.plusSeconds(90) + "]");
+        assertThat(calls).containsExactly("schedule[poll]", "resumeSchedule[poll, 5, " + NOW.plusSeconds(90) + "]");
     }
 
     @Test
     void resumingACronScheduleKeepsItsNextFire() {
-        handlers.put("resumeRecurring", a -> true);
+        handlers.put("resumeSchedule", a -> ScheduleOutcome.APPLIED);
         handlers.put(
-                "recurringDefinitions",
-                a -> List.of(new RecurringSchedule(definition("nightly", "0 2 * * *", null, false), NOW)));
+                "schedule", a -> Optional.of(new ScheduleEntry(definition("nightly", "0 2 * * *", null, false), NOW)));
+        failWhenListed();
 
-        assertThat(ops.pauseSchedule("nightly", false)).isTrue();
+        assertThat(ops.pauseSchedule("nightly", 2, false)).isEqualTo(ScheduleOutcome.APPLIED);
 
-        assertThat(calls).containsExactly("recurringDefinitions[]", "resumeRecurring[nightly, null]");
+        assertThat(calls).containsExactly("schedule[nightly]", "resumeSchedule[nightly, 2, null]");
+    }
+
+    private void failWhenListed() {
+        handlers.put("schedules", a -> {
+            throw new AssertionError("a resume must not list the schedules");
+        });
+        handlers.put("upcomingSchedules", a -> {
+            throw new AssertionError("a resume must not list the schedules");
+        });
     }
 
     @Test
-    void triggeringAScheduleSetsItsNextFireToNow() {
-        handlers.put("setNextFire", a -> true);
+    void aSchedulePageHoldsTheLimitAndNamesTheLastIdWhenMoreFollow() {
+        handlers.put("schedules", a -> {
+            var after = (String) a[0];
+            var all = List.of("a", "b", "c", "d", "e");
+            return all.stream()
+                    .filter(id -> after == null || id.compareTo(after) > 0)
+                    .limit((int) a[1])
+                    .map(id -> new ScheduleEntry(definition(id, "0 2 * * *", null, false), NOW))
+                    .toList();
+        });
 
-        assertThat(ops.triggerSchedule("nightly")).isTrue();
-
-        assertThat(calls).containsExactly("setNextFire[nightly, " + NOW + "]");
+        var first = ops.schedules(null, 2);
+        assertThat(first.items()).extracting(ScheduleView::id).containsExactly("a", "b");
+        assertThat(first.next()).isEqualTo("b");
+        var second = ops.schedules(first.next(), 2);
+        assertThat(second.items()).extracting(ScheduleView::id).containsExactly("c", "d");
+        assertThat(second.next()).isEqualTo("d");
+        var last = ops.schedules(second.next(), 2);
+        assertThat(last.items()).extracting(ScheduleView::id).containsExactly("e");
+        assertThat(last.next()).isNull();
     }
 
     @Test
-    void triggeringAnUnknownScheduleReturnsTheStoreAnswer() {
-        handlers.put("setNextFire", a -> false);
+    void aFullLastSchedulePageHasNoNextCursor() {
+        handlers.put("schedules", a -> {
+            var all = List.of("a", "b");
+            return all.stream()
+                    .limit((int) a[1])
+                    .map(id -> new ScheduleEntry(definition(id, "0 2 * * *", null, false), NOW))
+                    .toList();
+        });
 
-        assertThat(ops.triggerSchedule("missing")).isFalse();
+        var page = ops.schedules(null, 2);
+
+        assertThat(page.items()).hasSize(2);
+        assertThat(page.next()).isNull();
+        assertThat(calls).containsExactly("schedules[null, 3]");
     }
 
     @Test
-    void deletingAScheduleDelegatesToTheStore() {
-        handlers.put("deleteRecurring", a -> a[0].equals("nightly"));
+    void aScheduleLimitBelowOneIsRefusedBeforeTheStoreIsAsked() {
+        for (var limit : new int[] {0, -1, Integer.MIN_VALUE}) {
+            assertThatThrownBy(() -> ops.schedules(null, limit)).isInstanceOf(TaskValidationException.class);
+            assertThatThrownBy(() -> ops.upcomingSchedules(limit)).isInstanceOf(TaskValidationException.class);
+        }
+        assertThat(calls).isEmpty();
+    }
 
-        assertThat(ops.deleteSchedule("nightly")).isTrue();
-        assertThat(ops.deleteSchedule("missing")).isFalse();
+    @Test
+    void upcomingSchedulesAreViewedInTheStoreOrder() {
+        handlers.put(
+                "upcomingSchedules",
+                a -> List.of(
+                        new ScheduleEntry(definition("soon", "0 2 * * *", null, false), NOW),
+                        new ScheduleEntry(definition("later", "0 2 * * *", null, false), NOW.plusSeconds(5))));
+
+        assertThat(ops.upcomingSchedules(8)).extracting(ScheduleView::id).containsExactly("soon", "later");
+        assertThat(calls).containsExactly("upcomingSchedules[8]");
+    }
+
+    @Test
+    void aStaleResumeIsTheStoreAnswer() {
+        handlers.put("resumeSchedule", a -> ScheduleOutcome.STALE);
+        handlers.put("schedule", a -> Optional.empty());
+
+        assertThat(ops.pauseSchedule("nightly", 2, false)).isEqualTo(ScheduleOutcome.STALE);
+    }
+
+    @Test
+    void triggeringAScheduleSetsItsNextFireToNowAndSendsTheRevision() {
+        handlers.put("triggerSchedule", a -> ScheduleOutcome.APPLIED);
+
+        assertThat(ops.triggerSchedule("nightly", 4)).isEqualTo(ScheduleOutcome.APPLIED);
+
+        assertThat(calls).containsExactly("triggerSchedule[nightly, 4, " + NOW + "]");
+    }
+
+    @Test
+    void triggeringAnUnknownOrStaleScheduleReturnsTheStoreAnswer() {
+        handlers.put(
+                "triggerSchedule", a -> a[0].equals("missing") ? ScheduleOutcome.NOT_FOUND : ScheduleOutcome.STALE);
+
+        assertThat(ops.triggerSchedule("missing", 1)).isEqualTo(ScheduleOutcome.NOT_FOUND);
+        assertThat(ops.triggerSchedule("nightly", 1)).isEqualTo(ScheduleOutcome.STALE);
+    }
+
+    @Test
+    void deletingAScheduleDelegatesToTheStoreWithTheRevision() {
+        handlers.put(
+                "deleteSchedule", a -> a[0].equals("nightly") ? ScheduleOutcome.APPLIED : ScheduleOutcome.NOT_FOUND);
+
+        assertThat(ops.deleteSchedule("nightly", 9)).isEqualTo(ScheduleOutcome.APPLIED);
+        assertThat(ops.deleteSchedule("missing", 9)).isEqualTo(ScheduleOutcome.NOT_FOUND);
+        assertThat(calls).containsExactly("deleteSchedule[nightly, 9]", "deleteSchedule[missing, 9]");
     }
 
     @Test
@@ -665,13 +860,7 @@ class DefaultAdminOpsTest {
     void healthIsEmptyWhenTheOpsWereBuiltWithoutASupplier() {
         var store = (FullStore) Proxy.newProxyInstance(
                 FullStore.class.getClassLoader(), new Class<?>[] {FullStore.class}, (p, m, a) -> null);
-        var bare = new DefaultAdminOps(
-                store,
-                new Names(store),
-                new QueuesHolder(java.util.Set.of("Q:DEF"), List.of("Q:DEF"), "Q:DEF"),
-                Clock.systemUTC(),
-                null,
-                null);
+        var bare = new DefaultAdminOps(store, new Names(store), Clock.systemUTC(), null, null);
 
         assertThat(bare.health()).isEmpty();
         assertThat(bare.issues()).isEmpty();
@@ -679,7 +868,7 @@ class DefaultAdminOpsTest {
 
     @Test
     void issuesAreTheSuppliedList() {
-        var issue = new Issue(NOW, "store-error", "boom", null);
+        var issue = new Issue(NOW, Issue.Kind.STORE_ERROR, "boom", null);
         issues = () -> List.of(issue);
 
         assertThat(ops.issues()).containsExactly(issue);

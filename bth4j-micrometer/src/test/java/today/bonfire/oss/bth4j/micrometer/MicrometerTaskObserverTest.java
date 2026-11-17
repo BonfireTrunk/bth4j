@@ -14,9 +14,8 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.TaskEvent;
 import today.bonfire.oss.bth4j.TaskEvent.Outcome;
+import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.TaskView;
-import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
 
 class MicrometerTaskObserverTest {
 
@@ -24,8 +23,12 @@ class MicrometerTaskObserverTest {
     private final MicrometerTaskObserver observer = new MicrometerTaskObserver(registry);
 
     private static TaskView task() {
-        var record = TaskRecord.builder().id(7).state(TaskState.LEASED).build();
-        return new TaskView(record, "emails", "send");
+        return TaskView.builder()
+                .id(7)
+                .state(TaskState.LEASED)
+                .queue("emails")
+                .typeName("send")
+                .build();
     }
 
     private double count(String result, String outcome) {
@@ -87,23 +90,23 @@ class MicrometerTaskObserverTest {
     }
 
     @Test
-    void leaseExpiredHasUnknownTypeAndQueue() {
-        observer.onEvent(new TaskEvent.LeaseExpired(9, 1, 3, false));
+    void leaseExpiredIsCountedWithItsTypeAndQueue() {
+        observer.onEvent(new TaskEvent.LeaseExpired(9, "emails", "send", 1, 3, false));
 
         var counter = registry.get(MicrometerTaskObserver.TASKS)
-                .tags("type", "unknown", "queue", "unknown", "result", "lease_lost", "outcome", "applied")
+                .tags("type", "send", "queue", "emails", "result", "lease_lost", "outcome", "applied")
                 .counter();
         assertThat(counter.count()).isEqualTo(1);
     }
 
     @Test
     void deferredScheduleFiredAndPurged() {
-        observer.onEvent(new TaskEvent.Deferred(1, "send", "no processor"));
+        observer.onEvent(new TaskEvent.Deferred(1, "emails", "send", "no processor"));
         observer.onEvent(new TaskEvent.ScheduleFired("nightly", 2, Instant.now()));
         observer.onEvent(new TaskEvent.Purged(TaskState.SUCCEEDED, 5));
 
         assertThat(registry.get(MicrometerTaskObserver.DEFERRED)
-                        .tag("type", "send")
+                        .tags("type", "send", "queue", "emails")
                         .counter()
                         .count())
                 .isEqualTo(1);
@@ -147,14 +150,23 @@ class MicrometerTaskObserverTest {
     }
 
     @Test
-    void expiredHasUnknownTypeAndQueue() {
-        observer.onEvent(new TaskEvent.Expired(9));
+    void expiredIsCountedWithItsTypeAndQueue() {
+        observer.onEvent(new TaskEvent.Expired(9, "emails", "send"));
 
         var counter = registry.get(MicrometerTaskObserver.TASKS)
-                .tags("type", "unknown", "queue", "unknown", "result", "expired", "outcome", "applied")
+                .tags("type", "send", "queue", "emails", "result", "expired", "outcome", "applied")
                 .counter();
         assertThat(counter.count()).isEqualTo(1);
     }
+
+    @Test
+    void aKindOfEventItDoesNotKnowIsIgnored() {
+        observer.onEvent(new AnEventKindFromALaterRelease());
+
+        assertThat(registry.getMeters()).isEmpty();
+    }
+
+    private record AnEventKindFromALaterRelease() implements TaskEvent {}
 
     @Test
     void everyResultKindIsTaggedWithEveryOutcome() {
@@ -187,7 +199,7 @@ class MicrometerTaskObserverTest {
         }
 
         @Override
-        public Counter counter(String name, Iterable<Tag> tags) {
+        public Counter counter(String name, Tags tags) {
             counterCalls++;
             if (failCounters) {
                 throw new IllegalStateException("registry down");
@@ -196,7 +208,7 @@ class MicrometerTaskObserverTest {
         }
 
         @Override
-        public Timer timer(String name, Iterable<Tag> tags) {
+        public Timer timer(String name, Tags tags) {
             timerCalls++;
             if (failTimers) {
                 throw new IllegalStateException("registry down");

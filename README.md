@@ -2,7 +2,7 @@
 
 A Java library for background tasks with at-least-once delivery. Tasks live in a store (Redis, PostgreSQL or
 SQLite), several instances share the work through that store, and every state change is one atomic
-transition guarded by a revision, so a worker that lost its task cannot change it.
+transition guarded by a revision, so a runner that lost its task cannot change it.
 
 ```mermaid
 flowchart LR
@@ -30,7 +30,7 @@ BTH4J handles three kinds of work:
 
 | Kind | When it runs | Guide |
 |---|---|---|
-| Immediate task | as soon as a worker is free | [Enqueueing](docs/enqueueing.md) |
+| Immediate task | as soon as a runner has a free slot | [Enqueueing](docs/enqueueing.md) |
 | Scheduled task | after a delay or at a run time | [Enqueueing](docs/enqueueing.md) |
 | Recurring task | one task per fire time of a cron or fixed-delay definition | [Recurring tasks](docs/recurring-tasks.md) |
 
@@ -42,7 +42,7 @@ Every task carries the same parts:
 | Queue | decides which runners take the task and how many run at once | [Queues and concurrency](docs/queues-and-concurrency.md) |
 | Unique key (optional) | a second request with the same key is answered `Duplicate` | [Unique keys](docs/enqueueing.md#unique-keys) |
 | Retry budget | a failed attempt is retried until the budget is spent | [Retries and cancelling](docs/retries-and-cancelling.md) |
-| Lease | held while the task runs and renewed by the runner, so a crashed worker's task runs again | [How it works](docs/how-it-works.md) |
+| Lease | held while the task runs and renewed by the runner, so a crashed runner's task runs again | [How it works](docs/how-it-works.md) |
 | Steps (optional) | durable parts of a processor, so a retry resumes where the failed attempt stopped | [Steps](docs/tasks.md#steps) |
 
 Around the tasks, a runner gives you:
@@ -73,17 +73,17 @@ Add `bth4j-core` and one store module. Add `bth4j-testing` for tests.
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-core</artifactId>
-    <version>4.2.0</version>
+    <version>5.0.0</version>
 </dependency>
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-redis</artifactId>       <!-- or bth4j-postgres or bth4j-sqlite -->
-    <version>4.2.0</version>
+    <version>5.0.0</version>
 </dependency>
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-testing</artifactId>
-    <version>4.2.0</version>
+    <version>5.0.0</version>
     <scope>test</scope>
 </dependency>
 ```
@@ -94,12 +94,12 @@ The metrics and the admin HTTP server are separate modules. Add them when you us
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-micrometer</artifactId>
-    <version>4.2.0</version>
+    <version>5.0.0</version>
 </dependency>
 <dependency>
     <groupId>today.bonfire.oss</groupId>
     <artifactId>bth4j-admin-http</artifactId>
-    <version>4.2.0</version>
+    <version>5.0.0</version>
 </dependency>
 ```
 
@@ -148,8 +148,9 @@ var jedis = RedisClient.builder()
         .build();
 
 var runner = BackgroundRunner.builder()
-        .store(new RedisTaskStore(jedis, "my-app"))   // runners with the same namespace share the work
+        .store(RedisTaskStore.builder().client(jedis).namespace("my-app").build())   // runners with the same namespace share the work
         .jsonMapper(new JacksonMapper())
+        .queues(Queues.of("general", "mail", "reports"))  // optional: without it there is the one queue "general"
         .build();
 
 runner.registry()
@@ -165,7 +166,7 @@ runner.start();                                        // returns at once, the s
 var client = runner.client();
 
 EnqueueResult result = client.enqueue(TaskRequest.of(SEND_MAIL, new MailRequest("a@example.com", "Welcome"))
-        .queue("Q:HIGH")
+        .queue("mail")                                 // without it the task goes to the first queue, "general"
         .delay(Duration.ofMinutes(5))
         .uniqueKey("welcome-42")                       // a second request with this key is answered Duplicate
         .build());
@@ -173,7 +174,7 @@ if (result instanceof EnqueueResult.Duplicate d) {
     log.info("already queued as task {}", d.existingId());
 }
 
-client.putSchedule(ScheduleDefinition.of("nightly-report", NIGHTLY_REPORT, "30 2 * * *").queue("Q:LOW"));
+client.putSchedule(ScheduleDefinition.of("nightly-report", NIGHTLY_REPORT, "30 2 * * *", Overlap.ALLOW).withQueue("reports"));
 
 // on shutdown
 runner.stop();                                         // waits for running tasks, up to the shutdown timeout
@@ -193,15 +194,16 @@ jedis.close();
 | [Retries and cancelling](docs/retries-and-cancelling.md) | retry policies, clock skew, cancel requests, lease loss, maximum run time, `startBy` |
 | [Recurring tasks](docs/recurring-tasks.md) | cron and fixed-delay definitions, time zones, misfires, overlap, pausing and triggering |
 | [Queues and concurrency](docs/queues-and-concurrency.md) | queues, queue policies, pausing, fixed and adaptive concurrency |
+| [Exceptions](docs/errors.md) | what bth4j throws, when, and what to do about it |
 | [Configuration](docs/configuration.md) | every runner setting with its default, starting and stopping, how outcomes are written |
-| [Monitoring](docs/monitoring.md) | events, logging, inspection, health, issues, workers, metrics |
+| [Monitoring](docs/monitoring.md) | events, logging, inspection, health, issues, runners, metrics |
 | [Admin API and dashboard](docs/admin.md) | `AdminOps`, the admin HTTP server, roles, sessions, endpoints, the dashboard |
 | [Testing](docs/testing.md) | the test tools, a test with a clock you control, the store integration tests |
 | [Stores](docs/stores.md) | choosing a store and how the stores differ: clocks, precision, durability, transactions |
 | [Redis store](docs/stores/redis.md), [PostgreSQL store](docs/stores/postgresql.md), [SQLite store](docs/stores/sqlite.md) | setup, requirements, caveats and the inside of each store |
 | [Writing a store](docs/writing-a-store.md) | the store interfaces, the rules every store follows, the contract tests |
-| [Upgrading from 2.x](docs/upgrading.md) | moving 2.x data and what changed in the API |
-| [Design record of 3.0](docs/design-3.0.md) | the design, the record layout, the store contract and the storage layouts as built for 3.0 |
+| [Fault-tolerance tests](docs/fault-tolerance-tests.md) | how the stores are tested with cut calls, and what a resend answers |
+| [Upgrading from 4.x to 5.0](docs/upgrading.md) | what to do with your data, the changes the compiler does not show, and every old name with its new one |
 | [Changelog](CHANGELOG.md) | every release and what it changed |
 
 ## Requirements
@@ -218,7 +220,7 @@ jedis.close();
 | Area | Limitation |
 |---|---|
 | Cron | Cron expressions use the 5 field Unix format. |
-| Cancelling | Cancelling a running task is cooperative: the processor has to call `checkCancelled()` or be declared with `interruptOnCancel()`, and it is noticed on the next lease renewal. |
+| Cancelling | Cancelling a running task is cooperative: the processor has to call `checkCancelled()` or be declared with `withInterruptOnCancel()`, and it is noticed on the next lease renewal. |
 | Queue limits | `QueuePolicy` limits apply to one runner, not to the fleet. There are no fleet-wide concurrency limits, rate limits or priority bands. |
 | Issues | Issues are kept in the memory of the runner that recorded them (the last 100) and are lost on restart. |
 | Admin server | Admin sessions of `AdminHttpServer` are in memory, and the server has no user store beyond the users given to the builder. Put TLS (`https`) or a TLS-terminating proxy in front of it when it is not on the loopback interface. |

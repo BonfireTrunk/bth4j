@@ -8,7 +8,6 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -28,58 +27,62 @@ import redis.clients.jedis.Response;
 import redis.clients.jedis.UnifiedJedis;
 import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.jedis.exceptions.JedisException;
-import redis.clients.jedis.resps.Tuple;
+import redis.clients.jedis.params.ZRangeParams;
+import today.bonfire.oss.bth4j.CancelOutcome;
+import today.bonfire.oss.bth4j.DeleteOutcome;
+import today.bonfire.oss.bth4j.FailureInfo;
 import today.bonfire.oss.bth4j.Loggers;
-import today.bonfire.oss.bth4j.common.Json;
+import today.bonfire.oss.bth4j.PutScheduleOutcome;
+import today.bonfire.oss.bth4j.PutScheduleResult;
+import today.bonfire.oss.bth4j.QueueInfo;
+import today.bonfire.oss.bth4j.RetryOutcome;
+import today.bonfire.oss.bth4j.ScheduleOutcome;
+import today.bonfire.oss.bth4j.StateCounts;
+import today.bonfire.oss.bth4j.StepResult;
+import today.bonfire.oss.bth4j.TaskState;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
-import today.bonfire.oss.bth4j.spi.CancelOutcome;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
+import today.bonfire.oss.bth4j.internal.Json;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
+import today.bonfire.oss.bth4j.spi.CommitOutcome;
 import today.bonfire.oss.bth4j.spi.DueSchedule;
 import today.bonfire.oss.bth4j.spi.EnqueueOutcome;
 import today.bonfire.oss.bth4j.spi.ExpiredLease;
+import today.bonfire.oss.bth4j.spi.ExpiredTask;
 import today.bonfire.oss.bth4j.spi.FailOutcome;
-import today.bonfire.oss.bth4j.spi.FailureInfo;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
 import today.bonfire.oss.bth4j.spi.LeaseStatus;
 import today.bonfire.oss.bth4j.spi.PromoteResult;
-import today.bonfire.oss.bth4j.spi.PutRecurringOutcome;
-import today.bonfire.oss.bth4j.spi.PutRecurringResult;
-import today.bonfire.oss.bth4j.spi.QueueInfo;
 import today.bonfire.oss.bth4j.spi.RecordJson;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
-import today.bonfire.oss.bth4j.spi.RecurringSchedule;
-import today.bonfire.oss.bth4j.spi.RetryOutcome;
+import today.bonfire.oss.bth4j.spi.RunnerRecord;
 import today.bonfire.oss.bth4j.spi.ScheduleEffect;
-import today.bonfire.oss.bth4j.spi.StateCounts;
-import today.bonfire.oss.bth4j.spi.StepResult;
+import today.bonfire.oss.bth4j.spi.ScheduleEntry;
 import today.bonfire.oss.bth4j.spi.StoreArguments;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
+import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
-import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
-import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /**
  * {@link FullStore} on Redis 7.4 or newer and Valkey 9 or newer (hash field expiry is required; tested on
  * Redis 8 and Valkey 9): one hash per task with the payload, steps and failures in keys of their own, sorted
  * sets for the queues and the state indexes, and one Lua script per transition so that every check and its
  * writes run as one unit (see {@link Keys} for the layout and {@link RedisScripts} for the scripts). All keys
- * carry the namespace as a hash tag, so the store also works on Redis Cluster. Runners that share a namespace
- * share the work.
+ * carry the namespace as a hash tag, so a namespace lies in one slot of a Redis Cluster; the store is not
+ * tested on a cluster, and the scripts derive their keys, so that slot must not be resharded while runners use
+ * it. Runners that share a namespace share the work.
  */
-public class RedisTaskStore implements FullStore {
+public final class RedisTaskStore implements FullStore {
     private static final Logger log = LoggerFactory.getLogger(Loggers.REDIS_STORE);
 
     /**
-     * The key layout this class writes, stored in the namespace's {@code meta} hash. {@link #init} refuses a
-     * namespace with any other layout. 3.0 wrote layout 1; layout 2 was only in 4.0.0 snapshots; 4.0.0 wrote
-     * layout 3, which lacks the worker coverage this layout relies on; layout 4 and earlier forms of layout 5
-     * were only in 4.1.0 snapshots.
+     * The version of the keys this class writes, stored in the namespace's {@code meta} hash. {@link #init}
+     * refuses a namespace with any other version.
      */
-    public static final int LAYOUT_VERSION = 5;
+    public static final int SCHEMA_VERSION = 8;
 
     private static final int PAGE_CHUNK = 500;
 
@@ -105,25 +108,55 @@ public class RedisTaskStore implements FullStore {
 
     private record TypeSet(Set<Integer> ids, String digest) {}
 
-    /**
-     * @param jedis     client used for all Redis operations, for example a {@code RedisClient}. The store does not
-     *                  close it.
-     * @param namespace prefix of all keys; runners with the same namespace share the work. Must not be blank or
-     *                  contain braces.
-     */
-    public RedisTaskStore(UnifiedJedis jedis, String namespace) {
-        if (jedis == null) {
-            throw new IllegalArgumentException("Jedis client is required");
-        }
-        if (namespace == null || namespace.isBlank() || namespace.contains("{") || namespace.contains("}")) {
-            throw new IllegalArgumentException("namespace cannot be blank or contain braces");
-        }
+    private RedisTaskStore(UnifiedJedis jedis, String namespace) {
         this.jedis = jedis;
         this.keys = new Keys(namespace);
         this.scripts = new ScriptRunner(jedis, keys.meta, keys.prefix);
     }
 
-    public Keys keys() {
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    public static final class Builder {
+        private UnifiedJedis client;
+        private String namespace;
+
+        private Builder() {}
+
+        /**
+         * Client used for all Redis operations, for example a {@code RedisClient}. The store does not close it.
+         * Required.
+         */
+        public Builder client(UnifiedJedis client) {
+            this.client = client;
+            return this;
+        }
+
+        /**
+         * Prefix of all keys; runners with the same namespace share the work. Must not be blank or contain braces.
+         * Required.
+         */
+        public Builder namespace(String namespace) {
+            this.namespace = namespace;
+            return this;
+        }
+
+        /**
+         * @throws TaskConfigurationException when the client is null or the namespace is not allowed
+         */
+        public RedisTaskStore build() {
+            if (client == null) {
+                throw new TaskConfigurationException("Jedis client is required");
+            }
+            if (namespace == null || namespace.isBlank() || namespace.contains("{") || namespace.contains("}")) {
+                throw new TaskConfigurationException("namespace cannot be blank or contain braces");
+            }
+            return new RedisTaskStore(client, namespace);
+        }
+    }
+
+    Keys keys() {
         return keys;
     }
 
@@ -159,29 +192,34 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public StoreInfo info() {
-        return new StoreInfo("redis", LAYOUT_VERSION);
+        return new StoreInfo("redis", SCHEMA_VERSION);
     }
 
     /**
-     * Checks that the server evicts no keys, then writes the layout version of a new namespace and checks it on an
-     * existing one. The eviction policy comes from {@code INFO memory}; when the server refuses that command (an
-     * ACL without {@code +info}, a renamed or disabled command) or its reply has no {@code maxmemory_policy}, init
-     * logs a warning to {@link Loggers#REDIS_STORE} and goes on without the check.
+     * Checks that the server evicts no keys and has hash field expiry, then writes the schema version of a new
+     * namespace and checks it on an existing one. The eviction policy comes from {@code INFO memory}; when the
+     * server refuses that command (an ACL without {@code +info}, a renamed or disabled command) or its reply has no
+     * {@code maxmemory_policy}, init logs a warning to {@link Loggers#REDIS_STORE} and goes on without the check.
      *
-     * @throws TaskConfigurationException when the server's {@code maxmemory-policy} is not {@code noeviction}
-     * @throws TaskStoreException         when the namespace has a layout other than {@value #LAYOUT_VERSION}
+     * @throws TaskConfigurationException when the server's {@code maxmemory-policy} is not {@code noeviction}, or
+     *                                    the server does not know {@code HPEXPIREAT}
+     * @throws TaskStoreException         when the namespace has a schema version other than {@value #SCHEMA_VERSION}, or
+     *                                    holds keys of the store without a schema version
      */
     @Override
     public void init() {
         checkEvictionPolicy();
-        guard(() -> {
-            jedis.hsetnx(keys.meta, SCHEMA, String.valueOf(LAYOUT_VERSION));
-            var found = jedis.hget(keys.meta, SCHEMA);
-            if (!String.valueOf(LAYOUT_VERSION).equals(found)) {
-                throw new TaskStoreException("Redis namespace " + keys.namespace + " has layout version " + found
-                        + ", expected " + LAYOUT_VERSION);
-            }
-        });
+        checkHashFieldExpiry();
+        var version = String.valueOf(SCHEMA_VERSION);
+        var found = (String) guard(() -> scripts.run(RedisScripts.INIT, List.of(version)));
+        if (found.isEmpty()) {
+            throw new TaskStoreException("Redis namespace " + keys.namespace
+                    + " holds keys without a schema version, this library needs schema version " + SCHEMA_VERSION);
+        }
+        if (!version.equals(found)) {
+            throw new TaskStoreException("Redis namespace " + keys.namespace + " has schema version " + found
+                    + ", expected " + SCHEMA_VERSION);
+        }
     }
 
     private void checkEvictionPolicy() {
@@ -211,6 +249,27 @@ public class RedisTaskStore implements FullStore {
         }
     }
 
+    /**
+     * The scripts end a kept key window with {@code HPEXPIREAT}, after they wrote the task. A server without the
+     * command would fail them there and leave the transition half applied, so it is refused here.
+     */
+    private void checkHashFieldExpiry() {
+        try {
+            // the field is never written, so the call changes nothing on a server that knows the command
+            jedis.hpexpireAt(keys.meta, System.currentTimeMillis(), "hash-field-expiry-check");
+        } catch (JedisDataException e) {
+            if (e.getMessage() != null && e.getMessage().startsWith("ERR unknown command")) {
+                throw new TaskConfigurationException(
+                        "the server does not know HPEXPIREAT and this store needs hash field expiry: use Redis 7.4"
+                                + " or newer, or Valkey 9 or newer",
+                        e);
+            }
+            throw new TaskStoreException("Redis call failed: " + e.getMessage(), e);
+        } catch (JedisException e) {
+            throw new TaskStoreException("Redis call failed: " + e.getMessage(), e);
+        }
+    }
+
     private static String infoField(String info, String name) {
         if (info == null) return null;
         var prefix = name + ":";
@@ -233,10 +292,10 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
+    public int allocateRunnerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
         StoreArguments.requireLabel(label);
         var args = List.of(label, Json.write(queueIds), Json.write(typeIds));
-        return (int) num(guard(() -> scripts.run(RedisScripts.WORKER_REGISTER, args)));
+        return (int) num(guard(() -> scripts.run(RedisScripts.RUNNER_REGISTER, args)));
     }
 
     @Override
@@ -325,9 +384,10 @@ public class RedisTaskStore implements FullStore {
     }
 
     static List<String> enqueueArgs(TaskRecord t) {
+        StoreArguments.requireKey(t.uniqueKey());
         var args = new ArrayList<String>();
         args.add(String.valueOf(t.id()));
-        args.add(t.due() == null ? "" : ms(t.due()));
+        args.add(t.dueAt() == null ? "" : ms(t.dueAt()));
         args.add(t.uniqueKey() == null ? "" : t.uniqueKey());
         args.addAll(storeArgs(t));
         args.add(Keys.F_WRITE_TOKEN);
@@ -363,7 +423,7 @@ public class RedisTaskStore implements FullStore {
 
     /**
      * The script returns the hash fields as they were before the claim and the time it used; the fields it
-     * wrote (state, stateChanged, revision, attempts, claimedAt, lease, worker) are filled in here.
+     * wrote (state, stateChanged, revision, attempts, claimedAt, lease, runner) are filled in here.
      */
     @Override
     @SuppressWarnings("unchecked")
@@ -375,7 +435,7 @@ public class RedisTaskStore implements FullStore {
         var args = new ArrayList<String>();
         args.add(String.valueOf(request.count()));
         args.add(String.valueOf(request.lease().toMillis()));
-        args.add(String.valueOf(request.workerId()));
+        args.add(String.valueOf(request.runnerId()));
         var types = known == null ? null : typeSet(known);
         args.add(types == null ? "" : types.digest());
         request.grants().forEach(g -> {
@@ -400,13 +460,13 @@ public class RedisTaskStore implements FullStore {
         List<String> unreadable = null;
         for (var entry : r.subList(1, r.size())) {
             try {
-                tasks.add(TaskHashes.fromClaim(entry, at, leaseUntil, request.workerId()));
+                tasks.add(TaskHashes.fromClaim(entry, at, leaseUntil, request.runnerId()));
             } catch (UnreadableTaskException e) {
                 if (unreadable == null) unreadable = new ArrayList<>();
                 unreadable.add(String.valueOf(e.taskId()));
             }
         }
-        if (unreadable != null) endLeases(at, request.workerId(), unreadable);
+        if (unreadable != null) endLeases(at, request.runnerId(), unreadable);
         return tasks;
     }
 
@@ -414,10 +474,10 @@ public class RedisTaskStore implements FullStore {
      * Ends the leases this claim just took on tasks it cannot read, so maintenance takes them over at once. When
      * that fails the leases lapse on their own; the readable tasks of the claim are returned either way.
      */
-    private void endLeases(long claimedAt, int workerId, List<String> ids) {
+    private void endLeases(long claimedAt, int runnerId, List<String> ids) {
         var args = new ArrayList<String>(ids.size() + 2);
         args.add(String.valueOf(claimedAt));
-        args.add(String.valueOf(workerId));
+        args.add(String.valueOf(runnerId));
         args.addAll(ids);
         try {
             guard(() -> scripts.run(RedisScripts.END_LEASES, args));
@@ -532,7 +592,7 @@ public class RedisTaskStore implements FullStore {
         return List.of(
                 effect.scheduleId(),
                 String.valueOf(effect.occurrenceId()),
-                effect.pauses() ? "" : ms(effect.nextFire()));
+                effect.isPause() ? "" : ms(effect.nextFireAt()));
     }
 
     @Override
@@ -604,6 +664,7 @@ public class RedisTaskStore implements FullStore {
     @Override
     @SuppressWarnings("unchecked")
     public PromoteResult promote(int limit) {
+        StoreArguments.requireLimit(limit);
         var r = (List<Object>) guard(() -> scripts.run(RedisScripts.PROMOTE, List.of(String.valueOf(limit))));
         var next = num(r.get(1));
         return new PromoteResult((int) num(r.get(0)), next < 0 ? null : Instant.ofEpochMilli(next));
@@ -612,19 +673,24 @@ public class RedisTaskStore implements FullStore {
     @Override
     @SuppressWarnings("unchecked")
     public List<ExpiredLease> reclaim(int limit) {
+        StoreArguments.requireLimit(limit);
         return guard(() -> {
-            var ids = jedis.zrangeByScore(keys.leased, "-inf", String.valueOf(serverNow()), 0, limit);
-            var fields = new ArrayList<Response<List<String>>>(ids.size());
-            try (var pipeline = jedis.pipelined()) {
-                ids.forEach(id -> fields.add(pipeline.hmget(
-                        keys.task(Long.parseLong(id)), F_REVISION, F_ATTEMPTS, F_MAX_ATTEMPTS, F_TYPE, F_CANCEL_AT)));
-                pipeline.sync();
+            var rows = (List<List<Object>>) scripts.run(RedisScripts.RECLAIM, List.of(String.valueOf(limit)));
+            var ids = new ArrayList<String>(rows.size());
+            var fields = new ArrayList<List<String>>(rows.size());
+            for (var row : rows) {
+                ids.add((String) row.getFirst());
+                var v = new ArrayList<String>(row.size() - 1);
+                for (var field : row.subList(1, row.size())) {
+                    v.add((String) field);
+                }
+                fields.add(v);
             }
             var out = new ArrayList<ExpiredLease>(ids.size());
             var orphans = new ArrayList<String>();
             var unfenced = new ArrayList<String>();
             for (var i = 0; i < ids.size(); i++) {
-                var v = fields.get(i).get();
+                var v = fields.get(i);
                 if (v.get(0) == null) {
                     orphans.add(ids.get(i));
                     continue;
@@ -647,10 +713,10 @@ public class RedisTaskStore implements FullStore {
     }
 
     /**
-     * One reclaimed lease from its hash fields (rev, att, max, ty, cra). A task whose other numbers cannot be read
-     * comes back with its revision and zero counts, so that maintenance finds it unreadable and ends it. One whose
-     * revision cannot be read cannot be fenced: it is null, and reclaim gives it a readable revision for the next
-     * round.
+     * One reclaimed lease from its hash fields (rev, att, max, q, ty, cra). A task whose attempt counts cannot be read
+     * comes back with its revision and zero counts, so that maintenance finds it unreadable and ends it; a queue or
+     * type id that cannot be read is 0. One whose revision cannot be read cannot be fenced: it is null, and reclaim
+     * gives it a readable revision for the next round.
      */
     private static ExpiredLease expiredLease(long id, List<String> v) {
         int revision;
@@ -659,22 +725,32 @@ public class RedisTaskStore implements FullStore {
         } catch (NumberFormatException e) {
             return null;
         }
+        int attempts = 0;
+        int maxAttempts = 0;
         try {
-            return new ExpiredLease(
-                    id,
-                    revision,
-                    Integer.parseInt(v.get(1)),
-                    Integer.parseInt(v.get(2)),
-                    Integer.parseInt(v.get(3)),
-                    v.get(4) != null);
+            attempts = Integer.parseInt(v.get(1));
+            maxAttempts = Integer.parseInt(v.get(2));
         } catch (NumberFormatException e) {
-            return new ExpiredLease(id, revision, 0, 0, 0, v.get(4) != null);
+            attempts = 0;
+            maxAttempts = 0;
+        }
+        return new ExpiredLease(
+                id, revision, attempts, maxAttempts, idOrZero(v.get(3)), idOrZero(v.get(4)), v.get(5) != null);
+    }
+
+    /** A queue or type id that cannot be read is 0, which is never a registered id. */
+    private static int idOrZero(String text) {
+        try {
+            return Integer.parseInt(text);
+        } catch (NumberFormatException e) {
+            return 0;
         }
     }
 
     @Override
     public long purge(TaskState state, Duration retention, int limit) {
         StoreArguments.requireTerminal(state);
+        StoreArguments.requireLimit(limit);
         var args = List.of(String.valueOf(state.code()), String.valueOf(retention.toMillis()), String.valueOf(limit));
         return num(guard(() -> scripts.run(RedisScripts.PURGE, args)));
     }
@@ -682,35 +758,14 @@ public class RedisTaskStore implements FullStore {
     /** The key fields of a finished task expire with the key itself (hash field expiry), so there is nothing to do. */
     @Override
     public int releaseKeys(int limit) {
+        StoreArguments.requireLimit(limit);
         return 0;
-    }
-
-    @Override
-    public Instant nextDue() {
-        return guard(() -> {
-            var heads = new ArrayList<Response<List<Tuple>>>();
-            try (var pipeline = jedis.pipelined()) {
-                for (var qid : sortedQueueIds()) {
-                    heads.add(pipeline.zrangeWithScores(keys.scheduled(qid), 0, 0));
-                }
-                pipeline.sync();
-            }
-            Instant next = null;
-            for (var head : heads) {
-                var h = head.get();
-                if (!h.isEmpty()) {
-                    var due = Instant.ofEpochMilli((long) h.getFirst().getScore());
-                    if (next == null || due.isBefore(next)) next = due;
-                }
-            }
-            return next;
-        });
     }
 
     // ---- schedules -----------------------------------------------------------------------------------
 
     @Override
-    public PutRecurringResult putRecurring(RecurringDefinition d, Instant nextFire, Instant keepUntil) {
+    public PutScheduleResult putSchedule(StoredSchedule d, Instant nextFire, Instant keepUntil) {
         var args = new ArrayList<String>();
         args.add(d.scheduleId());
         args.add(ms(nextFire));
@@ -736,11 +791,11 @@ public class RedisTaskStore implements FullStore {
         if (d.catchUpMaxFires() != 0) {
             args.addAll(List.of(F_CATCH_UP, String.valueOf(d.catchUpMaxFires())));
         }
-        if (d.fixedDelayMs() != null) {
-            args.addAll(List.of(F_FIXED_DELAY, String.valueOf(d.fixedDelayMs())));
+        if (d.fixedDelay() != null) {
+            args.addAll(List.of(F_FIXED_DELAY, String.valueOf(d.fixedDelay().toMillis())));
         }
-        if (d.maxRunTimeMs() != null) {
-            args.addAll(List.of(F_MAX_RUN_TIME, String.valueOf(d.maxRunTimeMs())));
+        if (d.maxRunTime() != null) {
+            args.addAll(List.of(F_MAX_RUN_TIME, String.valueOf(d.maxRunTime().toMillis())));
         }
         if (d.overlapSkip()) {
             args.addAll(List.of(F_OVERLAP_SKIP, "1"));
@@ -755,25 +810,32 @@ public class RedisTaskStore implements FullStore {
             args.addAll(List.of(F_DATA, d.encodedPayload()));
         }
         var r = (List<?>) guard(() -> scripts.run(RedisScripts.CRON_PUT, args));
-        return new PutRecurringResult(
-                PutRecurringOutcome.valueOf((String) r.get(0)), Instant.ofEpochMilli(num(r.get(1))));
+        return new PutScheduleResult(
+                PutScheduleOutcome.valueOf((String) r.get(0)), Instant.ofEpochMilli(num(r.get(1))));
     }
 
     @Override
-    public boolean deleteRecurring(String scheduleId) {
-        return num(guard(() -> scripts.run(RedisScripts.CRON_DELETE, List.of(scheduleId)))) == 1;
+    public ScheduleOutcome deleteSchedule(String scheduleId, Long expectedRevision) {
+        var args = List.of(scheduleId, optionalRevision(expectedRevision));
+        return ScheduleOutcome.valueOf((String) guard(() -> scripts.run(RedisScripts.CRON_DELETE, args)));
+    }
+
+    private static String optionalRevision(Long revision) {
+        return revision == null ? "" : revision.toString();
     }
 
     @Override
-    public Map<String, Instant> recurringSchedules() {
+    public Map<String, Instant> nextFireTimes() {
         var result = new LinkedHashMap<String, Instant>();
-        recurringDefinitions().forEach(r -> result.put(r.definition().scheduleId(), r.nextFire()));
+        guard(() -> entries(jedis.zrange(keys.cronDefinitions, 0, -1)))
+                .forEach(r -> result.put(r.definition().scheduleId(), r.nextFireAt()));
         return result;
     }
 
     @Override
     @SuppressWarnings("unchecked")
-    public List<DueSchedule> dueRecurring(Instant upTo, int limit) {
+    public List<DueSchedule> dueSchedules(Instant upTo, int limit) {
+        StoreArguments.requireLimit(limit);
         return guard(() -> {
             var due = jedis.zrangeByScoreWithScores(keys.cron, "-inf", ms(upTo), 0, limit);
             var hashes = new ArrayList<Response<Map<String, String>>>(due.size());
@@ -788,14 +850,17 @@ public class RedisTaskStore implements FullStore {
                 if (h.isEmpty()) continue;
                 var id = due.get(i).getElement();
                 out.add(new DueSchedule(
-                        id, Instant.ofEpochMilli((long) due.get(i).getScore()), definition(id, h)));
+                        id,
+                        Instant.ofEpochMilli((long) due.get(i).getScore()),
+                        definition(id, h),
+                        "1".equals(h.get(F_TRIGGERED))));
             }
             return out;
         });
     }
 
-    private static RecurringDefinition definition(String id, Map<String, String> d) {
-        return new RecurringDefinition(
+    private static StoredSchedule definition(String id, Map<String, String> d) {
+        return new StoredSchedule(
                 id,
                 Integer.parseInt(d.get(F_TYPE)),
                 Integer.parseInt(d.get(F_PAYLOAD_VERSION)),
@@ -805,17 +870,21 @@ public class RedisTaskStore implements FullStore {
                 d.get(F_ZONE),
                 d.get(F_MISFIRE),
                 d.containsKey(F_CATCH_UP) ? Integer.parseInt(d.get(F_CATCH_UP)) : 0,
-                d.containsKey(F_FIXED_DELAY) ? Long.parseLong(d.get(F_FIXED_DELAY)) : null,
+                d.containsKey(F_FIXED_DELAY) ? Duration.ofMillis(Long.parseLong(d.get(F_FIXED_DELAY))) : null,
                 "1".equals(d.get(F_OVERLAP_SKIP)),
                 d.get(F_DATA),
                 Integer.parseInt(d.get(F_MAX_ATTEMPTS)),
-                d.containsKey(F_MAX_RUN_TIME) ? Long.parseLong(d.get(F_MAX_RUN_TIME)) : null,
+                d.containsKey(F_MAX_RUN_TIME) ? Duration.ofMillis(Long.parseLong(d.get(F_MAX_RUN_TIME))) : null,
                 "1".equals(d.get(F_PAUSED)),
                 Long.parseLong(d.get(F_REVISION)));
     }
 
     @Override
-    public boolean commitRecurring(DueSchedule due, Instant nextFire, TaskRecord occurrence) {
+    public CommitOutcome commitSchedule(DueSchedule due, Instant nextFire, TaskRecord given) {
+        StoreArguments.requireKey(given.uniqueKey());
+        var occurrence = given.scheduleId() != null
+                ? given
+                : given.toBuilder().scheduleId(due.scheduleId()).build();
         var args = new ArrayList<String>();
         args.add(due.scheduleId());
         args.add(String.valueOf(due.definition().revision()));
@@ -824,13 +893,17 @@ public class RedisTaskStore implements FullStore {
         args.add(String.valueOf(occurrence.id()));
         args.add(occurrence.uniqueKey() == null ? "" : occurrence.uniqueKey());
         args.addAll(storeArgs(occurrence));
-        return num(guard(() -> scripts.run(RedisScripts.CRON_COMMIT, args))) == 1;
+        return switch ((int) num(guard(() -> scripts.run(RedisScripts.CRON_COMMIT, args)))) {
+            case 1 -> CommitOutcome.STORED;
+            case 2 -> CommitOutcome.SKIPPED;
+            default -> CommitOutcome.NOT_COMMITTED;
+        };
     }
 
     // ---- inspection ----------------------------------------------------------------------------------
 
     @Override
-    public Optional<TaskRecord> getTask(long id) {
+    public Optional<TaskRecord> task(long id) {
         var found = load(List.of(id), false);
         return found.isEmpty() ? Optional.empty() : Optional.of(found.getFirst());
     }
@@ -843,10 +916,16 @@ public class RedisTaskStore implements FullStore {
             if (holder == null) return Optional.empty();
             if (holder.equals(named)) return Optional.empty();
             named = holder;
-            var record = getTask(Long.parseLong(holder));
+            var record = task(Long.parseLong(holder));
             if (record.isPresent() && holdsKey(record.get(), key)) return record;
         }
         return Optional.empty();
+    }
+
+    /** The {@code k:} string names the holder for as long as the key is taken, also after the task was removed. */
+    @Override
+    public boolean holdsKey(long id, String key) {
+        return String.valueOf(id).equals(guard(() -> jedis.get(keys.uniqueKey(key))));
     }
 
     /** The two reads of {@link #taskByKey} are not atomic: the record may have lost the key to a newer task since. */
@@ -935,25 +1014,26 @@ public class RedisTaskStore implements FullStore {
 
     /**
      * Lists from the structures that hold the state: {@code idx:<state>:<qid>} for LEASED and the terminal
-     * states, {@code q:<qid>:<tid>} of the types in
-     * {@code active:<qid>} for QUEUED and {@code sched:<qid>} for SCHEDULED. Order is by the zset score, then numeric
-     * id: stateChanged for the indexed states, due for QUEUED and SCHEDULED. The cursor is
+     * states, {@code qa:<qid>} for QUEUED and {@code sched:<qid>} for SCHEDULED. Order is by the zset score, then the id
+     * as text, which is the order a claim takes them in: stateChanged for the indexed states, due for QUEUED and
+     * SCHEDULED. The cursor is
      * {@code <score>:<id>} of the last entry of the page. Pages merge the zsets of each queue, preserving the same
      * cursor when a task or an entire type leaves the queue.
      */
     @Override
     public TaskPage tasks(TaskState state, Integer queueId, String cursor, int limit) {
+        StoreArguments.requireLimit(limit);
         var position = cursor == null ? null : decodeCursor(cursor);
-        if (limit < 1) {
-            return new TaskPage(List.of(), null);
-        }
         return guard(() -> {
             var probe = (int) Math.min((long) limit + 1, Integer.MAX_VALUE);
             var found = listing(state, queueId, position, probe);
             var entries = found.subList(0, Math.min(limit, found.size()));
-            var items = load(entries.stream().map(Entry::id).toList(), true);
+            // a task can leave the state between the read of the ids and the read of the records
+            var items = load(entries.stream().map(Entry::id).toList(), true).stream()
+                    .filter(t -> t.state() == state)
+                    .toList();
             var last = entries.isEmpty() ? null : entries.getLast();
-            var next = found.size() > limit ? (long) last.score() + ":" + last.id() : null;
+            var next = found.size() > limit ? (long) last.score() + ":" + last.member() : null;
             return new TaskPage(items, next);
         });
     }
@@ -963,90 +1043,67 @@ public class RedisTaskStore implements FullStore {
         try {
             if (colon > 0) {
                 return new Entry(
-                        Long.parseLong(cursor.substring(0, colon)), Long.parseLong(cursor.substring(colon + 1)));
+                        Long.parseLong(cursor.substring(0, colon)),
+                        Long.toString(Long.parseLong(cursor.substring(colon + 1))));
             }
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("malformed cursor");
+            throw new TaskValidationException("malformed cursor");
         }
-        throw new IllegalArgumentException("malformed cursor");
+        throw new TaskValidationException("malformed cursor");
     }
 
     private List<Entry> listing(TaskState state, Integer queueId, Entry after, int limit) {
-        var entries = new ArrayList<Entry>();
-        var qids = queueId == null ? sortedQueueIds() : List.of(queueId);
-        for (var qid : qids) {
-            for (var zset : stateZsets(state, qid)) {
-                entries.addAll(page(zset, after, limit));
-            }
-        }
-        var ordered = entries.stream().sorted(ORDER).toList();
-        return ordered.subList(0, Math.min(limit, ordered.size()));
-    }
-
-    private record Entry(double score, long id) {}
-
-    private static final Comparator<Entry> ORDER =
-            Comparator.comparingDouble(Entry::score).thenComparingLong(Entry::id);
-
-    private List<String> stateZsets(TaskState state, int qid) {
-        return switch (state) {
-            case QUEUED ->
-                jedis.smembers(keys.activeTypes(qid)).stream()
-                        .map(tid -> keys.queue(qid, Integer.parseInt(tid)))
-                        .toList();
-            case SCHEDULED -> List.of(keys.scheduled(qid));
-            default -> List.of(keys.index(state.code(), qid));
-        };
-    }
-
-    /**
-     * Reads one zset in (score, numeric id) order after the cursor. Redis breaks score ties by member bytes, so a
-     * chunk's trailing score group is re-read whole before it is ordered by number. A chunk is no longer than the
-     * page needs.
-     */
-    private List<Entry> page(String zset, Entry after, int limit) {
         var out = new ArrayList<Entry>();
-        var min = after == null ? "-inf" : String.valueOf((long) after.score());
-        var size = Math.min(PAGE_CHUNK, limit);
+        var position = after;
         while (out.size() < limit) {
-            var chunk = jedis.zrangeByScoreWithScores(zset, min, "+inf", 0, size);
-            if (chunk.isEmpty()) {
+            var size = Math.min(PAGE_CHUNK, limit - out.size());
+            var chunk = page(state, queueId, position, size);
+            out.addAll(chunk);
+            if (chunk.size() < size) {
                 break;
             }
-            var full = chunk.size() == size;
-            var lastScore = chunk.getLast().getScore();
-            String nextMin = null;
-            if (full) {
-                var kept = chunk.stream().filter(t -> t.getScore() < lastScore).toList();
-                if (kept.isEmpty()) {
-                    var group = (long) lastScore;
-                    chunk = jedis.zrangeByScoreWithScores(
-                            zset, String.valueOf(group), String.valueOf(group), 0, Integer.MAX_VALUE);
-                    nextMin = "(" + group;
-                } else {
-                    chunk = kept;
-                    nextMin = String.valueOf((long) lastScore);
-                }
-            }
-            var ordered = new ArrayList<Entry>(chunk.size());
-            for (var t : chunk) {
-                ordered.add(new Entry(t.getScore(), Long.parseLong(t.getElement())));
-            }
-            ordered.sort(ORDER);
-            for (var e : ordered) {
-                if (after == null || ORDER.compare(e, after) > 0) {
-                    out.add(e);
-                }
-            }
-            if (nextMin == null) {
-                break;
-            }
-            min = nextMin;
+            position = out.getLast();
         }
         return out;
     }
 
-    // ---- wave 2: cancel, expiry, admin, workers ------------------------------------------------------
+    /** A zset entry: the member is the id as the decimal text Redis orders equal scores by. */
+    private record Entry(double score, String member) {
+        long id() {
+            return Long.parseLong(member);
+        }
+    }
+
+    /**
+     * One script call that merges the zsets of the state, of every queue or of the given one, in the order Redis
+     * keeps them (score, then the id as text) and returns the next {@code size} entries after the cursor. A chunk
+     * is no longer than the page needs, which bounds the time the script blocks the server.
+     */
+    @SuppressWarnings("unchecked")
+    private List<Entry> page(TaskState state, Integer queueId, Entry after, int size) {
+        var args = new ArrayList<String>();
+        args.add(
+                switch (state) {
+                    case QUEUED -> "q";
+                    case SCHEDULED -> "s";
+                    default -> "i";
+                });
+        args.add(String.valueOf(state.code()));
+        args.add(after == null ? "" : String.valueOf((long) after.score()));
+        args.add(after == null ? "" : after.member());
+        args.add(String.valueOf(size));
+        if (queueId != null) {
+            args.add(String.valueOf(queueId));
+        }
+        var reply = (List<Object>) scripts.run(RedisScripts.LIST, args);
+        var out = new ArrayList<Entry>(reply.size() / 2);
+        for (var i = 0; i < reply.size(); i += 2) {
+            out.add(new Entry(Double.parseDouble((String) reply.get(i + 1)), (String) reply.get(i)));
+        }
+        return out;
+    }
+
+    // ---- wave 2: cancel, expiry, admin, runners ------------------------------------------------------
 
     /** An optional text for a script: '' for null, else the text after a one-character prefix, so '' is kept. */
     private static String optionalText(String text) {
@@ -1078,20 +1135,26 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     @SuppressWarnings("unchecked")
-    public List<Long> expire(int limit) {
+    public List<ExpiredTask> expire(int limit) {
+        StoreArguments.requireLimit(limit);
         var r = (List<Object>) guard(() -> scripts.run(RedisScripts.EXPIRE, List.of(String.valueOf(limit))));
-        return r.stream().map(o -> Long.parseLong((String) o)).toList();
+        var out = new ArrayList<ExpiredTask>(r.size() / 3);
+        for (var i = 0; i < r.size(); i += 3) {
+            long id = Long.parseLong((String) r.get(i));
+            out.add(new ExpiredTask(id, idOrZero((String) r.get(i + 1)), idOrZero((String) r.get(i + 2))));
+        }
+        return out;
     }
 
     @Override
-    public int purgeWorkers(Duration staleAfter) {
-        var args = List.of(String.valueOf(staleAfter.toMillis()), String.valueOf(RedisScripts.PURGE_WORKERS_PAGE));
+    public int purgeRunners(Duration staleAfter) {
+        var args = List.of(String.valueOf(staleAfter.toMillis()), String.valueOf(RedisScripts.PURGE_RUNNERS_PAGE));
         var total = 0;
         int page;
         do {
-            page = (int) num(guard(() -> scripts.run(RedisScripts.PURGE_WORKERS, args)));
+            page = (int) num(guard(() -> scripts.run(RedisScripts.PURGE_RUNNERS, args)));
             total += page;
-        } while (page == RedisScripts.PURGE_WORKERS_PAGE);
+        } while (page == RedisScripts.PURGE_RUNNERS_PAGE);
         return total;
     }
 
@@ -1099,29 +1162,31 @@ public class RedisTaskStore implements FullStore {
     public CancelOutcome cancel(long id, int revision, String reason, ScheduleEffect effect) {
         var args = new ArrayList<>(List.of(String.valueOf(id), String.valueOf(revision), optionalText(reason)));
         args.addAll(effectArgs(effect));
-        var r = (String) guard(() -> scripts.run(RedisScripts.CANCEL, args));
-        if (r.endsWith("+")) {
-            effect.markApplied();
-            r = r.substring(0, r.length() - 1);
-        }
-        return CancelOutcome.valueOf(r);
+        return CancelOutcome.valueOf(outcome(effect, (String) guard(() -> scripts.run(RedisScripts.CANCEL, args))));
+    }
+
+    /** Takes the trailing plus of a script answer, which says the schedule effect changed the definition, off. */
+    private static String outcome(ScheduleEffect effect, String answer) {
+        if (!answer.endsWith("+")) return answer;
+        effect.markApplied();
+        return answer.substring(0, answer.length() - 1);
     }
 
     @Override
     public RetryOutcome retry(long id, int revision) {
         var args = List.of(String.valueOf(id), String.valueOf(revision));
-        return switch ((int) num(guard(() -> scripts.run(RedisScripts.RETRY, args)))) {
-            case 1 -> RetryOutcome.RETRIED;
-            case 2 -> RetryOutcome.DUPLICATE;
-            default -> RetryOutcome.STALE;
-        };
+        var answer = (String) guard(() -> scripts.run(RedisScripts.RETRY, args));
+        if (answer.equals("KEY_HELD")) {
+            throw new TaskStoreException("Cannot retry task " + id + ": its unique key is held by another task");
+        }
+        return RetryOutcome.valueOf(answer);
     }
 
     @Override
-    public boolean delete(long id, int revision, ScheduleEffect effect) {
+    public DeleteOutcome delete(long id, int revision, ScheduleEffect effect) {
         var args = new ArrayList<>(List.of(String.valueOf(id), String.valueOf(revision)));
         args.addAll(effectArgs(effect));
-        return applied(effect, num(guard(() -> scripts.run(RedisScripts.DELETE, args))));
+        return DeleteOutcome.valueOf(outcome(effect, (String) guard(() -> scripts.run(RedisScripts.DELETE, args))));
     }
 
     @Override
@@ -1149,12 +1214,12 @@ public class RedisTaskStore implements FullStore {
 
     @Override
     public void heartbeat(
-            int workerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
+            int runnerId, String label, Set<Integer> queueIds, Set<Integer> typeIds, int running, boolean accepting) {
         StoreArguments.requireLabel(label);
         guard(() -> scripts.run(
                 RedisScripts.HEARTBEAT,
                 List.of(
-                        String.valueOf(workerId),
+                        String.valueOf(runnerId),
                         String.valueOf(running),
                         accepting ? "1" : "0",
                         label,
@@ -1163,38 +1228,38 @@ public class RedisTaskStore implements FullStore {
     }
 
     @Override
-    public List<WorkerInfo> workers() {
+    public List<RunnerRecord> runners() {
         return guard(() -> {
-            var ids = jedis.zrange(keys.workers, 0, -1).stream()
+            var ids = jedis.zrange(keys.runners, 0, -1).stream()
                     .map(Integer::valueOf)
                     .sorted()
                     .toList();
             var hashes = new ArrayList<Response<Map<String, String>>>(ids.size());
             try (var pipeline = jedis.pipelined()) {
-                ids.forEach(id -> hashes.add(pipeline.hgetAll(keys.worker(id))));
+                ids.forEach(id -> hashes.add(pipeline.hgetAll(keys.runner(id))));
                 pipeline.sync();
             }
-            var out = new ArrayList<WorkerInfo>(ids.size());
+            var out = new ArrayList<RunnerRecord>(ids.size());
             for (var i = 0; i < ids.size(); i++) {
                 var h = hashes.get(i).get();
                 if (h.isEmpty()) {
                     continue;
                 }
-                out.add(new WorkerInfo(
+                out.add(new RunnerRecord(
                         ids.get(i),
                         h.getOrDefault(F_LABEL, ""),
                         Instant.ofEpochMilli(Long.parseLong(h.get(F_STARTED))),
                         Instant.ofEpochMilli(Long.parseLong(h.get(F_SEEN))),
                         Integer.parseInt(h.getOrDefault(F_RUNNING, "0")),
                         "1".equals(h.get(F_ACCEPTING)),
-                        workerIds(h.get(F_QUEUES)),
-                        workerIds(h.get(F_TYPES))));
+                        runnerIds(h.get(F_QUEUES)),
+                        runnerIds(h.get(F_TYPES))));
             }
             return out;
         });
     }
 
-    private static Set<Integer> workerIds(String value) {
+    private static Set<Integer> runnerIds(String value) {
         var ids = new HashSet<Integer>();
         for (var id : (List<?>) Json.parse(value)) ids.add(((Number) id).intValue());
         return ids;
@@ -1203,41 +1268,70 @@ public class RedisTaskStore implements FullStore {
     // ---- wave 2: schedule controls -------------------------------------------------------------------
 
     @Override
-    public List<RecurringSchedule> recurringDefinitions() {
+    public List<ScheduleEntry> schedules(String afterId, int limit) {
+        StoreArguments.requireLimit(limit);
         return guard(() -> {
-            var ids = jedis.smembers(keys.cronDefinitions).stream().sorted().toList();
-            var hashes = new ArrayList<Response<Map<String, String>>>(ids.size());
-            try (var pipeline = jedis.pipelined()) {
-                ids.forEach(id -> hashes.add(pipeline.hgetAll(keys.cronDefinition(id))));
-                pipeline.sync();
+            // a definition deleted between the read of the ids and the read of its hash leaves a gap, which is
+            // filled from behind it, so that a page below the limit always means the end of the listing
+            var page = new ArrayList<ScheduleEntry>();
+            var from = afterId == null ? "-" : "(" + afterId;
+            while (page.size() < limit) {
+                var asked = limit - page.size();
+                var ids = jedis.zrange(
+                        keys.cronDefinitions,
+                        ZRangeParams.zrangeByLexParams(from, "+").limit(0, asked));
+                page.addAll(entries(ids));
+                if (ids.size() < asked) break;
+                from = "(" + ids.getLast();
             }
-            var out = new ArrayList<RecurringSchedule>(ids.size());
-            for (var i = 0; i < ids.size(); i++) {
-                var h = hashes.get(i).get();
-                if (!h.isEmpty()) {
-                    out.add(new RecurringSchedule(
-                            definition(ids.get(i), h), Instant.ofEpochMilli(Long.parseLong(h.get(F_NEXT)))));
-                }
-            }
-            return out;
+            return page;
         });
     }
 
     @Override
-    public boolean pauseRecurring(String scheduleId) {
-        return num(guard(() -> scripts.run(RedisScripts.CRON_PAUSE, List.of(scheduleId)))) == 1;
+    public List<ScheduleEntry> upcomingSchedules(int limit) {
+        StoreArguments.requireLimit(limit);
+        return guard(() -> entries(jedis.zrange(keys.cron, 0, limit - 1L)));
     }
 
     @Override
-    public boolean resumeRecurring(String scheduleId, Instant nextFire) {
-        var args = List.of(scheduleId, nextFire == null ? "" : ms(nextFire));
-        return num(guard(() -> scripts.run(RedisScripts.CRON_RESUME, args))) == 1;
+    public Optional<ScheduleEntry> schedule(String scheduleId) {
+        return guard(() -> entries(List.of(scheduleId)).stream().findFirst());
+    }
+
+    private List<ScheduleEntry> entries(List<String> ids) {
+        var hashes = new ArrayList<Response<Map<String, String>>>(ids.size());
+        try (var pipeline = jedis.pipelined()) {
+            ids.forEach(id -> hashes.add(pipeline.hgetAll(keys.cronDefinition(id))));
+            pipeline.sync();
+        }
+        var out = new ArrayList<ScheduleEntry>(ids.size());
+        for (var i = 0; i < ids.size(); i++) {
+            var h = hashes.get(i).get();
+            if (!h.isEmpty()) {
+                out.add(new ScheduleEntry(
+                        definition(ids.get(i), h), Instant.ofEpochMilli(Long.parseLong(h.get(F_NEXT)))));
+            }
+        }
+        return out;
     }
 
     @Override
-    public boolean setNextFire(String scheduleId, Instant nextFire) {
-        var args = List.of(scheduleId, ms(nextFire));
-        return num(guard(() -> scripts.run(RedisScripts.CRON_SET_NEXT, args))) == 1;
+    public ScheduleOutcome pauseSchedule(String scheduleId, Long expectedRevision) {
+        var args = List.of(scheduleId, optionalRevision(expectedRevision));
+        return ScheduleOutcome.valueOf((String) guard(() -> scripts.run(RedisScripts.CRON_PAUSE, args)));
+    }
+
+    @Override
+    public ScheduleOutcome resumeSchedule(String scheduleId, Long expectedRevision, Instant nextFire) {
+        var args = List.of(scheduleId, optionalRevision(expectedRevision), nextFire == null ? "" : ms(nextFire));
+        return ScheduleOutcome.valueOf((String) guard(() -> scripts.run(RedisScripts.CRON_RESUME, args)));
+    }
+
+    @Override
+    public ScheduleOutcome triggerSchedule(String scheduleId, Long expectedRevision, Instant fireAt) {
+        var args = List.of(scheduleId, optionalRevision(expectedRevision), ms(fireAt));
+        return ScheduleOutcome.valueOf((String) guard(() -> scripts.run(RedisScripts.CRON_TRIGGER, args)));
     }
 
     @Override

@@ -2,9 +2,8 @@ package today.bonfire.oss.bth4j;
 
 import java.time.Duration;
 import java.util.Map;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
+import today.bonfire.oss.bth4j.spi.StoredSchedule;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
 
 final class ScheduleFixtures {
@@ -20,7 +19,7 @@ final class ScheduleFixtures {
      */
     static long fixedDelayOccurrence(
             InMemoryStore store, TaskClient client, java.time.Instant now, int typeId, int queueId, int maxAttempts) {
-        var definition = new RecurringDefinition(
+        var definition = new StoredSchedule(
                 SCHEDULE_ID,
                 typeId,
                 0,
@@ -30,15 +29,15 @@ final class ScheduleFixtures {
                 null,
                 null,
                 0,
-                60_000L,
+                java.time.Duration.ofMinutes(1),
                 false,
                 null,
                 maxAttempts,
                 null,
                 false,
                 0);
-        store.putRecurring(definition, now, now);
-        var due = store.dueRecurring(now, 10).getFirst();
+        store.putSchedule(definition, now, now);
+        var due = store.dueSchedules(now, 10).getFirst();
         var occurrence = TaskRecord.builder()
                 .id(client.nextId())
                 .queueId(queueId)
@@ -46,11 +45,12 @@ final class ScheduleFixtures {
                 .state(TaskState.QUEUED)
                 .maxAttempts(maxAttempts)
                 .createdAt(now)
-                .due(now)
+                .dueAt(now)
                 .scheduleId(SCHEDULE_ID)
                 .headers(Map.of(RecurringTaskService.FIXED_DELAY_HEADER, "PT1M"))
                 .build();
-        if (!store.commitRecurring(due, now.plus(Duration.ofDays(36_500)), occurrence)) {
+        if (!store.commitSchedule(due, now.plus(Duration.ofDays(36_500)), occurrence)
+                .isCommitted()) {
             throw new IllegalStateException("the occurrence was not committed");
         }
         store.promote(10);

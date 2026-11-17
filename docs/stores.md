@@ -11,6 +11,7 @@ On this page:
 - [What a crash can lose](#what-a-crash-can-lose)
 - [Enqueue inside your own transaction](#enqueue-inside-your-own-transaction)
 - [Tasks due at the same time](#tasks-due-at-the-same-time)
+- [Unique keys after a task ended](#unique-keys-after-a-task-ended)
 - [Maintenance batches](#maintenance-batches)
 - [Behavior that belongs to one store](#behavior-that-belongs-to-one-store)
 
@@ -22,7 +23,7 @@ On this page:
 | Needs | Redis 7.4 or newer, or Valkey 9 or newer | PostgreSQL 16 or newer (17 or newer recommended) | SQLite 3.45 or newer in WAL mode | nothing to run, the data lives in the process |
 | Runners on several machines | Yes | Yes | No: one or more runners in one process, or several processes on one machine, with the database file on a local disk | No: it is for tests |
 | Enqueue inside your own transaction | No: commit first, then enqueue, with an outbox | Yes, when the task tables are in the same database as your data | Yes, when the task tables are in the same database as your data | No |
-| Which clock decides | the Redis server (`TIME`) | the database server (`now()`) | the application's `java.time.Clock` | the application's `java.time.Clock` |
+| Which clock decides | the Redis server (`TIME`) | the database server (`statement_timestamp()`) | the application's `java.time.Clock` | the application's `java.time.Clock` |
 | What a crash of the server or machine loses | depends on your Redis settings: everything with no RDB and no AOF, nothing confirmed with `appendfsync always` | nothing confirmed, with the defaults (`synchronous_commit = on`, `fsync = on`) | depends on your `synchronous` setting: nothing confirmed with `FULL` | everything, whenever the process ends |
 | Removes data on its own | only under a `maxmemory-policy` other than `noeviction`; `init` refuses to start under one, when it can read the policy | never | never | never |
 | Best for | runners on several machines, when your task writes do not need to join a database transaction | runners on several machines, and tasks that must commit or roll back with your own data | runners on one machine, with the database file on a local disk | tests of your application |
@@ -42,7 +43,7 @@ What differs, and what your own settings decide, is listed in the sections below
 | Store | Current time comes from |
 |---|---|
 | Redis | the database server (`TIME`) |
-| PostgreSQL | the database server (`now()`) |
+| PostgreSQL | the database server (`statement_timestamp()`, the time the statement started) |
 | SQLite | the `java.time.Clock` the store was given, in the application |
 | In-memory | the `java.time.Clock` the store was given, in the application |
 
@@ -51,8 +52,6 @@ On every store the runner computes `createdAt`, delays and retry times on its ow
 ## Time precision
 
 Every store keeps times and durations in whole milliseconds and drops anything finer, so the timestamps you read back are alike on all of them.
-
-Rows PostgreSQL wrote before 4.2.0 keep their microseconds until they are written again.
 
 ## What a crash can lose
 
@@ -122,9 +121,9 @@ sequenceDiagram
 3. After the commit, enqueue `TaskRequest.of(type, payload).id(id).build()` and delete the outbox row.
 4. A periodic sweep enqueues the outbox rows a crash or an `EnqueueFailedException` left behind. The same id is stored once and answered `Accepted` either way.
 
-When a succeeded task can be removed before the sweep comes (a short succeeded retention), also give the request a unique key with a `keepFor` longer than the sweep's reach, so that a resend cannot run it again.
+When a succeeded task can be removed before the sweep comes (a short succeeded retention), also give the request a unique key with a `keepAfterDone` longer than the sweep's reach, so that a resend cannot run it again. The resend is answered `Accepted` on every store.
 
-Enqueueing first and cancelling the task when your transaction rolls back does not work. A worker can start the task before the rollback, and a crash between the two leaves a task for data that was never committed.
+Enqueueing first and cancelling the task when your transaction rolls back does not work. A runner can start the task before the rollback, and a crash between the two leaves a task for data that was never committed.
 
 ## Tasks due at the same time
 
@@ -133,7 +132,18 @@ Enqueueing first and cancelling the task when your transaction rolls back does n
 | PostgreSQL, SQLite, in-memory | id order |
 | Redis | compares their ids as text, so of two tasks due in the same millisecond, id 1000 runs before id 999 |
 
-The runner promises no order among tasks due at the same time.
+A listing of tasks follows the same order on each store. The runner promises no order among tasks due at the same time.
+
+## Unique keys after a task ended
+
+A unique key with a keep window (`Uniqueness.keepAfterDone`) stays taken for that long after its task ended. Whether a key is taken, and for how long, is the same on every store. Two things around it differ:
+
+| Case | PostgreSQL and SQLite | Redis | In-memory |
+|---|---|---|---|
+| A finished task is read after its keep window ended and before the next maintenance pass | still shows `uniqueKey` and `keyUntil`; maintenance clears them | shows neither: the fields expire with the window | as PostgreSQL and SQLite |
+| A task was removed inside its keep window, and its id is enqueued again with another unique key or with none | answered `Accepted`, and nothing is stored: the row that keeps the key holds the id until the window ends | stored as a new task | as Redis |
+
+The second case needs an application that gives a task its own id and uses that id again for a different task, which is a mistake of the caller: while the first task is still there it is refused with `TaskIdReusedException`. With the same unique key, the resend is answered `Accepted` and stored once on every store.
 
 ## Maintenance batches
 

@@ -1,25 +1,26 @@
 package today.bonfire.oss.bth4j;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.RetryPolicy.Decision;
-import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 
 class RetryPolicyTest {
 
     private static final Throwable ERROR = new IllegalStateException("boom");
 
     private static TaskView failedTask(int attempts) {
-        var record = TaskRecord.builder()
+        return TaskView.builder()
                 .id(1)
                 .state(TaskState.LEASED)
                 .attempts(attempts)
                 .maxAttempts(100)
+                .queue("Q:DEF")
+                .typeName("event")
                 .build();
-        return new TaskView(record, "Q:DEF", "event");
     }
 
     private static long delayMillis(RetryPolicy policy, int attempts) {
@@ -42,11 +43,25 @@ class RetryPolicyTest {
     }
 
     @Test
-    void exponentialNeverExceedsTheCapPlusJitter() {
+    void exponentialNeverExceedsTheCapAndStaysSpreadOutAtIt() {
         var policy = RetryPolicy.exponential(Duration.ofSeconds(1), Duration.ofSeconds(10));
+        var seen = new java.util.HashSet<Long>();
 
         for (int i = 0; i < 200; i++) {
-            assertThat(delayMillis(policy, 30)).isBetween(8_000L - 1, 12_000L + 1);
+            long delay = delayMillis(policy, 30);
+            assertThat(delay).isBetween(8_000L, 10_000L);
+            seen.add(delay);
+        }
+        assertThat(seen).as("distinct delays at the cap").hasSizeGreaterThan(100);
+    }
+
+    @Test
+    void exponentialJustBelowTheCapDoesNotExceedItEither() {
+        // the fourth delay is 8 s before jitter, which could add up to 1.6 s
+        var policy = RetryPolicy.exponential(Duration.ofSeconds(1), Duration.ofSeconds(9));
+
+        for (int i = 0; i < 200; i++) {
+            assertThat(delayMillis(policy, 4)).isBetween(6_400L, 9_000L);
         }
     }
 
@@ -97,5 +112,50 @@ class RetryPolicyTest {
         assertThat(((Decision.RetryAfter) Decision.retryAfter(Duration.ofSeconds(-5))).delay())
                 .isEqualTo(Duration.ZERO);
         assertThat(Decision.dead("no more")).isEqualTo(new Decision.Dead("no more"));
+    }
+
+    @Test
+    void aDecisionBuiltWithoutTheFactoryNormalizesItsDelayToo() {
+        assertThat(new Decision.RetryAfter(null).delay()).isEqualTo(Duration.ZERO);
+        assertThat(new Decision.RetryAfter(Duration.ofSeconds(-5)).delay()).isEqualTo(Duration.ZERO);
+        assertThat(new Decision.RetryAfter(Duration.ofSeconds(5)).delay()).isEqualTo(Duration.ofSeconds(5));
+    }
+
+    @Test
+    void exponentialKeepsDoublingASmallBaseUntilTheCap() {
+        var policy = RetryPolicy.exponential(Duration.ofMillis(10), Duration.ofDays(30));
+
+        long nominal = 10L << 24;
+        assertThat(delayMillis(policy, 25)).isBetween((long) (nominal * 0.8) - 1, (long) (nominal * 1.2) + 1);
+        long cap = Duration.ofDays(30).toMillis();
+        for (int attempts : new int[] {40, 64, 65, 1000}) {
+            assertThat(delayMillis(policy, attempts))
+                    .as("attempt %d", attempts)
+                    .isBetween((long) (cap * 0.8) - 1, (long) (cap * 1.2) + 1);
+        }
+    }
+
+    @Test
+    void exponentialCountsACapBeyondOneHundredYearsAsOneHundredYears() {
+        var policy = RetryPolicy.exponential(Duration.ofSeconds(1), Duration.ofSeconds(Long.MAX_VALUE));
+
+        long longest = TaskRequest.MAX_TIME_FROM_NOW.toMillis();
+        assertThat(delayMillis(policy, 200)).isBetween((long) (longest * 0.8) - 1, (long) (longest * 1.2) + 1);
+    }
+
+    @Test
+    void exponentialAndFixedRefuseANullOrNegativeArgument() {
+        var second = Duration.ofSeconds(1);
+        for (Duration bad : new Duration[] {null, Duration.ofMillis(-1)}) {
+            assertThatThrownBy(() -> RetryPolicy.exponential(bad, second))
+                    .isInstanceOf(TaskConfigurationException.class)
+                    .hasMessageContaining("base cannot be null or negative");
+            assertThatThrownBy(() -> RetryPolicy.exponential(second, bad))
+                    .isInstanceOf(TaskConfigurationException.class)
+                    .hasMessageContaining("cap cannot be null or negative");
+            assertThatThrownBy(() -> RetryPolicy.fixed(bad))
+                    .isInstanceOf(TaskConfigurationException.class)
+                    .hasMessageContaining("delay cannot be null or negative");
+        }
     }
 }

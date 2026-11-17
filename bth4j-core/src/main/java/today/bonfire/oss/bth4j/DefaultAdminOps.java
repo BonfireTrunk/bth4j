@@ -2,7 +2,6 @@ package today.bonfire.oss.bth4j;
 
 import java.time.Clock;
 import java.time.Duration;
-import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -11,17 +10,13 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
-import today.bonfire.oss.bth4j.spi.CancelOutcome;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.FullStore;
-import today.bonfire.oss.bth4j.spi.QueueInfo;
-import today.bonfire.oss.bth4j.spi.RecurringDefinition;
-import today.bonfire.oss.bth4j.spi.RecurringSchedule;
-import today.bonfire.oss.bth4j.spi.RetryOutcome;
-import today.bonfire.oss.bth4j.spi.StateCounts;
+import today.bonfire.oss.bth4j.spi.ScheduleEntry;
+import today.bonfire.oss.bth4j.spi.StoreArguments;
+import today.bonfire.oss.bth4j.spi.StoredSchedule;
+import today.bonfire.oss.bth4j.spi.TaskPage;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.UnreadableTaskException;
-import today.bonfire.oss.bth4j.spi.WorkerInfo;
 
 /** {@link AdminOps} over a store; health and issues come from the runner when there is one. */
 final class DefaultAdminOps implements AdminOps {
@@ -29,21 +24,14 @@ final class DefaultAdminOps implements AdminOps {
 
     private final FullStore store;
     private final Names names;
-    private final QueuesHolder queues;
     private final Clock clock;
     private final Supplier<RunnerHealth> health;
     private final Supplier<List<Issue>> issues;
 
     DefaultAdminOps(
-            FullStore store,
-            Names names,
-            QueuesHolder queues,
-            Clock clock,
-            Supplier<RunnerHealth> health,
-            Supplier<List<Issue>> issues) {
+            FullStore store, Names names, Clock clock, Supplier<RunnerHealth> health, Supplier<List<Issue>> issues) {
         this.store = store;
         this.names = names;
-        this.queues = queues;
         this.clock = clock;
         this.health = health;
         this.issues = issues;
@@ -66,27 +54,36 @@ final class DefaultAdminOps implements AdminOps {
         store.pauseQueue(adminQueueId(queue), paused);
     }
 
-    /** A blank name is the default queue; any other name must already be in the store's registry. */
+    /** The name must be given and already be in the store's registry. */
     private int adminQueueId(String queue) {
-        var name = queue == null || queue.isBlank() ? queues.defaultQueue : queue;
-        return names.knownQueueId(name).orElseThrow(() -> new TaskValidationException("Unknown queue: " + name));
+        if (queue == null || queue.isBlank()) throw new TaskValidationException("queue is required");
+        return names.knownQueueId(queue).orElseThrow(() -> new TaskValidationException("Unknown queue: " + queue));
     }
 
     @Override
     public Optional<TaskView> task(long id) {
-        return store.getTask(id).map(names::view);
+        return store.task(id).map(names::view);
     }
 
     @Override
     public Optional<TaskView> taskByKey(String key) {
-        StoredText.require("uniqueKey", key);
+        TaskClient.requireLookupKey(key);
         return store.taskByKey(key).map(names::view);
     }
 
     @Override
+    public TaskViewPage tasks(TaskState state, String cursor, int limit) {
+        TaskClient.requireListedState(state);
+        return view(store.tasks(state, null, cursor, limit));
+    }
+
+    @Override
     public TaskViewPage tasks(TaskState state, String queue, String cursor, int limit) {
-        var queueId = queue == null ? null : Integer.valueOf(adminQueueId(queue));
-        var page = store.tasks(state, queueId, cursor, limit);
+        TaskClient.requireListedState(state);
+        return view(store.tasks(state, adminQueueId(queue), cursor, limit));
+    }
+
+    private TaskViewPage view(TaskPage page) {
         var result = new ArrayList<TaskView>();
         for (var r : page.items()) result.add(names.view(r));
         return new TaskViewPage(result, page.next());
@@ -110,7 +107,7 @@ final class DefaultAdminOps implements AdminOps {
 
     @Override
     public CancelOutcome cancelByKey(String key, String reason) {
-        StoredText.require("uniqueKey", key);
+        TaskClient.requireLookupKey(key);
         var holder = store.taskByKey(key).orElse(null);
         if (holder == null) return CancelOutcome.NOT_FOUND;
         if (holder.state().isTerminal()) return CancelOutcome.FINISHED;
@@ -118,7 +115,7 @@ final class DefaultAdminOps implements AdminOps {
     }
 
     @Override
-    public boolean delete(long id, int revision) {
+    public DeleteOutcome delete(long id, int revision) {
         var pause = RecurringTaskService.pauseEffect(readable(id));
         return store.delete(id, revision, pause);
     }
@@ -130,23 +127,34 @@ final class DefaultAdminOps implements AdminOps {
      */
     private TaskRecord readable(long id) {
         try {
-            return store.getTask(id).orElse(null);
+            return store.task(id).orElse(null);
         } catch (UnreadableTaskException e) {
             return null;
         }
     }
 
     @Override
-    public List<WorkerInfo> workers() {
-        return store.workers();
+    public List<RunnerView> runners() {
+        var views = new ArrayList<RunnerView>();
+        for (var r : store.runners()) {
+            var queues = new HashSet<String>();
+            for (int id : r.queueIds()) queues.add(names.queueName(id));
+            var types = new HashSet<String>();
+            for (int id : r.typeIds()) types.add(names.typeName(id));
+            views.add(new RunnerView(
+                    r.id(), r.label(), r.startedAt(), r.lastSeenAt(), r.running(), r.accepting(), queues, types));
+        }
+        return views;
     }
 
     @Override
     public List<UnservedWork> unservedWork(Duration liveWithin) {
-        if (liveWithin.isNegative()) throw new IllegalArgumentException("liveWithin must be non-negative");
+        if (liveWithin == null || liveWithin.isNegative() || !StoredTime.fits(liveWithin)) {
+            throw new TaskValidationException("liveWithin must be non-negative and at most " + StoredTime.MAX);
+        }
         var cutoff = clock.instant().minus(liveWithin);
-        var live = store.workers().stream()
-                .filter(w -> w.accepting() && !w.lastSeen().isBefore(cutoff))
+        var live = store.runners().stream()
+                .filter(w -> w.accepting() && !w.lastSeenAt().isBefore(cutoff))
                 .toList();
         var paused = new HashSet<Integer>();
         for (var queue : store.queues()) {
@@ -159,14 +167,14 @@ final class DefaultAdminOps implements AdminOps {
                     .mapToLong(Long::longValue)
                     .sum();
             if (waiting == 0 || paused.contains(queueId)) continue;
-            var workers =
+            var runners =
                     live.stream().filter(w -> w.queueIds().contains(queueId)).toList();
-            if (workers.isEmpty()) {
+            if (runners.isEmpty()) {
                 result.add(new UnservedWork(names.queueName(queueId), null, waiting));
                 continue;
             }
             var types = new HashSet<Integer>();
-            for (var worker : workers) types.addAll(worker.typeIds());
+            for (var runner : runners) types.addAll(runner.typeIds());
             entry.getValue().forEach((type, count) -> {
                 if (!types.contains(type)) {
                     result.add(new UnservedWork(names.queueName(queueId), names.typeName(type), count));
@@ -177,60 +185,74 @@ final class DefaultAdminOps implements AdminOps {
     }
 
     @Override
-    public int purgeStaleWorkers(Duration staleAfter) {
+    public int purgeStaleRunners(Duration staleAfter) {
         if (staleAfter == null || staleAfter.isNegative() || staleAfter.isZero() || !StoredTime.fits(staleAfter)) {
-            throw new IllegalArgumentException("staleAfter must be positive and at most " + StoredTime.MAX);
+            throw new TaskValidationException("staleAfter must be positive and at most " + StoredTime.MAX);
         }
-        return store.purgeWorkers(staleAfter);
+        return store.purgeRunners(staleAfter);
     }
 
     @Override
-    public List<ScheduleView> schedules() {
+    public ScheduleViewPage schedules(String cursor, int limit) {
+        StoreArguments.requireLimit(limit);
+        var entries = store.schedules(cursor, (int) Math.min((long) limit + 1, Integer.MAX_VALUE));
+        var page = entries.size() > limit ? entries.subList(0, limit) : entries;
+        var result = new ArrayList<ScheduleView>(page.size());
+        for (var s : page) result.add(view(s));
+        return new ScheduleViewPage(
+                result, entries.size() > limit ? page.getLast().definition().scheduleId() : null);
+    }
+
+    @Override
+    public List<ScheduleView> upcomingSchedules(int limit) {
+        StoreArguments.requireLimit(limit);
         var result = new ArrayList<ScheduleView>();
-        for (var s : store.recurringDefinitions()) result.add(view(s));
+        for (var s : store.upcomingSchedules(limit)) result.add(view(s));
         return result;
     }
 
-    private ScheduleView view(RecurringSchedule s) {
+    private ScheduleView view(ScheduleEntry s) {
         var d = s.definition();
         return new ScheduleView(
                 d.scheduleId(),
+                d.revision(),
                 names.typeName(d.typeId()),
                 names.queueName(d.queueId()),
                 d.account(),
                 d.cron(),
-                d.zone() == null ? null : ZoneId.of(d.zone()),
-                RecurringDefinition.misfire(d.misfire(), d.catchUpMaxFires()),
-                d.fixedDelayMs() == null ? null : Duration.ofMillis(d.fixedDelayMs()),
+                d.zone(),
+                StoredSchedule.misfire(d.misfire(), d.catchUpMaxFires()),
+                d.fixedDelay(),
                 d.overlapSkip() ? Overlap.SKIP : Overlap.ALLOW,
                 d.paused(),
-                s.nextFire(),
+                s.nextFireAt(),
                 d.maxAttempts(),
-                d.maxRunTimeMs() == null ? null : Duration.ofMillis(d.maxRunTimeMs()));
+                d.maxRunTime());
     }
 
     @Override
-    public boolean pauseSchedule(String id, boolean paused) {
-        if (paused) return store.pauseRecurring(id);
+    public ScheduleOutcome pauseSchedule(String id, long revision, boolean paused) {
+        StoredText.requirePresent("schedule id", id);
+        if (paused) return store.pauseSchedule(id, revision);
         // a fixed-delay definition parks its next fire while paused, so it resumes one delay from now; the store
-        // applies that only to a definition that is paused, so resuming a running one changes nothing
-        var next = store.recurringDefinitions().stream()
-                .filter(s ->
-                        s.definition().scheduleId().equals(id) && s.definition().isFixedDelay())
-                .findFirst()
-                .map(s -> clock.instant().plusMillis(s.definition().fixedDelayMs()))
+        // applies that only to a paused definition whose occurrence is not still running
+        var next = store.schedule(id)
+                .filter(s -> s.definition().isFixedDelay())
+                .map(s -> clock.instant().plus(s.definition().fixedDelay()))
                 .orElse(null);
-        return store.resumeRecurring(id, next);
+        return store.resumeSchedule(id, revision, next);
     }
 
     @Override
-    public boolean triggerSchedule(String id) {
-        return store.setNextFire(id, clock.instant());
+    public ScheduleOutcome triggerSchedule(String id, long revision) {
+        StoredText.requirePresent("schedule id", id);
+        return store.triggerSchedule(id, revision, clock.instant());
     }
 
     @Override
-    public boolean deleteSchedule(String id) {
-        return store.deleteRecurring(id);
+    public ScheduleOutcome deleteSchedule(String id, long revision) {
+        StoredText.requirePresent("schedule id", id);
+        return store.deleteSchedule(id, revision);
     }
 
     @Override

@@ -1,5 +1,5 @@
-import { api, isAdmin } from '../api.js';
-import { duration, confirmDialog, toast, toastError } from '../ui.js';
+import { api, isAdmin, serverNow } from '../api.js';
+import { duration, confirmDialog, toast, toastError, indentJson, compareInstants } from '../ui.js';
 
 const { ref, computed, onMounted } = Vue;
 
@@ -54,10 +54,11 @@ export default {
       if (payload.value === '') return '(no payload)';
       if (typeof payload.value !== 'string') return JSON.stringify(payload.value, null, 2);
       try {
-        return JSON.stringify(JSON.parse(payload.value), null, 2);
+        JSON.parse(payload.value);
       } catch (e) {
         return payload.value;
       }
+      return indentJson(payload.value);
     });
 
     async function act(fn, okMessage, after) {
@@ -68,8 +69,9 @@ export default {
         if (after) after();
         else await load();
       } catch (e) {
-        if (e.conflict) stale.value = true;
+        if (e.stale) stale.value = true;
         toastError(e);
+        if (e.gone) await load();
       } finally {
         busy.value = false;
       }
@@ -120,7 +122,7 @@ export default {
       if (!t) return [];
       const stops = [
         { label: 'Created', at: t.createdAt, reached: true },
-        { label: 'Due', at: t.due, reached: Date.parse(t.due) <= Date.now() || t.state !== 'SCHEDULED' },
+        { label: 'Due', at: t.dueAt, reached: Date.parse(t.dueAt) <= serverNow() || t.state !== 'SCHEDULED' },
         { label: 'Claimed', at: t.claimedAt, reached: !!t.claimedAt },
       ];
       if (FINISHED[t.state]) stops.push({ label: FINISHED[t.state], at: t.stateChangedAt, reached: true });
@@ -130,8 +132,12 @@ export default {
     });
     const cancelled = computed(() => task.value && (task.value.cancelRequestedAt || task.value.cancelReason));
 
+    // An object does not keep the order of its keys (a step named "2" comes before "10" and before "fetch"),
+    // so the order the steps finished in comes from their times.
     const steps = computed(() =>
-      Object.entries((task.value && task.value.steps) || {}).map(([name, s]) => ({ name, at: s && s.at, result: s && s.result })),
+      Object.entries((task.value && task.value.steps) || {})
+        .map(([name, s]) => ({ name, at: s && s.at, result: s && s.result }))
+        .sort((a, b) => compareInstants(a.at, b.at)),
     );
     const failures = computed(() => {
       const f = (task.value && task.value.failures) || [];
@@ -160,7 +166,7 @@ export default {
         <state-badge :state="task.state" lg></state-badge>
         <span class="rev">revision {{ task.revision }}</span>
         <span v-if="task.state === 'LEASED' && task.leaseUntil" class="muted">lease <time-ago :at="task.leaseUntil"></time-ago></span>
-        <span v-else-if="task.state === 'SCHEDULED' || task.state === 'QUEUED'" class="muted">due <time-ago :at="task.due" late></time-ago></span>
+        <span v-else-if="task.state === 'SCHEDULED' || task.state === 'QUEUED'" class="muted">due <time-ago :at="task.dueAt" late></time-ago></span>
         <span class="spacer"></span>
         <button type="button" :disabled="!admin() || busy || !canRetry" :title="admin() ? (canRetry ? '' : 'Only DEAD, CANCELLED or EXPIRED tasks can be retried') : 'Admin role required'" @click="retry">Retry</button>
         <button type="button" class="danger" :disabled="!admin() || busy || !canCancel" :title="admin() ? (canCancel ? '' : 'Only QUEUED, SCHEDULED or LEASED tasks can be cancelled') : 'Admin role required'" @click="cancel">Cancel...</button>
@@ -194,7 +200,7 @@ export default {
           <h3>Execution</h3>
           <dl class="kv">
             <dt>Attempts</dt><dd>{{ task.attempts }} of {{ task.maxAttempts }}</dd>
-            <dt>Worker</dt><dd>{{ task.workerId ?? '-' }}</dd>
+            <dt>Runner</dt><dd>{{ task.runnerId ?? '-' }}</dd>
             <dt>Lease until</dt><dd><time-ago :at="task.leaseUntil"></time-ago></dd>
             <dt>Start by</dt><dd><time-ago :at="task.startBy" late></time-ago></dd>
             <dt>Max run time</dt><dd>{{ task.maxRunTime ? duration(task.maxRunTime) : '-' }}</dd>

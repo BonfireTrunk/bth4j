@@ -8,16 +8,17 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 class ClaimRequestTest {
     @Test
     void rejectsInvalidSharesCapsAndDuplicateOrEmptyGrants() {
-        assertThatThrownBy(() -> new QueueGrant(1, -1, 2)).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new QueueGrant(1, 0, -1)).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new QueueGrant(1, 3, 2)).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> request(List.of())).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new QueueGrant(1, -1, 2)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> new QueueGrant(1, 0, -1)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> new QueueGrant(1, 3, 2)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> request(List.of())).isInstanceOf(TaskValidationException.class);
         assertThatThrownBy(() -> request(List.of(new QueueGrant(1, 1, 1), new QueueGrant(1, 0, 2))))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(TaskValidationException.class);
     }
 
     @Test

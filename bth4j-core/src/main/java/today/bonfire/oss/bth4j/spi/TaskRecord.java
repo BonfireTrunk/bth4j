@@ -4,6 +4,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import today.bonfire.oss.bth4j.FailureInfo;
+import today.bonfire.oss.bth4j.StepResult;
+import today.bonfire.oss.bth4j.TaskState;
 
 /**
  * A task as the store keeps it. Fields that do not apply to the task's state are null. A store never
@@ -14,8 +17,9 @@ import java.util.Map;
  *
  * @param id                unique per namespace, allocated by the client from {@link TaskStore#allocateIds}
  * @param revision          +1 on every state change; never on renew, step or progress writes; the fence every
- *                          transition checks. The client starts a new task at a random value, so that a lease
- *                          on an earlier task with the same id cannot match it
+ *                          transition checks. The client starts a new task at a random value below 2^30, so that
+ *                          a lease on an earlier task with the same id practically cannot match it (one chance in
+ *                          2^30 for each reuse of an id while such a lease is still held)
  * @param queueId           see {@link TaskStore#queueId}
  * @param typeId            see {@link TaskStore#typeId}
  * @param payloadVersion    the task type's payload version when the task was enqueued
@@ -23,18 +27,18 @@ import java.util.Map;
  * @param attempts          how often the task was claimed
  * @param maxAttempts       after this many failed attempts the task is dead
  * @param createdAt         when the client built the task (client clock)
- * @param due               when the task may run: the enqueue time for an immediate task, the due time for a
+ * @param dueAt             when the task may run: the enqueue time for an immediate task, the due time for a
  *                          scheduled one, the retry time after a failure (store clock); never null once stored
  * @param stateChangedAt    when the current state was entered (store clock); the finish time of a terminal task
  * @param encodedPayload    encoded payload; null when there is none or it was dropped on success
- * @param workerId          the worker that claimed the task; kept after it finished
+ * @param runnerId          the runner that claimed the task; kept after it finished
  * @param leaseUntil        when the lease expires unless renewed; LEASED only
  * @param claimedAt         when the last attempt started
  * @param account           application-defined owner, or null
  * @param headers           application headers, or null
  * @param uniqueKey         the unique key while it is held, or null
  * @param keyKeep           how long the key stays held after the task ends, at most
- *                          {@link today.bonfire.oss.bth4j.Uniqueness#MAX_KEEP_FOR}; null releases it at the end
+ *                          {@link today.bonfire.oss.bth4j.Uniqueness#MAX_KEEP_AFTER_DONE}; null releases it at the end
  * @param keyUntil          when the held key of a finished task is released
  * @param retryPolicy       name of the retry policy; null means the runner's default
  * @param scheduleId        the recurring definition this task is an occurrence of, or null
@@ -58,10 +62,10 @@ public record TaskRecord(
         int attempts,
         int maxAttempts,
         Instant createdAt,
-        Instant due,
+        Instant dueAt,
         Instant stateChangedAt,
         String encodedPayload,
-        Integer workerId,
+        Integer runnerId,
         Instant leaseUntil,
         Instant claimedAt,
         String account,
@@ -92,13 +96,14 @@ public record TaskRecord(
 
     /**
      * @return this record as {@link ExecutionStore#enqueue} stores a new task: the fields a producer sets, zero
-     *         attempts, and no worker, lease, claim time, key-until, cancel request or reason, progress, steps or
-     *         failures
+     *         attempts, and no runner, lease, claim time, key-until, cancel request or reason, progress, steps or
+     *         failures. A {@link #keyKeep()} without a {@link #uniqueKey()} keeps nothing and is dropped.
      */
     public TaskRecord asNew() {
         return toBuilder()
+                .keyKeep(uniqueKey == null ? null : keyKeep)
                 .attempts(0)
-                .workerId(null)
+                .runnerId(null)
                 .leaseUntil(null)
                 .claimedAt(null)
                 .keyUntil(null)
@@ -121,10 +126,10 @@ public record TaskRecord(
         b.attempts = attempts;
         b.maxAttempts = maxAttempts;
         b.createdAt = createdAt;
-        b.due = due;
+        b.dueAt = dueAt;
         b.stateChangedAt = stateChangedAt;
         b.encodedPayload = encodedPayload;
-        b.workerId = workerId;
+        b.runnerId = runnerId;
         b.leaseUntil = leaseUntil;
         b.claimedAt = claimedAt;
         b.account = account;
@@ -160,10 +165,10 @@ public record TaskRecord(
         private int attempts;
         private int maxAttempts = 1;
         private Instant createdAt;
-        private Instant due;
+        private Instant dueAt;
         private Instant stateChangedAt;
         private String encodedPayload;
-        private Integer workerId;
+        private Integer runnerId;
         private Instant leaseUntil;
         private Instant claimedAt;
         private String account;
@@ -229,8 +234,8 @@ public record TaskRecord(
             return this;
         }
 
-        public Builder due(Instant v) {
-            due = v;
+        public Builder dueAt(Instant v) {
+            dueAt = v;
             return this;
         }
 
@@ -244,8 +249,8 @@ public record TaskRecord(
             return this;
         }
 
-        public Builder workerId(Integer v) {
-            workerId = v;
+        public Builder runnerId(Integer v) {
+            runnerId = v;
             return this;
         }
 
@@ -345,10 +350,10 @@ public record TaskRecord(
                     attempts,
                     maxAttempts,
                     createdAt,
-                    due,
+                    dueAt,
                     stateChangedAt,
                     encodedPayload,
-                    workerId,
+                    runnerId,
                     leaseUntil,
                     claimedAt,
                     account,

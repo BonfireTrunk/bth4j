@@ -1,6 +1,7 @@
 package today.bonfire.oss.bth4j;
 
 import java.time.Duration;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /**
  * How long a {@link TaskRequest#uniqueKey()} stays taken. At most one task record holds the key; an old
@@ -16,28 +17,29 @@ public sealed interface Uniqueness {
     /**
      * The key stays taken for this long after the task reaches a terminal state.
      *
-     * @param duration positive and at most {@link #MAX_KEEP_FOR}
+     * @param duration at least one millisecond, which is the finest a store keeps, and at most {@link #MAX_KEEP_AFTER_DONE}
      */
-    record KeepFor(Duration duration) implements Uniqueness {
-        public KeepFor {
-            if (duration == null || duration.isNegative() || duration.isZero()) {
-                throw new IllegalArgumentException("duration must be positive");
+    record KeepAfterDone(Duration duration) implements Uniqueness {
+        public KeepAfterDone {
+            // compared before the conversion, which overflows for a duration such as ChronoUnit.FOREVER
+            if (duration != null && duration.compareTo(MAX_KEEP_AFTER_DONE) > 0) {
+                throw new TaskValidationException("duration must be at most " + MAX_KEEP_AFTER_DONE);
             }
-            if (duration.compareTo(MAX_KEEP_FOR) > 0) {
-                throw new IllegalArgumentException("duration must be at most " + MAX_KEEP_FOR);
+            if (duration == null || !duration.isPositive() || duration.toMillis() < 1) {
+                throw new TaskValidationException("duration must be at least 1 ms");
             }
         }
     }
 
     /**
-     * The longest {@link KeepFor} window, {@link TaskRequest#MAX_TIME_FROM_NOW} (100 years): Redis cannot expire a
+     * The longest {@link KeepAfterDone} window, {@link TaskRequest#MAX_TIME_FROM_NOW} (100 years): Redis cannot expire a
      * key much later.
      */
-    Duration MAX_KEEP_FOR = TaskRequest.MAX_TIME_FROM_NOW;
+    Duration MAX_KEEP_AFTER_DONE = TaskRequest.MAX_TIME_FROM_NOW;
 
     Uniqueness UNTIL_DONE = new UntilDone();
 
-    static Uniqueness keepFor(Duration duration) {
-        return new KeepFor(duration);
+    static Uniqueness keepAfterDone(Duration duration) {
+        return new KeepAfterDone(duration);
     }
 }

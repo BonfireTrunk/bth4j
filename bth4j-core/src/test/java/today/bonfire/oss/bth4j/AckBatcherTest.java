@@ -14,9 +14,9 @@ import java.util.concurrent.Future;
 import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.spi.ExecutionStore;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
 
 @Timeout(30)
 class AckBatcherTest {

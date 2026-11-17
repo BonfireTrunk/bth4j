@@ -1,11 +1,14 @@
+import { serverNow } from './api.js';
+
 const { reactive, ref, onMounted, onUnmounted } = Vue;
 
 export const STATES = ['QUEUED', 'SCHEDULED', 'LEASED', 'SUCCEEDED', 'DEAD', 'CANCELLED', 'EXPIRED'];
 
-// one clock for every countdown on the page; components read it so relative times tick without a request
-export const now = ref(Date.now());
+// one clock for every countdown on the page, set to the server's time because the timestamps compared with it are
+// the server's; components read it so relative times tick without a request
+export const now = ref(serverNow());
 setInterval(() => {
-  now.value = Date.now();
+  now.value = serverNow();
 }, 1000);
 
 function pad(n) {
@@ -56,6 +59,47 @@ export function duration(iso) {
 
 export function sum(obj) {
   return Object.values(obj || {}).reduce((a, b) => a + Number(b || 0), 0);
+}
+
+// Lays out JSON text over lines without parsing it: JSON.parse would round a number above 2^53 and drop the
+// trailing zero of 1.10, and a payload is shown as it is stored.
+export function indentJson(text) {
+  let out = '';
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      let end = i + 1;
+      while (end < text.length && text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
+      out += text.slice(i, end + 1);
+      i = end;
+    } else if (c === '{' || c === '[') {
+      let next = i + 1;
+      while (/\s/.test(text[next] || '')) next++;
+      if (text[next] === (c === '{' ? '}' : ']')) {
+        out += c + text[next];
+        i = next;
+      } else {
+        depth++;
+        out += c + '\n' + '  '.repeat(depth);
+      }
+    } else if (c === '}' || c === ']') {
+      depth = Math.max(0, depth - 1);
+      out += '\n' + '  '.repeat(depth) + c;
+    } else if (c === ',') out += ',\n' + '  '.repeat(depth);
+    else if (c === ':') out += ': ';
+    else if (!/\s/.test(c)) out += c;
+  }
+  return out;
+}
+
+// Orders two instants as the server writes them: Date.parse stops at milliseconds, and the fraction has
+// zero to nine digits, so the text alone does not sort either.
+export function compareInstants(a, b) {
+  const byMillis = Date.parse(a) - Date.parse(b);
+  if (byMillis || Number.isNaN(byMillis)) return byMillis || 0;
+  const fraction = (iso) => ((/\.(\d+)/.exec(iso) || [])[1] || '').padEnd(9, '0');
+  return fraction(a).localeCompare(fraction(b));
 }
 
 export const toasts = reactive([]);
@@ -109,10 +153,11 @@ export function usePoll(fetcher, intervalMs = 0) {
   const error = ref('');
   let timer = null;
   let inFlight = false;
+  let rerun = null;
   let alive = true;
 
   async function load() {
-    if (inFlight) return;
+    if (inFlight || !alive) return;
     inFlight = true;
     try {
       const result = await fetcher();
@@ -126,7 +171,23 @@ export function usePoll(fetcher, intervalMs = 0) {
     } finally {
       inFlight = false;
       loading.value = false;
+      const next = rerun;
+      rerun = null;
+      if (next) (alive ? load() : Promise.resolve()).then(next.resolve);
     }
+  }
+
+  // A timer tick that finds a request in flight is skipped. A reload asked for after an action must show the
+  // state after it, so it waits for the request in flight and makes one more, whatever number of reloads asked.
+  function reload() {
+    if (!inFlight) return load();
+    if (!rerun) {
+      rerun = {};
+      rerun.promise = new Promise((resolve) => {
+        rerun.resolve = resolve;
+      });
+    }
+    return rerun.promise;
   }
 
   onMounted(() => {
@@ -137,7 +198,7 @@ export function usePoll(fetcher, intervalMs = 0) {
     alive = false;
     if (timer) clearInterval(timer);
   });
-  return { data, loading, error, reload: load };
+  return { data, loading, error, reload };
 }
 
 const HOLD_MS = 3000;
@@ -149,7 +210,7 @@ export function useChanges() {
   function diff(current) {
     if (previous) {
       for (const [k, v] of Object.entries(current)) {
-        if (previous[k] !== undefined && previous[k] !== v) marks.set(k, Date.now() + HOLD_MS);
+        if (previous[k] !== undefined && previous[k] !== v) marks.set(k, serverNow() + HOLD_MS);
       }
     }
     previous = current;

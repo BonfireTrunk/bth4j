@@ -6,7 +6,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.time.Duration;
 import java.time.ZoneId;
 import org.junit.jupiter.api.Test;
-import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 class ScheduleDefinitionTest {
@@ -21,7 +20,7 @@ class ScheduleDefinitionTest {
 
     @Test
     void cronFactoryLeavesFixedDelayAndOptionsUnset() {
-        var d = ScheduleDefinition.of("nightly", WITH_PAYLOAD, "data", "0 2 * * *");
+        var d = ScheduleDefinition.of("nightly", WITH_PAYLOAD, "data", "0 2 * * *", Overlap.ALLOW);
 
         assertThat(d.id()).isEqualTo("nightly");
         assertThat(d.type()).isEqualTo(WITH_PAYLOAD);
@@ -37,7 +36,7 @@ class ScheduleDefinitionTest {
 
     @Test
     void payloadlessCronFactory() {
-        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *");
+        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW);
 
         assertThat(d.payload()).isNull();
         assertThat(d.cron()).isEqualTo("0 2 * * *");
@@ -62,40 +61,65 @@ class ScheduleDefinitionTest {
     }
 
     @Test
-    void misfireDefaultsToFireOnceNowAndOverlapToAllow() {
-        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *");
+    void misfireDefaultsToFireOnceNow() {
+        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW);
 
         assertThat(d.misfire()).isEqualTo(Misfire.FIRE_ONCE_NOW);
+    }
+
+    @Test
+    void aCronDefinitionTakesTheOverlapRuleItIsGivenAndIsRefusedWithoutOne() {
+        assertThat(ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *", Overlap.SKIP)
+                        .overlap())
+                .isEqualTo(Overlap.SKIP);
+        assertThat(ScheduleDefinition.of("nightly", WITH_PAYLOAD, "data", "0 2 * * *", Overlap.ALLOW)
+                        .overlap())
+                .isEqualTo(Overlap.ALLOW);
+        assertThatThrownBy(() -> ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *", null))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessageContaining("overlap rule");
+        assertThatThrownBy(() -> ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *", Overlap.SKIP)
+                        .withOverlap(null))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessageContaining("overlap rule");
+    }
+
+    @Test
+    void aFixedDelayDefinitionAllowsOverlapUnlessToldOtherwise() {
+        var d = ScheduleDefinition.every("poll", NO_PAYLOAD, Duration.ofMinutes(5));
+
         assertThat(d.overlap()).isEqualTo(Overlap.ALLOW);
+        assertThat(d.withOverlap(Overlap.SKIP).overlap()).isEqualTo(Overlap.SKIP);
+        assertThat(d.withOverlap(Overlap.SKIP).withOverlap(null).overlap()).isEqualTo(Overlap.ALLOW);
     }
 
     @Test
     void nullIdIsRejected() {
-        assertThatThrownBy(() -> ScheduleDefinition.of(null, NO_PAYLOAD, "0 2 * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of(null, NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("schedule id");
     }
 
     @Test
     void blankIdIsRejected() {
-        assertThatThrownBy(() -> ScheduleDefinition.of("", NO_PAYLOAD, "0 2 * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of("", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> ScheduleDefinition.of("   ", NO_PAYLOAD, "0 2 * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of("   ", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class);
     }
 
     @Test
     void idLongerThan128CharactersIsRejectedAndExactly128IsAccepted() {
-        assertThat(ScheduleDefinition.of("a".repeat(128), NO_PAYLOAD, "0 2 * * *")
+        assertThat(ScheduleDefinition.of("a".repeat(128), NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW)
                         .id())
                 .hasSize(128);
-        assertThatThrownBy(() -> ScheduleDefinition.of("a".repeat(129), NO_PAYLOAD, "0 2 * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of("a".repeat(129), NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class);
     }
 
     @Test
     void nullTypeIsRejected() {
-        assertThatThrownBy(() -> ScheduleDefinition.of("id", (TaskType<Void>) null, "0 2 * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of("id", (TaskType<Void>) null, "0 2 * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("type");
     }
@@ -120,10 +144,10 @@ class ScheduleDefinitionTest {
 
     @Test
     void neitherCronNorFixedDelayIsRejected() {
-        assertThatThrownBy(() -> ScheduleDefinition.of("id", NO_PAYLOAD, null))
+        assertThatThrownBy(() -> ScheduleDefinition.of("id", NO_PAYLOAD, null, Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("exactly one");
-        assertThatThrownBy(() -> ScheduleDefinition.of("id", NO_PAYLOAD, "  "))
+        assertThatThrownBy(() -> ScheduleDefinition.of("id", NO_PAYLOAD, "  ", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class);
     }
 
@@ -140,20 +164,31 @@ class ScheduleDefinitionTest {
 
     @Test
     void anAccountFollowsTheTaskRule() {
-        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *");
+        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW);
         String longest = "a".repeat(TaskRequest.MAX_ACCOUNT_LENGTH);
-        assertThat(d.account(longest).account()).isEqualTo(longest);
-        assertThatThrownBy(() -> d.account(longest + "a"))
+        assertThat(d.withAccount(longest).account()).isEqualTo(longest);
+        assertThatThrownBy(() -> d.withAccount(longest + "a"))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("account");
     }
 
     @Test
     void anIdOrAccountWithAU0000IsRejected() {
-        assertThatThrownBy(() -> ScheduleDefinition.of("night\u0000ly", NO_PAYLOAD, "0 2 * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of("night\u0000ly", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class);
-        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *");
-        assertThatThrownBy(() -> d.account("a\u0000b")).isInstanceOf(TaskValidationException.class);
+        var d = ScheduleDefinition.of("nightly", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW);
+        assertThatThrownBy(() -> d.withAccount("a\u0000b")).isInstanceOf(TaskValidationException.class);
+    }
+
+    @Test
+    void aBlankCronNextToAFixedDelayIsNoCron() {
+        for (var blank : new String[] {"", "  "}) {
+            var d = new ScheduleDefinition<>(
+                    "id", NO_PAYLOAD, null, blank, Duration.ofMinutes(1), null, null, null, null, null, null, null);
+
+            assertThat(d.cron()).isNull();
+            assertThat(d).isEqualTo(ScheduleDefinition.every("id", NO_PAYLOAD, Duration.ofMinutes(1)));
+        }
     }
 
     @Test
@@ -177,46 +212,52 @@ class ScheduleDefinitionTest {
 
     @Test
     void typeWithPayloadRequiresOne() {
-        assertThatThrownBy(() -> ScheduleDefinition.of("id", WITH_PAYLOAD, null, "0 2 * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of("id", WITH_PAYLOAD, null, "0 2 * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("payload");
     }
 
     @Test
     void maxAttemptsOutsideOneToShortMaxIsRejected() {
-        var d = ScheduleDefinition.of("id", NO_PAYLOAD, "0 2 * * *");
+        var d = ScheduleDefinition.of("id", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW);
 
-        assertThatThrownBy(() -> d.maxAttempts(0)).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> d.maxAttempts(-1)).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> d.maxAttempts(Short.MAX_VALUE + 1)).isInstanceOf(TaskValidationException.class);
-        assertThat(d.maxAttempts(1).maxAttempts()).isEqualTo(1);
-        assertThat(d.maxAttempts(Short.MAX_VALUE).maxAttempts()).isEqualTo((int) Short.MAX_VALUE);
+        assertThatThrownBy(() -> d.withMaxAttempts(0)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> d.withMaxAttempts(-1)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> d.withMaxAttempts(Short.MAX_VALUE + 1)).isInstanceOf(TaskValidationException.class);
+        assertThat(d.withMaxAttempts(1).maxAttempts()).isEqualTo(1);
+        assertThat(d.withMaxAttempts(Short.MAX_VALUE).maxAttempts()).isEqualTo((int) Short.MAX_VALUE);
     }
 
     @Test
     void maxRunTimeFollowsTheTaskRule() {
-        var d = ScheduleDefinition.of("id", NO_PAYLOAD, "0 2 * * *");
+        var d = ScheduleDefinition.of("id", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW);
 
         assertThat(d.maxRunTime()).isNull();
-        assertThatThrownBy(() -> d.maxRunTime(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> d.maxRunTime(TaskRequest.MAX_RUN_TIME.plusMillis(1)))
+        assertThatThrownBy(() -> d.withMaxRunTime(Duration.ZERO)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> d.withMaxRunTime(Duration.ofNanos(999_999)))
                 .isInstanceOf(TaskValidationException.class);
-        assertThat(d.maxRunTime(Duration.ofMinutes(5)).maxRunTime()).isEqualTo(Duration.ofMinutes(5));
-        assertThat(d.maxRunTime(Duration.ofMinutes(5)).maxAttempts(2).maxRunTime())
+        assertThatThrownBy(() -> d.withMaxRunTime(TaskRequest.MAX_RUN_TIME.plusMillis(1)))
+                .isInstanceOf(TaskValidationException.class);
+        assertThat(d.withMaxRunTime(Duration.ofMinutes(5)).maxRunTime()).isEqualTo(Duration.ofMinutes(5));
+        assertThat(d.withMaxRunTime(Duration.ofMinutes(5)).withMaxAttempts(2).maxRunTime())
                 .isEqualTo(Duration.ofMinutes(5));
     }
 
     @Test
     void withersChangeOnlyTheirFieldAndReturnNewInstances() {
-        var base = ScheduleDefinition.of("id", WITH_PAYLOAD, "data", "0 2 * * *");
+        var base = ScheduleDefinition.of("id", WITH_PAYLOAD, "data", "0 2 * * *", Overlap.ALLOW);
         var berlin = ZoneId.of("Europe/Berlin");
 
-        assertThat(base.zone(berlin)).isNotSameAs(base).isEqualTo(copyWith(base, berlin, null, null, null, null, null));
-        assertThat(base.misfire(Misfire.SKIP)).isEqualTo(copyWith(base, null, Misfire.SKIP, null, null, null, null));
-        assertThat(base.overlap(Overlap.SKIP)).isEqualTo(copyWith(base, null, null, Overlap.SKIP, null, null, null));
-        assertThat(base.queue("Q1")).isEqualTo(copyWith(base, null, null, null, "Q1", null, null));
-        assertThat(base.account("acme")).isEqualTo(copyWith(base, null, null, null, null, "acme", null));
-        assertThat(base.maxAttempts(3)).isEqualTo(copyWith(base, null, null, null, null, null, 3));
+        assertThat(base.withZone(berlin))
+                .isNotSameAs(base)
+                .isEqualTo(copyWith(base, berlin, null, null, null, null, null));
+        assertThat(base.withMisfire(Misfire.SKIP))
+                .isEqualTo(copyWith(base, null, Misfire.SKIP, null, null, null, null));
+        assertThat(base.withOverlap(Overlap.SKIP))
+                .isEqualTo(copyWith(base, null, null, Overlap.SKIP, null, null, null));
+        assertThat(base.withQueue("Q1")).isEqualTo(copyWith(base, null, null, null, "Q1", null, null));
+        assertThat(base.withAccount("acme")).isEqualTo(copyWith(base, null, null, null, null, "acme", null));
+        assertThat(base.withMaxAttempts(3)).isEqualTo(copyWith(base, null, null, null, null, null, 3));
         assertThat(base.zone()).isNull();
         assertThat(base.queue()).isNull();
     }
@@ -224,12 +265,12 @@ class ScheduleDefinitionTest {
     @Test
     void withersKeepEarlierSettings() {
         var d = ScheduleDefinition.every("id", WITH_PAYLOAD, "data", Duration.ofMinutes(2))
-                .zone(ZoneId.of("UTC"))
-                .misfire(Misfire.catchUp(4))
-                .overlap(Overlap.SKIP)
-                .queue("Q1")
-                .account("acme")
-                .maxAttempts(7);
+                .withZone(ZoneId.of("UTC"))
+                .withMisfire(Misfire.catchUp(4))
+                .withOverlap(Overlap.SKIP)
+                .withQueue("Q1")
+                .withAccount("acme")
+                .withMaxAttempts(7);
 
         assertThat(d.id()).isEqualTo("id");
         assertThat(d.type()).isEqualTo(WITH_PAYLOAD);
@@ -244,15 +285,12 @@ class ScheduleDefinitionTest {
     }
 
     @Test
-    void settingMisfireOrOverlapToNullRestoresTheDefault() {
-        var d = ScheduleDefinition.of("id", NO_PAYLOAD, "0 2 * * *")
-                .misfire(Misfire.SKIP)
-                .overlap(Overlap.SKIP)
-                .misfire(null)
-                .overlap(null);
+    void settingMisfireToNullRestoresTheDefault() {
+        var d = ScheduleDefinition.of("id", NO_PAYLOAD, "0 2 * * *", Overlap.ALLOW)
+                .withMisfire(Misfire.SKIP)
+                .withMisfire(null);
 
         assertThat(d.misfire()).isEqualTo(Misfire.FIRE_ONCE_NOW);
-        assertThat(d.overlap()).isEqualTo(Overlap.ALLOW);
     }
 
     @Test
@@ -264,8 +302,8 @@ class ScheduleDefinitionTest {
 
     @Test
     void catchUpWithMaxBelowOneIsRejected() {
-        assertThatThrownBy(() -> Misfire.catchUp(0)).isInstanceOf(TaskConfigurationException.class);
-        assertThatThrownBy(() -> new Misfire.CatchUp(-3)).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> Misfire.catchUp(0)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> new Misfire.CatchUp(-3)).isInstanceOf(TaskValidationException.class);
         assertThat(Misfire.catchUp(1)).isEqualTo(new Misfire.CatchUp(1));
     }
 

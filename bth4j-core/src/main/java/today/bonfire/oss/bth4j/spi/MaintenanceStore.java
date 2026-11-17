@@ -1,13 +1,15 @@
 package today.bonfire.oss.bth4j.spi;
 
 import java.time.Duration;
-import java.time.Instant;
 import java.util.List;
+import today.bonfire.oss.bth4j.TaskState;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /**
  * Background housekeeping. Any runner may call these; the store makes them safe to run concurrently. A call
  * with a limit fills the batch while more qualify (an index entry the store finds broken and drops may take a
- * place in it): the runner calls again while a batch comes back full, and a short batch ends the round.
+ * place in it): the runner calls again while a batch comes back full, and a short batch ends the round. A
+ * limit is at least 1; a lower one throws {@link TaskValidationException}.
  */
 public interface MaintenanceStore extends TaskStore {
 
@@ -24,8 +26,7 @@ public interface MaintenanceStore extends TaskStore {
      * leaves the key taken until then: {@link #releaseKeys} frees it, and a same-key enqueue meanwhile answers
      * {@link EnqueueOutcome.DuplicateKey} with the removed task's id.
      *
-     * @param state SUCCEEDED, DEAD, CANCELLED or EXPIRED; any other state throws {@link IllegalArgumentException}
-     * @param limit at least 1
+     * @param state SUCCEEDED, DEAD, CANCELLED or EXPIRED; any other state throws {@link TaskValidationException}
      * @return how many were removed
      */
     long purge(TaskState state, Duration retention, int limit);
@@ -34,26 +35,24 @@ public interface MaintenanceStore extends TaskStore {
      * Releases unique keys of finished tasks whose {@link TaskRecord#keyUntil()} has passed, including the keys
      * that removed tasks left taken.
      *
-     * @param limit at least 1; the most keys one call releases
+     * @param limit the most keys one call releases
      * @return how many were released
      */
     int releaseKeys(int limit);
-
-    /** @return the earliest due time among SCHEDULED tasks, or null */
-    Instant nextDue();
 
     /**
      * Moves QUEUED and SCHEDULED tasks whose {@link TaskRecord#startBy()} has passed to EXPIRED (revision +1,
      * unique key handled like a terminal transition), oldest first, up to the limit.
      *
-     * @return the ids moved
+     * @return the tasks moved, each with the queue and type id it had, read in the same atomic step as the move so
+     *         that a purge or delete right after cannot take them away
      */
-    List<Long> expire(int limit);
+    List<ExpiredTask> expire(int limit);
 
     /**
-     * Deletes worker rows whose last heartbeat is older than {@code staleAfter}.
+     * Deletes runner rows whose last heartbeat is older than {@code staleAfter}.
      *
      * @return how many were deleted
      */
-    int purgeWorkers(Duration staleAfter);
+    int purgeRunners(Duration staleAfter);
 }

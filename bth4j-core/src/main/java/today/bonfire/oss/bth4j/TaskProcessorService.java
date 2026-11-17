@@ -1,7 +1,6 @@
 package today.bonfire.oss.bth4j;
 
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -9,6 +8,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.LongSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
@@ -43,12 +43,14 @@ class TaskProcessorService extends CustomThread {
     private final Map<Integer, QueuePolicy> policies;
     private final boolean policed;
     private final Set<Integer> knownTypeIds;
-    private final int workerId;
+    private final int runnerId;
     private final Duration lease;
     private final Duration renewInterval;
+    private final Duration maxRunTimeCheckInterval;
     private final Duration defaultMaxRunTime;
     private final Duration idlePollInterval;
     private final int claimBatchSize;
+    private final LongSupplier nanoTime;
     private final AtomicInteger queueOffset = new AtomicInteger();
     /** shared with the runner so that a restarted processor keeps renewing the tasks its predecessor started */
     private final Admission admission;
@@ -57,10 +59,23 @@ class TaskProcessorService extends CustomThread {
     /** the last shared claim skipped a queue at its cap; written and read by the processor thread only */
     private boolean capBlocked;
 
+    private final OutageLog claimOutage;
+    private final OutageLog renewalOutage;
+    /** the store failure of the last claim; written and read by the processor thread only */
+    private RuntimeException claimFailure;
+    /**
+     * What each queue of {@code distinctQueueIds} is owed of the slots shared so far. Kept from claim to claim, so
+     * the weights also hold when slots free up one at a time; written and read by the processor thread only.
+     */
+    private final long[] credits;
+
     private final String renewerName;
     private final ThreadGroup group;
     private volatile Thread renewer;
     private volatile boolean renewalRunning = true;
+
+    /** How often running attempts are checked against their maximum run time, when a renewal period is longer. */
+    private static final Duration MAX_RUN_TIME_CHECK_INTERVAL = Duration.ofSeconds(1);
 
     private TaskProcessorService(Builder b) {
         super(b.group, b.threadName);
@@ -70,15 +85,21 @@ class TaskProcessorService extends CustomThread {
         this.distinctQueueIds = List.copyOf(new LinkedHashSet<>(b.queueIds));
         this.policies = Map.copyOf(b.queuePolicies);
         this.policed = policies.values().stream().anyMatch(p -> !p.equals(QueuePolicy.DEFAULT));
+        this.credits = new long[distinctQueueIds.size()];
         this.knownTypeIds = Set.copyOf(b.knownTypeIds);
-        this.workerId = b.workerId;
+        this.runnerId = b.runnerId;
         this.admission = b.admission;
         this.reservations = b.reservations;
         this.lease = b.lease;
         this.renewInterval = Duration.ofMillis(Math.max(100, lease.toMillis() / 3));
+        this.maxRunTimeCheckInterval =
+                renewInterval.compareTo(MAX_RUN_TIME_CHECK_INTERVAL) < 0 ? renewInterval : MAX_RUN_TIME_CHECK_INTERVAL;
         this.defaultMaxRunTime = b.defaultMaxRunTime;
         this.idlePollInterval = b.idlePollInterval;
         this.claimBatchSize = b.claimBatchSize;
+        this.nanoTime = b.nanoTime;
+        this.claimOutage = new OutageLog(log, "Task processor", nanoTime);
+        this.renewalOutage = new OutageLog(log, "Lease renewal", nanoTime);
         this.group = b.group;
         this.renewerName = b.threadName + "-lease";
         this.renewer = newRenewer();
@@ -134,7 +155,14 @@ class TaskProcessorService extends CustomThread {
                         log.debug("Task processor thread interrupted while stopping");
                     }
                 } catch (Exception e) {
-                    log.error("Task processor error, waiting {} before the next attempt", idlePollInterval, e);
+                    var failure = claimFailure;
+                    claimFailure = null;
+                    if (e == failure) {
+                        claimOutage.failed(
+                                e, "Task processor error, waiting {} before the next attempt", idlePollInterval);
+                    } else {
+                        log.error("Task processor error, waiting {} before the next attempt", idlePollInterval, e);
+                    }
                     sleepQuietly(idlePollInterval);
                 }
             }
@@ -189,9 +217,11 @@ class TaskProcessorService extends CustomThread {
             try {
                 reservations.drainSignal();
                 tasks = policed ? claimShared(slots) : claim(rotatedQueues(), slots);
+                claimOutage.succeeded();
                 settings.status().claimed();
             } catch (RuntimeException e) {
                 settings.status().storeError(e);
+                claimFailure = e;
                 throw e;
             }
             if (tasks.size() > slots) tasks = withinSlots(tasks, slots);
@@ -220,7 +250,7 @@ class TaskProcessorService extends CustomThread {
         TaskExecution execution = null;
         boolean submitting = false;
         try {
-            execution = new TaskExecution(record, settings, this::finished);
+            execution = new TaskExecution(record, settings, this::finished, nanoTime);
             admission.started(execution);
             reservations.reserve(
                     execution,
@@ -260,56 +290,88 @@ class TaskProcessorService extends CustomThread {
                                 .toList(),
                         count,
                         lease,
-                        workerId,
+                        runnerId,
                         knownTypeIds));
     }
 
     /**
      * Shares {@code slots} between the queues by weight, each capped by its remaining concurrency, and claims
      * from each queue with a share. Slots a queue could not fill are offered once more to the queues that
-     * filled theirs, so an empty queue does not idle the others.
+     * filled theirs, and what is left after that to the queues the split gave no share, so an empty queue does
+     * not idle the others.
      */
     private List<TaskRecord> claimShared(int slots) {
-        var order = rotatedDistinctQueues();
-        var caps = new int[order.size()];
+        int queues = distinctQueueIds.size();
+        int first = Math.floorMod(queueOffset.getAndIncrement(), queues);
+        var order = new ArrayList<Integer>(queues);
+        var caps = new int[queues];
+        var weights = new int[queues];
         capBlocked = false;
-        long totalWeight = 0;
-        for (int i = 0; i < order.size(); i++) {
+        boolean open = false;
+        for (int i = 0; i < queues; i++) {
+            order.add(distinctQueueIds.get((first + i) % queues));
             var policy = policies.getOrDefault(order.get(i), QueuePolicy.DEFAULT);
             int cap = policy.maxConcurrent() == 0
                     ? slots
                     : Math.max(0, policy.maxConcurrent() - reservations.running(order.get(i)));
             caps[i] = Math.min(cap, slots);
-            if (caps[i] > 0) totalWeight += policy.weight();
+            weights[i] = policy.weight();
+            if (caps[i] > 0) open = true;
             else capBlocked = true;
         }
-        if (totalWeight == 0) return List.of();
-        var shares = new int[order.size()];
-        int given = 0;
-        for (int i = 0; i < order.size(); i++) {
-            if (caps[i] == 0) continue;
-            int weight =
-                    policies.getOrDefault(order.get(i), QueuePolicy.DEFAULT).weight();
-            shares[i] = (int) Math.min(caps[i], (long) slots * weight / totalWeight);
-            given += shares[i];
-        }
-        for (int i = 0; given < slots && i < order.size(); i++) {
-            if (shares[i] < caps[i]) {
-                shares[i]++;
-                given++;
+        if (!open) return List.of();
+        // smooth weighted round robin, one slot at a time: every queue below its cap earns its weight, the queue
+        // owed most takes the slot and pays what was earned in that round. Shares cut from each claim's own slot
+        // count would give a queue of weight 3 beside one of weight 1 half the slots when one slot frees at a time
+        var shares = new int[queues];
+        for (int given = 0; given < slots; given++) {
+            int winner = -1;
+            long earned = 0;
+            for (int i = 0; i < queues; i++) {
+                if (shares[i] >= caps[i]) continue;
+                int queue = (first + i) % queues;
+                credits[queue] += weights[i];
+                earned += weights[i];
+                if (winner < 0 || credits[queue] > credits[(first + winner) % queues]) winner = i;
             }
+            if (winner < 0) break;
+            credits[(first + winner) % queues] -= earned;
+            shares[winner]++;
         }
         var grants = new ArrayList<QueueGrant>(order.size());
         for (int i = 0; i < order.size(); i++) {
             grants.add(new QueueGrant(order.get(i), shares[i], caps[i]));
         }
-        return settings.store().claim(new ClaimRequest(grants, slots, lease, workerId, knownTypeIds));
+        var claimed = settings.store().claim(new ClaimRequest(grants, slots, lease, runnerId, knownTypeIds));
+        int left = slots - claimed.size();
+        if (left <= 0) return claimed;
+        // a store skips a grant without a share, also when the queues with a share have nothing to run
+        var skipped = new ArrayList<QueueGrant>();
+        for (int i = 0; i < order.size(); i++) {
+            if (shares[i] == 0 && caps[i] > 0) {
+                skipped.add(new QueueGrant(order.get(i), Math.min(caps[i], left), caps[i]));
+            }
+        }
+        if (skipped.isEmpty()) return claimed;
+        try {
+            var more = settings.store().claim(new ClaimRequest(skipped, left, lease, runnerId, knownTypeIds));
+            if (more.isEmpty()) return claimed;
+            var all = new ArrayList<TaskRecord>(claimed.size() + more.size());
+            all.addAll(claimed);
+            all.addAll(more);
+            return all;
+        } catch (RuntimeException e) {
+            if (claimed.isEmpty()) throw e;
+            // the tasks of the first claim are leased to this runner and still have to run
+            settings.status().storeError(e);
+            return claimed;
+        }
     }
 
     /** A store that returned more tasks than asked for: the extra ones go back to their queue, unrun. */
     private List<TaskRecord> withinSlots(List<TaskRecord> tasks, int slots) {
         var detail = "store returned " + tasks.size() + " tasks for a claim of " + slots;
-        settings.status().issue("store-error", detail, null);
+        settings.status().issue(Issue.Kind.STORE_ERROR, detail, null);
         log.error("The {}, returning the extra ones to their queue", detail);
         for (var extra : tasks.subList(slots, tasks.size())) {
             try {
@@ -334,7 +396,7 @@ class TaskProcessorService extends CustomThread {
                     execution.taskId(),
                     e);
         }
-        settings.status().issue("executor-rejected", cause.toString(), execution.taskId());
+        settings.status().issue(Issue.Kind.EXECUTOR_REJECTED, cause.toString(), execution.taskId());
         log.warn("Executor rejected task {}, returned to its queue", execution.taskId(), cause);
     }
 
@@ -353,10 +415,6 @@ class TaskProcessorService extends CustomThread {
         return rotate(queueIds);
     }
 
-    private List<Integer> rotatedDistinctQueues() {
-        return rotate(distinctQueueIds);
-    }
-
     private List<Integer> rotate(List<Integer> ids) {
         int n = ids.size();
         int start = Math.floorMod(queueOffset.getAndIncrement(), n);
@@ -368,14 +426,37 @@ class TaskProcessorService extends CustomThread {
     }
 
     private void renewLeases() {
+        long renewAt = System.nanoTime() + renewInterval.toNanos();
         while (renewalRunning) {
-            sleepQuietly(renewInterval);
+            sleepQuietly(untilNextCheck(maxRunTimeCheckInterval, renewAt - System.nanoTime()));
             try {
-                renewOnce();
+                if (System.nanoTime() - renewAt >= 0) {
+                    renewAt = System.nanoTime() + renewInterval.toNanos();
+                    renewOnce();
+                } else {
+                    cancelOverrunning();
+                }
             } catch (RuntimeException | Error e) {
                 // an Error ending this thread would stop every renewal while the runner reports RUNNING
                 log.error("Lease renewal round failed, retrying in {}", renewInterval, e);
             }
+        }
+    }
+
+    /** The check interval, cut short when the next renewal is due before it, so that no renewal waits for a check. */
+    static Duration untilNextCheck(Duration checkInterval, long nanosUntilRenewal) {
+        return Duration.ofNanos(Math.clamp(nanosUntilRenewal, 0, checkInterval.toNanos()));
+    }
+
+    /**
+     * Requests cancellation of the attempts past their maximum run time, without a store call. It runs between
+     * two renewal rounds, so that a maximum run time shorter than a renewal period is not noticed a whole period
+     * late.
+     */
+    void cancelOverrunning() {
+        long now = nanoTime.getAsLong();
+        for (var e : admission.attempts()) {
+            if (!e.reporting()) cancelIfOverrunning(e, now);
         }
     }
 
@@ -386,7 +467,7 @@ class TaskProcessorService extends CustomThread {
     void renewOnce() {
         var attempts = admission.attempts();
         if (attempts.isEmpty()) return;
-        var now = settings.clock().instant();
+        long now = nanoTime.getAsLong();
         var executions = new ArrayList<TaskExecution>(attempts.size());
         for (var e : attempts) {
             // an attempt whose processor returned is writing its outcome: it is renewed until that write resolves
@@ -394,6 +475,8 @@ class TaskProcessorService extends CustomThread {
                 cancelIfOverrunning(e, now);
                 if (abandonIfStuck(e, now)) continue;
             }
+            // a lost lease cannot be renewed again; the loss was reported when it was found
+            if (e.lostLease()) continue;
             executions.add(e);
         }
         if (executions.isEmpty()) return;
@@ -401,6 +484,7 @@ class TaskProcessorService extends CustomThread {
         for (var e : executions) refs.add(new LeaseRef(e.taskId(), e.revision()));
         try {
             var statuses = settings.store().renew(refs, lease);
+            renewalOutage.succeeded();
             int lost = 0;
             for (int i = 0; i < statuses.size() && i < executions.size(); i++) {
                 var status = statuses.get(i);
@@ -410,7 +494,7 @@ class TaskProcessorService extends CustomThread {
                     if (execution.reporting()) continue;
                     lost++;
                     execution.leaseLost();
-                    settings.status().issue("lease-lost", "lease not renewed", execution.taskId());
+                    settings.status().issue(Issue.Kind.LEASE_LOST, "lease not renewed", execution.taskId());
                 } else if (status.cancelRequested()) {
                     execution.requestCancel(null);
                 }
@@ -420,7 +504,7 @@ class TaskProcessorService extends CustomThread {
             }
         } catch (RuntimeException e) {
             settings.status().storeError(e);
-            log.error("Lease renewal failed for {} running tasks", refs.size(), e);
+            renewalOutage.failed(e, "Lease renewal failed for {} running tasks", refs.size());
         }
     }
 
@@ -428,13 +512,13 @@ class TaskProcessorService extends CustomThread {
         return e.maxRunTime() != null ? e.maxRunTime() : defaultMaxRunTime;
     }
 
-    private void cancelIfOverrunning(TaskExecution e, Instant now) {
-        var started = e.startedAt();
-        if (started == null || e.overrunSince() != null) return;
+    private void cancelIfOverrunning(TaskExecution e, long now) {
+        var started = e.startedNanos();
+        if (started == null || e.overrunSinceNanos() != null) return;
         var maxRunTime = maxRunTime(e);
-        if (!now.isAfter(started.plus(maxRunTime))) return;
+        if (now - started <= maxRunTime.toNanos()) return;
         e.markOverrun(now);
-        if (e.cancelRequested()) return;
+        if (e.isCancelRequested()) return;
         log.warn("Task {} exceeded its maximum run time of {}, requesting cancellation", e.taskId(), maxRunTime);
         e.requestCancel("max run time " + maxRunTime + " exceeded");
     }
@@ -445,14 +529,14 @@ class TaskProcessorService extends CustomThread {
      *
      * @return true when the attempt is abandoned
      */
-    private boolean abandonIfStuck(TaskExecution e, Instant now) {
-        var since = e.overrunSince();
-        if (since == null || now.isBefore(since.plus(renewInterval))) return false;
+    private boolean abandonIfStuck(TaskExecution e, long now) {
+        var since = e.overrunSinceNanos();
+        if (since == null || now - since < renewInterval.toNanos()) return false;
         if (reservations.abandon(e)) {
             var detail = "task " + e.taskId() + " ran past its maximum run time of " + maxRunTime(e)
                     + " and did not stop; its lease is no longer renewed and its slots stay held until it ends ("
                     + reservations.abandoned() + " abandoned attempts hold slots)";
-            settings.status().issue("attempt-abandoned", detail, e.taskId());
+            settings.status().issue(Issue.Kind.ATTEMPT_ABANDONED, detail, e.taskId());
             log.warn(detail);
         }
         return true;
@@ -490,11 +574,12 @@ class TaskProcessorService extends CustomThread {
         private List<Integer> queueIds;
         private Map<Integer, QueuePolicy> queuePolicies = Map.of();
         private Set<Integer> knownTypeIds;
-        private int workerId;
+        private int runnerId;
         private Duration lease = Duration.ofSeconds(60);
         private Duration defaultMaxRunTime = Duration.ofHours(1);
         private Duration idlePollInterval = Duration.ofMillis(500);
         private int claimBatchSize = 32;
+        private LongSupplier nanoTime = System::nanoTime;
         private Admission admission = new Admission();
         private QueueReservations reservations = new QueueReservations();
 
@@ -534,8 +619,8 @@ class TaskProcessorService extends CustomThread {
             return this;
         }
 
-        Builder workerId(int workerId) {
-            this.workerId = workerId;
+        Builder runnerId(int runnerId) {
+            this.runnerId = runnerId;
             return this;
         }
 
@@ -547,6 +632,12 @@ class TaskProcessorService extends CustomThread {
         /** The maximum run time of an attempt whose task sets none. */
         Builder defaultMaxRunTime(Duration defaultMaxRunTime) {
             this.defaultMaxRunTime = defaultMaxRunTime;
+            return this;
+        }
+
+        /** The source of elapsed time for the maximum run time; a test passes its own. */
+        Builder nanoTime(LongSupplier nanoTime) {
+            this.nanoTime = nanoTime;
             return this;
         }
 

@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
@@ -34,7 +35,8 @@ class BackgroundRunnerBuilderTest {
                 builder::succeededRetention,
                 builder::deadRetention,
                 builder::cancelledRetention,
-                builder::workerStaleAfter);
+                builder::expiredRetention,
+                builder::runnerStaleTimeout);
 
         for (var setting : settings) {
             assertThatCode(() -> setting.apply(longest)).doesNotThrowAnyException();
@@ -45,13 +47,73 @@ class BackgroundRunnerBuilderTest {
     }
 
     @Test
-    void aWorkerLabelOrQueueNameWithAU0000IsRejected() {
+    void aRetentionMayBeZeroAndIsNeverNegativeOrNull() {
+        var builder = BackgroundRunner.builder();
+        Map<String, Function<Duration, BackgroundRunner.Builder>> settings = Map.of(
+                "succeededRetention", builder::succeededRetention,
+                "deadRetention", builder::deadRetention,
+                "cancelledRetention", builder::cancelledRetention,
+                "expiredRetention", builder::expiredRetention);
+
+        settings.forEach((name, setting) -> {
+            assertThatCode(() -> setting.apply(Duration.ZERO)).doesNotThrowAnyException();
+            for (Duration bad : new Duration[] {Duration.ofMillis(-1), null}) {
+                assertThatThrownBy(() -> setting.apply(bad))
+                        .isInstanceOf(TaskConfigurationException.class)
+                        .hasMessage(name + " cannot be null or negative");
+            }
+        });
+    }
+
+    @Test
+    void everyIntervalHasAShortestValueAndIsAtMostOneHundredYears() {
+        var builder = BackgroundRunner.builder();
+        Map<Duration, List<Function<Duration, BackgroundRunner.Builder>>> settingsByShortest = Map.of(
+                Duration.ofMillis(1), List.of(builder::purgeInterval, builder::serviceCheckInterval),
+                Duration.ofMillis(10),
+                        List.of(
+                                builder::idlePollInterval,
+                                builder::scheduledTaskCheckInterval,
+                                builder::scheduleCheckInterval),
+                Duration.ofSeconds(1), List.of(builder::maintenanceCheckInterval));
+
+        settingsByShortest.forEach((shortest, settings) -> {
+            for (var setting : settings) {
+                assertThatCode(() -> setting.apply(shortest)).doesNotThrowAnyException();
+                assertThatCode(() -> setting.apply(TaskRequest.MAX_TIME_FROM_NOW))
+                        .doesNotThrowAnyException();
+                for (Duration bad :
+                        new Duration[] {null, Duration.ZERO, shortest.minusNanos(1), Duration.ofMillis(-1)}) {
+                    assertThatThrownBy(() -> setting.apply(bad))
+                            .as("%s", bad)
+                            .isInstanceOf(TaskConfigurationException.class)
+                            .hasMessageContaining("at least " + shortest.toMillis() + " ms");
+                }
+                // too long to count in milliseconds: refused, not an ArithmeticException
+                for (Duration bad :
+                        new Duration[] {TaskRequest.MAX_TIME_FROM_NOW.plusMillis(1), Duration.ofSeconds(Long.MAX_VALUE)
+                        }) {
+                    assertThatThrownBy(() -> setting.apply(bad))
+                            .as("%s", bad)
+                            .isInstanceOf(TaskConfigurationException.class)
+                            .hasMessageContaining("at most");
+                }
+            }
+        });
+    }
+
+    @Test
+    void aQueueListWithANullNameIsRejected() {
+        assertThatThrownBy(() -> BackgroundRunner.builder().processQueues(java.util.Arrays.asList("general", null)))
+                .isInstanceOf(TaskConfigurationException.class)
+                .hasMessage("queues to process cannot contain null");
+    }
+
+    @Test
+    void aRunnerLabelOrQueueNameWithAU0000IsRejected() {
         var builder = BackgroundRunner.builder();
 
-        assertThatThrownBy(() -> builder.workerLabel("host\u00001")).isInstanceOf(TaskConfigurationException.class);
-        assertThatThrownBy(() -> builder.configureQueues(List.of("Q\u00001"), null, null))
-                .isInstanceOf(TaskConfigurationException.class);
-        assertThatThrownBy(() -> TaskClient.builder().queues(List.of("Q\u00001"), null))
-                .isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> builder.runnerLabel("host\u00001")).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> Queues.of("Q\u00001")).isInstanceOf(TaskConfigurationException.class);
     }
 }

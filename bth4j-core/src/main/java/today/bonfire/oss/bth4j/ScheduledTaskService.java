@@ -1,5 +1,6 @@
 package today.bonfire.oss.bth4j;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import org.slf4j.Logger;
@@ -9,14 +10,28 @@ import today.bonfire.oss.bth4j.spi.MaintenanceStore;
 /** Moves scheduled tasks whose time has come into their queues. Any number of instances may run it. */
 class ScheduledTaskService extends CustomThread {
     private static final Logger log = LoggerFactory.getLogger(Loggers.PROMOTION);
+    private static final Duration SHORTEST_WAIT = Duration.ofMillis(1);
 
     private final MaintenanceStore store;
+    private final Clock clock;
+    private final RunnerStatus status;
     private final Duration pollInterval;
     private final int batchSize;
+
+    /**
+     * The wait before the store is asked again about a task that is due by this clock and was not moved, which
+     * happens while the store's clock is behind this one. It doubles with every such round, up to the poll
+     * interval, so that a skew of seconds costs a few calls and not one per millisecond.
+     */
+    private Duration overdueWait = SHORTEST_WAIT;
+
+    private final OutageLog outage = new OutageLog(log, "Scheduled task promotion", System::nanoTime);
 
     ScheduledTaskService(Builder builder) {
         super(builder.group, builder.threadName);
         this.store = builder.store;
+        this.clock = builder.clock;
+        this.status = builder.status;
         this.pollInterval = builder.pollInterval;
         this.batchSize = builder.batchSize;
     }
@@ -27,8 +42,10 @@ class ScheduledTaskService extends CustomThread {
             while (this.canContinueProcessing) {
                 try {
                     var r = store.promote(batchSize);
+                    outage.succeeded();
                     if (r.moved() > 0) {
                         log.trace("Moved {} scheduled tasks to their queues", r.moved());
+                        overdueWait = SHORTEST_WAIT;
                     }
                     if (r.moved() == batchSize) {
                         continue;
@@ -41,7 +58,8 @@ class ScheduledTaskService extends CustomThread {
                         log.debug("Scheduled task service Thread interrupted while stopping");
                     }
                 } catch (Exception e) {
-                    log.error("Scheduled task service Thread error", e);
+                    status.storeError(e);
+                    outage.failed(e, "Scheduled task service Thread error");
                     sleepAfterError();
                 }
             }
@@ -50,13 +68,24 @@ class ScheduledTaskService extends CustomThread {
         }
     }
 
-    private Duration sleepTime(Instant nextDue) {
+    Duration sleepTime(Instant nextDue) {
         if (nextDue == null) {
+            overdueWait = SHORTEST_WAIT;
             return pollInterval;
         }
-        var untilDue = Duration.between(Instant.now(), nextDue);
-        var wait = untilDue.compareTo(Duration.ofMillis(1)) < 0 ? Duration.ofMillis(1) : untilDue;
-        return wait.compareTo(pollInterval) < 0 ? wait : pollInterval;
+        // by the runner's clock, which is the one the store's due times follow
+        var untilDue = Duration.between(clock.instant(), nextDue);
+        if (untilDue.isPositive()) {
+            overdueWait = SHORTEST_WAIT;
+            return shorter(untilDue.compareTo(SHORTEST_WAIT) < 0 ? SHORTEST_WAIT : untilDue, pollInterval);
+        }
+        var wait = shorter(overdueWait, pollInterval);
+        overdueWait = shorter(overdueWait.multipliedBy(2), pollInterval);
+        return wait;
+    }
+
+    private static Duration shorter(Duration a, Duration b) {
+        return a.compareTo(b) < 0 ? a : b;
     }
 
     private void sleepAfterError() {
@@ -75,6 +104,8 @@ class ScheduledTaskService extends CustomThread {
         private ThreadGroup group;
         private String threadName;
         private MaintenanceStore store;
+        private Clock clock = Clock.systemUTC();
+        private RunnerStatus status;
         private Duration pollInterval = Duration.ofSeconds(1);
         private int batchSize = 100;
 
@@ -92,6 +123,16 @@ class ScheduledTaskService extends CustomThread {
 
         Builder setStore(MaintenanceStore store) {
             this.store = store;
+            return this;
+        }
+
+        Builder setClock(Clock clock) {
+            this.clock = clock;
+            return this;
+        }
+
+        Builder setStatus(RunnerStatus status) {
+            this.status = status;
             return this;
         }
 

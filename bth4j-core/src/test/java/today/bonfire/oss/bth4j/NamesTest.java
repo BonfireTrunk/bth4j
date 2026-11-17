@@ -9,7 +9,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.spi.StoreInfo;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
 import today.bonfire.oss.bth4j.spi.TaskStore;
 
 class NamesTest {
@@ -67,7 +66,7 @@ class NamesTest {
         }
 
         @Override
-        public int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
+        public int allocateRunnerId(String label, Set<Integer> queueIds, Set<Integer> typeIds) {
             return 1;
         }
     }
@@ -138,6 +137,42 @@ class NamesTest {
     }
 
     @Test
+    void anEventNamesARegisteredQueueAndTypeAndSaysUnknownForTheRest() {
+        var store = new RegistryStore();
+        var names = new Names(store);
+        int queue = names.queueId("Q:DEF");
+        int type = names.typeId("send");
+
+        assertThat(names.queueNameOrUnknown(queue)).isEqualTo("Q:DEF");
+        assertThat(names.typeNameOrUnknown(type)).isEqualTo("send");
+        assertThat(names.queueNameOrUnknown(77)).isEqualTo("unknown");
+        assertThat(names.typeNameOrUnknown(78)).isEqualTo("unknown");
+    }
+
+    @Test
+    void anIdOfZeroIsUnknownWithoutAskingTheRegistry() {
+        var store = new RegistryStore();
+        var names = new Names(store);
+
+        assertThat(names.queueNameOrUnknown(0)).isEqualTo("unknown");
+        assertThat(names.typeNameOrUnknown(0)).isEqualTo("unknown");
+
+        assertThat(store.queueNamesCalls).hasValue(0);
+        assertThat(store.typeNamesCalls).hasValue(0);
+    }
+
+    @Test
+    void anEventLoadsAnIdAnotherProcessRegisteredFromTheRegistry() {
+        var store = new RegistryStore();
+        int foreignQueue = store.queueId("Q:OTHER");
+        int foreignType = store.typeId("other-type");
+        var names = new Names(store);
+
+        assertThat(names.queueNameOrUnknown(foreignQueue)).isEqualTo("Q:OTHER");
+        assertThat(names.typeNameOrUnknown(foreignType)).isEqualTo("other-type");
+    }
+
+    @Test
     void viewResolvesQueueAndTypeNames() {
         var store = new RegistryStore();
         var names = new Names(store);
@@ -152,7 +187,7 @@ class NamesTest {
 
         assertThat(view.id()).isEqualTo(5);
         assertThat(view.queue()).isEqualTo("Q:HIGH");
-        assertThat(view.type()).isEqualTo("report");
+        assertThat(view.typeName()).isEqualTo("report");
         assertThat(view.state()).isEqualTo(TaskState.QUEUED);
     }
 }

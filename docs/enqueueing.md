@@ -27,27 +27,30 @@ unique keys, enqueueing inside your own database transaction, and how to resend 
 |---|---|
 | `queue(name)` | target queue; the default queue when absent |
 | `delay(duration)` / `at(instant)` | run later; the last one set wins; at most 100 years from now |
-| `uniqueKey(key)` / `uniqueKey(key, Uniqueness.keepFor(d))` | at most one task holds the key, see [Unique keys](#unique-keys) |
+| `uniqueKey(key)` / `uniqueKey(key, Uniqueness.keepAfterDone(d))` | at most one task holds the key, see [Unique keys](#unique-keys) |
 | `maxAttempts(n)` | attempts before the task is dead; the runner default when absent |
 | `startBy(instant)` | the task expires if it has not started by then, see [Cancelling tasks](retries-and-cancelling.md#expiring-a-task-that-did-not-start); must not be before the run time; at most 100 years from now |
 | `maxRunTime(duration)` | an attempt running longer is asked to stop, see [Cancelling tasks](retries-and-cancelling.md#maximum-run-time) |
 | `retryPolicy(name)` | a retry policy registered on the runner with that name, see [Retries](retries-and-cancelling.md#retries) |
-| `account(text)`, `header(name, value)` | application labels, stored with the task (`account` at most 128 characters, `TaskRequest.MAX_ACCOUNT_LENGTH`; 8 KiB of headers) |
+| `account(text)`, `addHeader(name, value)` | application labels, stored with the task (`account` at most 128 characters, `TaskRequest.MAX_ACCOUNT_LENGTH`; 8 KiB of headers) |
 | `id(id)` | an id the client allocated (`client.nextId()` or a retry prepared with `EnqueueFailedException.retryRequests(...)`), see [Resend with a caller-allocated id](#resend-with-a-caller-allocated-id) |
 
 `enqueueAll` stores many requests in chunks.
 
 ## Results
 
-`enqueue` returns `Accepted(id)` or `Duplicate(existingId)`. A few cases throw instead:
+`enqueue` returns `Accepted(id, created)` or `Duplicate(existingId)`. A few cases throw instead:
 
 | Result | When |
 |---|---|
-| `Accepted(id)` | The task is stored. With an existing id and matching content, `Accepted` only confirms that the record exists. It never starts another run, even when the task is DEAD. Use `AdminOps.retry` to run a dead task again. |
-| `Duplicate(existingId)` | A task holds the request's unique key. A DEAD holder inside the `keepFor` window still answers `Duplicate` with its id. A running task holds its key until it ends. |
+| `Accepted(id, created)` | The task is stored. `created` is true when this call stored it and false when a task with this id and the same content was already there (a resend); in that case `Accepted` only confirms that the record exists. It never starts another run, even when the task is DEAD. Use `AdminOps.retry` to run a dead task again. A write that the store's own transport repeated still answers `created = true`. |
+| `Duplicate(existingId)` | A task holds the request's unique key. A DEAD holder inside the `keepAfterDone` window still answers `Duplicate` with its id. A running task holds its key until it ends. |
 | `EnqueueFailedException` (thrown) | The store cannot be reached, and the caller does not know whether the task was stored. See [When the store cannot be reached](#when-the-store-cannot-be-reached). |
 | `TaskValidationException` (thrown) | The request carries an id that was never allocated. |
 | `TaskIdReusedException` (thrown) | The request carries an id that already belongs to a task, and the request is not the same request. |
+| `UnreadableTaskException` (thrown) | The request carries an id that belongs to a task whose stored value cannot be read. Nothing was written, and a resend fails the same way until that task is repaired or deleted. |
+
+[Exceptions](errors.md) lists everything bth4j throws.
 
 ## Limits
 
@@ -56,8 +59,8 @@ unique keys, enqueueing inside your own database transaction, and how to resend 
 | Payload | at most 256 KiB |
 | Headers | 8 KiB |
 | An account | at most 128 characters (`TaskRequest.MAX_ACCOUNT_LENGTH`) |
-| A unique key | 1 to 256 characters, not blank, without U+0000 |
-| The key you pass to `taskByKey` and `cancelByKey` | without U+0000; a blank or longer key finds no task |
+| A unique key | 1 to 256 characters, not blank, without U+0000, not starting with `sched:` (the keys of schedule occurrences start so) |
+| The key you pass to `taskByKey` and `cancelByKey` | not null and without U+0000, or `TaskValidationException`; a blank or longer key finds no task. Over HTTP a blank or longer key is a 400 |
 
 ### Text with U+0000
 
@@ -66,7 +69,8 @@ No text the library stores may contain U+0000, which PostgreSQL cannot keep. The
 | Text | What happens to U+0000 |
 |---|---|
 | A request, a schedule, a name or a cancel reason | The client refuses it. |
-| Text from processor code (failure message and stack, progress, step names and results) | It is recorded with U+FFFD in its place. |
+| Text from processor code (failure message and stack, progress, step results) | It is recorded with U+FFFD in its place. |
+| A step name | The step fails with a `TaskValidationException` before its body runs. |
 
 ### Time limits
 
@@ -75,7 +79,7 @@ Times follow one rule, `TaskRequest.MAX_TIME_FROM_NOW` (100 years), so that ever
 | What | Rule |
 |---|---|
 | `at` or `startBy` | The library refuses a value further than 100 years from now, either way. |
-| `delay`, `keepFor`, fixed delay, lease, retention or worker stale-after | The library refuses a longer value. |
+| `delay`, `keepAfterDone`, fixed delay, lease, retention or runner stale timeout | The library refuses a longer value. |
 | A retry policy or a `TaskRescheduleException` that asks for a longer wait | It gets 100 years. |
 
 ## Unique keys
@@ -85,17 +89,55 @@ A unique key makes sure at most one task holds it. How long the task holds it de
 | Situation | What happens to the key |
 |---|---|
 | `uniqueKey(key)` | It is held until the task finishes, and free as soon as the task finishes. |
-| `uniqueKey(key, Uniqueness.keepFor(d))` | It is held until `d` (at most 100 years) after the task finishes, also when the task itself was removed sooner (see [Retention](how-it-works.md#retention)). An operator retry within `d` keeps it. |
-| A later enqueue with the same key and a shorter `keepFor` | It does not shorten the holder's window. |
-| `AdminOps.cancel` on a DEAD task | It answers `STALE` and leaves the key held for the window. |
+| `uniqueKey(key, Uniqueness.keepAfterDone(d))` | It is held until `d` (at least one millisecond, at most 100 years) after the task finishes, also when the task itself was removed sooner (see [Retention](how-it-works.md#retention)). An operator retry within `d` keeps it. |
+| A later enqueue with the same key and a shorter `keepAfterDone` | It does not shorten the holder's window. |
+| `AdminOps.cancel` on a DEAD task | It answers `FINISHED` and leaves the key held for the window. |
 | A successful `AdminOps.delete` | It frees the key at once and removes the task and its failure history. |
 | A task that is running | It holds its key until it ends. |
+
+### When the key becomes free
+
+```mermaid
+flowchart LR
+    A([Enqueue]) --> B[Waiting] --> C[Running, retries included] --> D([Task ends])
+    D -->|"uniqueKey(key)"| F([Key is free])
+    D -->|"keepAfterDone(d)"| E[Key stays held for d] --> F
+```
+
+The key is held from the enqueue on, for as long as the task waits and runs. `d` starts to count when the task ends
+(SUCCEEDED, DEAD, CANCELLED or EXPIRED), not when it was enqueued and not when it started. A task that waits three
+hours, runs ten minutes and was enqueued with `keepAfterDone(Duration.ofHours(1))` blocks its key for four hours and
+ten minutes.
+
+### Which one to use
+
+| | `uniqueKey(key)` | `uniqueKey(key, Uniqueness.keepAfterDone(d))` |
+|---|---|---|
+| The question it answers | Is this work already waiting or running? | Was this exact thing already done a short while ago? |
+| Use it when | Doing the work again later is fine, and often needed. You only want no second copy in the queue. | Doing the work a second time does harm, or it may happen at most once in `d`. |
+
+| Example | Key | Mode | Why |
+|---|---|---|---|
+| A product is edited twenty times in a minute and every edit asks for a search reindex | `reindex-product-42` | until done | One reindex waits, not twenty. After it ends, the next edit can ask for a new one. |
+| A user clicks "Import" five times | `import-tenant-7` | until done | One import runs. When it ends, the user can start another. |
+| A payment provider delivers the same webhook again hours later | `webhook-<event id>` | `keepAfterDone`, longer than the provider keeps resending | The first task has ended by then. Without the window the order would be fulfilled twice. |
+| An order confirmation mail, where the browser or a message broker can resend the request | `order-9-confirmation` | `keepAfterDone(Duration.ofDays(30))` | The customer gets one mail. |
+| A low-stock alert at most once an hour | `low-stock-sku-55` | `keepAfterDone(Duration.ofHours(1))` | Repeats inside the hour answer `Duplicate`. |
+
+Two things to keep in mind:
+
+- An enqueue that comes while the task is already running also answers `Duplicate`. If the running task read its data
+  before the change that caused the enqueue, it does not see that change. Read fresh data at the start of the
+  processor, or enqueue again after the task ends.
+- With `keepAfterDone`, a task that ended DEAD or CANCELLED holds the key for `d` as well. A resend answers
+  `Duplicate` and does not start a fresh try. Run it again with an operator retry, which keeps the key (see
+  [Admin](admin.md)).
 
 ### Reading and cancelling by key
 
 | Call | What it does |
 |---|---|
-| `client.taskByKey(key)` and `admin.taskByKey(key)` | Reads the task that holds a unique key now, open or finished inside its `keepFor` window, without writing. It is empty when no task holds the key, and also when the holder was removed by its retention and only its key stays taken. |
+| `client.taskByKey(key)` and `admin.taskByKey(key)` | Reads the task that holds a unique key now, open or finished inside its `keepAfterDone` window, without writing. It is empty when no task holds the key, and also when the holder was removed by its retention and only its key stays taken. |
 | `admin.cancelByKey(key, reason)` | Cancels that task. Cancelling a waiting fixed-delay occurrence (key `sched:<schedule id>`) pauses its schedule, as cancelling it by id does. |
 
 A key you pass to these calls follows the same rule as `uniqueKey`, see [Limits](#limits).
@@ -105,7 +147,7 @@ A key you pass to these calls follows the same rule as `uniqueKey`, see [Limits]
 A repair sweep re-enqueues work after a crash. The default until-done key is free as soon as the task finishes, so a late
 enqueue can run the job again.
 
-To prevent another enqueue from starting a second task after SUCCEEDED, DEAD or CANCELLED, use `keepFor` longer than the
+To prevent another enqueue from starting a second task after SUCCEEDED, DEAD or CANCELLED, use `keepAfterDone` longer than the
 window in which a retry or sweep can still happen. A DEAD holder inside that window still answers `Duplicate` with its id.
 Inspect it with `taskByKey` while its retention keeps it.
 
@@ -123,7 +165,7 @@ A processor uses its own `TaskClient` to enqueue. `TaskContext` has no enqueue m
 
 A unique key protects task records, not running bodies.
 
-- After lease loss, the old body can overlap a replacement until its next check or, for types using `interruptOnCancel()`,
+- After lease loss, the old body can overlap a replacement until its next check or, for types using `withInterruptOnCancel()`,
   an interruptible blocking call after the runner detects the loss.
 - Interrupts are cooperative too.
 - Fence side effects with the task revision or an idempotent target.
@@ -180,7 +222,7 @@ sequenceDiagram
     App->>Client: enqueue(same request, same id)
     Client->>Store: write the task
     Store-->>Client: stored now, or already stored by the first call
-    Client-->>App: Accepted(id)
+    Client-->>App: Accepted(id, created)
 ```
 
 In code:
@@ -191,7 +233,7 @@ var request = TaskRequest.of(SEND_MAIL, mail).id(id).build();
 try {
     client.enqueue(request);
 } catch (EnqueueFailedException e) {
-    client.enqueue(request);        // same id: stored once, answered Accepted either way
+    client.enqueue(request);        // same id: stored once, answered Accepted either way; created tells which call stored it
 }
 ```
 
@@ -207,6 +249,7 @@ positions.
 | An id that already belongs to a task, with the same request encoded identically | Accepted again. `Accepted` only confirms that the record exists; it never starts another run, even when the task is DEAD. Use `AdminOps.retry` to run a dead task again. |
 | An id that already belongs to a task, with any other difference | `TaskIdReusedException`. |
 | A caller id taken by another writer after the preflight | `EnqueueFailedException` carrying a `TaskIdReusedException` cause. Such caller-id reuse still requires caller correction. |
+| An id that belongs to a task whose stored value cannot be read | `UnreadableTaskException`. Nothing is written. |
 
 A Redis failover that rolls the id counter back can make an allocated id look unallocated.
 
@@ -220,7 +263,7 @@ A Redis failover that rolls the id counter back can make an allocated id look un
 | The unique key (only while the stored task holds one, even after an operator retry) | Retry policy |
 | | `startBy`, `maxRunTime` |
 | | Delay, `at(...)` |
-| | The `keepFor` duration |
+| | The `keepAfterDone` duration |
 | | Payload version |
 
 Before writing, `enqueueAll` runs these checks:
@@ -244,6 +287,16 @@ keeping any ids you set yourself.
 | A batch, failure after the reservation | Every request's last assigned id, in request order. |
 | A single `enqueue`, the high-water read fails | The caller id is retained. |
 | A single `enqueue` with a generated id | The generated id, only once the call tried to write it. |
+
+What failed and how much was written are two separate facts. `getCause()` tells what failed, and the other fields tell
+how much of the batch was written:
+
+| Cause | What failed |
+|---|---|
+| `TaskStoreException` | The store could not be reached, or no free id was found in three writes. |
+| `TaskIdReusedException` | A caller id was taken by another writer after the check before the first write. |
+| `UnreadableTaskException` | A stored task that a write had to compare with cannot be read. |
+| Anything else | Whatever the store threw. From the first write of a batch on, every failure is reported this way, so the results of the chunks that were written are never lost. |
 
 ### Retrying a failed batch
 
@@ -321,4 +374,4 @@ A caller id taken by another writer after the preflight also fails with `Enqueue
 ## Inside the id check (PostgreSQL)
 
 On PostgreSQL the id check reads the id sequence with `pg_sequence_last_value`. It needs only the USAGE privilege on
-`<prefix>_task_id`, which `allocateIds` already uses.
+`<namespace>_task_id`, which `allocateIds` already uses.

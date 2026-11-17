@@ -18,13 +18,13 @@ import org.junit.jupiter.api.Test;
 import today.bonfire.oss.bth4j.exceptions.EnqueueFailedException;
 import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskIdReusedException;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
+import today.bonfire.oss.bth4j.exceptions.UnreadableTaskException;
 import today.bonfire.oss.bth4j.spi.ClaimRequest;
 import today.bonfire.oss.bth4j.spi.FullStore;
 import today.bonfire.oss.bth4j.spi.QueueGrant;
 import today.bonfire.oss.bth4j.spi.TaskRecord;
-import today.bonfire.oss.bth4j.spi.TaskState;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
 import today.bonfire.oss.bth4j.testing.InMemoryStore;
 import today.bonfire.oss.bth4j.testing.MutableClock;
 
@@ -41,14 +41,52 @@ class TaskClientTest {
     @BeforeEach
     void setUp() {
         clock = new MutableClock();
-        store = new InMemoryStore(clock);
+        store = InMemoryStore.builder().clock(clock).build();
     }
+
+    private static final Queues QUEUES = Queues.of("Q:DEF", "Q:LOW", "Q:MED", "Q:HIGH");
 
     private TaskClient.Builder builder() {
         return TaskClient.builder()
+                .queues(QUEUES)
                 .store(store)
                 .jsonMapper(new JsonMapperTest())
                 .clock(clock);
+    }
+
+    @Test
+    void aMissingArgumentIsRefusedAsAValidationError() {
+        var client = builder().build();
+
+        assertThatThrownBy(() -> client.enqueue(null))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("request is required");
+        assertThatThrownBy(() -> client.enqueueAll(null))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("requests are required");
+        assertThatThrownBy(() -> client.enqueueAll(
+                        java.util.Arrays.asList(TaskRequest.of(VOID).build(), null)))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("requests cannot contain null");
+        assertThatThrownBy(() -> client.putSchedule(null))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("definition is required");
+        assertThatThrownBy(() -> client.tasks(null, null, null, 10))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("state is required");
+        assertThat(store.counts().values()).allMatch(StateCounts.ZERO::equals);
+    }
+
+    @Test
+    void aTaskListingRefusesABlankQueueAndListsEveryQueueForNull() {
+        var client = builder().build();
+        client.enqueue(TaskRequest.of(VOID).queue("Q:LOW").build());
+
+        assertThatThrownBy(() -> client.tasks(TaskState.QUEUED, " ", null, 10))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("queue is required");
+        assertThat(client.tasks(TaskState.QUEUED, null, null, 10).items()).hasSize(1);
+        assertThat(client.tasks(TaskState.QUEUED, "Q:DEF", null, 10).items()).isEmpty();
     }
 
     @Test
@@ -60,7 +98,7 @@ class TaskClientTest {
         var third = client.enqueue(TaskRequest.of(TYPED, new Payload("x")).build());
 
         assertThat(first).isInstanceOf(EnqueueResult.Accepted.class);
-        assertThat(first.accepted()).isTrue();
+        assertThat(first.isAccepted()).isTrue();
         assertThat(second.id()).isGreaterThan(first.id());
         assertThat(third.id()).isGreaterThan(second.id());
     }
@@ -102,11 +140,94 @@ class TaskClientTest {
         var first = client.enqueue(request);
         var second = client.enqueue(request);
 
-        assertThat(first).isEqualTo(new EnqueueResult.Accepted(id));
-        assertThat(second).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(first).isEqualTo(new EnqueueResult.Accepted(id, true));
+        assertThat(second).isEqualTo(new EnqueueResult.Accepted(id, false));
         assertThat(client.tasks(TaskState.QUEUED, null, null, 100).items())
                 .extracting(TaskView::id)
                 .containsExactly(id);
+    }
+
+    @Test
+    void aFirstWriteAnswersCreatedAndAResendWithTheSameContentDoesNot() {
+        var client = builder().build();
+        long id = client.nextId();
+        var request = TaskRequest.of(TYPED, new Payload("once")).id(id).build();
+
+        assertThat(client.enqueue(TaskRequest.of(VOID).build()))
+                .isInstanceOfSatisfying(
+                        EnqueueResult.Accepted.class,
+                        a -> assertThat(a.created()).isTrue());
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id, true));
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id, false));
+    }
+
+    @Test
+    void aBatchAnswersCreatedPerRequestWhenItMixesFirstWritesWithResends() {
+        var client = builder().build();
+        long sent = client.nextId();
+        long fresh = client.nextId();
+        client.enqueue(TaskRequest.of(VOID).id(sent).build());
+
+        var results = client.enqueueAll(List.of(
+                TaskRequest.of(VOID).id(sent).build(),
+                TaskRequest.of(VOID).id(fresh).build(),
+                TaskRequest.of(VOID).build()));
+
+        assertThat(results).hasSize(3);
+        assertThat(results.get(0)).isEqualTo(new EnqueueResult.Accepted(sent, false));
+        assertThat(results.get(1)).isEqualTo(new EnqueueResult.Accepted(fresh, true));
+        assertThat(results.get(2))
+                .isInstanceOfSatisfying(
+                        EnqueueResult.Accepted.class,
+                        a -> assertThat(a.created()).isTrue());
+    }
+
+    @Test
+    void withNoRetryPolicyNamesAnyNameIsAccepted() {
+        var client = builder().build();
+
+        assertThat(client.enqueue(TaskRequest.of(VOID).retryPolicy("anything").build())
+                        .isAccepted())
+                .isTrue();
+    }
+
+    @Test
+    void aRequestMayNameAnAddedRetryPolicyOrNoneAtAll() {
+        var client =
+                builder().addRetryPolicyName("slow").addRetryPolicyName("fast").build();
+
+        assertThat(client.enqueue(TaskRequest.of(VOID).retryPolicy("slow").build())
+                        .isAccepted())
+                .isTrue();
+        assertThat(client.enqueue(TaskRequest.of(VOID).build()).isAccepted()).isTrue();
+        assertThat(client.enqueueAll(List.of(
+                        TaskRequest.of(VOID).retryPolicy("fast").build(),
+                        TaskRequest.of(VOID).build())))
+                .hasSize(2)
+                .allMatch(EnqueueResult::isAccepted);
+    }
+
+    @Test
+    void aRequestNamingAnotherRetryPolicyIsRefusedByEnqueueAndEnqueueAll() {
+        var client = builder().addRetryPolicyName("slow").build();
+        var unknown = TaskRequest.of(VOID).retryPolicy("typo").build();
+
+        assertThatThrownBy(() -> client.enqueue(unknown))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("retry policy typo is not one of the names this client was given");
+        assertThatThrownBy(() -> client.enqueueAll(List.of(TaskRequest.of(VOID).build(), unknown)))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("retry policy typo is not one of the names this client was given");
+        assertThatThrownBy(() -> client.prepare(unknown)).isInstanceOf(TaskValidationException.class);
+        assertThat(client.counts().get("Q:DEF").queued()).isZero();
+    }
+
+    @Test
+    void aBadRetryPolicyNameGivenToTheBuilderIsRefused() {
+        assertThatThrownBy(() -> builder().addRetryPolicyName(null)).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> builder().addRetryPolicyName(" ")).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> builder().addRetryPolicyName("x".repeat(TaskRequest.MAX_RETRY_POLICY_LENGTH + 1)))
+                .isInstanceOf(TaskConfigurationException.class);
     }
 
     @Test
@@ -121,7 +242,7 @@ class TaskClientTest {
 
         client.enqueue(request);
 
-        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(id, false));
     }
 
     @Test
@@ -153,7 +274,7 @@ class TaskClientTest {
         var same = client.enqueueAll(List.of(
                 TaskRequest.of(TYPED, new Payload("a")).id(id).build(),
                 TaskRequest.of(VOID).build()));
-        assertThat(same.getFirst()).isEqualTo(new EnqueueResult.Accepted(id));
+        assertThat(same.getFirst()).isEqualTo(new EnqueueResult.Accepted(id, false));
         assertThatThrownBy(() ->
                         client.enqueueAll(List.of(TaskRequest.of(VOID).id(id).build())))
                 .isInstanceOf(TaskIdReusedException.class);
@@ -173,7 +294,7 @@ class TaskClientTest {
                         TaskRequest.of(VOID).build(),
                         TaskRequest.of(VOID).id(unallocated + 5).build())))
                 .isInstanceOf(TaskValidationException.class);
-        assertThat(client.enqueue(TaskRequest.of(VOID).id(next).build()).accepted())
+        assertThat(client.enqueue(TaskRequest.of(VOID).id(next).build()).isAccepted())
                 .isTrue();
         assertThat(client.tasks(TaskState.QUEUED, null, null, 100).items()).hasSize(1);
     }
@@ -205,6 +326,7 @@ class TaskClientTest {
 
     private TaskClient clientOn(FullStore s) {
         return TaskClient.builder()
+                .queues(QUEUES)
                 .store(s)
                 .jsonMapper(new JsonMapperTest())
                 .clock(clock)
@@ -220,7 +342,7 @@ class TaskClientTest {
 
         var result = b.enqueue(TaskRequest.of(VOID).build());
 
-        assertThat(result.accepted()).isTrue();
+        assertThat(result.isAccepted()).isTrue();
         assertThat(result.id()).isEqualTo(11);
         assertThat(b.tasks(TaskState.QUEUED, null, null, 100).items())
                 .extracting(TaskView::id)
@@ -351,10 +473,10 @@ class TaskClientTest {
         assertThat(client.task(id).orElseThrow().uniqueKey()).isNull();
 
         assertThat(client.enqueue(TaskRequest.of(VOID).uniqueKey("k").id(id).build()))
-                .isEqualTo(new EnqueueResult.Accepted(id));
+                .isEqualTo(new EnqueueResult.Accepted(id, false));
         assertThat(client.enqueueAll(
                         List.of(TaskRequest.of(VOID).uniqueKey("k").id(id).build())))
-                .containsExactly(new EnqueueResult.Accepted(id));
+                .containsExactly(new EnqueueResult.Accepted(id, false));
     }
 
     @Test
@@ -364,10 +486,10 @@ class TaskClientTest {
         client.enqueue(TaskRequest.of(VOID).id(id).build());
 
         assertThat(client.enqueue(TaskRequest.of(VOID).uniqueKey("k").id(id).build()))
-                .isEqualTo(new EnqueueResult.Accepted(id));
+                .isEqualTo(new EnqueueResult.Accepted(id, false));
         assertThat(client.enqueueAll(
                         List.of(TaskRequest.of(VOID).uniqueKey("k").id(id).build())))
-                .containsExactly(new EnqueueResult.Accepted(id));
+                .containsExactly(new EnqueueResult.Accepted(id, false));
     }
 
     @Test
@@ -390,6 +512,7 @@ class TaskClientTest {
     void storeDownOnAColdClientThrowsEnqueueFailedWithoutIds() {
         var down = new AtomicBoolean();
         var client = TaskClient.builder()
+                .queues(QUEUES)
                 .store(failingStore(down))
                 .jsonMapper(new JsonMapperTest())
                 .clock(clock)
@@ -409,6 +532,7 @@ class TaskClientTest {
     void storeDownWhileCheckingACallerIdCarriesThatId() {
         var down = new AtomicBoolean();
         var client = TaskClient.builder()
+                .queues(QUEUES)
                 .store(failingStore(down))
                 .jsonMapper(new JsonMapperTest())
                 .clock(clock)
@@ -434,16 +558,16 @@ class TaskClientTest {
                         List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)),
                         1,
                         Duration.ofSeconds(30),
-                        store.allocateWorkerId("test", Set.of(), Set.of()),
+                        store.allocateRunnerId("test", Set.of(), Set.of()),
                         null))
                 .getFirst();
         assertThat(store.ack(id, leased.revision(), true, false, null)).isTrue();
-        assertThat(store.getTask(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
-        assertThat(store.getTask(id).orElseThrow().encodedPayload()).isNull();
+        assertThat(store.task(id).orElseThrow().state()).isEqualTo(TaskState.SUCCEEDED);
+        assertThat(store.task(id).orElseThrow().encodedPayload()).isNull();
         var retry = TaskRequest.of(TYPED, new Payload("different")).id(id).build();
 
-        assertThat(client.enqueue(retry)).isEqualTo(new EnqueueResult.Accepted(id));
-        assertThat(client.enqueueAll(List.of(retry))).containsExactly(new EnqueueResult.Accepted(id));
+        assertThat(client.enqueue(retry)).isEqualTo(new EnqueueResult.Accepted(id, false));
+        assertThat(client.enqueueAll(List.of(retry))).containsExactly(new EnqueueResult.Accepted(id, false));
         assertThat(client.counts().get("Q:DEF").succeeded()).isEqualTo(1);
         assertThat(client.counts().get("Q:DEF").queued()).isZero();
     }
@@ -453,7 +577,7 @@ class TaskClientTest {
         var client = builder().build();
         long id = client.nextId();
         client.enqueue(TaskRequest.of(VOID).id(id).build());
-        var failing = clientOn(storeFailingOn("getTask"));
+        var failing = clientOn(storeFailingOn("task"));
 
         assertThatThrownBy(() -> failing.enqueue(TaskRequest.of(VOID).id(id).build()))
                 .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
@@ -474,13 +598,13 @@ class TaskClientTest {
 
     @Test
     void generatedRequestsDoNotReadTheMarkOrStoredContent() {
-        var client = clientOn(storeFailingOn("idHighWaterMark", "getTask"));
+        var client = clientOn(storeFailingOn("idHighWaterMark", "task"));
 
-        assertThat(client.enqueue(TaskRequest.of(VOID).build()).accepted()).isTrue();
+        assertThat(client.enqueue(TaskRequest.of(VOID).build()).isAccepted()).isTrue();
         assertThat(client.enqueueAll(List.of(
                         TaskRequest.of(VOID).build(), TaskRequest.of(VOID).build())))
                 .hasSize(2)
-                .allMatch(EnqueueResult::accepted);
+                .allMatch(EnqueueResult::isAccepted);
     }
 
     @Test
@@ -492,8 +616,8 @@ class TaskClientTest {
                 TaskRequest.of(VOID).id(earlier).build(),
                 TaskRequest.of(VOID).id(local).build());
 
-        assertThat(client.enqueue(requests.getFirst()).accepted()).isTrue();
-        assertThat(client.enqueueAll(requests)).hasSize(2).allMatch(EnqueueResult::accepted);
+        assertThat(client.enqueue(requests.getFirst()).isAccepted()).isTrue();
+        assertThat(client.enqueueAll(requests)).hasSize(2).allMatch(EnqueueResult::isAccepted);
         assertThatThrownBy(() -> client.enqueue(
                         TaskRequest.of(VOID).id(store.idHighWaterMark()).build()))
                 .isInstanceOf(EnqueueFailedException.class);
@@ -512,11 +636,11 @@ class TaskClientTest {
         var marks = new AtomicInteger();
         var observed = clientOn(interceptStore((method, args) -> {
             if (method.equals("idHighWaterMark")) marks.incrementAndGet();
-            if (method.equals("getTask")) reads.add((Long) args[0]);
+            if (method.equals("task")) reads.add((Long) args[0]);
             if (method.equals("enqueueAll")) assertThat(reads).containsExactly(first, second);
         }));
 
-        assertThat(observed.enqueueAll(requests)).hasSize(2).allMatch(EnqueueResult::accepted);
+        assertThat(observed.enqueueAll(requests)).hasSize(2).allMatch(EnqueueResult::isAccepted);
         assertThat(reads).containsExactly(first, second);
         assertThat(marks.get()).isEqualTo(1);
     }
@@ -537,8 +661,8 @@ class TaskClientTest {
                     assertThat(e.notStored()).containsExactlyInAnyOrder(0, 1);
                     assertThat(e.storedCount()).isZero();
                 });
-        assertThat(store.getTask(1)).isEmpty();
-        assertThat(store.getTask(2)).isEmpty();
+        assertThat(store.task(1)).isEmpty();
+        assertThat(store.task(2)).isEmpty();
     }
 
     @Test
@@ -586,7 +710,7 @@ class TaskClientTest {
                     assertThat(e.storedCount()).isEqualTo(500);
                     assertThat(e.settled()).hasSize(500);
                     assertThat(e.settled().getFirst()).isEqualTo(new EnqueueResult.Duplicate(holder));
-                    assertThat(e.settled().subList(1, 500)).allMatch(EnqueueResult::accepted);
+                    assertThat(e.settled().subList(1, 500)).allMatch(EnqueueResult::isAccepted);
                     assertThat(e.notStored()).containsExactly(1000);
                     assertThat(store.counts().get(store.queueId("Q:DEF")).queued())
                             .isEqualTo(501);
@@ -596,7 +720,7 @@ class TaskClientTest {
                         assertThat(retry.get(i).id()).isEqualTo(e.ids().get(500 + i));
                     assertThat(retry.get(500).id()).isNull();
                     assertThat(retry.get(501).id()).isEqualTo(laterCallerId);
-                    assertThat(failing.enqueueAll(retry)).hasSize(502).allMatch(EnqueueResult::accepted);
+                    assertThat(failing.enqueueAll(retry)).hasSize(502).allMatch(EnqueueResult::isAccepted);
                 });
         assertThat(store.counts().get(store.queueId("Q:DEF")).queued()).isEqualTo(requests.size());
     }
@@ -637,7 +761,7 @@ class TaskClientTest {
                         TaskRequest.of(TYPED, new Payload("caller")).id(2).build())))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("overlaps");
-        assertThat(store.getTask(2)).isEmpty();
+        assertThat(store.task(2)).isEmpty();
         assertThat(store.counts()).isEmpty();
     }
 
@@ -650,7 +774,7 @@ class TaskClientTest {
                         TaskRequest.of(VOID).build(),
                         TaskRequest.of(VOID).id(unallocated).build())))
                 .isInstanceOf(TaskValidationException.class);
-        assertThat(store.getTask(unallocated)).isEmpty();
+        assertThat(store.task(unallocated)).isEmpty();
     }
 
     @Test
@@ -709,14 +833,14 @@ class TaskClientTest {
                     assertThat(e.ids()).containsExactly(1L);
                     assertThat(e.storedCount()).isZero();
                     assertThat(healthy.enqueue(TaskRequest.of(VOID).id(e.id()).build()))
-                            .isEqualTo(new EnqueueResult.Accepted(1));
+                            .isEqualTo(new EnqueueResult.Accepted(1, false));
                 });
         assertThat(healthy.counts().get("Q:DEF").queued()).isEqualTo(1);
     }
 
     @Test
     void duplicateCallerIdsAreRejectedBeforeAnyStoreCall() {
-        var client = clientOn(storeFailingOn("idHighWaterMark", "allocateIds", "getTask", "enqueueAll"));
+        var client = clientOn(storeFailingOn("idHighWaterMark", "allocateIds", "task", "enqueueAll"));
 
         assertThatThrownBy(() -> client.enqueueAll(List.of(
                         TaskRequest.of(VOID).id(1).build(),
@@ -748,7 +872,7 @@ class TaskClientTest {
                 });
         assertThat(calls).containsExactly("idHighWaterMark", "allocateIds");
         var results = healthy.enqueueAll(requests);
-        assertThat(results).hasSize(2).allMatch(EnqueueResult::accepted);
+        assertThat(results).hasSize(2).allMatch(EnqueueResult::isAccepted);
         assertThat(results.get(1).id()).isEqualTo(callerId);
         assertThat(healthy.counts().get("Q:DEF").queued()).isEqualTo(2);
     }
@@ -768,9 +892,9 @@ class TaskClientTest {
                         assertThat(e.storedCount()).isZero();
                         assertThat(e.notStored()).containsExactly(0);
                     });
-            assertThat(store.getTask(firstGenerated)).isEmpty();
+            assertThat(store.task(firstGenerated)).isEmpty();
         }
-        assertThat(store.getTask(callerId)).isEmpty();
+        assertThat(store.task(callerId)).isEmpty();
     }
 
     @Test
@@ -799,7 +923,7 @@ class TaskClientTest {
                     assertThat(e.storedCount()).isZero();
                     assertThat(e.getCause()).hasMessageContaining("3 tries");
                     var retry = builder().build().enqueueAll(e.retryRequests(requests));
-                    assertThat(retry).hasSize(3).allMatch(EnqueueResult::accepted);
+                    assertThat(retry).hasSize(3).allMatch(EnqueueResult::isAccepted);
                     assertThat(retry.get(0).id()).isEqualTo(1);
                     assertThat(retry.get(1).id()).isGreaterThan(129);
                     assertThat(retry.get(2).id()).isEqualTo(3);
@@ -838,7 +962,7 @@ class TaskClientTest {
                     assertThat(retry.getLast().id()).isEqualTo(caller);
                     var healthy = builder().build();
                     var results = healthy.enqueueAll(retry);
-                    assertThat(results).hasSize(502).allMatch(EnqueueResult::accepted);
+                    assertThat(results).hasSize(502).allMatch(EnqueueResult::isAccepted);
                     assertThat(results.get(0).id()).isNotIn(e.ids());
                     assertThat(results.get(500).id()).isNotIn(e.ids());
                     assertThat(healthy.counts().get("Q:DEF").queued()).isEqualTo(505);
@@ -872,20 +996,20 @@ class TaskClientTest {
                     assertThat(e.storedCount()).isZero();
                     assertThat(e.getCause()).hasMessageContaining("occupied generated task ids");
                     assertThat(e.getCause().getCause()).hasMessage("store down");
-                    var a = store.getTask(1).orElseThrow();
-                    var x = store.getTask(2).orElseThrow();
+                    var a = store.task(1).orElseThrow();
+                    var x = store.task(2).orElseThrow();
                     var retry = e.retryRequests(requests);
                     assertThat(retry.getFirst().id()).isEqualTo(1L);
                     assertThat(retry.get(1)).isSameAs(requests.get(1));
                     var healthy = builder().build();
                     var results = healthy.enqueueAll(retry);
-                    assertThat(results).allMatch(EnqueueResult::accepted);
+                    assertThat(results).allMatch(EnqueueResult::isAccepted);
                     assertThat(results.getFirst().id()).isEqualTo(1);
                     assertThat(results.get(1).id()).isNotIn(1L, 2L);
-                    assertThat(store.getTask(results.get(1).id()).orElseThrow().encodedPayload())
+                    assertThat(store.task(results.get(1).id()).orElseThrow().encodedPayload())
                             .isEqualTo(x.encodedPayload());
-                    assertThat(store.getTask(1).orElseThrow()).isEqualTo(a);
-                    assertThat(store.getTask(2).orElseThrow()).isEqualTo(x);
+                    assertThat(store.task(1).orElseThrow()).isEqualTo(a);
+                    assertThat(store.task(2).orElseThrow()).isEqualTo(x);
                     assertThat(healthy.counts().get("Q:DEF").queued()).isEqualTo(3);
                 });
     }
@@ -949,14 +1073,14 @@ class TaskClientTest {
                     assertThat(e.getCause()).hasMessage("replacement task ids overlap a caller id");
                     assertThat(e.notStored()).containsExactlyInAnyOrder(1, 500);
                     assertThat(e.ids().getLast()).isEqualTo(callerId);
-                    var x = store.getTask(e.ids().get(1)).orElseThrow();
+                    var x = store.task(e.ids().get(1)).orElseThrow();
                     var retry = e.retryRequests(requests);
                     assertThat(retry.get(1).id()).isNull();
                     assertThat(retry.get(500).id()).isNull();
                     assertThat(retry.getLast().id()).isEqualTo(callerId);
                     var healthy = builder().build();
-                    assertThat(healthy.enqueueAll(retry)).hasSize(502).allMatch(EnqueueResult::accepted);
-                    assertThat(store.getTask(x.id()).orElseThrow()).isEqualTo(x);
+                    assertThat(healthy.enqueueAll(retry)).hasSize(502).allMatch(EnqueueResult::isAccepted);
+                    assertThat(store.task(x.id()).orElseThrow()).isEqualTo(x);
                     assertThat(healthy.counts().get("Q:DEF").queued()).isEqualTo(503);
                 });
     }
@@ -987,7 +1111,7 @@ class TaskClientTest {
                     assertThat(retry.getFirst().id()).isEqualTo(callerId);
                     assertThat(retry.get(1).id()).isNull();
                     assertThat(retry.get(2).id()).isEqualTo(e.ids().get(2));
-                    assertThat(store.getTask(e.ids().get(2))).isPresent();
+                    assertThat(store.task(e.ids().get(2))).isPresent();
                 });
     }
 
@@ -1019,10 +1143,10 @@ class TaskClientTest {
         var result = client.enqueueAll(List.of(
                 TaskRequest.of(type, "payload").delay(Duration.ofHours(1)).build()));
 
-        assertThat(result).containsExactly(new EnqueueResult.Accepted(65));
-        var task = store.getTask(result.getFirst().id()).orElseThrow();
+        assertThat(result).containsExactly(new EnqueueResult.Accepted(65, true));
+        var task = store.task(result.getFirst().id()).orElseThrow();
         assertThat(task.encodedPayload()).isEqualTo("payload1");
-        assertThat(task.due()).isEqualTo(due);
+        assertThat(task.dueAt()).isEqualTo(due);
         assertThat(encodes.get()).isEqualTo(1);
         assertThat(writes.get()).isEqualTo(2);
     }
@@ -1050,8 +1174,61 @@ class TaskClientTest {
                     assertThat(e.ids().getLast()).isEqualTo(callerId);
                     assertThat(e.storedCount()).isEqualTo(500);
                     assertThat(e.getCause()).isInstanceOf(TaskIdReusedException.class);
-                    assertThat(store.getTask(e.ids().getFirst())).isPresent();
+                    assertThat(store.task(e.ids().getFirst())).isPresent();
                 });
+    }
+
+    @Test
+    void aCallerIdWhoseStoredTaskCannotBeReadIsThrownAsItIsAndNothingIsWritten() {
+        var unreadable = new AtomicBoolean();
+        var client = clientOn(interceptStore((method, args) -> {
+            if (unreadable.get() && method.equals("task")) throw unreadable((long) args[0]);
+        }));
+        long id = client.nextId();
+        var request = TaskRequest.of(VOID).id(id).build();
+        client.enqueue(request);
+        unreadable.set(true);
+
+        assertThatThrownBy(() -> client.enqueue(request))
+                .isInstanceOfSatisfying(
+                        UnreadableTaskException.class,
+                        e -> assertThat(e.taskId()).isEqualTo(id));
+        assertThatThrownBy(() -> client.enqueueAll(List.of(TaskRequest.of(VOID).build(), request)))
+                .isInstanceOfSatisfying(
+                        UnreadableTaskException.class,
+                        e -> assertThat(e.taskId()).isEqualTo(id));
+        assertThat(store.tasks(TaskState.QUEUED, null, null, 10).items())
+                .extracting(TaskRecord::id)
+                .containsExactly(id);
+    }
+
+    @Test
+    void whateverFailsInALaterChunkTheRecoveryDataIsKept() {
+        List<RuntimeException> failures = List.of(unreadable(7), new IllegalStateException("not a bth4j failure"));
+        for (var failure : failures) {
+            var writes = new AtomicInteger();
+            var client = clientOn(interceptStore((method, args) -> {
+                if (method.equals("enqueueAll") && writes.incrementAndGet() == 2) throw failure;
+            }));
+            var requests = new ArrayList<TaskRequest<Void>>();
+            for (int i = 0; i < 501; i++) requests.add(TaskRequest.of(VOID).build());
+
+            assertThatThrownBy(() -> client.enqueueAll(requests))
+                    .as("%s", failure)
+                    .isInstanceOfSatisfying(EnqueueFailedException.class, e -> {
+                        assertThat(e.getCause()).isSameAs(failure);
+                        assertThat(e.ids()).hasSize(501).doesNotHaveDuplicates();
+                        assertThat(e.settled()).hasSize(500);
+                        assertThat(e.retryRequests(requests))
+                                .singleElement()
+                                .satisfies(r ->
+                                        assertThat(r.id()).isEqualTo(e.ids().getLast()));
+                    });
+        }
+    }
+
+    private static UnreadableTaskException unreadable(long id) {
+        return new UnreadableTaskException(id, "task " + id + " has a stored value that cannot be read", null);
     }
 
     @Test
@@ -1066,11 +1243,11 @@ class TaskClientTest {
         requests.add(TaskRequest.of(VOID).id(callerId).build());
 
         var results = client.enqueueAll(requests);
-        assertThat(results).hasSize(501).allMatch(EnqueueResult::accepted);
+        assertThat(results).hasSize(501).allMatch(EnqueueResult::isAccepted);
         assertThat(results).extracting(EnqueueResult::id).doesNotHaveDuplicates();
         assertThat(results.getFirst().id()).isEqualTo(1001);
         assertThat(results.getLast().id()).isEqualTo(callerId);
-        assertThat(store.getTask(callerId)).isPresent();
+        assertThat(store.task(callerId)).isPresent();
     }
 
     @Test
@@ -1081,11 +1258,11 @@ class TaskClientTest {
         var second = client.enqueue(TaskRequest.of(VOID).uniqueKey("k").build());
         var other = client.enqueue(TaskRequest.of(VOID).uniqueKey("other").build());
 
-        assertThat(first.accepted()).isTrue();
+        assertThat(first.isAccepted()).isTrue();
         assertThat(second).isEqualTo(new EnqueueResult.Duplicate(first.id()));
-        assertThat(second.accepted()).isFalse();
+        assertThat(second.isAccepted()).isFalse();
         assertThat(second.id()).isEqualTo(first.id());
-        assertThat(other.accepted()).isTrue();
+        assertThat(other.isAccepted()).isTrue();
         assertThat(client.tasks(TaskState.QUEUED, null, null, 100).items()).hasSize(2);
     }
 
@@ -1114,7 +1291,7 @@ class TaskClientTest {
 
         var results = client.enqueueAll(requests);
 
-        assertThat(results).hasSize(1200).allMatch(EnqueueResult::accepted);
+        assertThat(results).hasSize(1200).allMatch(EnqueueResult::isAccepted);
         assertThat(results.stream().map(EnqueueResult::id).distinct().count()).isEqualTo(1200L);
         assertThat(client.counts().get("Q:DEF").queued()).isEqualTo(1200L);
     }
@@ -1124,11 +1301,11 @@ class TaskClientTest {
         var client = builder().build();
         var fits = "x".repeat(TaskRequest.MAX_HEADERS_BYTES - 1);
 
-        var accepted = client.enqueue(TaskRequest.of(VOID).header("h", fits).build());
+        var accepted = client.enqueue(TaskRequest.of(VOID).addHeader("h", fits).build());
 
         assertThat(client.task(accepted.id()).orElseThrow().headers()).containsEntry("h", fits);
         assertThatThrownBy(() -> client.enqueue(
-                        TaskRequest.of(VOID).header("h", fits + "x").build()))
+                        TaskRequest.of(VOID).addHeader("h", fits + "x").build()))
                 .isInstanceOf(TaskValidationException.class)
                 .hasMessageContaining("headers");
     }
@@ -1138,9 +1315,9 @@ class TaskClientTest {
         var client = builder().build();
         var twoBytes = "é".repeat(TaskRequest.MAX_HEADERS_BYTES / 4);
         var request = TaskRequest.of(VOID)
-                .header("a", twoBytes)
-                .header("b", twoBytes)
-                .header("c", "x")
+                .addHeader("a", twoBytes)
+                .addHeader("b", twoBytes)
+                .addHeader("c", "x")
                 .build();
 
         assertThatThrownBy(() -> client.enqueue(request)).isInstanceOf(TaskValidationException.class);
@@ -1181,7 +1358,7 @@ class TaskClientTest {
         var view = client.task(result.id()).orElseThrow();
         assertThat(view.id()).isEqualTo(result.id());
         assertThat(view.queue()).isEqualTo("Q:HIGH");
-        assertThat(view.type()).isEqualTo("client-typed");
+        assertThat(view.typeName()).isEqualTo("client-typed");
         assertThat(view.state()).isEqualTo(TaskState.QUEUED);
         assertThat(view.account()).isEqualTo("acme");
         assertThat(view.maxAttempts()).isEqualTo(4);
@@ -1212,8 +1389,21 @@ class TaskClientTest {
     }
 
     @Test
-    void customQueuesReplaceTheDefaults() {
-        var client = builder().queues(List.of("A", "B"), "B").build();
+    void aClientWithoutQueuesHasTheOneQueueCommon() {
+        var client = TaskClient.builder().store(store).clock(clock).build();
+
+        var view =
+                client.task(client.enqueue(TaskRequest.of(VOID).build()).id()).orElseThrow();
+
+        assertThat(view.queue()).isEqualTo("general");
+        assertThatThrownBy(
+                        () -> client.enqueue(TaskRequest.of(VOID).queue("Q:DEF").build()))
+                .isInstanceOf(TaskValidationException.class);
+    }
+
+    @Test
+    void theQueuesAClientIsGivenReplaceTheBuiltInOneAndNameTheDefault() {
+        var client = builder().queues(Queues.of("A", "B").withDefault("B")).build();
 
         var defaulted =
                 client.task(client.enqueue(TaskRequest.of(VOID).build()).id()).orElseThrow();
@@ -1233,7 +1423,108 @@ class TaskClientTest {
 
         var view = client.task(result.id()).orElseThrow();
         assertThat(view.state()).isEqualTo(TaskState.SCHEDULED);
-        assertThat(view.due()).isEqualTo(clock.instant().plus(Duration.ofMinutes(5)));
+        assertThat(view.dueAt()).isEqualTo(clock.instant().plus(Duration.ofMinutes(5)));
+    }
+
+    @Test
+    void startByInThePastIsRejectedForATaskThatRunsAtOnce() {
+        var client = builder().build();
+        var past = TaskRequest.of(VOID).startBy(clock.instant().minusMillis(1)).build();
+        var now = TaskRequest.of(VOID).startBy(clock.instant()).build();
+
+        assertThatThrownBy(() -> client.enqueue(past))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("startBy is before the run time");
+        assertThat(client.enqueue(now)).isInstanceOf(EnqueueResult.Accepted.class);
+    }
+
+    @Test
+    void aResendWithACallerIdIsAcceptedAfterItsStartByPassedOrItsDelayMovedPastIt() {
+        var client = builder().build();
+        var atOnce = TaskRequest.of(VOID)
+                .id(client.nextId())
+                .startBy(clock.instant().plusSeconds(5))
+                .build();
+        var delayed = TaskRequest.of(VOID)
+                .id(client.nextId())
+                .delay(Duration.ofSeconds(60))
+                .startBy(clock.instant().plusSeconds(90))
+                .build();
+        var neverSent = TaskRequest.of(VOID)
+                .id(client.nextId())
+                .startBy(clock.instant().plusSeconds(5))
+                .build();
+        assertThat(client.enqueue(atOnce)).isEqualTo(new EnqueueResult.Accepted(atOnce.id(), true));
+        assertThat(client.enqueue(delayed)).isEqualTo(new EnqueueResult.Accepted(delayed.id(), true));
+
+        clock.advance(Duration.ofSeconds(45));
+
+        assertThat(client.enqueue(atOnce)).isEqualTo(new EnqueueResult.Accepted(atOnce.id(), false));
+        assertThat(client.enqueue(delayed)).isEqualTo(new EnqueueResult.Accepted(delayed.id(), false));
+        assertThat(client.enqueueAll(List.of(atOnce, delayed)))
+                .containsExactly(
+                        new EnqueueResult.Accepted(atOnce.id(), false),
+                        new EnqueueResult.Accepted(delayed.id(), false));
+        assertThatThrownBy(() -> client.enqueue(neverSent))
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("startBy is before the run time");
+    }
+
+    @Test
+    void aResendIsAcceptedAfterItsStartByPassedAlsoWhenTheTaskWasRemovedAndOnlyItsKeyIsKept() {
+        var client = builder().build();
+        var request = TaskRequest.of(VOID)
+                .id(client.nextId())
+                .uniqueKey("order-7", Uniqueness.keepAfterDone(Duration.ofHours(1)))
+                .startBy(clock.instant().plusSeconds(5))
+                .build();
+        var otherKey = TaskRequest.of(VOID)
+                .id(request.id())
+                .uniqueKey("order-8", Uniqueness.keepAfterDone(Duration.ofHours(1)))
+                .startBy(clock.instant().plusSeconds(5))
+                .build();
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(request.id(), true));
+        var leased = store.claim(new ClaimRequest(
+                        List.of(new QueueGrant(store.queueId("Q:DEF"), 1, 1)),
+                        1,
+                        Duration.ofSeconds(30),
+                        store.allocateRunnerId("test", Set.of(), Set.of()),
+                        null))
+                .getFirst();
+        assertThat(store.ack(request.id(), leased.revision(), false, false, null))
+                .isTrue();
+        assertThat(store.task(request.id())).isEmpty();
+
+        clock.advance(Duration.ofSeconds(45));
+
+        assertThat(client.enqueue(request)).isEqualTo(new EnqueueResult.Accepted(request.id(), false));
+        assertThat(client.enqueueAll(List.of(request)))
+                .containsExactly(new EnqueueResult.Accepted(request.id(), false));
+        assertThat(store.task(request.id())).as("not stored again").isEmpty();
+        assertThatThrownBy(() -> client.enqueue(otherKey))
+                .as("the same id with a key it does not hold")
+                .isInstanceOf(TaskValidationException.class)
+                .hasMessage("startBy is before the run time");
+    }
+
+    @Test
+    void aJsonPayloadWithoutAMapperIsAConfigurationError() {
+        var client =
+                TaskClient.builder().queues(QUEUES).store(store).clock(clock).build();
+
+        assertThatThrownBy(() ->
+                        client.enqueue(TaskRequest.of(TYPED, new Payload("a")).build()))
+                .isInstanceOf(TaskConfigurationException.class);
+        assertThat(client.enqueue(TaskRequest.of(VOID).build())).isInstanceOf(EnqueueResult.Accepted.class);
+    }
+
+    @Test
+    void aKeyLookupWithoutAKeyAndAScheduleIdThatIsMissingOrHasAU0000AreRejected() {
+        var client = builder().build();
+
+        assertThatThrownBy(() -> client.taskByKey(null)).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> client.deleteSchedule("s\u0000")).isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> client.deleteSchedule(null)).isInstanceOf(TaskValidationException.class);
     }
 
     @Test
@@ -1254,14 +1545,14 @@ class TaskClientTest {
         var longest = TaskRequest.MAX_TIME_FROM_NOW;
 
         assertThat(client.enqueue(TaskRequest.of(VOID).at(now.plus(longest)).build())
-                        .accepted())
+                        .isAccepted())
                 .isTrue();
         assertThat(client.enqueue(TaskRequest.of(VOID).at(now.minus(longest)).build())
-                        .accepted())
+                        .isAccepted())
                 .isTrue();
         assertThat(client.enqueue(
                                 TaskRequest.of(VOID).startBy(now.plus(longest)).build())
-                        .accepted())
+                        .isAccepted())
                 .isTrue();
         for (var bad :
                 List.of(now.plus(longest).plusMillis(1), now.minus(longest).minusMillis(1), Instant.MAX)) {
@@ -1334,52 +1625,70 @@ class TaskClientTest {
     @Test
     void schedulePutDeleteAndList() {
         var client = builder().build();
-        var definition = ScheduleDefinition.of("nightly", TYPED, new Payload("p"), "0 3 * * *");
+        var definition = ScheduleDefinition.of("nightly", TYPED, new Payload("p"), "0 3 * * *", Overlap.ALLOW);
 
-        var next = client.putSchedule(definition);
+        var put = client.putSchedule(definition);
 
-        assertThat(next).isEqualTo(Instant.parse("2030-01-01T03:00:00Z"));
-        assertThat(client.schedules()).containsEntry("nightly", next);
+        assertThat(put)
+                .isEqualTo(new PutScheduleResult(PutScheduleOutcome.CREATED, Instant.parse("2030-01-01T03:00:00Z")));
+        assertThat(client.nextFireTimes()).containsEntry("nightly", put.nextFireAt());
 
         assertThat(client.deleteSchedule("nightly")).isTrue();
         assertThat(client.deleteSchedule("nightly")).isFalse();
-        assertThat(client.schedules()).isEmpty();
+        assertThat(client.nextFireTimes()).isEmpty();
     }
 
     @Test
     void registeringAScheduleAgainKeepsTheNextFireTimeForTheSameCronAndResetsItForAnother() {
         var client = builder().build();
-        var first = client.putSchedule(ScheduleDefinition.of("s", VOID, "0 3 * * *"));
+        var first = client.putSchedule(ScheduleDefinition.of("s", VOID, "0 3 * * *", Overlap.ALLOW));
         clock.advance(Duration.ofHours(1));
 
-        var same = client.putSchedule(ScheduleDefinition.of("s", VOID, "0 3 * * *"));
-        var changed = client.putSchedule(ScheduleDefinition.of("s", VOID, "0 5 * * *"));
+        var same = client.putSchedule(ScheduleDefinition.of("s", VOID, "0 3 * * *", Overlap.ALLOW));
+        var changed = client.putSchedule(ScheduleDefinition.of("s", VOID, "0 5 * * *", Overlap.ALLOW));
 
-        assertThat(first).isEqualTo(Instant.parse("2030-01-01T03:00:00Z"));
-        assertThat(same).isEqualTo(first);
-        assertThat(changed).isEqualTo(Instant.parse("2030-01-01T05:00:00Z"));
-        assertThat(client.schedules()).containsOnly(java.util.Map.entry("s", changed));
+        var three = Instant.parse("2030-01-01T03:00:00Z");
+        var five = Instant.parse("2030-01-01T05:00:00Z");
+        assertThat(first).isEqualTo(new PutScheduleResult(PutScheduleOutcome.CREATED, three));
+        assertThat(same).isEqualTo(new PutScheduleResult(PutScheduleOutcome.UNCHANGED, three));
+        assertThat(changed).isEqualTo(new PutScheduleResult(PutScheduleOutcome.CHANGED, five));
+        assertThat(client.nextFireTimes()).containsOnly(java.util.Map.entry("s", five));
+    }
+
+    @Test
+    void registeringAFixedDelayScheduleAgainAnswersTheStoredNextFireTime() {
+        var client = builder().build();
+        var every = ScheduleDefinition.every("poll", VOID, Duration.ofMinutes(5));
+        var first = client.putSchedule(every);
+        clock.advance(Duration.ofSeconds(10));
+
+        var again = client.putSchedule(every);
+
+        assertThat(first.nextFireAt()).isEqualTo(Instant.parse("2030-01-01T00:05:00Z"));
+        assertThat(again).isEqualTo(new PutScheduleResult(PutScheduleOutcome.UNCHANGED, first.nextFireAt()));
     }
 
     @Test
     void invalidCronIsRejected() {
         var client = builder().build();
 
-        assertThatThrownBy(() -> client.putSchedule(ScheduleDefinition.of("bad", VOID, "not a cron")))
+        assertThatThrownBy(() -> client.putSchedule(ScheduleDefinition.of("bad", VOID, "not a cron", Overlap.ALLOW)))
                 .isInstanceOf(TaskValidationException.class);
-        assertThat(client.schedules()).isEmpty();
+        assertThat(client.nextFireTimes()).isEmpty();
     }
 
     @Test
     void scheduleDefinitionValidatesItsFields() {
-        assertThatThrownBy(() -> ScheduleDefinition.of(" ", VOID, "* * * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of(" ", VOID, "* * * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> ScheduleDefinition.of("x".repeat(129), VOID, "* * * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of("x".repeat(129), VOID, "* * * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> ScheduleDefinition.of("id", TYPED, null, "* * * * *"))
+        assertThatThrownBy(() -> ScheduleDefinition.of("id", TYPED, null, "* * * * *", Overlap.ALLOW))
                 .isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> ScheduleDefinition.of("id", VOID, " ")).isInstanceOf(TaskValidationException.class);
-        assertThatThrownBy(() -> ScheduleDefinition.of("id", VOID, "* * * * *").maxAttempts(0))
+        assertThatThrownBy(() -> ScheduleDefinition.of("id", VOID, " ", Overlap.ALLOW))
+                .isInstanceOf(TaskValidationException.class);
+        assertThatThrownBy(() -> ScheduleDefinition.of("id", VOID, "* * * * *", Overlap.ALLOW)
+                        .withMaxAttempts(0))
                 .isInstanceOf(TaskValidationException.class);
     }
 
@@ -1390,9 +1699,7 @@ class TaskClientTest {
         assertThatThrownBy(() -> TaskClient.builder().defaultMaxAttempts(0))
                 .isInstanceOf(TaskConfigurationException.class);
         assertThatThrownBy(() -> TaskClient.builder().clock(null)).isInstanceOf(TaskConfigurationException.class);
-        assertThatThrownBy(() -> TaskClient.builder().queues(List.of(), null))
-                .isInstanceOf(TaskConfigurationException.class);
-        assertThatThrownBy(() -> TaskClient.builder().queues(List.of("A"), "B"))
+        assertThatThrownBy(() -> TaskClient.builder().queues((Queues) null))
                 .isInstanceOf(TaskConfigurationException.class);
     }
 }

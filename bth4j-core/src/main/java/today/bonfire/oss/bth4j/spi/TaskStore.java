@@ -2,6 +2,8 @@ package today.bonfire.oss.bth4j.spi;
 
 import java.util.Map;
 import java.util.Set;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
+import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
 /**
  * What every store provides: identity, the name registries and schema management. The task operations are
@@ -18,7 +20,7 @@ import java.util.Set;
  * long, so a store may keep times as epoch milliseconds or SQL timestamps. A store keeps times and durations in
  * whole milliseconds: it drops what is finer from those it is given, takes its own clock to the millisecond, and
  * compares a time it is given with a stored one to the millisecond. Arguments that break a rule of this
- * SPI throw {@link IllegalArgumentException}; {@link StoreArguments} holds the shared checks.
+ * SPI throw {@link TaskValidationException}; {@link StoreArguments} holds the shared checks.
  */
 public interface TaskStore {
 
@@ -29,6 +31,8 @@ public interface TaskStore {
      * {@link #info()} reports.
      *
      * @throws TaskStoreException when the stored schema version differs
+     * @throws today.bonfire.oss.bth4j.exceptions.TaskConfigurationException when the engine is not set up as the
+     *     store needs it, for example a Redis server that evicts keys or an SQLite connection that is not in WAL mode
      */
     void init();
 
@@ -42,13 +46,13 @@ public interface TaskStore {
     long allocateIds(int count);
 
     /**
-     * Registers an accepting worker and returns its id. Ids are never reused.
+     * Registers an accepting runner and returns its id. Ids are never reused.
      *
      * @param label free text that identifies the process, for example host and pid; not null
-     * @param queueIds queues this worker processes
-     * @param typeIds task types this worker processes
+     * @param queueIds queues this runner processes
+     * @param typeIds task types this runner processes
      */
-    int allocateWorkerId(String label, Set<Integer> queueIds, Set<Integer> typeIds);
+    int allocateRunnerId(String label, Set<Integer> queueIds, Set<Integer> typeIds);
 
     /**
      * Resolves a queue name to its id, registering the name when it is new. Ids are permanent, so callers

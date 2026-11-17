@@ -4,9 +4,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
+import today.bonfire.oss.bth4j.exceptions.TaskStoreException;
 import today.bonfire.oss.bth4j.spi.ExecutionStore;
 import today.bonfire.oss.bth4j.spi.LeaseRef;
-import today.bonfire.oss.bth4j.spi.TaskStoreException;
 
 /**
  * Sends the acknowledgements of tasks that finish while an earlier batch is on its way to the store as one

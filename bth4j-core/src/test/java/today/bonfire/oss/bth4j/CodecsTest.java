@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import org.junit.jupiter.api.Test;
+import today.bonfire.oss.bth4j.exceptions.TaskConfigurationException;
 import today.bonfire.oss.bth4j.exceptions.TaskDataException;
 import today.bonfire.oss.bth4j.exceptions.TaskValidationException;
 
@@ -52,12 +53,15 @@ class CodecsTest {
     }
 
     @Test
-    void jsonTypeWithoutMapperFailsWithADataException() {
+    void aMissingMapperIsAConfigurationErrorNotADataErrorWhichWouldEndTheTaskAsDead() {
         var withoutMapper = new Codecs(null);
 
         assertThatThrownBy(() -> withoutMapper.encode(JSON_TYPE, new Payload("a", 1)))
-                .isInstanceOf(TaskDataException.class)
-                .hasRootCauseInstanceOf(TaskDataException.class);
+                .isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> withoutMapper.decode(JSON_TYPE, "{}")).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> withoutMapper.encodeStep("result")).isInstanceOf(TaskConfigurationException.class);
+        assertThatThrownBy(() -> withoutMapper.decodeStep("\"result\"", String.class))
+                .isInstanceOf(TaskConfigurationException.class);
     }
 
     @Test
@@ -134,6 +138,11 @@ class CodecsTest {
 
         assertThat(twoBytesEach.length()).isLessThan(TaskRequest.MAX_PAYLOAD_BYTES);
         assertThatThrownBy(() -> codecs.encode(raw, twoBytesEach)).isInstanceOf(TaskValidationException.class);
+
+        // three bytes each: a third of the limit in chars still fits, one char more does not
+        var fits = "\u20ac".repeat(TaskRequest.MAX_PAYLOAD_BYTES / 3);
+        assertThat(codecs.encode(raw, fits)).isEqualTo(fits);
+        assertThatThrownBy(() -> codecs.encode(raw, fits + "\u20ac")).isInstanceOf(TaskValidationException.class);
     }
 
     @Test

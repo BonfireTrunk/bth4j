@@ -13,7 +13,7 @@ import today.bonfire.oss.bth4j.TaskView;
  * bounded. Register it with {@code BackgroundRunner.builder().observer(...)}.
  * <p>
  * Meters: {@code bth4j.tasks} (type, queue, result, outcome), {@code bth4j.task.duration} (type, queue),
- * {@code bth4j.deferred} (type), {@code bth4j.schedule.fired} and {@code bth4j.purged} (state).
+ * {@code bth4j.deferred} (type, queue), {@code bth4j.schedule.fired} and {@code bth4j.purged} (state).
  */
 public final class MicrometerTaskObserver implements TaskObserver {
 
@@ -22,8 +22,6 @@ public final class MicrometerTaskObserver implements TaskObserver {
     static final String DEFERRED = "bth4j.deferred";
     static final String SCHEDULE_FIRED = "bth4j.schedule.fired";
     static final String PURGED = "bth4j.purged";
-
-    private static final String UNKNOWN = "unknown";
 
     private final MeterRegistry registry;
     private final Tags commonTags;
@@ -61,7 +59,7 @@ public final class MicrometerTaskObserver implements TaskObserver {
                                 DURATION,
                                 commonTags.and(
                                         "type",
-                                        e.task().type(),
+                                        e.task().typeName(),
                                         "queue",
                                         e.task().queue()))
                         .record(e.runTime());
@@ -70,21 +68,23 @@ public final class MicrometerTaskObserver implements TaskObserver {
             case TaskEvent.Died e -> countTask(e.task(), "died", e.outcome());
             case TaskEvent.Rescheduled e -> countTask(e.task(), "rescheduled", e.outcome());
             case TaskEvent.Cancelled e -> countTask(e.task(), "cancelled", e.outcome());
-            case TaskEvent.LeaseExpired e -> count(UNKNOWN, UNKNOWN, "lease_lost", TaskEvent.Outcome.APPLIED);
-            case TaskEvent.Expired e -> count(UNKNOWN, UNKNOWN, "expired", TaskEvent.Outcome.APPLIED);
+            case TaskEvent.LeaseExpired e -> count(e.type(), e.queue(), "lease_lost", TaskEvent.Outcome.APPLIED);
+            case TaskEvent.Expired e -> count(e.type(), e.queue(), "expired", TaskEvent.Outcome.APPLIED);
             case TaskEvent.Deferred e ->
-                registry.counter(DEFERRED, commonTags.and("type", e.type())).increment();
+                registry.counter(DEFERRED, commonTags.and("type", e.type(), "queue", e.queue()))
+                        .increment();
             case TaskEvent.ScheduleFired e ->
                 registry.counter(SCHEDULE_FIRED, commonTags).increment();
             case TaskEvent.Purged e ->
                 registry.counter(
-                                PURGED, commonTags.and("state", e.state().name().toLowerCase()))
+                                PURGED, commonTags.and("state", e.state().name().toLowerCase(Locale.ROOT)))
                         .increment(e.count());
+            default -> {}
         }
     }
 
     private void countTask(TaskView task, String result, TaskEvent.Outcome outcome) {
-        count(task.type(), task.queue(), result, outcome);
+        count(task.typeName(), task.queue(), result, outcome);
     }
 
     private void count(String type, String queue, String result, TaskEvent.Outcome outcome) {
