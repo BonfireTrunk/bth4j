@@ -298,8 +298,9 @@ public abstract class StoreContract {
             }
             start.countDown();
             List<T> results = new ArrayList<>();
+            // ends a run that hangs; with every commit synced to a busy disk a run of a second can take a minute
             for (Future<T> f : futures) {
-                results.add(f.get(30, TimeUnit.SECONDS));
+                results.add(f.get(120, TimeUnit.SECONDS));
             }
             return results;
         } finally {
